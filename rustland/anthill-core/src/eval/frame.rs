@@ -92,6 +92,16 @@ pub enum AwaitState {
         buffered: Vec<Value>,
         remaining: Vec<Rc<NodeOccurrence>>,
     },
+    /// Proposal 073 §2 — a call on an instance collecting its arguments; on the last one the
+    /// receiver's dictionary names the member (`Interpreter::dispatch_on_instance`). `filled`
+    /// is the call's evidence for the operation's own `requires`, evaluated where the call is.
+    InstanceApplyArgs {
+        spec_op: Symbol,
+        abstract_sort: Symbol,
+        buffered: Vec<Value>,
+        remaining: Vec<Rc<NodeOccurrence>>,
+        filled: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
+    },
     /// WI-223: an `apply_within` node — like ApplyArgs but threads the
     /// callee's name-keyed `requirements` channel through to the callee
     /// frame at dispatch time. Per `docs/design/operation-call-model.md`
@@ -104,6 +114,10 @@ pub enum AwaitState {
         buffered: Vec<Value>,
         remaining: Vec<Rc<NodeOccurrence>>,
         requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
+        /// Proposal 073 §2 — the argument positions paired with a dictionary before the
+        /// call: an abstract sort's default body entered through a dictionary of a carrier
+        /// takes its receiver as the instance it is (`Interpreter::positions_to_pair`).
+        pair_at: Option<Box<(crate::eval::value::Dictionary, SmallVec<[usize; 2]>)>>,
     },
     /// A constructor node is collecting (possibly named) field values.
     ConstructorArgs {
@@ -173,6 +187,23 @@ pub enum AwaitState {
     /// value is the apply's result — cascade it up without re-evaluating
     /// anything in this frame.
     OperationResult,
+    /// Proposal 073 §2 — the node `node` is reduced in the frame above, and its value is
+    /// converted by `conversion` on delivery: paired with the dictionary of the instance
+    /// it is, where a value of a known sort meets an abstract type, or converted through
+    /// its constructor's fields. A frame of its own, not a step of the node's: the node may
+    /// enter an operation by a tail call, which replaces the frame it runs in.
+    ///
+    /// `armed` is `true` from the push until the node is first reduced above it, so that
+    /// reduction does not suspend again; a later reduction of the same node in the frame
+    /// above — a tail call back into the operation holding it — is another value and
+    /// converts again. `receiver` is the dictionary of the instance a call was made on, for
+    /// a member's result typed at it.
+    Convert {
+        conversion: crate::kb::typing::InstanceConversion,
+        node: Option<Rc<NodeOccurrence>>,
+        armed: bool,
+        receiver: Option<crate::eval::value::Dictionary>,
+    },
     /// Proposal 027.4 — an `Error.reify` BOUNDARY: the frame that dispatched
     /// `reify` is suspended here while the thunk runs in the frame above, and
     /// this frame is the marker a raise unwinds to. 047 §4: *"`reset` is a
@@ -270,6 +301,12 @@ pub struct Frame {
     /// None = fresh (ready to reduce `expr`); Some = suspended, waiting for
     /// the child frame above to deliver a value.
     pub awaiting: Option<AwaitState>,
+    /// Proposal 073 §6.2, STAGE 4'S — the frame runs text no typer saw: a query's compound
+    /// expression, the body of a lambda a rule wrote. Its calls have no typed caller, and
+    /// the only ones whose implementation is still found from the argument values
+    /// (`dispatch_resolved_operation`'s steps 3 and 3b), until such a call is typed where
+    /// it is read or refused (WI-20261105-CBRD2). Inherited by the frames it pushes.
+    pub untyped: bool,
 }
 
 /// Captured context for pushing a child frame: everything the eval
@@ -278,6 +315,7 @@ pub struct Frame {
 /// sub-expression about to be reduced).
 pub struct ChildFrameContext {
     pub op: Symbol,
+    pub untyped: bool,
     pub locals: SmallVec<[(Symbol, Value); 4]>,
     pub requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
 }
@@ -289,6 +327,7 @@ impl Frame {
     pub fn child_context(&self) -> ChildFrameContext {
         ChildFrameContext {
             op: self.op,
+            untyped: self.untyped,
             locals: self.locals.clone(),
             requirements: self.requirements.clone(),
         }
@@ -349,6 +388,15 @@ impl ActivationStack {
     }
     pub fn top_mut(&mut self) -> Option<&mut Frame> {
         self.frames.last_mut()
+    }
+
+    /// The frame under the top one — the one the top frame was pushed by — mutably.
+    pub(crate) fn below_top_mut(&mut self) -> Option<&mut Frame> {
+        let n = self.frames.len();
+        if n < 2 {
+            return None;
+        }
+        self.frames.get_mut(n - 2)
     }
 
     /// Override the depth cap (test hook). Lets a test drive the stack
@@ -470,6 +518,7 @@ mod tests {
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
             awaiting: None,
+            untyped: false,
         }
     }
 

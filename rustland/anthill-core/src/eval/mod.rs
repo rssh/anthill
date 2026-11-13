@@ -12,6 +12,7 @@ pub mod effects;
 pub mod error;
 pub mod eval;
 pub mod frame;
+mod instance;
 pub mod layer_arena;
 pub mod map_arena;
 pub mod pattern;
@@ -267,6 +268,9 @@ pub(crate) struct FieldSymbols {
     /// `__req_self` — the Self-slot requirement-param name (WI-237
     /// names model). Interned, not a stdlib symbol.
     pub req_self: Symbol,
+    /// Proposal 073 §2 — `anthill.realization.runtime.Instance`, the functor of a value of
+    /// an abstract type (`eval::instance`); `None` in a knowledge base without the stdlib.
+    pub instance: Option<Symbol>,
 }
 
 impl FieldSymbols {
@@ -305,6 +309,7 @@ impl FieldSymbols {
                 crate::kb::typing::AbsenceRecord::HostEntry,
             ),
             req_self: kb.intern("__req_self"),
+            instance: kb.try_resolve_symbol("anthill.realization.runtime.Instance"),
         }
     }
 }
@@ -508,6 +513,15 @@ pub struct Interpreter {
     /// WI-20260913-2858G) sees its own dictionary on the way in and the caller's again on
     /// the way out, rather than inheriting whatever ran last.
     pub(crate) builtin_dispatch_dict: Option<crate::eval::value::Dictionary>,
+    /// Proposal 073 §6.1, STAGE 4'S — set while the host entry's own call is dispatched
+    /// ([`Self::invoke_op_with_requirements`]). With a frame typed with no caller to pass a
+    /// dictionary (`Frame::untyped`: a rule-written lambda, a reflected form) it is what
+    /// `untyped_caller` reads: the dispatches where a spec operation's implementation is
+    /// still found from the argument values (`dispatch_resolved_operation`'s steps 3 and 3b),
+    /// until a host call passes the dictionaries its callee reads or is refused
+    /// (WI-20261105-CBRD2). A call made from a typed body is decided at load and never
+    /// reaches them.
+    pub(crate) host_entry_dispatch: bool,
     /// Proposal 071 §1.3 — the requirement channel of the builtin currently running, or
     /// `None` outside one. A builtin enters no frame, and a host function that raises takes
     /// the `TypeValue` of what it raises out of this channel ([`Self::raise_error`]), as an
@@ -553,6 +567,14 @@ pub struct Interpreter {
     /// through a dictionary (`push_spec_body_slots`); a declaration's answer, which nothing
     /// changes while the program runs.
     pub(crate) spec_body_ops: HashMap<Symbol, bool>,
+    /// Proposal 073 §2 — per `(operation of an abstract sort, member)`: the conversion of the
+    /// member's result to the type a call on an instance was typed at
+    /// (`kb::typing::member_result_conversion`).
+    pub(crate) member_result_conversions:
+        HashMap<(Symbol, Symbol), Option<crate::kb::typing::InstanceConversion>>,
+    /// Proposal 073 §2 — per `(operation called, member entered)` through a dictionary: the
+    /// argument positions paired with it (`Interpreter::positions_to_pair`).
+    pub(crate) pair_positions: HashMap<(Symbol, Symbol), Option<smallvec::SmallVec<[usize; 2]>>>,
     pub(crate) config: EvalConfig,
     /// 068 §2 — the rule world's UNKNOWNS a bridged call was handed: the unbound logic
     /// variables of its arguments. Empty everywhere else, and then nothing below changes
@@ -619,6 +641,7 @@ impl Interpreter {
         };
         Self {
             builtin_dispatch_dict: None,
+            host_entry_dispatch: false,
             running_builtin: None,
             kb,
             stack,
@@ -639,6 +662,8 @@ impl Interpreter {
             profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
             trace_requirements: std::env::var_os("ANTHILL_TRACE_REQ").is_some(),
             spec_body_ops: HashMap::new(),
+            member_result_conversions: HashMap::new(),
+            pair_positions: HashMap::new(),
             config,
             bridge_unknowns: std::rc::Rc::from([]),
             pattern_read_unknown: std::cell::Cell::new(false),
@@ -906,7 +931,10 @@ impl Interpreter {
             // `TypeValue` of what it raises among them.
             let mut requirements = smallvec::SmallVec::new();
             self.seed_entry_op_requirements(sym, args, &mut requirements)?;
-            return self.call_host(sym, &builtin, args, requirements);
+            // Proposal 073 §2 — handed back to the host as the carrier's value.
+            return self
+                .call_host(sym, &builtin, args, requirements)
+                .map(|v| self.carried_for_host(sym, v));
         }
         // A BODY-LESS operation is entered by value-directed dispatch to a provider's, and
         // the dispatch builds THAT frame from the values, the channel seeded here being a
@@ -922,7 +950,19 @@ impl Interpreter {
                     .to_string(),
             ));
         }
-        let mut requirements = self.seed_entry_requirements(sym)?;
+        // Proposal 073 §6.1, STAGE 4'S — a host call passes values and no dictionaries: the
+        // channel is built at the arguments' sorts, as the resolver's bridge builds a rule
+        // body's call's (`call_op_bridged`) — a spec operation's instance at its receiver's
+        // sort, another operation's chain at the arguments' types — where they resolve; a
+        // stand-in is left where nothing does. Until a host call passes the dictionaries its
+        // callee reads, or is refused (WI-20261105-CBRD2).
+        let mut requirements = match witnesses.is_empty() {
+            true => match self.requirements_at_the_host_values(sym, args)? {
+                Some(reqs) => reqs,
+                None => self.seed_entry_requirements(sym)?,
+            },
+            false => self.seed_entry_requirements(sym)?,
+        };
         // WI-20260922-ATFGH — the host's witnesses FIRST, so a mismatch is refused before
         // anything else runs and the op-half resolution below skips the slots they fill
         // (a tie there is not a verdict about a slot the host has already answered —
@@ -1095,7 +1135,10 @@ impl Interpreter {
             // The calling clause's conditions for the builtin's own chain stand in for what
             // its argument values would give, as they do for a body below (WI-20260925-P7VP4).
             let requirements = self.supplied_channel(sym, supplied_slots);
-            return self.call_host(sym, &builtin, args, requirements);
+            // Proposal 073 §2 — handed back to the host as the carrier's value.
+            return self
+                .call_host(sym, &builtin, args, requirements)
+                .map(|v| self.carried_for_host(sym, v));
         }
         // 068 §2: an operation whose carrier the call would be dispatched by, reached with
         // that carrier one of the caller's unknowns, cannot be chosen yet — run as it is, a
@@ -1389,9 +1432,129 @@ impl Interpreter {
             op: sym,
             requirements,
         });
-        let result = (builtin)(self, args);
+        let opened = self.open_host_arguments(sym, args);
+        let result = (builtin)(self, opened.as_deref().unwrap_or(args));
         self.running_builtin = saved;
-        result
+        match result {
+            Ok(v) => self.pair_host_result(sym, v),
+            err => err,
+        }
+    }
+
+    /// Proposal 073 §2 — the host works on its own values: an argument at a parameter typed at a
+    /// sort with abstract values is handed to it as the carrier's value. `None` where nothing
+    /// is opened.
+    fn open_host_arguments(&self, op: Symbol, args: &[Value]) -> Option<Vec<Value>> {
+        let info = crate::kb::op_info::lookup_operation_info(&self.kb, op)?;
+        let mut out: Option<Vec<Value>> = None;
+        for (i, (_, ty)) in info.params.iter().enumerate() {
+            if !self.typed_at_abstract_carrier(ty) {
+                continue;
+            }
+            if let Some((_, carried)) = args.get(i).and_then(|a| self.open_instance(a)) {
+                out.get_or_insert_with(|| args.to_vec())[i] = carried;
+            }
+        }
+        out
+    }
+
+    /// Proposal 073 §2 — a host operation's result at a sort with abstract values (`KB.execute`
+    /// answering `Stream[…]`) is the instance of the host carrier it built: the host's value says
+    /// which (a stream handle is a `LogicalStream`), and that carrier's dictionary is paired with
+    /// it.
+    fn pair_host_result(&mut self, op: Symbol, v: Value) -> Result<Value, EvalError> {
+        let Some(info) = crate::kb::op_info::lookup_operation_info(&self.kb, op) else {
+            return Ok(v);
+        };
+        let ret = info.return_type.clone();
+        if !self.typed_at_abstract_carrier(&ret) || self.open_instance(&v).is_some() {
+            return Ok(v);
+        }
+        let Some(abstract_sort) = crate::kb::typing::sort_functor_of_view(&self.kb, &ret) else {
+            return Ok(v);
+        };
+        let abstract_sort = self.kb.canonical_sort_sym(abstract_sort);
+        let Some(carrier) = eval::runtime_carrier_sort(&self.kb, &v) else {
+            return Err(EvalError::Internal(format!(
+                "host `{}` answered a {} where its result is a `{}`, which names no carrier",
+                self.kb.qualified_name_of(op),
+                v.type_name(),
+                self.kb.qualified_name_of(abstract_sort),
+            )));
+        };
+        let carrier = self.kb.canonical_sort_sym(carrier);
+        let carrier_ty = Value::term(self.kb.make_sort_ref(carrier));
+        let term = crate::kb::typing::dictionary_at_in_scope(
+            &mut self.kb,
+            abstract_sort,
+            carrier,
+            &carrier_ty,
+            &ret,
+            &[],
+            &crate::kb::typing::DictChain::empty(),
+            &[],
+        )
+        .map_err(|why| {
+            EvalError::Internal(format!("the result of host `{}`: {why}", self.kb.qualified_name_of(op)))
+        })?;
+        let occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, term);
+        let dict = self.eval_requirement_chain_node(&occ)?;
+        self.make_instance(dict, v)
+    }
+
+    /// Proposal 073 §2 — the result of `op` handed to the host: an instance is handed as its
+    /// carrier's value, wherever it stands in the result (`snd` of `Stream.splitFirst`'s
+    /// pair), the host working on its own values. Walked only where `op`'s declared result
+    /// names a sort with abstract values.
+    pub(crate) fn carried_for_host(&self, op: Symbol, v: Value) -> Value {
+        let holds_instances = crate::kb::op_info::lookup_operation_info(&self.kb, op)
+            .is_some_and(|info| {
+                crate::kb::typing::type_names_abstract_carrier(&self.kb, &info.return_type)
+            });
+        if holds_instances {
+            self.opened_throughout(v)
+        } else {
+            v
+        }
+    }
+
+    /// `v` with every instance in it opened to its carrier's value, at any depth.
+    fn opened_throughout(&self, v: Value) -> Value {
+        if let Some((_, carried)) = self.open_instance(&v) {
+            return self.opened_throughout(carried);
+        }
+        match v {
+            Value::Entity {
+                functor,
+                pos,
+                named,
+            } => Value::Entity {
+                functor,
+                pos: pos.iter().map(|c| self.opened_throughout(c.clone())).collect::<Vec<_>>().into(),
+                named: named
+                    .iter()
+                    .map(|(k, c)| (*k, self.opened_throughout(c.clone())))
+                    .collect::<Vec<_>>()
+                    .into(),
+            },
+            Value::Tuple { pos, named } => Value::Tuple {
+                pos: pos.iter().map(|c| self.opened_throughout(c.clone())).collect::<Vec<_>>().into(),
+                named: named
+                    .iter()
+                    .map(|(k, c)| (*k, self.opened_throughout(c.clone())))
+                    .collect::<Vec<_>>()
+                    .into(),
+            },
+            other => other,
+        }
+    }
+
+    /// Is `ty` headed by a sort with abstract values (`kb::typing::is_abstract_carrier_sort`)?
+    fn typed_at_abstract_carrier(&self, ty: &Value) -> bool {
+        crate::kb::typing::sort_functor_of_view(&self.kb, ty).is_some_and(|h| {
+            let h = self.kb.canonical_sort_sym(self.kb.type_arg_owner(h).unwrap_or(h));
+            crate::kb::typing::is_abstract_carrier_sort(&self.kb, h)
+        })
     }
 
     /// Is `sym` `PartialEq.eq` ([`Self::eq_spec_op`])?
@@ -1478,7 +1641,10 @@ impl Interpreter {
             // `TypeValue` of what it raises among them.
             let mut requirements = smallvec::SmallVec::new();
             self.seed_entry_op_requirements(sym, args, &mut requirements)?;
-            return self.call_host(sym, &builtin, args, requirements);
+            // Proposal 073 §2 — handed back to the host as the carrier's value.
+            return self
+                .call_host(sym, &builtin, args, requirements)
+                .map(|v| self.carried_for_host(sym, v));
         }
         // Names model: `__req_self` → a self-referential placeholder for
         // the parent sort; `__req_<spec>` → each host-supplied chain
@@ -1664,6 +1830,40 @@ impl Interpreter {
     /// serves this route (MEASURED: `wi842_bracketless_readers_test` calls
     /// `Holder.probe(leaf())` straight from the host and gets its answer), and a body
     /// that genuinely needs the dictionary raises at the read naming the frame.
+    /// [`Self::call_op_sym`]'s channel read at the host's argument values (stage 4's step):
+    /// `None` where nothing resolves there and the seeded stand-ins stand.
+    fn requirements_at_the_host_values(
+        &mut self,
+        sym: Symbol,
+        args: &[Value],
+    ) -> Result<Option<smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>>, EvalError> {
+        if self.cached_operation_body(sym).is_none() {
+            return Ok(None);
+        }
+        // A spec something provides: its instance at the receiver's sort, where the bare
+        // value names one (a conditional provision over the value's type arguments does not,
+        // and the host's dispatch steps answer it).
+        if crate::kb::typing::spec_op_parent_sort(&self.kb, sym)
+            .is_some_and(|s| crate::kb::typing::spec_has_any_providers(&self.kb, s))
+        {
+            return match self.spec_instance_at_the_receiver(sym, args)? {
+                Some(dict) => Ok(Some(self.expand_dispatching_dict(sym, sym, &dict)?)),
+                None => Ok(None),
+            };
+        }
+        let reqs = self.requirements_at_the_values(sym, args)?;
+        // Only a channel the values decide in full: a slot they record absent is the host's
+        // to pass, and the seeded stand-in is what the operation's own checks refuse.
+        if reqs.is_empty()
+            || reqs
+                .iter()
+                .any(|(_, d)| crate::kb::typing::is_absence_marker(&self.kb, d.impl_sort()))
+        {
+            return Ok(None);
+        }
+        Ok(Some(reqs))
+    }
+
     fn seed_entry_requirements(
         &mut self,
         op_sym: Symbol,
@@ -2076,6 +2276,7 @@ impl Interpreter {
             locals: smallvec::SmallVec::new(),
             requirements,
             awaiting: None,
+            untyped: false,
         })?;
         self.run()
     }

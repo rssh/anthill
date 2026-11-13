@@ -1169,6 +1169,15 @@ pub(crate) fn resolve_op_target_at(
     if answered_by_its_dictionary(kb, spec_op) {
         return Ok(spec_op);
     }
+    // Proposal 073 §2 — a carrier with no provision of the spec of its own, whose instance of
+    // it is the one a sort with abstract values gives its carriers (`Box provides Mid`, `Mid
+    // provides Top[C = Self, get = fetch]`): that provision decides the member, and the
+    // carrier's operations of the same name are not the spec's (`Box.get` is no `Top.get`).
+    if !provides_spec_itself(kb, impl_sym, spec_op) {
+        if let Some(member) = member_through_abstract_provision(kb, impl_sym, spec_op) {
+            return Ok(member);
+        }
+    }
     let fn_qn = kb.qualified_name_of(spec_op);
     let Some((_, op_short)) = fn_qn.rsplit_once('.') else {
         return Ok(spec_op);
@@ -1243,6 +1252,54 @@ pub(crate) fn resolve_op_target_at(
             candidates: suppliers,
         }),
     }
+}
+
+/// Does `provider` provide `spec_op`'s spec by a provision of its own, or is it that spec?
+fn provides_spec_itself(kb: &KnowledgeBase, provider: Symbol, spec_op: Symbol) -> bool {
+    let Some(spec) = impl_parent_sort_of_op(kb, spec_op) else {
+        return true;
+    };
+    // A row forwarded from the carrier's provision of a sort with abstract values
+    // (`Rewrap provides FiniteCollection`, derived from `Rewrap provides FiniteStream`) is that
+    // sort's provision read at the carrier, not one of the carrier's own.
+    same_sort_canonical(kb, provider, spec)
+        || provides_rows_of_provider(kb, provider).any(|row| {
+            same_sort_canonical(kb, row.spec_base, spec)
+                && !kb
+                    .derived_provision_origin_of(row.rid)
+                    .is_some_and(|origin| is_abstract_carrier_sort(kb, origin))
+        })
+}
+
+/// Proposal 073 §2 — the member a sort with abstract values gives `spec_op` for its carriers,
+/// where `provider` is such a sort's carrier and that sort provides `spec_op`'s spec for them
+/// (`Stream provides Iterable[C = Self]`): `Iterable.find` through `List`'s instance is
+/// `Stream.find`, the dictionary being `List`'s `Stream` (`carrier_own_instance_goal`).
+/// `None` where no such sort gives one.
+fn member_through_abstract_provision(
+    kb: &KnowledgeBase,
+    provider: Symbol,
+    spec_op: Symbol,
+) -> Option<Symbol> {
+    let spec = impl_parent_sort_of_op(kb, spec_op)?;
+    for row in provides_rows_of_provider(kb, provider) {
+        let abstract_sort = row.spec_base;
+        if same_sort_canonical(kb, abstract_sort, spec)
+            || same_sort_canonical(kb, abstract_sort, provider)
+            || !is_abstract_carrier_sort(kb, abstract_sort)
+            || !sort_provides(kb, abstract_sort, spec)
+        {
+            continue;
+        }
+        if let Ok(member) = resolve_op_target_at(kb, abstract_sort, spec_op, None) {
+            if member != spec_op {
+                // …as the carrier gives it: its own member for the abstract sort's operation
+                // (`Deep` writing `steps` over `Mid`'s default), or the default.
+                return Some(resolve_op_target_at(kb, provider, member, None).unwrap_or(member));
+            }
+        }
+    }
+    None
 }
 
 /// WI-20261025-7K84M — an operation a provider in the instance `tree` gives two implementations,
@@ -1874,6 +1931,17 @@ pub enum CallClass {
         op_short_sym: Symbol,
         dict: TermId,
     },
+    /// Proposal 073 §2 — a call on a value of an abstract type (`Mergeable.merge(x, y)` over
+    /// `x: Mergeable`, `takeN(rest, …)` over a `rest: Stream`). The value is an instance: the
+    /// call runs the member the instance's dictionary names, taken out of the receiver's pair
+    /// where the call runs (`eval::dispatch_on_instance`). `abstract_sort` is the receiver's
+    /// static sort, whose member answers `spec_op_sym` and names the receiver among its
+    /// parameters. Nothing is chosen from a value: the dictionary is the one fixed where the
+    /// value was made.
+    OnInstance {
+        spec_op_sym: Symbol,
+        abstract_sort: Symbol,
+    },
     /// WI-325: dispatch returned `NoCandidates` AND the call's per-call
     /// substitution leaves at least one of the spec's type parameters
     /// abstract (`is_type_param_value`). The typer detects the abstract
@@ -2060,7 +2128,7 @@ fn entry_type_param_bindings(
     spec_qn: &str,
     entry: &RequiresEntry,
 ) -> Option<SmallVec<[(Value, Value); 2]>> {
-    if entry.required_sort != spec_sort {
+    if !same_sort_canonical(kb, entry.required_sort, spec_sort) {
         return None;
     }
     // ONE READ FOR EVERY CARRIER, each binding on the carrier it rides: a plain sort
@@ -2628,8 +2696,8 @@ fn frame_tree(kb: &mut KnowledgeBase, chain: &DictChain) -> Vec<RequiresNode> {
 /// since the enclosing block already failed to pin a carrier. Failing to pin is NOT the
 /// same question: [`statically_pinned_carrier`] answers `None` both for a call that names
 /// no carrier at all and for one whose carrier ARGUMENT is merely abstract here, and the
-/// second belongs to eval's value-directed dispatch, which reads the carrier off the
-/// runtime value. Deferring those to the slot is precisely the wrong answer NR6FJ
+/// second owes the instance at its argument's type (proposal 073 §6.2), which a slot at
+/// another type is not. Deferring those to the slot is precisely the wrong answer NR6FJ
 /// measured — `viaop[U](x: U) requires Desc[T = Rich] = Desc.describe(x)` computing
 /// `Rich`'s 7 for a `plain()` — so the gate is shared with that route rather than
 /// re-derived here.

@@ -55,6 +55,14 @@ pub struct Closure {
     /// own type is). Recorded where the closure is built, from the type the typer stamped on the
     /// lambda; `None` for every other lambda.
     pub relabel: Option<std::rc::Rc<[Symbol]>>,
+    /// Proposal 073 §2 — what the closure's result becomes where it is applied: the function
+    /// was used at a type whose result is an abstract type its own is a carrier of
+    /// ([`crate::kb::typing::InstanceConversion::Function`]), with the dictionary of the
+    /// instance a call was made on for a result typed at it. `None` for every other closure.
+    pub result_conversion: Option<(
+        crate::kb::typing::InstanceConversion,
+        Option<crate::eval::value::Dictionary>,
+    )>,
 }
 
 struct Slot {
@@ -277,6 +285,7 @@ mod tests {
             requirements: SmallVec::new(),
             written_in: None,
             relabel: None,
+            result_conversion: None,
         }
     }
 
@@ -324,6 +333,7 @@ mod tests {
             requirements: SmallVec::new(),
             written_in: None,
             relabel: None,
+            result_conversion: None,
         });
         let pat = h.with(|c| c.param_pattern.clone());
         assert!(Rc::ptr_eq(&pat, &param));
@@ -346,6 +356,7 @@ mod tests {
             requirements: SmallVec::new(),
             written_in: None,
             relabel: None,
+            result_conversion: None,
         };
         let pa = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
         let pb = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);

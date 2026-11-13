@@ -4408,7 +4408,7 @@ fn pinned_goal_carrier(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<Symbol
 /// Condition 1 of [`unprovided_provision`]: the spec declares type parameters and the goal
 /// binds each of them to a fully concrete type. Such a goal, rendered, is a `provides`
 /// clause as it would be written ([`UnprovidedProvision::provision_in_full`]).
-fn goal_pins_every_param(kb: &mut KnowledgeBase, goal: &SortGoal) -> bool {
+pub(super) fn goal_pins_every_param(kb: &mut KnowledgeBase, goal: &SortGoal) -> bool {
     let tparams = kb.type_params_of_sort(goal.spec_sort);
     !tparams.is_empty()
         && tparams.iter().all(|tp| {
@@ -4544,9 +4544,21 @@ pub(super) fn unprovided_spec_at_carrier(
     if host_implements(kb, callee_op) || carrier_is_an_instance(kb, carrier, goal.spec_sort) {
         return None;
     }
+    Some(unprovided_spec_at(kb, goal, carrier, callee_op, span))
+}
+
+/// The refusal of a call of `callee_op` whose goal no provision answers at `carrier` — also
+/// where the carrier has rows of the spec that answer at other types (`has_a_row`).
+pub(super) fn unprovided_spec_at(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    carrier: Symbol,
+    callee_op: Symbol,
+    span: Option<Span>,
+) -> TypeError {
     let in_full = goal_pins_every_param(kb, goal);
     let contract_unheld = if in_full { library_contract_unheld(kb, goal) } else { None };
-    Some(TypeError::UnsatisfiableRequirement {
+    TypeError::UnsatisfiableRequirement {
         span,
         op: callee_op,
         callee_sort: callee_op,
@@ -4563,7 +4575,7 @@ pub(super) fn unprovided_spec_at_carrier(
             unprovided: Some(UnprovidedProvision {
                 carrier,
                 spec: goal.spec_sort,
-                has_a_row: false,
+                has_a_row: carrier_has_provision_row(kb, carrier, goal.spec_sort),
                 provision_in_full: in_full.then(|| format_goal(kb, goal)),
                 contract_unheld,
                 failed_at: goal.spec_sort,
@@ -4571,7 +4583,7 @@ pub(super) fn unprovided_spec_at_carrier(
             }),
             untied: None,
         }),
-    })
+    }
 }
 
 /// The refusal for calling an operation of spec `goal.spec_sort` where the call leaves a

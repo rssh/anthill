@@ -25,24 +25,22 @@
 //! | `a_fact_completing_a_type_only_provision_beats_the_default` | ok | ok | **FAILS** |
 //! | `a_witness_supplied_impl_beats_the_spec_default` | ok | ok | **FAILS** |
 //! | `an_unrunnable_own_member_is_not_a_supplier` | ok | ok | **FAILS** |
-//! | `an_abstract_receiver_reaches_the_fact_bound_impl` | ok | **FAILS** | **FAILS** |
 //! | `a_fact_bound_impls_effects_reach_the_call_site` | **FAILS** | ok | **FAILS** |
 //! | `an_own_member_rivalled_by_a_fact_binding_is_refused` | **FAILS** | ok | **FAILS** |
 //! | `the_carriers_own_member_still_beats_the_default` | ok | ok | ok |
 //! | `a_carrier_with_no_supplier_still_runs_the_default` | ok | ok | ok |
 //!
-//! So each half is separately load-bearing, and the two tests that prove it are the
-//! ones the redundancy does NOT cover: only the typer's static pin can surface a
-//! bound impl's EFFECTS at the call, and only the eval read sees a carrier the typer
-//! could not pin.
+//! So each half is separately load-bearing: only the typer's static pin can surface a
+//! bound impl's EFFECTS at the call. The row that read the eval half alone, a carrier the
+//! typer could not pin behind an abstract `Shape`, went with value-direction (proposal 073):
+//! `a_call_at_an_abstract_type_with_no_provision_runs_the_default`.
 //!
 //! The tie row moved (RE-MEASURED for WI-1012, all four runs, not carried over): it
 //! read `FAILS | FAILS | FAILS` while the refusal was eval's, because either half
 //! left un-widened selected silently on its own. Now that a statically concrete
 //! carrier is refused at LOAD, reverting the EVAL half alone leaves the typer to
-//! refuse and the test passes — the eval half's own control for a tie is
-//! `a_tie_on_an_abstract_carrier_is_still_refused_at_the_call`, in
-//! `wi1012_static_supplier_tie_test`.
+//! refuse and the test passes. Behind an abstract `Shape` there is no tie any more
+//! (`a_tie_behind_an_abstract_type_is_no_tie`, in `wi1012_static_supplier_tie_test`).
 //!
 //! `an_unrunnable_own_member_is_not_a_supplier` has a SECOND control, orthogonal to
 //! this table and stated at the test: deleting the interpretability filter (with both
@@ -210,16 +208,15 @@ fn a_carrier_with_no_supplier_still_runs_the_default() {
     );
 }
 
-/// THE EVAL HALF. The typer pins the fixtures above statically (the receiver's static
-/// carrier IS `Leaf`), so a program is needed where it cannot: `via_spec` takes an
-/// abstract-spec `Shape`, which `carrier_is_abstract_spec` makes the typer defer on,
-/// and only the runtime value names `Leaf`. `Shape` receives on itself (`sides(s: Self)`),
-/// so a `Leaf` is a `Shape` — a spec over a parameter is no type of its providers' values
-/// (WI-20261005-KSSA4). This is the only test whose answer the
-/// eval read ALONE decides — the tie below reaches that read too, but needs the
-/// typer half as well (see the matrix at the top).
+/// THE EVAL HALF, GONE WITH VALUE-DIRECTION (proposal 073 §2, §3). `via_spec` takes a
+/// `Shape`, which `Leaf` provides; the value it is handed is a `Shape` instance and holds
+/// `Shape`'s operations only. `Desc.describe(s)` is a call at `T = Shape`, which nothing
+/// provides, so it runs `Desc`'s default as a call at any carrier without a provision does
+/// (`a_carrier_with_no_supplier_still_runs_the_default`): 1. It answered 7 while the run time
+/// chose `Leaf`'s fact-bound `leafDescribe` from the value. Typed at `Leaf`, the parameter
+/// reaches it at load (7), and with `describe` body-less the call at `Shape` is refused at load.
 #[test]
-fn an_abstract_receiver_reaches_the_fact_bound_impl() {
+fn a_call_at_an_abstract_type_with_no_provision_runs_the_default() {
     let ns = "test.wi1010.evalhalf";
     let src = format!(
         r#"namespace {ns}
@@ -254,9 +251,24 @@ end
     );
     assert_eq!(
         probe(ns, &src),
-        7,
-        "the typer cannot pin an abstract-spec carrier — the runtime value's own \
-         sort must still reach the fact's binding",
+        1,
+        "a call at `Shape`, which provides no `Desc`, runs the default; the `Shape` \
+         instance holds no `Desc` operation of `Leaf`'s",
+    );
+    let at_leaf = src
+        .replace("operation via_spec(s: Shape)", "operation via_spec(s: Leaf)")
+        .replace(&format!("namespace {ns}"), &format!("namespace {ns}.atleaf"));
+    assert_eq!(probe(&format!("{ns}.atleaf"), &at_leaf), 7, "at `Leaf`, the fact's binding");
+    let bodyless = src
+        .replace(
+            "operation describe(x: T) -> Int64 = 1",
+            "operation describe(x: T) -> Int64",
+        )
+        .replace(&format!("namespace {ns}"), &format!("namespace {ns}.bodyless"));
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&bodyless),
+        &["Desc.describe.requires", "provides no `"],
+        "no default and no provision at `Shape`",
     );
 }
 
@@ -267,9 +279,9 @@ end
 ///
 /// WI-1012 MOVED WHERE IT IS RAISED, not whether. This program's `Leaf` is statically
 /// concrete, so the typer reaches the same two candidates at the moment it declines to
-/// pin and refuses at LOAD; the eval refusal is kept for a carrier the typer cannot
-/// pin (`a_tie_on_an_abstract_carrier_is_still_refused_at_the_call`), and the two
-/// quote one sentence. `TypeError::DispatchAmbiguous` could not have carried it: its
+/// pin and refuses at LOAD; behind an abstract type the call is at that type, where `Leaf`'s
+/// two suppliers are no tie (`wi1012_static_supplier_tie_test::a_tie_behind_an_abstract_type_
+/// is_no_tie`). `TypeError::DispatchAmbiguous` could not have carried it: its
 /// `InstanceTie` holds PROVIDER SYMBOLS, and here both routes canonicalize to the same
 /// carrier — the candidates have to be rendered by ROUTE, the only wording that can
 /// name an instance fact, which has no name (058 §4.3).

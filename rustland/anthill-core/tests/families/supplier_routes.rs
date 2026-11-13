@@ -10,15 +10,20 @@
 //! beside a bare provision in its body, a witness sort's member (`= 4`), or its own member
 //! beside a binding. `go()` returns the call's value.
 //!
-//! ONE PROGRAM, FOUR SPELLINGS (P4): the call by name, the dot, through a `requires`
-//! dictionary (`gen(leaf())`), and through a receiver typed by a spec `Leaf` provides
-//! (`viaShape(leaf())`). Every program carries all of them as declarations and differs
+//! ONE PROGRAM, THREE SPELLINGS (P4): the call by name, the dot, and through a `requires`
+//! dictionary (`gen(leaf())`). Every program carries all of them as declarations and differs
 //! only in `go`'s call, and the file without `go` is the [`Program::subject`]: a refusal of
 //! the declarations is one verdict for every route, and a refusal of the call is the
 //! route's own. The rule-body route is proposal 068's and is not here.
 //!
-//! NOT PROGRAMS, and skipped ([`skips`]): the dot and the receiver spellings of `name()`,
-//! which takes no receiver.
+//! A RECEIVER TYPED BY A SPEC `Leaf` PROVIDES IS NO SPELLING (proposal 073 §2): in
+//! `viaShape(s: Shape) -> Int64 = Desc.describe(s)` the value is an instance of `Shape`, and
+//! the call is one at `Shape` — its default, or refused at load without one, whoever supplies
+//! `Leaf`. It was the fourth spelling while the run time dispatched it on the value, and is
+//! `wi1010_defaulted_op_instance_fact_test`'s and `wi1012_static_supplier_tie_test`'s now.
+//!
+//! NOT PROGRAMS, and skipped ([`skips`]): the dot spelling of `name()`, which takes no
+//! receiver.
 //!
 //! SOUNDNESS (P3): the rule refuses two suppliers for one carrier, and a body-less
 //! operation nothing supplies ([`Program::refused`]). A refusal the rule does not make is
@@ -26,25 +31,19 @@
 //! one until WI-20261025-7K84M, where §8.7 merges the two provisions and the backing check
 //! read one.
 //!
-//! A TIE IS ONE VERDICT WHERE §8.7 LETS THE ROUTE CHOOSE WHEN ([`judge`]): two suppliers are
-//! refused at load where the carrier is static and at the call where only a value names it.
-//! The receiver spelling is the one route where only a value names it, so its refusal when
-//! the call runs is read as the call refused; on every other route a tie that reaches the
-//! run is a P3 violation, as any program that loads and does not run is. Through a
-//! dictionary the carrier is static where the dictionary is built, `gen(leaf())`, and the
-//! tie is refused there (the user, 2026-10-25).
+//! A TIE IS REFUSED AT LOAD on every route: the carrier is static at each, and through a
+//! dictionary where the dictionary is built, `gen(leaf())` (the user, 2026-10-25). A tie that
+//! reaches the run is a P3 violation, as any program that loads and does not run is.
 //!
 //! NO EXCEPTIONS since WI-20261025-7K84M (`resolve_op_target_at`, `resolve_at_goal`'s
 //! projection, the backing check's merged view and the construction's tie, one answer for
-//! both halves), which took off the nine it listed, moving thirteen verdicts. CONTROL, measured
-//! there: run with [`judge`] as plain `judge_program`, the family names both `own+binding` rows
-//! of the receiving shape and nothing else — their receiver spelling against P2 and P3, and the
-//! row against P4. Each of 7K84M's four parts backed out alone moves verdicts of this family
+//! both halves), which took off the nine it listed, moving thirteen verdicts. Each of 7K84M's
+//! four parts backed out alone moves verdicts of this family
 //! (`wi_7k84m_one_supplier_answer_test`'s header). It saw WI-20261025-ZAWX9's delivery
 //! (`3657c39d`) too, which landed while it was being written: five verdicts moved, and the
 //! three exceptions listed for ZAWX9 excused nothing.
 
-use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Verdict};
+use super::{opt, spelt, Exception, Family, Hole, Picks, Program};
 
 pub static FAMILY: Family = Family {
     name: "f-supplier-routes",
@@ -76,34 +75,19 @@ pub static FAMILY: Family = Family {
                 spelt("by-name", "", "call"),
                 spelt("dot", "", "call"),
                 spelt("dictionary", "", "call"),
-                spelt("receiver", "", "call"),
             ],
         },
     ],
     render,
     skips: Some(skips),
-    judge,
+    judge: super::judge_program,
     exceptions: EXCEPTIONS,
 };
 
 const EXCEPTIONS: &[Exception] = &[];
 
-/// The receiver spelling's call: the one route where only the value names the carrier.
-const RECEIVER_CALL: &str = "viaShape(leaf())";
-
-/// [`super::judge_program`], with the receiver spelling's tie refused when the call runs read
-/// as the call refused, as the other routes refuse it at load (§8.7).
-fn judge(program: &Program) -> Verdict {
-    const TIE: &str = "AmbiguousSpecOpDispatch";
-    let receiver = program.source.contains(&format!("go() -> Int64 = {RECEIVER_CALL}\n"));
-    match super::judge_program(program) {
-        Verdict::DriveFails(class) if receiver && class == TIE => Verdict::DriveRefused(class),
-        verdict => verdict,
-    }
-}
-
 fn skips(picks: &Picks<'_>) -> bool {
-    picks.is("shape", "nullary") && (picks.is("route", "dot") || picks.is("route", "receiver"))
+    picks.is("shape", "nullary") && picks.is("route", "dot")
 }
 
 fn render(picks: &Picks<'_>) -> Program {
@@ -130,9 +114,7 @@ fn render(picks: &Picks<'_>) -> Program {
     let routes = if nullary {
         "  operation gen[A]() -> Int64 requires Desc[T = A] = Desc.name[T = A]()\n".to_string()
     } else {
-        "  operation gen[A](x: A) -> Int64 requires Desc[T = A] = Desc.describe(x)\n  \
-         operation viaShape(s: Shape) -> Int64 = Desc.describe(s)\n"
-            .to_string()
+        "  operation gen[A](x: A) -> Int64 requires Desc[T = A] = Desc.describe(x)\n".to_string()
     };
     let call = match (nullary, picks.label("route")) {
         (true, "by-name") => "Desc.name[T = Leaf]()",
@@ -140,22 +122,17 @@ fn render(picks: &Picks<'_>) -> Program {
         (false, "by-name") => "Desc.describe(leaf())",
         (false, "dot") => "leaf().describe()",
         (false, "dictionary") => "gen(leaf())",
-        (false, "receiver") => RECEIVER_CALL,
         other => panic!("no route {other:?}"),
     };
     let declarations = format!(
         r#"namespace family.f
   import anthill.prelude.{{Int64}}
-  sort Shape
-    sort E = ?
-  end
   sort Desc
     sort T = ?
     operation {op}{sig} -> Int64{default}
   end
   sort Leaf
     entity leaf
-    provides Shape[E = Int64]
 {in_leaf}  end
 {after_leaf}{routes}"#
     );

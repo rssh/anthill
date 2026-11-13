@@ -992,6 +992,21 @@ pub(super) fn check_operation_bodies(
                     errors.push(e);
                 }
 
+                // Proposal 073 §2 — a value of a known sort used at an abstract type is the
+                // instance it is there: stamped once the body conforms, on the stored tree.
+                if conforms {
+                    errors.extend(stamp_instance_conversions(
+                        kb,
+                        &env,
+                        TypeErrorContext::OperationReturn {
+                            op_name: op.op_sym,
+                            surface: None,
+                        },
+                        &result.node,
+                        &effective_return,
+                    ));
+                }
+
                 // WI-314: operation-boundary effect masking. Drops effects
                 // on non-escaping locals (as before) and masks / re-keys
                 // `Modify[result]` from freshly-allocated regions per the

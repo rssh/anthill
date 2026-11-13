@@ -1356,7 +1356,7 @@ pub(crate) fn build_sort_info_index(kb: &mut KnowledgeBase) {
 /// then read false, `carrier_is_abstract_spec` would return false, and the
 /// abstract-spec-carrier dispatch gates (WI-598/601/608/609/614) would spuriously
 /// skip — regressing a legitimately-abstract spec value to a loud dispatch error.
-pub(super) fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
+pub(crate) fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
     // WI-660: "any provider of this spec?" is a non-empty spec-base bucket of the provider
     // index — keyed on the `canonical_sort_sym(base)` this asks with, and holding live
     // facts only (WI-20261010-ANK4X: a retract takes its fact out). Asked of the bucket
@@ -1372,8 +1372,8 @@ pub(super) fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> b
 /// entity constructors of its own (no concrete representation) AND other sorts
 /// `provides` it (it is an interface, not just an empty concrete sort). A value
 /// whose static type is such a sort — e.g. `FiniteStream`, the declared return of
-/// the finite `map`/`filter` — is really some concrete provider, so a body-less
-/// carrier-param spec op on it must DEFER to eval's value-directed dispatch rather
+/// the finite `map`/`filter` — is an instance of that sort, so a body-less
+/// carrier-param spec op on it runs the instance's member (proposal 073 §2) rather
 /// than resolve the spec sort's OWN `requires` chain (which `FiniteStream provides
 /// Stream → Stream requires EffectsRuntime[E]` leaves unsatisfiable at an abstract
 /// access row). The constructor check keeps a CONCRETE carrier that happens to

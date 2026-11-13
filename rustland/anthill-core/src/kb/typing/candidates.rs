@@ -19,8 +19,8 @@ pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -
 }
 
 /// WI-508: resolve a NULLARY spec op (carrier only in the result, e.g.
-/// `MutableCollection.new() -> C`) to its concrete impl op when value-directed
-/// dispatch found no candidate (the carrier is not pinned by any argument).
+/// `MutableCollection.new() -> C`) to its concrete impl op when the dispatch found no
+/// candidate (the carrier is not pinned by any argument).
 ///
 /// Priority:
 /// - (a) the EXPECTED RETURN TYPE names a concrete carrier sort ⇒ that carrier
@@ -2487,7 +2487,7 @@ pub(super) fn impl_param_ref<V: TermView>(
 ///   `effects_expr = E` binding that spec resolution took for a satisfaction site);
 /// * any other application is parametric when it has named arguments: a parameterized type
 ///   is `Fn{S, named}`, its base the functor and its bindings the named arguments (WI-361).
-pub(super) fn parametric_view_parts<V: TermView>(
+pub(crate) fn parametric_view_parts<V: TermView>(
     kb: &KnowledgeBase,
     value: &V,
 ) -> Option<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
@@ -3025,8 +3025,8 @@ pub(super) fn reached_carrier_matches_call(
 /// (WI-448) cover `spec_sort` OVER THE CALL'S CARRIER? Used only in the FAILED dispatch
 /// arms (`NoMatch` / abstract `NoCandidates`) to LICENSE an abstract spec-op call in
 /// the op's body that the op explicitly declared it `requires` — `List.member requires
-/// Eq[T]` covering its `eq(head, x)` — leaving the call as the spec op for
-/// value-directed eval (the op-scoped dual of the sort-level defer-to-requirement).
+/// Eq[T]` covering its `eq(head, x)` — and deferring the call to the slot it names
+/// (the op-scoped dual of the sort-level defer-to-requirement).
 /// Only a FAILED abstract dispatch reaches these arms — a concrete call resolves
 /// `Unique` (keeping its impl effect-grounding, WI-365) and never gets here.
 ///
@@ -3044,8 +3044,7 @@ pub(super) fn reached_carrier_matches_call(
 /// reached spec-param-relative `SortView` binding through it, so at `target` the reached
 /// carrier is expressed in the op's scope and [`reached_carrier_matches_call`] σ-aligns
 /// it with the call's carrier. `call_carriers` empty (a fully-open call that pinned no
-/// carrier) falls back to carrier-blind symbol reachability — the pre-WI-653 license,
-/// which value-directed eval resolves.
+/// carrier) falls back to carrier-blind symbol reachability — the pre-WI-653 license.
 pub(super) fn op_requires_covers(
     kb: &mut KnowledgeBase,
     ctx: &SigmaCtx,
@@ -3103,8 +3102,8 @@ pub(super) fn op_requires_covers(
 /// carrier (the fully-open case), which [`op_requires_covers`] treats as the pre-WI-653
 /// carrier-blind licence. Deliberately less eager than the abstract-param DIAGNOSTIC loop
 /// in `check_apply` (which treats a `None`-resolved param as still-abstract for a WI-325
-/// flag): omitting an unbound param is sound here because the `blind` fallback defers to
-/// value-directed eval, not a wrong-carrier licence. A pinned carrier that is not a term —
+/// flag): omitting an unbound param is sound here because the `blind` fallback is a
+/// licence at no carrier, not a wrong-carrier one. A pinned carrier that is not a term —
 /// a type holding a value, or an effect row carrying one — counts like any other
 /// (WI-20260929-WBHTM). It used to be omitted, and an omitted PINNED carrier is not that
 /// wildcard: with nothing else pinned the licence went `blind`, carrier and all, and a call

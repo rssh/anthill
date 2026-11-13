@@ -124,7 +124,9 @@ fn wi768_annotation_typed_argument_dispatches_the_same_way() {
 /// the wrong ones. What it pins is the other half of the pair — that finding a binding by
 /// LABEL rather than by symbol identity still CHECKS the bound value. A key match that
 /// started SKIPPING the slot instead of comparing it would dispatch this happily; it must
-/// not, because `name` is a `String`, not an `Int64`.
+/// not, because `name` is a `String`, not an `Int64`. No provision answers the call, so it is
+/// refused at load (proposal 073 §1): it loaded unpinned while the run time chose from the
+/// value.
 #[test]
 fn wi768_a_provider_for_a_different_schema_is_not_dispatched() {
     let src = program(
@@ -133,11 +135,12 @@ fn wi768_a_provider_for_a_different_schema_is_not_dispatched() {
         "person_row",
         "",
     );
-    let kb = load_kb_with(&src);
-    assert!(
-        pinned_impls(&kb, "test.wi768wrong").is_empty(),
-        "a provider claiming `name: Int64` must not be dispatched for a relation whose \
-         `name` is a String — matching a binding key by label must still compare the value \
-         behind it",
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &[
+            "Labelled[T = anthill.prelude.Relation[T = (name: String, age: Int64)",
+            "no row of it answers at these bindings",
+        ],
+        "a provider claiming `name: Int64`, a relation whose `name` is a String",
     );
 }

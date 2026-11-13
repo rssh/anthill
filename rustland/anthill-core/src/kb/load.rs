@@ -20535,6 +20535,7 @@ fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
         // cost is zero where it is zero and a rebuild where it is not.
         kb.spec_carrier_param_cache.borrow_mut().clear();
         kb.spec_self_representing_cache.borrow_mut().clear();
+        kb.abstract_carrier_cache.borrow_mut().clear();
         // WI-20261010-ANK4X — and the provider index's witness-carrier memo, which is
         // `witness_dispatch_carrier` remembered per spec and reads the parameter the
         // first of those two memoizes. It used to go with the index, which a load

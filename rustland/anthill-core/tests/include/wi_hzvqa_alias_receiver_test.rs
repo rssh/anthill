@@ -374,8 +374,10 @@ fn an_alias_that_names_the_enclosing_parameter_is_at_that_parameter() {
 }
 
 /// A spec's operation called through an alias of the spec is called at the members the
-/// alias fixes: with `Out` fixed to `String` the result is a `String`, as it is with the
-/// spec written out.
+/// alias fixes: with `Out` fixed to `String` the call asks `Desc[T = Leaf, Out = String]`, as
+/// it does with the spec written out, which no provision gives (`Leaf` provides `Out =
+/// Int64`): refused at the call (proposal 073 §1). It was the return's mismatch while the
+/// call was left for the run time to answer from the value.
 #[test]
 fn a_spec_called_through_an_alias_is_at_its_members() {
     const SPEC: &str = "  sort Desc\n    sort T = ?\n    sort Out = ?\n    operation label(x: T) -> Out\n  end\n  sort Leaf\n    entity leaf\n    provides Desc[T = Leaf, Out = Int64]\n    operation label(x: Leaf) -> Int64 = 7\n  end\n  sort DA = Desc[Out = Int64]\n  sort DS = Desc[Out = String]\n";
@@ -389,14 +391,17 @@ fn a_spec_called_through_an_alias_is_at_its_members() {
         "hzvqaspectwin",
         &format!("{SPEC}{}", written("Int64", "Desc[Out = String]", "label(leaf)")),
     );
-    assert!(twin.contains("go.return (op-return): expected Int64, got String"), "{twin}");
+    let at_string = "Desc[T = test.hzvqaspectwin.Leaf, Out = anthill.prelude.String]` cannot be supplied";
+    assert!(twin.contains(at_string), "{twin}");
     for (ns, body) in [
         ("hzvqaspecbadw", written("Int64", "DS", "label(leaf)")),
         ("hzvqaspecbadb", bound("Int64", "DS", "label(leaf)")),
     ] {
         let rendered = refusal(ns, &format!("{SPEC}{body}"));
         assert!(
-            rendered.contains("go.return (op-return): expected Int64, got String"),
+            rendered.contains(&format!(
+                "Desc[T = test.{ns}.Leaf, Out = anthill.prelude.String]` cannot be supplied"
+            )),
             "{ns}: {rendered}"
         );
     }

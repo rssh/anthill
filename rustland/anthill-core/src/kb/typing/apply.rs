@@ -842,7 +842,6 @@ fn check_apply_call(
                     recv_ty,
                     view,
                     carrier_pvid,
-                    _transitive,
                     recv_arg_sym,
                 )) => bind_spec_params_from_carrier_param(
                     kb,
@@ -2084,7 +2083,6 @@ fn check_apply_call(
             _recv_ty,
             view,
             _carrier_pvid,
-            _transitive,
             _recv_arg_sym,
         )) = &carrier_param_info
         {
@@ -2403,6 +2401,16 @@ fn check_apply_call(
         if let Some(w) = solving.as_deref_mut() {
             attach_held_arguments(kb, w, &subst, [pos_results, named_results])?;
         }
+
+        // Proposal 073 §2 — the parameters as this call's σ reads them, now complete: what the
+        // instance pass converts each argument to (`List.append(cars, [s])` with `s: Sp` puts
+        // each `Car` of `cars` at `Sp`).
+        occ.set_call_params(
+            op.params
+                .iter()
+                .map(|(name, ty)| (*name, resolve_type_deep_value(kb, &subst, ty)))
+                .collect(),
+        );
 
         // Apply param-name substitution to op.effects (WI-209), then
         // walk each through `walk_type_deep` so type-var bindings from
@@ -2889,8 +2897,8 @@ fn check_apply_call(
         //
         // Here rather than at each consumer: a slot is served by one of THREE routes
         // (the parent sort's dictionary, the spec-op dispatch, or — for an op-scoped
-        // `requires` — value-direction at eval, which does not read the call's
-        // selections), and only the first two have a place to complain from.
+        // `requires` — the operation's own slot), and only the first two have a place
+        // to complain from.
         //
         // And ABOVE the classification blocks below rather than after them, because
         // several of them RETURN: the WI-444 defaulted-spec-op carrier-override path
@@ -2960,9 +2968,9 @@ fn check_apply_call(
         // shape `receiver_carrier` / `carrier_param_info` already classified:
         // the self-receiver (`collect(s: Stream)`) or carrier-param
         // (`size(c: C)`) form. A carrier WITHOUT an override classifies nothing
-        // and falls through to run the default body. Eval's value-directed
-        // override (eval.rs step 3) is the dynamic dual for an ABSTRACT-receiver
-        // call this cannot pin.
+        // and falls through to run the default body. A call on an ABSTRACT receiver
+        // runs the member of the instance the value is (proposal 073 §2), not an
+        // override chosen from the value.
         //
         // WI-1042 — "defaulted spec op" is [`defaulted_spec_op_parent`], the gate this
         // block OWNS and two other sites ask ([`dot_member_dispatch_decision`]'s
@@ -3035,6 +3043,45 @@ fn check_apply_call(
                 pos_results,
                 named_results,
             );
+            // Proposal 073 §2 — a defaulted operation called on a value of an abstract type runs
+            // the receiver instance's operation, its member or this body, as the call runs.
+            if matches!(recv_carrier, ReceiverCarrier::Abstract | ReceiverCarrier::NotApplicable)
+                && env.in_evaluated_body()
+            {
+                if let Some(abstract_sort) = instance_receiver_sort(
+                    kb,
+                    &op,
+                    spec_sort,
+                    &pos_call_params,
+                    named_args,
+                    pos_results,
+                    named_results,
+                )
+                .filter(|&abstract_sort| instance_holds_member(kb, abstract_sort, fn_sym))
+                {
+                    occ.set_classification(CallClass::OnInstance {
+                        spec_op_sym: fn_sym,
+                        abstract_sort,
+                    });
+                    stamp_spec_op_supply(
+                        kb,
+                        env,
+                        occ,
+                        fn_sym,
+                        &subst,
+                        &selections,
+                        &projection_receivers,
+                        &held_views,
+                        span,
+                    )?;
+                    return Ok(TypeResult {
+                        ty: resolved_ret,
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+            }
             // Where the arguments are silent, what the call's own bracket or expected type
             // bound the carrier parameter to. An argument-pinned carrier still wins. A
             // requirement of the spec in scope — the caller's, or that of the sort a rule is
@@ -3343,6 +3390,68 @@ fn check_apply_call(
                         node: Rc::clone(occ),
                     });
                 }
+                // NO SUPPLIER AT THE CARRIER: the default runs at the carrier's instance, the
+                // dictionary its provision gives, which the default's own calls read
+                // (proposal 073 §3: `size(PBag.empty())` runs `FiniteCollection.size` with
+                // `PBag`'s dictionary, and its `collect(c)` is `PBag.collect`). With no
+                // provision at the carrier the default runs as at any carrier none answers.
+                if chosen.is_none() && env.in_evaluated_body() {
+                    let dispatch_sigma = SigmaCtx {
+                        subst: &subst,
+                        param_rigids: env.param_rigids(),
+                    };
+                    let (outcome, resolved_tree) = resolve_at_open_goal(
+                        kb,
+                        env,
+                        &subst,
+                        spec_sort,
+                        op_short_sym,
+                        carrier.clone(),
+                        &selections,
+                        &dispatch_sigma,
+                    );
+                    // A provision at the carrier whose condition fails there (`MySet`'s `O:
+                    // WeakOrd[T]` at an `O` a call's existential result leaves no provider) is
+                    // no instance to run the default at: refused here, where a carrier with no
+                    // provision at all runs the default. Only where the search names the
+                    // condition: a goal no row matched as written is the dispatch below's.
+                    if let DispatchOutcome::NoMatch { unmet: Some(unmet) } = outcome {
+                        return Err(TypeError::DispatchNoMatch {
+                            span,
+                            op: fn_sym,
+                            unmet: Some(unmet),
+                        });
+                    }
+                    if let (DispatchOutcome::Unique(target), Some(tree)) = (&outcome, resolved_tree) {
+                        if kb.canonical_sym(*target) == kb.canonical_sym(fn_sym)
+                            && tree.impl_sort().is_some_and(|p| !same_sort_canonical(kb, p, spec_sort))
+                        {
+                            classify_pin_or_apply_within(
+                                kb,
+                                occ,
+                                fn_sym,
+                                fn_sym,
+                                env.enclosing_sort(),
+                                Some(tree),
+                                Some(&OpSupplyCtx {
+                                    subst: &subst,
+                                    caller_requires: env.enclosing_frame_chain(),
+                                    param_rigids: env.param_rigids(),
+                                    selected: &selections,
+                                    enclosing_op: env.enclosing_op(),
+                                    param_arg_types: &projection_receivers,
+                                    held: &held_views,
+                                }),
+                            )?;
+                            return Ok(TypeResult {
+                                ty: resolved_ret,
+                                env: env.clone(),
+                                effects,
+                                node: Rc::clone(occ),
+                            });
+                        }
+                    }
+                }
                 // WI-1093 ARM 2 / WI-1091 cause (1) — NO SUPPLIER, so the spec's own
                 // DEFAULT BODY runs. It is still a call AT A CARRIER, and the evidence it
                 // is entered with must be that carrier's INSTANCE. Falling through from
@@ -3437,7 +3546,11 @@ fn check_apply_call(
                         return Err(TypeError::DispatchNoMatch {
                             span,
                             op: fn_sym,
-                            unmet: Some(Box::new(DispatchFailure { goal_text, hint })),
+                            unmet: Some(Box::new(DispatchFailure {
+                                goal_text,
+                                hint,
+                                through: None,
+                            })),
                         });
                     }
                     _ => None,
@@ -3596,6 +3709,7 @@ fn check_apply_call(
                             unmet: Some(Box::new(DispatchFailure {
                                 goal_text: format_goal(kb, &goal),
                                 hint: apart.account(),
+                                through: None,
                             })),
                         });
                     }
@@ -3623,7 +3737,11 @@ fn check_apply_call(
                         return Err(TypeError::DispatchNoMatch {
                             span,
                             op: fn_sym,
-                            unmet: Some(Box::new(DispatchFailure { goal_text, hint })),
+                            unmet: Some(Box::new(DispatchFailure {
+                                goal_text,
+                                hint,
+                                through: None,
+                            })),
                         });
                     }
                 }
@@ -3811,6 +3929,69 @@ fn check_apply_call(
                     });
                 }
             }
+            // Proposal 073 §6.2 — A DEFAULTED OPERATION AT A TYPE PARAMETER owes that type's
+            // instance as a body-less one does: the default is what the instance runs where it
+            // writes none, so which instance is still the call's to pass. Nothing above found
+            // it — no carrier the call pins, no requirement in scope — so the call is the
+            // body-less twin's (`UnresolvedSpecOp`, refused naming the `requires` it needs),
+            // not the default run for every instance. In the spec's own default body, at the
+            // body's own carrier, it takes the instance the body runs at (073 §3).
+            // Only a spec something provides is dispatched: a sort over a parameter that no
+            // sort provides (`Helper[X]`, `requires Coll[C = X]`) is called as an operation
+            // whose requirements its caller passes.
+            if carrier.is_none() && env.in_evaluated_body() && spec_has_any_providers(kb, spec_sort) {
+                let at_a_parameter = spec_carrier_param(kb, spec_sort).and_then(|param| {
+                    let vid = declared_type_param_vid(kb, &Value::term(resolve_sort_alias(kb, param)?))?;
+                    let bound = spec_param_binding(kb, &subst, vid)?;
+                    (is_type_param_view(kb, &bound)
+                        || matches!(
+                            type_head(kb, &bound),
+                            TypeHead::ExprCarried | TypeHead::RigidProjection
+                        ))
+                    .then_some(param)
+                });
+                if let Some(param) = at_a_parameter {
+                    match call_at_own_instance(
+                        kb,
+                        env,
+                        &op,
+                        fn_sym,
+                        spec_sort,
+                        &pos_call_params,
+                        named_args,
+                        pos_results,
+                        named_results,
+                    ) {
+                        Some(class) => {
+                            occ.set_classification(class);
+                            stamp_spec_op_supply(
+                                kb,
+                                env,
+                                occ,
+                                fn_sym,
+                                &subst,
+                                &selections,
+                                &projection_receivers,
+                                &held_views,
+                                span,
+                            )?;
+                        }
+                        None => occ.set_classification(CallClass::UnresolvedSpecOp {
+                            spec_op_sym: fn_sym,
+                            spec_sort_sym: spec_sort,
+                            abstract_params: SmallVec::from_elem(param, 1),
+                            span,
+                            enclosing_sort: env.enclosing_sort(),
+                        }),
+                    }
+                    return Ok(TypeResult {
+                        ty: resolved_ret,
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+            }
         }
 
         // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
@@ -3846,7 +4027,7 @@ fn check_apply_call(
             // ONE mechanism for the arg-carrier (`flatMap(o:Option,…)`) and the
             // result-carrier (`unit(42):Option`, carrier only in the return). A
             // first-order carrier param has no members, so it keeps the
-            // receiver-carrier / value-directed path unchanged.
+            // receiver-carrier path unchanged.
             // PERF gate: the HK fill only applies to an op whose signature USES a
             // higher-kinded carrier — i.e. has a parameterized type (`F[T=A]`) in the
             // return or a param. A bare first-order op (`combine(x:T, y:T) -> T`) skips
@@ -4176,6 +4357,44 @@ fn check_apply_call(
             // sort. Skipping concrete dispatch is what keeps a ≥2-impl
             // self-receiver spec from resolving `Ambiguous` for a
             // legitimately abstract call.
+            // Proposal 073 §2 — A CALL ON A VALUE OF AN ABSTRACT TYPE runs the member the
+            // value's instance holds: the receiver is a pair, and its dictionary names the
+            // member where the call runs. Nothing is left to choose from the value.
+            if carrier == ReceiverCarrier::Abstract && env.in_evaluated_body() {
+                if let Some(abstract_sort) = instance_receiver_sort(
+                    kb,
+                    &op,
+                    spec_sort,
+                    &pos_call_params,
+                    named_args,
+                    pos_results,
+                    named_results,
+                )
+                .filter(|&abstract_sort| instance_holds_member(kb, abstract_sort, fn_sym))
+                {
+                    occ.set_classification(CallClass::OnInstance {
+                        spec_op_sym: fn_sym,
+                        abstract_sort,
+                    });
+                    stamp_spec_op_supply(
+                        kb,
+                        env,
+                        occ,
+                        fn_sym,
+                        &subst,
+                        &selections,
+                        &projection_receivers,
+                        &held_views,
+                        span,
+                    )?;
+                    return Ok(TypeResult {
+                        ty: resolved_ret.clone(),
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+            }
             if carrier == ReceiverCarrier::Abstract {
                 // WI-325 exception: a spec that warrants the abstract check but
                 // has NO provider at all (a user-defined, wholly-unimplemented
@@ -4216,14 +4435,11 @@ fn check_apply_call(
             // WI-598: a CARRIER-PARAM spec op whose receiver is typed at an ABSTRACT SPEC — a
             // value whose static type is `FiniteStream` (`Dictionary.ops`' declared return),
             // which provides FiniteCollection and has no representation of its own — is a
-            // call at an abstract type. It is left as the spec op for eval's value-directed
-            // dispatch, the carrier-param analogue of the abstract self-receiver arm
-            // (`carrier == Abstract`) above, until proposal 073 stage 3 runs it on the
-            // instance the value is (073 §2). MEASURED (WI-20261105-C6GK8): dispatched here
-            // instead, `collect(fs())` over `fs() -> FiniteStream[T = Int64, E = {}] = [1, 2,
-            // 3]` is pinned to `FiniteStream.collect`, and eval's carrier override (its step
-            // 3) enters `List.collect` with `FiniteStream`'s dictionary and panics at the
-            // frame push.
+            // call at an abstract type, run on the instance the value is (proposal 073 §2,
+            // the block below). MEASURED (WI-20261105-C6GK8): dispatched by the ordinary
+            // route instead, `collect(fs())` over `fs() -> FiniteStream[T = Int64, E = {}] =
+            // [1, 2, 3]` is pinned to `FiniteStream.collect`, and the run time entered
+            // `List.collect` with `FiniteStream`'s dictionary and panicked at the frame push.
             //
             // A CONCRETE carrier that provides the spec only through a chain of provisions is
             // dispatched below like any other (073 §1); see the rest of the chain and WI-496's
@@ -4245,6 +4461,76 @@ fn check_apply_call(
             let pinned_carrier =
                 statically_pinned_carrier(kb, &carrier, carrier_param_sym, Some(spec_sort))
                     .map(|c| c.sort);
+            // Proposal 073 §2 — the carrier-parameter twin of the call on an instance above:
+            // `collect(fs())` over an `fs()` typed `FiniteStream` runs the member the
+            // instance holds (this was WI-598's deferral to the value).
+            if carrier_param_sym.is_some() && env.in_evaluated_body() {
+                if let Some(abstract_sort) = instance_receiver_sort(
+                    kb,
+                    &op,
+                    spec_sort,
+                    &pos_call_params,
+                    named_args,
+                    pos_results,
+                    named_results,
+                )
+                .filter(|&abstract_sort| instance_holds_member(kb, abstract_sort, fn_sym))
+                {
+                    occ.set_classification(CallClass::OnInstance {
+                        spec_op_sym: fn_sym,
+                        abstract_sort,
+                    });
+                    stamp_spec_op_supply(
+                        kb,
+                        env,
+                        occ,
+                        fn_sym,
+                        &subst,
+                        &selections,
+                        &projection_receivers,
+                        &held_views,
+                        span,
+                    )?;
+                    return Ok(TypeResult {
+                        ty: resolved_ret.clone(),
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+            }
+            if carrier_param_sym.is_some() && pinned_carrier.is_none() && env.in_evaluated_body() {
+                if let Some(class) = call_at_own_instance(
+                    kb,
+                    env,
+                    &op,
+                    fn_sym,
+                    spec_sort,
+                    &pos_call_params,
+                    named_args,
+                    pos_results,
+                    named_results,
+                ) {
+                    occ.set_classification(class);
+                    stamp_spec_op_supply(
+                        kb,
+                        env,
+                        occ,
+                        fn_sym,
+                        &subst,
+                        &selections,
+                        &projection_receivers,
+                        &held_views,
+                        span,
+                    )?;
+                    return Ok(TypeResult {
+                        ty: resolved_ret.clone(),
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+            }
             if carrier_param_sym.is_some() && pinned_carrier.is_none() {
                 // An open carrier: the clause's condition, as at the abstract receiver above.
                 if env.clause_supplies_requirements(pos_args, named_args) {
@@ -4447,43 +4733,8 @@ fn check_apply_call(
                     DispatchOutcome::NoCandidates | DispatchOutcome::Deferred => break,
                 }
             }
-            // WI-496's DEFERRAL, KEPT WHERE THE DISPATCH FINDS NO CANDIDATE AT A CARRIER THE
-            // CHAIN REACHES (WI-20261105-C6GK8). Every chain the dispatch has a candidate for is
-            // decided above, a refusal included; what the chain walk
-            // ([`transitive_provision_view`]) reaches and the dispatch does not is a carrier read
-            // through ANOTHER sort's provision at a spec over a parameter: `Desc.d(bk(k: 0))`
-            // beside `W provides Desc[T = Tagger]` and `Bk provides Tagger[C = Bk]`. The dispatch
-            // reads a `Bk` as no `Tagger` (kernel-language §8.2), and WI-20261025-053QV decides
-            // that a provision at `Tagger` answers it (its family row `g-compatibility`
-            // `pair=param-spec,position=provision`, `runs 1`). Until that rule reaches the
-            // dispatch the call is left to eval's value-directed dispatch, which walks the same
-            // chain. MEASURED: refused at load with this arm gone ("requirement `Desc[T = Bk]`
-            // cannot be supplied"); `wi_c6gk8_known_type_call_test::a_provision_at_a_spec_
-            // over_a_parameter_still_answers_its_providers_value` drives it.
-            if matches!(outcome, DispatchOutcome::NoCandidates)
-                && matches!(&carrier_param_info, Some((.., true, _)))
-            {
-                stamp_spec_op_supply(
-                    kb,
-                    env,
-                    occ,
-                    fn_sym,
-                    &subst,
-                    &selections,
-                    &projection_receivers,
-                    &held_views,
-                    span,
-                )?;
-                return Ok(TypeResult {
-                    ty: resolved_ret.clone(),
-                    env: env.clone(),
-                    effects,
-                    node: Rc::clone(occ),
-                });
-            }
             // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
-            // RESULT) gets no carrier from value args, so value-directed
-            // dispatch finds nothing. Resolve the carrier from the EXPECTED
+            // RESULT) gets no carrier from value args. Resolve the carrier from the EXPECTED
             // RETURN TYPE (a concrete annotation pins it) or, failing that, from
             // a UNIQUE provider (information hiding); 2+ providers with nothing
             // pinning the carrier is a loud ambiguity. A `requires`-covered call
@@ -4793,12 +5044,99 @@ fn check_apply_call(
                             return Err(refusal);
                         }
                     }
+                    // Proposal 073 §1 — NOTHING AT RUN TIME FINDS WHAT LOAD DID NOT: a call
+                    // of a spec something provides, at a callee the host does not implement,
+                    // is decided by the provision answering at the call's types, read with
+                    // what the call leaves open as open — or refused here. It was left as
+                    // the spec op for the value to choose ("an instance by a route the goal
+                    // did not match").
+                    if env.in_evaluated_body()
+                        && !pinned_spec
+                        && !op_requires_covers_call(kb, env, &subst, spec_sort)
+                        && spec_has_any_providers(kb, spec_sort)
+                        && !host_implements(kb, fn_sym)
+                    {
+                        let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                        let carrier =
+                            pinned_carrier.or_else(|| unclassified_goal_carrier(kb, &goal));
+                        let sigma = SigmaCtx {
+                            subst: &subst,
+                            param_rigids: env.param_rigids(),
+                        };
+                        let at_carrier = dispatch_carrier.clone();
+                        let (outcome, tree) = resolve_at_open_goal(
+                            kb,
+                            env,
+                            &subst,
+                            spec_sort,
+                            op_short_sym,
+                            at_carrier,
+                            &selections,
+                            &sigma,
+                        );
+                        match outcome {
+                            DispatchOutcome::Unique(target) if tree.is_some() => {
+                                classify_pin_or_apply_within(
+                                    kb,
+                                    occ,
+                                    fn_sym,
+                                    target,
+                                    enclosing_sort,
+                                    tree,
+                                    Some(&OpSupplyCtx {
+                                        subst: &subst,
+                                        caller_requires: env.enclosing_frame_chain(),
+                                        param_rigids: env.param_rigids(),
+                                        selected: &selections,
+                                        enclosing_op: env.enclosing_op(),
+                                        param_arg_types: &projection_receivers,
+                                        held: &held_views,
+                                    }),
+                                )?;
+                                return Ok(TypeResult {
+                                    ty: resolved_ret.clone(),
+                                    env: env.clone(),
+                                    effects,
+                                    node: Rc::clone(occ),
+                                });
+                            }
+                            // A goal no sort heads, all of it values (`Sized[N = 4]`), is
+                            // refused naming the goal itself, where it fixes every parameter;
+                            // one that leaves a parameter open is the missing `requires` below.
+                            DispatchOutcome::NoCandidates | DispatchOutcome::NoMatch { .. }
+                                if goal.bindings.iter().all(|(_, v)| type_is_ground(kb, v))
+                                    && (carrier.is_some() || goal_pins_every_param(kb, &goal)) =>
+                            {
+                                return Err(match carrier {
+                                    Some(c) => unprovided_spec_at(kb, &goal, c, fn_sym, span),
+                                    None => TypeError::DispatchNoMatch {
+                                        span,
+                                        op: fn_sym,
+                                        unmet: Some(Box::new(DispatchFailure {
+                                            goal_text: format_goal(kb, &goal),
+                                            hint: String::new(),
+                                            through: None,
+                                        })),
+                                    },
+                                });
+                            }
+                            DispatchOutcome::Ambiguous(tie) => {
+                                return Err(TypeError::DispatchAmbiguous {
+                                    span,
+                                    op: fn_sym,
+                                    tie,
+                                    in_rule_own_term: env.in_rule_own_term(),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
                     // WI-325: distinguish concrete-binding NoCandidates from
                     // abstract-binding NoCandidates with no covering `requires`
                     // (unsafe — dispatch will fail at first call site). A concrete
                     // carrier that is no instance was refused just above (WI-883);
-                    // one that reaches here is an instance by a route the goal did
-                    // not match, or a host-implemented callee: leave it untagged so
+                    // one that reaches here is a host-implemented callee, or a goal
+                    // the open-goal decision above left open: leave it untagged so
                     // the call stays as the spec op.
                     // Abstract: tag the occurrence so `req_insertion::run`
                     // can emit a `MissingRequiresForSpecOp` diagnostic.
@@ -4844,8 +5182,8 @@ fn check_apply_call(
                     // WI-562: op-scoped `requires` coverage (WI-448) — the
                     // op-scoped dual of the sort-level defer-to-requirement. If
                     // the enclosing OPERATION's OWN `requires` covers this spec,
-                    // an abstract `NoCandidates` is LICENSED (leave the call as
-                    // the spec op for value-directed eval) instead of demanding a
+                    // an abstract `NoCandidates` is LICENSED (the call deferred to
+                    // the slot the licence names) instead of demanding a
                     // sort-level `requires`. This lets `List.member`'s `Eq[T]`
                     // need live on `member` instead of the whole `List` sort,
                     // which a sort-level `requires Eq[T]` wrongly imposed on every
@@ -4855,6 +5193,41 @@ fn check_apply_call(
                     // pass-through below, so this only changes the abstract case.
                     // WI-653: carrier-aware coverage — the licensing `requires` must
                     // supply `spec_sort` OVER THE CALL'S CARRIER, not merely by symbol.
+                    // Proposal 073 §3 — in the spec's own default body, a call at the body's
+                    // own carrier takes the instance the body runs at (`collect(c)` in
+                    // `FiniteCollection.size`), before any licence leaves it unclassified.
+                    if env.in_evaluated_body() {
+                        if let Some(class) = call_at_own_instance(
+                            kb,
+                            env,
+                            &op,
+                            fn_sym,
+                            spec_sort,
+                            &pos_call_params,
+                            named_args,
+                            pos_results,
+                            named_results,
+                        ) {
+                            occ.set_classification(class);
+                            stamp_spec_op_supply(
+                                kb,
+                                env,
+                                occ,
+                                fn_sym,
+                                &subst,
+                                &selections,
+                                &projection_receivers,
+                                &held_views,
+                                span,
+                            )?;
+                            return Ok(TypeResult {
+                                ty: resolved_ret.clone(),
+                                env: env.clone(),
+                                effects,
+                                node: Rc::clone(occ),
+                            });
+                        }
+                    }
                     if op_requires_covers_call(kb, env, &subst, spec_sort) {
                         // WI-1091: licensed by the enclosing op's own `requires` — and
                         // now DEFERRED to the slot that licence names, when the chain
@@ -4872,8 +5245,11 @@ fn check_apply_call(
                     // WI-590 — an abstract dispatch the ENCLOSING SORT's `requires` covers
                     // is DECLARED to resolve, so it must not be reported as a
                     // missing-`requires`: the sort-level twin of WI-562's op-scoped licence.
-                    // Leave the call as the spec op for value-directed eval, exactly as that
-                    // licence does.
+                    // The call is left unclassified, as that licence leaves one whose chain
+                    // names no slot, and the run time has no route left for it (proposal 073
+                    // §1: it would end "operation has no body"). Traced over wi_tests on
+                    // stage 3's tree, neither licence leaves a call here: the pre-check above
+                    // classified every covered call.
                     //
                     // ORDER MATTERS, and it is the op-scoped licence that must come first:
                     // the two read INDEPENDENT sources (`env.op_requires()` vs the enclosing
@@ -4984,10 +5360,13 @@ fn check_apply_call(
                             // names `Widget.T` nowhere, yet the witness that supplies
                             // `render` is selected per carrier, so `T` IS part of the
                             // instantiation being sought. MEASURED — without this
-                            // conjunct, `wi325_missing_requires_test::
-                            // user_defined_self_receiver_spec_without_providers_errors_on_abstract_call`
-                            // goes green-to-red: a wholly-unimplemented self-receiver spec
-                            // loaded clean instead of being caught at type-check.
+                            // conjunct, wi325's `user_defined_self_receiver_spec_without_
+                            // providers_errors_on_abstract_call` went green-to-red: a
+                            // wholly-unimplemented self-receiver spec loaded clean instead
+                            // of being caught at type-check. Since proposal 073 stage 3 that
+                            // program loads (the call is on the instance its argument is,
+                            // `a_call_on_an_instance_of_an_unprovided_spec_loads`), and with
+                            // the conjunct backed out no row of wi_tests fails: undriven.
                             //
                             // `dispatches_on_nothing` is what `enclosing_requires_clause`
                             // tests above, for the same reason.
@@ -5093,6 +5472,40 @@ fn check_apply_call(
                                         ),
                                     });
                                 }
+                            }
+                        }
+                        // Proposal 073 §3 — in the spec's own default body, a call at the
+                        // body's own carrier takes the instance the body runs at.
+                        if !abstract_params.is_empty() && env.in_evaluated_body() {
+                            if let Some(class) = call_at_own_instance(
+                                kb,
+                                env,
+                                &op,
+                                fn_sym,
+                                spec_sort,
+                                &pos_call_params,
+                                named_args,
+                                pos_results,
+                                named_results,
+                            ) {
+                                occ.set_classification(class);
+                                stamp_spec_op_supply(
+                                    kb,
+                                    env,
+                                    occ,
+                                    fn_sym,
+                                    &subst,
+                                    &selections,
+                                    &projection_receivers,
+                                    &held_views,
+                                    span,
+                                )?;
+                                return Ok(TypeResult {
+                                    ty: resolved_ret.clone(),
+                                    env: env.clone(),
+                                    effects,
+                                    node: Rc::clone(occ),
+                                });
                             }
                         }
                         if !abstract_params.is_empty() {
@@ -5326,8 +5739,8 @@ fn check_apply_call(
                     // in scope (e.g. a `fact Eq[List[A]]`) drives it to `NoMatch`
                     // rather than `NoCandidates`. If the enclosing OPERATION's OWN
                     // `requires` covers this spec, the call is LICENSED (the
-                    // op-scoped dual of the sort-level defer-to-requirement): leave
-                    // it as the spec op for value-directed eval, so `member`'s
+                    // op-scoped dual of the sort-level defer-to-requirement) and
+                    // deferred to the slot it names, so `member`'s
                     // `Eq[T]` need lives on `member` instead of the whole `List`
                     // sort (a sort-level `requires Eq[T]` wrongly blocked
                     // `IndexedSeq.nth` on a `List[NonEq]`). Only failed
@@ -5339,7 +5752,9 @@ fn check_apply_call(
                     // FIRST for the same reason. UNLIKE that arm this one does not fall
                     // through to a pass-through: reaching its end is `DispatchNoMatch`, so a
                     // licence here must RETURN the spec-op result, exactly as the op-scoped
-                    // branch does.
+                    // branch does. A call the sort-level licence returns is unclassified,
+                    // and the run time has no route left for it (proposal 073 §1); traced
+                    // over wi_tests on stage 3's tree, no call reaches this licence.
                     if op_requires_covers_call(kb, env, &subst, spec_sort)
                         || enclosing_requires_clause.is_some()
                     {
@@ -5397,7 +5812,12 @@ fn check_apply_call(
                     }
                     return Err(TypeError::DispatchNoMatch {
                         span,
-                        op: chain_refused_at.unwrap_or(fn_sym),
+                        op: chain_refused_at
+                            .or_else(|| {
+                                let through = unmet.as_ref().and_then(|u| u.through)?;
+                                member_called_through(kb, through, fn_sym)
+                            })
+                            .unwrap_or(fn_sym),
                         unmet,
                     });
                 }
@@ -5420,9 +5840,8 @@ fn check_apply_call(
                     // which did not load.
                     //
                     // Gated on the tie, not applied to every op-scoped call, and the
-                    // gate IS the design (see [`op_scoped_defer_location`]): an
-                    // op-scoped requirement stays served by value-direction wherever
-                    // value-direction can serve it, which is everywhere else.
+                    // gate IS the design (see [`op_scoped_defer_location`]): every other
+                    // op-scoped call is decided by the pre-check before the dispatch.
                     if defer_to_op_scoped_slot(
                         kb,
                         env,
@@ -5442,7 +5861,16 @@ fn check_apply_call(
                     }
                     return Err(TypeError::DispatchAmbiguous {
                         span,
-                        op: chain_refused_at.unwrap_or(fn_sym),
+                        op: chain_refused_at
+                            .or_else(|| {
+                                // A tie at the call's goal among providers of another spec is
+                                // one at the carrier's own instance of that spec, which the
+                                // resolver answered the goal by: a call of that spec's member.
+                                (tie.at_call_goal && !same_sort_canonical(kb, tie.spec, spec_sort))
+                                    .then(|| member_called_through(kb, tie.spec, fn_sym))
+                                    .flatten()
+                            })
+                            .unwrap_or(fn_sym),
                         tie,
                         in_rule_own_term: env.in_rule_own_term(),
                     });
@@ -6972,3 +7400,65 @@ fn rekeyed_return(
     .unwrap_or_else(|| ty.clone())
 }
 
+
+/// The member of the sort with abstract values `through` that a call of `spec_op` answered
+/// by `through`'s instance at the carrier is a call of (`Mid.get` for `Top.get` over `Mid
+/// provides Top[C = Self]`) — what the call's refusal there names, since its bracket selects a
+/// provider of `through` where `spec_op`'s cannot.
+fn member_called_through(kb: &KnowledgeBase, through: Symbol, spec_op: Symbol) -> Option<Symbol> {
+    resolve_op_target_at(kb, through, spec_op, None)
+        .ok()
+        .filter(|member| *member != spec_op)
+}
+
+/// Proposal 073 §2, §3 — is a call of `spec_op` on a value of the abstract sort
+/// `abstract_sort` a call on the instance, the member its dictionary names: the sort writes
+/// the operation or declares it again, or no body answers it but the carrier's (`Sp.size` on
+/// a `Mid` that provides `Sp`). A spec's own default the sort does not write
+/// (`FiniteCollection.foldLeft` on a `FiniteStream`) is not: it runs at the abstract sort as
+/// the sort's provision of the spec gives it, through the call's dispatch, never the
+/// carrier's own member, and its calls on the value run the instance's. A member the sort
+/// cannot name (two suppliers) is the dispatch's to refuse, at load.
+fn instance_holds_member(kb: &KnowledgeBase, abstract_sort: Symbol, spec_op: Symbol) -> bool {
+    let Ok(member) = resolve_op_target_at(kb, abstract_sort, spec_op, None) else {
+        return false;
+    };
+    impl_parent_sort_of_op(kb, member).is_some_and(|owner| same_sort_canonical(kb, owner, abstract_sort))
+        || kb.op_body_node(member).is_none()
+}
+
+/// Proposal 073 §1 — the provision answering `spec_sort` at the call, asked of the goal the
+/// call states with what it leaves open read as open: a carrier written as its bare sort
+/// (`PBag.empty()`'s result) at its open slots, which a provision written at `PBag[T]`
+/// answers, and a parameter the call does not bind (`Element`) a variable the provision
+/// binds. The dispatch's own goal leaves such a parameter out, and a goal missing a binding
+/// matches no provision (`candidates_at`).
+#[allow(clippy::too_many_arguments)]
+fn resolve_at_open_goal(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    op_short_sym: Symbol,
+    carrier: Option<GoalCarrier>,
+    selections: &[InstanceSelection],
+    sigma: &SigmaCtx,
+) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
+    let mut goal = sort_goal_from_subst(kb, subst, spec_sort, carrier);
+    for (_, v) in goal.bindings.iter_mut() {
+        if let Some(open) = expand_sort_application(kb, v) {
+            *v = open;
+        }
+    }
+    open_unwritten_params(kb, spec_sort, &mut goal.bindings);
+    let pin = pinned_selection_for(kb, selections, spec_sort);
+    resolve_at_goal(
+        kb,
+        &goal,
+        op_short_sym,
+        env.enclosing_requires(),
+        Some(sigma),
+        pin,
+        env.sub_goal_requires(),
+    )
+}

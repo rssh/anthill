@@ -288,27 +288,18 @@ end
     );
 }
 
-/// AN ABSTRACT ARGUMENT STILL DISPATCHES ON THE RUNTIME VALUE — the row that caught a
-/// regression this ticket had already written.
+/// A CALL AT A TYPE PARAMETER OWES ITS INSTANCE, the default notwithstanding (proposal 073
+/// §6.2): `operation viaop[U](x: U) -> Int64 requires Desc[T = Rich] = Desc.describe(x)` is a
+/// call at `T = U`, and the `Desc[T = Rich]` in scope is no instance at `U`, so it is refused
+/// at load as its body-less twin is, naming the `requires` it needs. A slot naming `Rich`
+/// still decides nothing for it. It loaded and answered `Plain`'s `3` from the `plain()` value.
 ///
-/// `operation viaop[U](x: U) -> Int64 requires Desc[T = Rich] = Desc.describe(x)` called
-/// at `plain()` answers `Plain`'s `3`. `Desc.describe(x: T)` HAS a carrier parameter; it
-/// is merely abstract at this call, so the carrier is eval's to read off the runtime
-/// value and no static guess may pre-empt it.
-///
-/// THE FIRST CUT OF THE CHANGE ANSWERED 7 HERE — `Rich`'s `describe` run on a `plain()`
-/// value — because it consulted the slot whenever `statically_pinned_carrier` returned
-/// `None`, without distinguishing "this call names no carrier" from "this call's carrier
-/// is not yet known". Those are not the same thing, and the second belongs to eval.
-/// The carrier sources past the arguments now ask the DECLARATION (`call_names_no_carrier`:
-/// does the spec op declare a carrier-typed parameter at all) rather than the call-site
-/// classification, which is `None` for both.
-///
-/// FAILS WITH THAT GATE REMOVED, by answering 7, which makes it the control on the gate
-/// rather than on the feature; it passes both with the whole change backed out and with
-/// the finished change in.
+/// THE FIRST CUT OF WI-NR6FJ ANSWERED 7 HERE — `Rich`'s `describe` run on a `plain()` value —
+/// because it consulted the slot whenever `statically_pinned_carrier` returned `None`; the
+/// carrier sources past the arguments ask the DECLARATION (`call_names_no_carrier`). Written
+/// with `requires Desc[T = U]`, the call is through that requirement: `3`.
 #[test]
-fn an_abstract_argument_still_dispatches_on_the_runtime_value() {
+fn an_abstract_argument_owes_its_instance() {
     let src = r#"namespace test.defb.abs
   import anthill.prelude.Int64
 
@@ -331,18 +322,22 @@ fn an_abstract_argument_still_dispatches_on_the_runtime_value() {
     operation describe(x: Rich) -> Int64 = 7
   end
 
-  operation viaop[U](x: U) -> Int64 requires Desc[T = Rich] = Desc.describe(x)
+  operation viaop[U](x: U) -> Int64 REQUIRES = Desc.describe(x)
   rule answer(?r) :- viaop(plain(), ?r)
 end
 "#;
-    let mut kb = crate::common::load_kb_with(src);
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src.replace("REQUIRES", "requires Desc[T = Rich]")),
+        &["missing `requires Desc[T = …]` on `test.defb.abs.viaop`"],
+        "a call at `U` the `Desc[T = Rich]` in scope does not answer",
+    );
+    let mut kb = crate::common::load_kb_with(&src.replace("REQUIRES", "requires Desc[T = U]"));
     assert!(
         matches!(
             crate::common::query_unary(&mut kb, "test.defb.abs.answer").as_slice(),
             [(Value::Int(3), true)]
         ),
-        "the value being described is a `Plain`; a slot naming `Rich` must not decide \
-         a dispatch the runtime value owns",
+        "through the requirement at `U`, the caller's `Plain` instance answers",
     );
 }
 

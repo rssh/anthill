@@ -223,7 +223,10 @@ end
 /// dictionary and owes the body's `WeakOrd[T = A]` nothing: it loads, and answers at each
 /// carrier its own way — `Int64`'s primitive, `Float`'s IEEE order, a carrier's own `gt`,
 /// a carrier's `compare` through the body. A caller holding nothing of the spec owes the
-/// body's requirement as the call of any operation does. Fails with the caller's park kept
+/// instance the call is at, as a call of a body-less spec operation does (proposal 073
+/// §6.2): refused naming `PartialOrd[T = …]`. It named the body's `WeakOrd[T = A]` while a
+/// call of a default at a type parameter was the default's own call; a caller holding that
+/// one loads too, and answers as through `PartialOrd`. Fails with the caller's park kept
 /// (`call_park_site` answering `for_call`): refused naming `WeakOrd[T = A]`.
 #[test]
 fn a_caller_holding_the_spec_owes_the_body_nothing() {
@@ -248,7 +251,7 @@ fn a_caller_holding_the_spec_owes_the_body_nothing() {
     );
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&unheld),
-        &["anthill.prelude.WeakOrd[T = A]"],
+        &["missing `requires PartialOrd[T = …]` on `sm910.gen.none.bare`"],
         "a caller holding nothing of `PartialOrd`",
     );
 }

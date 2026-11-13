@@ -751,18 +751,12 @@ impl TypingEnv {
     /// The enclosing SORT's slots alone.
     ///
     /// WI-822 LEG 1 — THE SORT HALF, and the narrowing is the ticket's central
-    /// decision rather than an omission. Every reader of this list decides whether a
-    /// body call DEFERS to a frame slot instead of being served by VALUE-DIRECTED
-    /// dispatch, and for an op-scoped requirement value-direction is the right
-    /// channel and demonstrably works: WI-817's relay chain computes its 551 with no
-    /// dictionary anywhere, and `Holder.probe(leaf())` called straight from the HOST
-    /// — where no call site exists to build one, and a stand-in rooted at the parent
-    /// sort would mis-dispatch — can be served by nothing else. Widening this to the
-    /// composed chain was MEASURED: 30 tests across wi842/wi843/wi855/wi876/wi886/
-    /// wi869 flipped from a working value-directed dispatch to an unbound slot.
+    /// decision rather than an omission. Widening this to the composed chain was
+    /// MEASURED then: 30 tests across wi842/wi843/wi855/wi876/wi886/wi869 flipped from
+    /// a working value-directed dispatch to an unbound slot.
     ///
-    /// The op half is consulted at exactly one place, [`op_scoped_defer_location`],
-    /// on the one route value-direction CANNOT serve — see there.
+    /// The op half is read through [`op_scoped_defer_location`], by the pre-check that
+    /// defers a body call to a frame slot and by the dispatch arms that license one.
     pub(super) fn enclosing_requires(&self) -> &[RequiresEntry] {
         self.enclosing_chain.entries()
     }

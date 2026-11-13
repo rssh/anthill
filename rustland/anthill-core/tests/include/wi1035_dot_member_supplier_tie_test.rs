@@ -38,14 +38,14 @@
 //! since it would invoke a different operation against the spec's signature on a name
 //! match.
 //!
-//! On an ABSTRACT-SPEC receiver the call IS rerouted, and that is WI-1038 — see
-//! `an_abstract_spec_receiver_refuses_at_the_call_not_at_load`. There the member is not the
-//! carrier's implementation (the runtime value's is), so handing the call to the spec op is
-//! what "dispatch answers by the value" means, and it is exactly what the same program's
-//! qualified spelling does. The name-match hazard is closed rather than tolerated: the
-//! reroute is gated on `carrier_own_op` agreeing that the member really is the language's
-//! backing — the relation `resolve_op_target` dispatches through — so it means "the same
-//! implementation, chosen by the value", never "some same-named operation".
+//! On an ABSTRACT-SPEC receiver the call IS rerouted, and that is WI-1038: the dot hands
+//! the call to the spec op, as the same program's qualified spelling has it. The name-match
+//! hazard is closed rather than tolerated: the reroute is gated on `carrier_own_op` agreeing
+//! that the member really is the language's backing — the relation `resolve_op_target`
+//! dispatches through — so it means "the same implementation", never "some same-named
+//! operation". A value typed at the abstract sort is its instance (proposal 073 §2), so two
+//! suppliers there are refused at load in both spellings
+//! (`an_abstract_spec_receiver_with_two_suppliers_is_refused_at_load`).
 //!
 //! **WI-861 GAVE THE CONCRETE ARM A SECOND REROUTE, for this file's own reason.** When
 //! 058 §3.2's rung 2a breaks a supplier tie in favour of a WITNESS, `DotMember::Take`
@@ -82,6 +82,8 @@
 //! ## What fails if this is backed out — MEASURED per piece, one revert each
 //!
 //! Three pieces ship here and each was reverted alone: the TIE GUARD, the ABSTRACT REROUTE (WI-1038) and the PARSE SPAN TABLE (WI-1039).
+//! The abstract receiver's row was rewritten by proposal 073 stage 3 (a load refusal, where it
+//! was refused at the call), and its three columns were not measured again.
 //!
 //! | test | tie guard | reroute | span table |
 //! |---|---|---|---|
@@ -93,7 +95,7 @@
 //! | `the_dot_refusal_is_located_and_shares_the_qualified_spellings_body` | **FAILS** | ok | **FAILS** |
 //! | `a_nested_rule_body_dot_is_located_at_the_nested_dot` | ok | ok | **FAILS** |
 //! | `a_dot_under_an_entity_constructor_is_located_too` | ok | ok | **FAILS** |
-//! | `an_abstract_spec_receiver_refuses_at_the_call_not_at_load` | ok | **FAILS** | ok |
+//! | `an_abstract_spec_receiver_with_two_suppliers_is_refused_at_load` | not re-measured | not re-measured | not re-measured |
 //! | `an_abstract_spec_receiver_with_one_supplier_still_reaches_it` | ok | ok | ok |
 //! | `one_supplier_through_a_dot_still_reaches_the_own_member` | ok | ok | ok |
 //! | `one_fact_supplier_through_a_dot_still_reaches_the_binding` | ok | ok | ok |
@@ -175,7 +177,6 @@
 /// its name, so sharing it is the cluster's ordinary sibling reuse. (`wi1027::program` is
 /// that half too but hardwires a QUALIFIED `probe`, which is the spelling this file exists
 /// to contrast with.)
-use anthill_core::eval::EvalError;
 
 use crate::wi1010_defaulted_op_instance_fact_test::probe;
 use crate::wi1012_static_supplier_tie_test::{located, refusal};
@@ -557,43 +558,27 @@ const ABSTRACT_RIVAL: &str = "\n  operation otherDescribe(x: Coll) -> Int64 = 9\
 /// refusal is worth nothing if they disagree on the answer, and vice versa.
 const BOTH_SPELLINGS: [&str; 2] = ["c.describe()", "Desc.describe(c)"];
 
-/// CONTROL for the WI-608 abstract-spec gate, and the test that closed **WI-1038**.
-///
-/// The gate is what keeps this program from being refused at LOAD — a `Coll`-typed
-/// receiver is not a static pin, so the suppliers of the SPEC sort are not the suppliers of
-/// the value, and refusing there would take the half WI-1012 deliberately left to the call.
-/// Dropped, the fixture is a load error.
-///
-/// WI-1038 WAS THE OTHER HALF OF THE SAME GATE. Behind the early return the dot used to
-/// take the own member and never reach the value-directed reader either, so it ANSWERED 7
-/// where the qualified spelling of the identical program was refused at the call. It now
-/// hands the call to the SPEC op, gated on the member really being the language's backing
-/// (`carrier_own_op`, the relation `resolve_op_target` dispatches through) — so the reroute
-/// means "the same implementation, chosen by the value", never "some same-named operation".
-/// Both spellings are driven: they must give ONE verdict.
+/// TWO SUPPLIERS FOR AN ABSTRACT SORT ARE REFUSED AT LOAD, in both spellings. `Coll` writes
+/// `describe` and an instance fact binds `otherDescribe` for it, so `Desc.describe(c)` with
+/// `c: Coll` has two implementations for `Coll`, both known where the call is written: a
+/// value typed at `Coll` is a `Coll` instance and holds `Coll`'s operations (proposal 073
+/// §2), so nothing is left to the value. It loaded and was refused at the call while the
+/// run time chose `Leaf`'s supplier from the value (WI-1038 made the two spellings agree
+/// there); it is now the load refusal a concrete carrier's tie gets
+/// (`wi1012_static_supplier_tie_test`), with the same sentence.
 #[test]
-fn an_abstract_spec_receiver_refuses_at_the_call_not_at_load() {
+fn an_abstract_spec_receiver_with_two_suppliers_is_refused_at_load() {
     let ns = "test.wi1035.abstract";
-    // The program LOADS — which `interp_for` asserts by not panicking, it going through
-    // WI-966's `expect_loaded` — and both spellings then refuse at the CALL, naming the
-    // same carrier and the same two routes.
     for call in BOTH_SPELLINGS {
-        let err = crate::common::interp_for(&abstract_receiver(ns, call, ABSTRACT_RIVAL))
-            .call(&format!("{ns}.probe"), &[])
-            .expect_err("two suppliers behind an abstract receiver must refuse at the call");
-        let EvalError::AmbiguousSpecOpDispatch {
-            carrier,
-            candidates,
-            ..
-        } = &err
-        else {
-            panic!("`{call}`: expected AmbiguousSpecOpDispatch, got {err:?}");
-        };
-        assert!(
-            carrier.ends_with(".Coll"),
-            "`{call}`: the tie is per CARRIER: {carrier}"
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&abstract_receiver(ns, call, ABSTRACT_RIVAL)),
+            &[
+                "ambiguous dispatch of `test.wi1035.abstract.Desc.describe` on carrier \
+                 `test.wi1035.abstract.Coll`",
+                "2 implementations are supplied for that carrier",
+            ],
+            call,
         );
-        assert_eq!(candidates.len(), 2, "`{call}`: both routes: {candidates:?}");
     }
 }
 

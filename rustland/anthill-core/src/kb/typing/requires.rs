@@ -2462,6 +2462,11 @@ pub fn dict_layout(
     // dispatch's provider half is laid out for `spec`, the provision dispatched.
     self_provision: Option<Symbol>,
 ) -> DictLayout {
+    // Proposal 073 §2 — a provider reaching `spec` only through a sort with abstract values
+    // that provides it for its carriers (`Box provides Mid`, `Mid provides Top[C = Self]`)
+    // answers it with its own instance of that sort (`carrier_own_instance_goal`): the
+    // dictionary is laid out as that sort's at the provider.
+    let spec = spec_reached_through_abstract_provision(kb, spec, provider).unwrap_or(spec);
     // WI-869: BOTH halves come from the chain the dictionary is actually laid out by.
     // The self case (a self-provision, or a parent bundle) is the provider's own
     // dictionary chain: `dict_sub_goals` skips the spec half entirely there and emits

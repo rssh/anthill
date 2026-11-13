@@ -270,10 +270,10 @@ pub(super) fn receiver_carrier(
 /// value against a bare `Stream` op (`FiniteStream` provides `Stream` yet has no representation
 /// of its own) — is NOT a pinnable concrete impl. Resolving it concretely picks `FiniteStream`'s
 /// `provides Stream → Stream requires EffectsRuntime[E]`, unsatisfiable at the abstract access
-/// row `E` → a spurious `DispatchNoMatch` / `MissingRequiresForSpecOp`. The runtime value is
-/// some concrete provider (a `List`), so it classifies abstract and defers to eval's
-/// value-directed dispatch, exactly the deferral the carrier-param path already takes via
-/// `carrier_is_abstract_spec` (WI-598) — funnelling both dispatch shapes through the one notion.
+/// row `E` → a spurious `DispatchNoMatch` / `MissingRequiresForSpecOp`. It classifies
+/// abstract, and the call runs on the instance the value is (proposal 073 §2), as the
+/// carrier-param path does via `carrier_is_abstract_spec` (WI-598) — funnelling both
+/// dispatch shapes through the one notion.
 /// Concrete carriers (`List`/`Map` — they HAVE constructors, so `carrier_is_abstract_spec` is
 /// false) dispatch as before.
 pub(super) fn concrete_receiver_carrier(
@@ -902,20 +902,16 @@ fn compose_provision_views(
 /// bound, and compose its view back through each hop's carrier→intermediate
 /// bindings via [`compose_provision_views`]. `visited` guards a cyclic chain.
 ///
-/// The returned flag is `true` iff the view came via the TRANSITIVE (provides-
-/// chain) branch at the top level — `carrier_sym` does not itself bind the carrier
-/// param, the impl lives on an intermediate spec sort. Such a call is dispatched like any
-/// other (proposal 073 §1, `iterator(xs: List)` runs `Stream.iterator` within `List`'s
-/// `Stream` dictionary); the flag is read only where that dispatch finds nothing, to leave
-/// the call to eval as WI-496 left every one (see the fallback in `check_apply_call`). No
-/// separate walk is needed — the branch that built the view IS the classification.
+/// A call whose view came through a chain is dispatched like any other (proposal 073 §1,
+/// `iterator(xs: List)` runs `Stream.iterator` within `List`'s `Stream` dictionary), and
+/// one the dispatch finds nothing for is refused as any other is.
 pub(super) fn transitive_provision_view(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
     pvid: VarId,
     carrier_sym: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
-) -> Option<(SmallVec<[(Symbol, Value); 2]>, bool)> {
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     // Direct: the carrier itself provides spec_sort binding the carrier param.
     compose_through_provision_chain(kb, carrier_sym, visited, VisitOrder::VisitedFirst, &|c| {
         provision_binds_param_to_carrier(kb, spec_sort, pvid, c)
@@ -942,9 +938,8 @@ enum VisitOrder {
 
 /// WI-20260923-32XFQ — a provision view of `carrier_sym`: `direct`'s own answer for it,
 /// else an intermediate spec it DIRECTLY provides that (transitively) answers, composed
-/// back through the carrier→intermediate hop via [`compose_provision_views`]. The flag is
-/// `true` iff the view came through a hop at THIS level. `visited` guards a cyclic
-/// `provides` chain, placed per `order`.
+/// back through the carrier→intermediate hop via [`compose_provision_views`]. `visited`
+/// guards a cyclic `provides` chain, placed per `order`.
 ///
 /// The one recursion under the two transitive readers, which spelled it twice with
 /// different direct questions and different visit orders.
@@ -954,7 +949,7 @@ fn compose_through_provision_chain(
     visited: &mut SmallVec<[Symbol; 8]>,
     order: VisitOrder,
     direct: &impl Fn(Symbol) -> Option<SmallVec<[(Symbol, Value); 2]>>,
-) -> Option<(SmallVec<[(Symbol, Value); 2]>, bool)> {
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     let seen = |visited: &SmallVec<[Symbol; 8]>| {
         visited
             .iter()
@@ -967,7 +962,7 @@ fn compose_through_provision_chain(
         visited.push(carrier_sym);
     }
     if let Some(view) = direct(carrier_sym) {
-        return Some((view, false));
+        return Some(view);
     }
     if matches!(order, VisitOrder::DirectFirst) {
         if seen(visited) {
@@ -977,7 +972,7 @@ fn compose_through_provision_chain(
     }
     // Transitive: an intermediate spec the carrier provides answers.
     for intermediate in directly_provided_specs(kb, carrier_sym) {
-        let Some((outer_view, _)) =
+        let Some(outer_view) =
             compose_through_provision_chain(kb, intermediate, visited, order, direct)
         else {
             continue;
@@ -986,9 +981,11 @@ fn compose_through_provision_chain(
         let Some(inner_view) = provider_spec_view_bindings(kb, carrier_sym, intermediate) else {
             continue;
         };
-        return Some((
-            compose_provision_views(kb, intermediate, &outer_view, &inner_view),
-            true,
+        return Some(compose_provision_views(
+            kb,
+            intermediate,
+            &outer_view,
+            &inner_view,
         ));
     }
     None
@@ -1420,12 +1417,10 @@ pub(super) fn supplied_arg_type(
 /// carrier itself ([`provision_binds_param_to_carrier`] — distinguishing the
 /// carrier param from an element-like param). First match wins. Returns
 /// `(spec sort, carrier sort, receiver's inferred type, the provision's view
-/// bindings, carrier-param vid, transitive?, receiver-arg var-sym)` — the view
+/// bindings, carrier-param vid, receiver-arg var-sym)` — the view
 /// rides along so the binder does not re-scan the provider facts; the carrier-param
 /// vid (WI-593) lets the binder skip the carrier param `C` (bound by argument
-/// unification, not the provision); `transitive?` (WI-496) is `true` iff the carrier
-/// provides the spec only through a provides-chain (the impl lives on an intermediate
-/// spec sort), the bit a dispatch that finds nothing reads to defer to eval; and the receiver-arg
+/// unification, not the provision); and the receiver-arg
 /// var-sym (WI-612) is the projection subject for threading an abstract carrier param.
 ///
 /// WI-20260828-N2FHM — the receiver's TYPE arrives through `recv_ty_of`, not off the
@@ -1435,9 +1430,9 @@ pub(super) fn supplied_arg_type(
 /// typed, off the WI-793 `known` map, so a callback param naming a spec param
 /// (`Iterable.find`'s `pred: (x: Element) -> Bool`) can be grounded in time to hint the
 /// lambda. Everything else about the classification — which parameter is the carrier,
-/// which provision view licenses it, whether it is transitive — is ONE decision
-/// procedure, deliberately: a second copy keyed on hint-time inputs is exactly the
-/// desync the carrier-param path has been repaired for three times (WI-495/608/609).
+/// which provision view licenses it — is ONE decision procedure, deliberately: a second
+/// copy keyed on hint-time inputs is exactly the desync the carrier-param path has been
+/// repaired for three times (WI-495/608/609).
 pub(super) fn carrier_param_receiver(
     kb: &KnowledgeBase,
     params: &[(Symbol, Value)],
@@ -1452,7 +1447,6 @@ pub(super) fn carrier_param_receiver(
     Value,
     SmallVec<[(Symbol, Value); 2]>,
     VarId,
-    bool,
     Option<Symbol>,
 )> {
     let (spec_sort, candidates) = spec_carrier_param_candidates(kb, params, fn_sym)?;
@@ -1467,8 +1461,7 @@ pub(super) fn carrier_param_receiver(
         // view COMPOSED through transitive provision (a `List` carrier whose
         // Iterable-ness rides through `Stream`), so `Element`/`E` still ground.
         let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-        let Some((view, transitive)) =
-            transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
+        let Some(view) = transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
         else {
             continue;
         };
@@ -1492,7 +1485,6 @@ pub(super) fn carrier_param_receiver(
             recv_ty,
             view,
             pvid,
-            transitive,
             recv_arg_sym,
         ));
     }
@@ -2589,8 +2581,7 @@ pub(super) fn spec_instance_at_receiver(
 ) -> Option<Substitution> {
     let carrier_sym = sort_functor_of_view(kb, recv_ty)?;
     let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-    let (view, _transitive) =
-        transitive_provision_view(kb, spec, carrier_pvid, carrier_sym, &mut visited)?;
+    let view = transitive_provision_view(kb, spec, carrier_pvid, carrier_sym, &mut visited)?;
     let mut at = Substitution::new();
     bind_spec_params_from_carrier_param(
         kb,
@@ -3152,7 +3143,6 @@ pub(super) fn transitive_provider_spec_view_bindings(
     compose_through_provision_chain(kb, carrier_sym, visited, VisitOrder::DirectFirst, &|c| {
         provider_spec_view_bindings(kb, c, spec_sort)
     })
-    .map(|(view, _)| view)
 }
 
 /// WI-20260829-GNPG7 — the provider view for the SUBTYPE relation: direct, else composed
@@ -4848,6 +4838,10 @@ pub struct DispatchFailure {
     pub goal_text: String,
     /// The repair the search itself proposed. Empty when it had none.
     pub hint: String,
+    /// The sort with abstract values whose instance at the carrier the call's goal was, where
+    /// that is where it failed ([`FailedAt::AtCarrier`]): the refusal is a call of its
+    /// member's.
+    pub through: Option<Symbol>,
 }
 
 /// WI-869 — render a [`TypeError::DispatchNoMatch`]'s failure as a trailing clause, or
@@ -5044,12 +5038,13 @@ pub(super) fn resolve_at_goal(
     }
 
     let mut stack: Vec<SortGoal> = Vec::new();
+    let mut top: Option<TopFailure> = None;
     // Two `None`s: this IS the goal the call made, so there is no enclosing provider
     // whose locality could narrow it (WI-857) and no slot of one to pin (WI-870) —
     // `scope.selected` is the only pin that reaches this level.
     // WI-861: and [`DefaultRung::Consult`], because this IS the unselected DISPATCH 058
     // §3.2's ladder is about — no named slot, so silence here is silence.
-    match resolve_inner(
+    let result = resolve_inner(
         kb,
         &goal,
         &scope,
@@ -5057,8 +5052,16 @@ pub(super) fn resolve_at_goal(
         None,
         None,
         DefaultRung::Consult,
-        &mut None,
-    ) {
+        &mut top,
+    );
+    let through = match top {
+        Some(TopFailure {
+            provider,
+            at: FailedAt::AtCarrier,
+        }) => Some(provider),
+        _ => None,
+    };
+    match result {
         ResolutionResult::Resolved(tree) => match &tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => {
@@ -5108,7 +5111,11 @@ pub(super) fn resolve_at_goal(
             goal_text, hint, ..
         } => (
             DispatchOutcome::NoMatch {
-                unmet: Some(Box::new(DispatchFailure { goal_text, hint })),
+                unmet: Some(Box::new(DispatchFailure {
+                    goal_text,
+                    hint,
+                    through,
+                })),
             },
             None,
         ),
@@ -5124,7 +5131,11 @@ pub(super) fn resolve_at_goal(
             let hint = describe_resolution_failure(kb, &cyclic);
             (
                 DispatchOutcome::NoMatch {
-                    unmet: Some(Box::new(DispatchFailure { goal_text, hint })),
+                    unmet: Some(Box::new(DispatchFailure {
+                        goal_text,
+                        hint,
+                        through,
+                    })),
                 },
                 None,
             )

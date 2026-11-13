@@ -68,6 +68,15 @@ namespace anthill.realization.runtime
     operation ops(d: Self) -> FiniteStream[T = OpRef] @[host_implemented]
   end
 
+  -- A value of an abstract type (proposal 073 §2): the dictionary of the instance it is,
+  -- fixed where its sort was known, and the value of the sort that built it. An
+  -- ordinary first-order value, as `Dictionary` is: `Instance(dict, value)`. Made where
+  -- a value of a known sort is used at an abstract type, and taken apart where a call
+  -- on it enters the member the dictionary names.
+  sort Instance
+    sort T = ?
+  end
+
   -- A resolved operation reference: a fully-qualified op symbol plus — only
   -- when the op is requires-carrying — the dictionary that supplies its
   -- requirements at apply.

@@ -165,18 +165,54 @@ fn two_routes_binding_different_structured_types_refuse_in_either_order() {
     );
 }
 
-/// THE CONTROL: both routes binding `P` to ONE structured type agree, and the carrier is
-/// accepted at it. Passes either way by design, like the one-carrier control.
+/// THE CONTROL: both routes binding `P` to ONE structured type agree on `P` — and the value
+/// is still refused at `Spec`, in either order, for another reason: `ti(x)` makes the
+/// `Carrier` a `Spec` instance (proposal 073 §2), and there are two, `MidA`'s (`touch` 1) and
+/// `MidB`'s (2), with nothing saying which. It loaded on the tree before, and a `ti` that
+/// called `Spec.touch(c)` there answered nothing at run time. Typed at one route where it is
+/// used, the value is that instance: `touch` answers `MidA`'s 1.
+///
+/// Passes either way by design for the agreement it was written for: the refusal is the
+/// instance's, not the route merge's, which back-out (B) above reads.
 #[test]
-fn two_routes_binding_one_structured_type_still_load() {
+fn two_routes_binding_one_structured_type_need_one_instance() {
     for (shape, value) in [("list", "List[T = String]"), ("arrow", "(String) -> String")] {
-        expect_loaded(try_load_kb_with(&two_routes(
-            &format!("n3w68.p3r.same.{shape}"),
-            value,
-            value,
-            A_FIRST,
-            value,
-        )));
+        for (order, provides) in [("MidA first", A_FIRST), ("MidB first", B_FIRST)] {
+            let src = two_routes(
+                &format!("n3w68.p3r.same.{shape}"),
+                value,
+                value,
+                provides,
+                value,
+            );
+            crate::common::assert_refused_naming(
+                &load_errors(&src),
+                &[
+                    "ti.c",
+                    "2 instances of `n3w68.p3r.same.",
+                    "type the value at one of them where it is used",
+                ],
+                &format!("{shape}, {order}"),
+            );
+        }
+        let ns = format!("n3w68.p3r.one.{shape}");
+        let src = two_routes(&ns, value, value, A_FIRST, value)
+            .replace(
+                &format!("operation ti(c: Spec[P = {value}]) -> Int64 = 1"),
+                &format!("operation ti(c: Spec[P = {value}]) -> Int64 = Spec.touch(c)"),
+            )
+            .replace(
+                "operation drive(x: Carrier[T = Int64]) -> Int64 = ti(x)",
+                "operation drive(x: Carrier[T = Int64]) -> Int64 =\n    \
+                 let m: MidA[A = Int64] = x\n    \
+                 ti(m)\n  \
+                 operation probe() -> Int64 = drive(carrier(v: 5))",
+            );
+        assert_eq!(
+            crate::common::run_int64(&src, &format!("{ns}.probe")),
+            Ok(1),
+            "{shape}: typed at `MidA`, the value is `MidA`'s instance"
+        );
     }
 }
 

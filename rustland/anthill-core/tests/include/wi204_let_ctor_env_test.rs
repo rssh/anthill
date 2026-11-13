@@ -38,6 +38,7 @@ fn commit_classifications(
                 CallClass::ConcreteApplyWithin { spec_op_sym, .. } => *spec_op_sym == commit_sym,
                 CallClass::PinNow { spec_op_sym, .. } => *spec_op_sym == commit_sym,
                 CallClass::UnresolvedSpecOp { spec_op_sym, .. } => *spec_op_sym == commit_sym,
+                CallClass::OnInstance { spec_op_sym, .. } => *spec_op_sym == commit_sym,
                 CallClass::EtaOpRef { .. } => false,
             };
             if names_commit {

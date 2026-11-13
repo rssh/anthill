@@ -709,11 +709,9 @@ pub(crate) fn supplier_tie_repair(
 /// SILENT, NOT MERELY UNPINNED — and the difference between those two readings is a
 /// WRONG ANSWER. [`statically_pinned_carrier`] returns `None` for BOTH "this call names
 /// no carrier at all" (a nullary op) and "this call HAS a carrier argument whose type is
-/// abstract here", and only the first belongs to a slot-directed route. The second is
-/// deliberately left to eval's value-directed dispatch (see the WI-444 block's own note:
-/// *"Eval's value-directed override (eval.rs step 3) is the dynamic dual for an
-/// ABSTRACT-receiver call this cannot pin"*), which reads the carrier off the RUNTIME
-/// VALUE — the only correct source when the argument decides it.
+/// abstract here", and only the first belongs to a slot-directed route. The second owes
+/// the instance at its argument's type (proposal 073 §6.2): the argument decides it, and a
+/// slot at another type is no instance there.
 ///
 /// MEASURED, on the first cut of the declared-slot carrier source (a `requires` in scope
 /// read as the call's carrier, since retired: a call names its instance in its bracket),
@@ -726,9 +724,9 @@ pub(crate) fn supplier_tie_repair(
 ///
 /// answered 7 — `Rich`'s `describe` run on a `plain()` value — where it had answered 3,
 /// `Plain`'s own. Silently pre-empting a dynamic dispatch with a static guess is the same
-/// class of defect the slot routes exist to remove, so they are gated on the call SHAPE
-/// and `wi_nr6fj_defect_b_slot_over_default_test::
-/// an_abstract_argument_still_dispatches_on_the_runtime_value` drives it.
+/// class of defect the slot routes exist to remove, so they are gated on the call SHAPE.
+/// Since proposal 073 stage 3 the call is refused at load, owing `Desc[T = U]`
+/// (`wi_nr6fj_defect_b_slot_over_default_test::an_abstract_argument_owes_its_instance`).
 ///
 /// ASKED OF THE DECLARATION, NOT OF THE CALL, and that is the whole correction. The first
 /// cut gated on `carrier_param` — the call-site CLASSIFICATION — which is `None` both for
@@ -745,8 +743,8 @@ pub(crate) fn supplier_tie_repair(
 /// WI-20260919-H20YY — EXTRACTED because a SECOND route asks it. The defaulted block's
 /// slot DEFERRAL (a call over a type PARAMETER, which pins no static carrier) must
 /// answer the same
-/// question in the same words: it too would otherwise pre-empt value-directed dispatch on
-/// an abstract argument. Two copies of a gate whose failure mode is a silent wrong answer
+/// question in the same words: it too would otherwise hand an abstract argument's call a
+/// slot at another type. Two copies of a gate whose failure mode is a silent wrong answer
 /// is exactly the drift this tree keeps paying for.
 pub(super) fn call_names_no_carrier(
     kb: &KnowledgeBase,
@@ -876,7 +874,7 @@ fn provider_of_the_instance(
 /// shapes classified it: the SELF-RECEIVER form (`collect(s: Stream)`, whose carrier is
 /// the receiver argument's concrete sort) or the CARRIER-PARAM form (`describe(x: T)`,
 /// whose carrier is what filled the spec's own param). `None` when nothing static pins
-/// one — which is the signal to leave the call to eval's value-directed dispatch.
+/// one: the call is then at an instance the argument's type gives, or at a requirement.
 ///
 /// Extracted at WI-1027 because a SECOND site had to ask the same question, and the two
 /// answering it separately is the shape this tree keeps paying for: the WI-444 arm's copy
@@ -929,7 +927,10 @@ pub(super) fn statically_pinned_carrier(
             .filter(|&c| {
                 Some(kb.canonical_sort_sym(c)) != spec_sort.map(|s| kb.canonical_sort_sym(s))
             })
-            .filter(|&c| !carrier_is_abstract_spec(kb, c))
+            // Proposal 073 §1, §2 — a carrier with abstract values is a type the program
+            // knows: the instance at it is resolved at load like any other (a value of it is
+            // an instance, and a call on one is classified so before this is asked). WI-608's
+            // exclusion, which left such a call to the value's own sort, is gone with that.
             // NO ARGUMENTS, and none are missing: the carrier-PARAM shape's carrier IS
             // a spec binding, so whatever the receiver wrote at it is already
             // `goal.bindings`' value for that param. Reading it a second time here

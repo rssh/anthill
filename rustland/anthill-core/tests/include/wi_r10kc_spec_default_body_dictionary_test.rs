@@ -432,7 +432,7 @@ fn a_generic_consumer_over_a_list_keeps_each_elements_ordering() {
 //     would be the sole answer for, and it is rank-1-ness that excludes it, not a
 //     missing ∃.
 
-/// ROUTE 1 — THE HOST ENTRY, PINNED AS IT IS RATHER THAN AS IT SHOULD BE.
+/// ROUTE 1 — THE HOST ENTRY, AN ERROR WHERE IT WAS A WRONG ANSWER.
 ///
 /// `MySet.contains` is called from Rust with a `MySet` VALUE and a `String`: no call
 /// site, no carrier type, and `seed_entry_requirements` fills the `O` slot with a
@@ -442,15 +442,11 @@ fn a_generic_consumer_over_a_list_keeps_each_elements_ordering() {
 /// The set was built at `ByLength`, under which `"aa"` IS `"zz"`'s class, so the right
 /// answer is `true` and this route answers `false`.
 ///
-/// PINNED, NOT ACCEPTED. This is the WI-868 stand-in-vs-marker decision seen from the one
-/// side it is wrong on, and fixing it is the change that doc names as what "would
-/// re-open" it. Pinning the wrong answer is what makes the fix VISIBLE when someone makes
-/// it — the test fails, and its author reads this paragraph.
-///
-/// PASSES EITHER WAY BY DESIGN with respect to THIS ticket's two edits: a host entry's
-/// channel is non-empty (the stand-ins), so `spec_instance_for_sibling_call` returns it
-/// untouched, and no call site is classified. Measured with both edits backed out:
-/// identical `false`.
+/// That was the answer while a call in a body was dispatched from its values. It is not now
+/// (proposal 073): the stand-in names no ordering and nothing reads one off the strings, so
+/// the call stops where it reads the slot, `WeakOrd.compare` having no member to run. The
+/// host passes no `O`, and a host call that passes no requirement its callee reads is
+/// refused naming it once the host can pass one (§6.1, WI-20261105-CBRD2).
 #[test]
 fn the_host_entry_route_answers_by_value_direction() {
     let src = program(
@@ -481,18 +477,11 @@ fn the_host_entry_route_answers_by_value_direction() {
     let one = interp
         .call("r10kc.host.Mk.one", &[Value::Int(0)])
         .expect("building the one-element set");
+    let host = interp.call("r10kc.host.MySet.contains", &[one, Value::Str("aa".to_string())]);
     assert!(
-        matches!(
-            interp.call(
-                "r10kc.host.MySet.contains",
-                &[one, Value::Str("aa".to_string())]
-            ),
-            Ok(Value::Bool(false))
-        ),
-        "the host entry has no carrier type, so the `O` slot is a stand-in and the read \
-         falls to value-direction, which answers from the STRING arguments — `String`'s \
-         alphabetical ordering, not the set's `ByLength`. Pinned as the wrong answer it \
-         is; see this test's doc for what closes it",
+        matches!(&host, Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. })
+            if name == "anthill.prelude.WeakOrd.compare"),
+        "the host passes no `O`, and nothing chooses one from the strings: {host:?}",
     );
 }
 
@@ -503,14 +492,15 @@ fn the_host_entry_route_answers_by_value_direction() {
 /// there is no dictionary to build at the call site — which is the one remaining
 /// population of `UnavailableWhy::NamedSlotNotCarried` after this ticket.
 ///
-/// THE TWO HALVES REFUSE AT DIFFERENT PHASES, and that is the finding worth keeping:
-///   * DIRECT (`MySet.contains(Pack.mk(0), …)`) — a LOAD error, WI-1094's, which names
-///     the slot and the repair ("Write `O` in the parameter's type");
-///   * THROUGH THE SPEC (`Searchable.containsAny(Pack.mk(0), …)`) — loads CLEAN and
-///     refuses at run time with the value-directed `NamedSlotNotCarried` sentence.
-/// One phase apart for one cause. Whether the spec route should reach WI-1094's load
-/// refusal is not this ticket's to decide; it is recorded so the next reader has the
-/// measurement rather than an assumption.
+/// BOTH HALVES ARE REFUSED AT LOAD, naming the slot (proposal 073 §6.2: a requirement no
+/// caller passes is refused where the call is written):
+///   * DIRECT (`MySet.contains(Pack.mk(0), …)`) — WI-1094's refusal, which names the slot
+///     and the repair ("Write `O` in the parameter's type");
+///   * THROUGH THE SPEC (`Searchable.containsAny(Pack.mk(0), …)`) — the same account, at
+///     the dispatch: `MySet`'s provision of `Searchable` holds only where `O` names a
+///     provider, and the opened skolem names none. It loaded and was refused at run time,
+///     the value-directed `NamedSlotNotCarried` sentence, while the call was left to the
+///     value.
 #[test]
 fn the_existential_return_opens_a_skolem_that_names_no_provider() {
     const PACK: &str = "  sort Pack\n    \
@@ -518,7 +508,7 @@ fn the_existential_return_opens_a_skolem_that_names_no_provider() {
          MySet.insert(MySet.empty[T = String, O = ByLength](), \"zz\")\n  \
          end\n";
 
-    // THROUGH THE SPEC: loads, and refuses at the read.
+    // THROUGH THE SPEC: refused at load, at the dispatch.
     let via_spec = program(
         "r10kc.exists",
         RIVALS,
@@ -529,15 +519,13 @@ fn the_existential_return_opens_a_skolem_that_names_no_provider() {
              end"
         ),
     );
-    let mut interp = crate::common::interp_for(&via_spec);
-    let err = format!("{:?}", interp.call("r10kc.exists.Driver.go", &[Value::Int(0)]));
-    assert!(
-        err.contains("NAMED requirement slot") && err.contains("cannot be recovered"),
-        "an opened skolem names no provider, so the default body has no dictionary to \
-         receive and the read must be refused naming the slot; got {err}"
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&via_spec),
+        &["Searchable.containsAny.dispatch", "universally quantified", "named slot `O`"],
+        "an opened skolem names no provider, so the call has no instance to run at",
     );
 
-    // DIRECT: refused one phase earlier, at LOAD.
+    // DIRECT: refused at load too.
     let direct = program(
         "r10kc.exists2",
         RIVALS,

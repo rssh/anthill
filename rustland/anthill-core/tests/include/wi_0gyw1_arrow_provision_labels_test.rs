@@ -351,10 +351,10 @@ fn a_sole_parameter_is_its_type_and_a_tuple_there_is_the_list() {
 /// the first five was refused.
 ///
 /// The applied sort has two providers, `P1` at `Box[T = (Int64, Int64) -> Int64]` (10) and
-/// `P2` at a `Box` of another arrow (30): a value of a sort is dispatched when the call
-/// runs where no provision was matched, and with both left the call died there, "ambiguous
-/// dispatch … on carrier `Box`". With a provider of unrelated names in `P1`'s place it
-/// still does.
+/// `P2` at a `Box` of another arrow (30). With a provider of unrelated names in `P1`'s place
+/// no provision answers the call, and it is refused at load (proposal 073 §1); it loaded and
+/// died when it ran, "ambiguous dispatch … on carrier `Box`", the value then choosing between
+/// the two.
 #[test]
 fn an_arrow_inside_another_type_is_matched_the_same() {
     let rows = [
@@ -406,12 +406,13 @@ fn an_arrow_inside_another_type_is_matched_the_same() {
         )
     };
     assert_eq!(answers("wi0gyw1.inside_applied", &boxed(BARE), "via(box(n: 1))"), 10);
-    let src = with_go("wi0gyw1.inside_applied_other", &boxed(OTHER), "via(box(n: 1))");
-    let mut interp = interp_for(&src);
-    let died = interp.call("wi0gyw1.inside_applied_other.go", &[]);
-    assert!(
-        matches!(&died, Err(e) if format!("{e:?}").contains("AmbiguousSpecOpDispatch")),
-        "a `Box` of an arrow of other names is matched by neither provider: {died:?}"
+    crate::common::assert_refused_naming(
+        &refusal("wi0gyw1.inside_applied_other", &boxed(OTHER), "via(box(n: 1))"),
+        &[
+            "Apply[F = wi0gyw1.inside_applied_other.Box[T = (p: Int64, q: Int64) -> Int64]]",
+            "no row of it answers at these bindings",
+        ],
+        "a `Box` of an arrow of other names is matched by neither provider",
     );
     // … and unrelated names one level down stay two types.
     let body = format!(

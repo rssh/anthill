@@ -55,10 +55,12 @@
 //!     why the shipped predicate is `type_mentions_spec_param`.
 //!
 //! The third control for (b) is NOT duplicated here: a self-receiver spec carries its
-//! sort's parameters even when the signature never writes them, and
-//! `wi325_missing_requires_test::user_defined_self_receiver_spec_without_providers_errors_on_abstract_call`
-//! already pins it. That row went RED under a version of (b) lacking the `!has_receiver`
-//! conjunct — which is why the conjunct is there.
+//! sort's parameters even when the signature never writes them, and wi325's
+//! `user_defined_self_receiver_spec_without_providers_errors_on_abstract_call` pinned it. That
+//! row went RED under a version of (b) lacking the `!has_receiver` conjunct — which is why
+//! the conjunct is there. Since proposal 073 stage 3 its program loads (the call is on the
+//! instance its argument is, `a_call_on_an_instance_of_an_unprovided_spec_loads`), and with
+//! the conjunct backed out no row of wi_tests fails: it is undriven.
 
 /// `common::try_load_kb_with` and NOT a hand-rolled parse/load recipe: it reads the
 /// stdlib through the shared `STDLIB_PARSED` LazyLock, so these seven fixtures cost one

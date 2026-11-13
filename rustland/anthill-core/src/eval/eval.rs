@@ -164,12 +164,290 @@ impl Interpreter {
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
             awaiting: None,
+            untyped: false,
         })?;
         self.note_dispatch(sym);
-        let dispatched = self.dispatch_resolved_operation(sym, args.to_vec(), requirements);
+        let dispatched = match self.pair_host_arguments(sym, args) {
+            // Proposal 073 §2 — an operation of a sort with abstract values called on one of
+            // its values runs the member the instance's dictionary names, as a body's call on
+            // an instance does.
+            Ok(args) => match self.host_call_on_instance(sym, &args) {
+                Some(abstract_sort) => {
+                    self.dispatch_on_instance(sym, abstract_sort, args, SmallVec::new())
+                }
+                None => {
+                    let saved = std::mem::replace(&mut self.host_entry_dispatch, true);
+                    let dispatched = self.dispatch_resolved_operation(sym, args, requirements);
+                    self.host_entry_dispatch = saved;
+                    dispatched
+                }
+            },
+            Err(e) => Err(e),
+        };
         let result = self.run_from(floor, dispatched);
         self.end_host_entry(top_level, sym);
-        result
+        // Proposal 073 §2 — the host works on its own values: a result that is an instance is
+        // handed back as the carrier's value, as a host operation is handed its arguments.
+        result.map(|v| self.carried_for_host(sym, v))
+    }
+
+    /// STAGE 4'S, the host entry only — the dictionary of `op`'s spec at the sort of the
+    /// argument at its receiver (the parameter at `Self` or the spec's carrier), read off the
+    /// value as [`Self::pair_by_own_sort`] reads an instance's. `None` where the operation has
+    /// no receiver, the argument names no sort, or no provision answers at that sort alone
+    /// (a conditional one over the value's type arguments, which a bare value does not carry).
+    pub(super) fn spec_instance_at_the_receiver(
+        &mut self,
+        op: Symbol,
+        args: &[Value],
+    ) -> Result<Option<super::value::Dictionary>, EvalError> {
+        let Some(spec) = crate::kb::typing::spec_op_parent_sort(&self.kb, op) else {
+            return Ok(None);
+        };
+        let Some(info) = crate::kb::op_info::lookup_operation_info(&self.kb, op) else {
+            return Ok(None);
+        };
+        let Some(index) = crate::kb::typing::receiver_param_index(&self.kb, &info.params, spec) else {
+            return Ok(None);
+        };
+        let Some(carrier) = args.get(index).and_then(|a| runtime_carrier_sort(&self.kb, a)) else {
+            return Ok(None);
+        };
+        let carrier = self.kb.canonical_sort_sym(carrier);
+        let carrier_ty = Value::term(self.kb.make_sort_ref(carrier));
+        let spec_ty = Value::term(self.kb.make_sort_ref(spec));
+        let dict_term = crate::kb::typing::dictionary_at_in_scope(
+            &mut self.kb,
+            spec,
+            carrier,
+            &carrier_ty,
+            &spec_ty,
+            &[],
+            &crate::kb::typing::DictChain::empty(),
+            &[],
+        )
+        .ok();
+        let Some(dict_term) = dict_term else {
+            return Ok(None);
+        };
+        let occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_term);
+        Ok(Some(self.eval_requirement_chain_node(&occ)?))
+    }
+
+    /// Proposal 073 §6.1, §6.2, STAGE 4'S — is the call being dispatched one with no typed
+    /// caller: the host entry's own call, or a call in text no typer saw (a query's compound
+    /// expression, a rule's lambda: [`super::frame::Frame::untyped`])? The only calls whose
+    /// implementation is still found from the argument values, until CBRD2.
+    fn untyped_caller(&self) -> bool {
+        self.host_entry_dispatch || self.stack.top().is_some_and(|f| f.untyped)
+    }
+
+    /// The sort with abstract values `op` belongs to, where the host calls it on one of that
+    /// sort's values — its argument at `Self` an instance (`Stream.splitFirst(s)` with `s` a
+    /// `Stream`); `None` for any other call. Read off the operation's signature: the instance
+    /// is the argument's, nothing is chosen from its value.
+    fn host_call_on_instance(&self, op: Symbol, args: &[Value]) -> Option<Symbol> {
+        let sort = crate::kb::typing::impl_parent_sort_of_op(&self.kb, op)?;
+        if !crate::kb::typing::is_abstract_carrier_sort(&self.kb, sort) {
+            return None;
+        }
+        let info = crate::kb::op_info::lookup_operation_info(&self.kb, op)?;
+        let index = crate::kb::typing::self_receiver_param_index(&self.kb, &info.params, sort)?;
+        self.open_instance(args.get(index)?).map(|_| sort)
+    }
+
+    /// Proposal 073 §6.1, STAGE 4'S: a host call — `Interpreter::call`, the bridge a rule body's
+    /// call reaches the evaluator through — passes values and no instances. Where the operation
+    /// takes one at a sort whose values are instances (`Stream.isEmpty(s: Self)`), the value's
+    /// own sort answers it here: the one place left where a value chooses a dictionary, until a
+    /// host call passes the instances its callee reads, or is refused (WI-20261105-CBRD2).
+    fn pair_host_arguments(&mut self, op: Symbol, args: &[Value]) -> Result<Vec<Value>, EvalError> {
+        let Some(info) = crate::kb::op_info::lookup_operation_info(&self.kb, op) else {
+            return Ok(args.to_vec());
+        };
+        let params = info.params.clone();
+        let mut out = args.to_vec();
+        for (i, (_, ty)) in params.iter().enumerate() {
+            let Some(arg) = out.get_mut(i) else { continue };
+            let raw = std::mem::replace(arg, Value::Unit);
+            out[i] = self.pair_at_type(op, i, ty, raw)?;
+        }
+        Ok(out)
+    }
+
+    /// [`Self::pair_host_arguments`] for one argument `v` at its parameter's type `ty`: the
+    /// instance of the abstract sort `ty` is at, or a value of a data sort whose arguments
+    /// hold one (`List[T = Sp]`), its fields at those arguments paired in turn.
+    fn pair_at_type(
+        &mut self,
+        op: Symbol,
+        index: usize,
+        ty: &Value,
+        v: Value,
+    ) -> Result<Value, EvalError> {
+        use crate::kb::term_view::{TermView, ViewHead};
+        let Some(head) = crate::kb::typing::sort_functor_of_view(&self.kb, ty) else {
+            return Ok(v);
+        };
+        let head = self.kb.canonical_sort_sym(self.kb.type_arg_owner(head).unwrap_or(head));
+        if crate::kb::typing::is_abstract_carrier_sort(&self.kb, head) {
+            return self.pair_by_own_sort(op, index, head, ty, v);
+        }
+        // An instance handed to a parameter at its carrier's own sort (`Car.dflt(c: Car)`, the
+        // member a clause's read of the instance dispatched to): the carrier's value.
+        if !crate::kb::typing::is_sort_param_symbol(&self.kb, head) {
+            if let Some((_, inner)) = self.open_instance(&v) {
+                return Ok(inner);
+            }
+        }
+        let Some((_, args)) = crate::kb::typing::parametric_view_parts(&self.kb, ty) else {
+            return Ok(v);
+        };
+        if !args
+            .iter()
+            .any(|(_, a)| crate::kb::typing::type_names_abstract_carrier(&self.kb, a))
+        {
+            return Ok(v);
+        }
+        let ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } = v.head(&self.kb)
+        else {
+            return Ok(v);
+        };
+        // A collection literal a rule holds as its own term (`[car(n: 1), van(n: 2)]`): its
+        // elements are at the collection's element type.
+        if self.collection_literal_sort(functor).is_some() {
+            let Some((_, elem)) = args.iter().find(|(p, _)| self.kb.local_name_of(*p) == "T")
+            else {
+                return Err(EvalError::Internal(format!(
+                    "a collection literal passed to `{}` at `{}`, which has no element type",
+                    self.kb.qualified_name_of(op),
+                    crate::kb::typing::type_display_name_value(&self.kb, ty),
+                )));
+            };
+            let elem = elem.clone();
+            let mut pos: Vec<Value> = Vec::with_capacity(pos_arity);
+            for i in 0..pos_arity {
+                let child = v.pos_arg(&self.kb, i).map(|c| c.to_value()).ok_or_else(|| {
+                    EvalError::Internal(format!("missing element {i} of a literal"))
+                })?;
+                pos.push(self.pair_at_type(op, index, &elem, child)?);
+            }
+            return Ok(Value::Entity {
+                functor,
+                pos: pos.into(),
+                named: Vec::new().into(),
+            });
+        }
+        let Some(fields) = self.kb.entity_field_types(functor).map(|f| f.to_vec()) else {
+            return Ok(v);
+        };
+        let at = |kb: &crate::kb::KnowledgeBase, fty: &Value| -> Option<Value> {
+            crate::kb::typing::field_type_at(kb, head, fty, ty, &args)
+        };
+        let mut pos: Vec<Value> = Vec::with_capacity(pos_arity);
+        for i in 0..pos_arity {
+            let child = v
+                .pos_arg(&self.kb, i)
+                .map(|c| c.to_value())
+                .ok_or_else(|| EvalError::Internal(format!("missing field {i} of a value")))?;
+            let child = match fields.get(i).and_then(|(_, fty)| at(&self.kb, fty)) {
+                Some(at_ty) => self.pair_at_type(op, index, &at_ty, child)?,
+                None => child,
+            };
+            pos.push(child);
+        }
+        let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(named_arity);
+        for key in v.named_keys(&self.kb) {
+            let child = v
+                .named_arg(&self.kb, key)
+                .map(|c| c.to_value())
+                .ok_or_else(|| EvalError::Internal("missing named field of a value".into()))?;
+            let fty = fields
+                .iter()
+                .find(|(f, _)| self.kb.local_name_of(*f) == self.kb.local_name_of(key))
+                .and_then(|(_, fty)| at(&self.kb, fty));
+            let child = match fty {
+                Some(at_ty) => self.pair_at_type(op, index, &at_ty, child)?,
+                None => child,
+            };
+            named.push((key, child));
+        }
+        Ok(Value::Entity {
+            functor,
+            pos: pos.into(),
+            named: named.into(),
+        })
+    }
+
+    /// The instance of the abstract sort `head` a host passes `v` as: the dictionary of the
+    /// value's own sort's provision ([`Self::pair_host_arguments`], stage 4's step).
+    /// The collection a list or set literal held as a term builds (`List`, `Set`); `None` for
+    /// any other functor.
+    fn collection_literal_sort(&self, functor: Symbol) -> Option<Symbol> {
+        let built = if Some(functor) == self.reflect.list_literal {
+            "anthill.prelude.List"
+        } else if Some(functor) == self.reflect.set_literal {
+            "anthill.prelude.Set"
+        } else {
+            return None;
+        };
+        self.kb.try_resolve_symbol(built)
+    }
+
+    fn pair_by_own_sort(
+        &mut self,
+        op: Symbol,
+        index: usize,
+        head: Symbol,
+        ty: &Value,
+        v: Value,
+    ) -> Result<Value, EvalError> {
+        if self.open_instance(&v).is_some() {
+            return Ok(v);
+        }
+        let Some(carrier) = runtime_carrier_sort(&self.kb, &v) else {
+            // A value a guard is asked about while it still holds the rule's unknowns waits
+            // for them; any other is a value no sort answers for.
+            let what = format!(
+                "the argument {} of `{}` at `{}`, which names no sort",
+                index + 1,
+                self.kb.qualified_name_of(op),
+                self.kb.qualified_name_of(head),
+            );
+            return Err(if self.bridge_mode() {
+                self.reads_unknown(&what)
+            } else {
+                EvalError::Internal(format!("a host call passes {what}"))
+            });
+        };
+        // A collection literal a rule holds as its own term is the collection it builds.
+        let carrier = self.collection_literal_sort(carrier).unwrap_or(carrier);
+        let carrier = self.kb.canonical_sort_sym(carrier);
+        let carrier_ty = Value::term(self.kb.make_sort_ref(carrier));
+        let dict_term = crate::kb::typing::dictionary_at_in_scope(
+            &mut self.kb,
+            head,
+            carrier,
+            &carrier_ty,
+            ty,
+            &[],
+            &crate::kb::typing::DictChain::empty(),
+            &[],
+        )
+        .map_err(|why| {
+            EvalError::Internal(format!(
+                "a host call of `{}` passes no instance at its parameter {}: {why}",
+                self.kb.qualified_name_of(op),
+                index + 1
+            ))
+        })?;
+        let occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_term);
+        let dict = self.eval_requirement_chain_node(&occ)?;
+        self.make_instance(dict, v)
     }
 
     fn run_inner(
@@ -248,6 +526,12 @@ impl Interpreter {
     }
 
     fn reduce_node(&mut self, occ: &Rc<NodeOccurrence>) -> Result<StepOutcome, EvalError> {
+        // Proposal 073 §2 — a node whose value is converted where it is used (paired with
+        // the dictionary of the instance it is) is reduced in a frame of its own, with this
+        // one waiting to convert what it delivers.
+        if occ.has_instance_conversion() && !self.take_armed_conversion(occ) {
+            return self.suspend_for_conversion(occ);
+        }
         let expr = match &occ.kind {
             NodeKind::Expr { expr, .. } => expr,
             NodeKind::RuleHead { .. } => {
@@ -454,6 +738,16 @@ impl Interpreter {
                         pos_args,
                         named_args,
                     ),
+                    Some(CallClass::OnInstance {
+                        spec_op_sym,
+                        abstract_sort,
+                    }) => self.start_apply_on_instance(
+                        *spec_op_sym,
+                        *abstract_sort,
+                        &op_dicts,
+                        pos_args,
+                        named_args,
+                    ),
                     Some(CallClass::DeferToDictionary {
                         spec_op_sym, dict, ..
                     }) => self.start_apply_through_dictionary(
@@ -599,6 +893,46 @@ impl Interpreter {
                 "unexpected Expr::Bottom in expression body".into(),
             )),
         }
+    }
+
+    /// Is the frame under the top one waiting to convert `occ`, pushed for it and not yet
+    /// reduced? Disarms it: a later reduction of the same node in the frame above is another
+    /// value (a tail call back into the operation holding it), and converts again.
+    fn take_armed_conversion(&mut self, occ: &Rc<NodeOccurrence>) -> bool {
+        let Some(below) = self.stack.below_top_mut() else {
+            return false;
+        };
+        match &mut below.awaiting {
+            Some(AwaitState::Convert {
+                node: Some(node),
+                armed,
+                ..
+            }) if *armed && Rc::ptr_eq(node, occ) => {
+                *armed = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Suspend the top frame to convert the value `occ` delivers, and reduce `occ` above it.
+    fn suspend_for_conversion(&mut self, occ: &Rc<NodeOccurrence>) -> Result<StepOutcome, EvalError> {
+        let conversion = occ.instance_conversion().ok_or_else(|| {
+            EvalError::Internal("a node to convert carries no conversion".into())
+        })?;
+        let top = self
+            .stack
+            .top_mut()
+            .ok_or_else(|| EvalError::Internal("conversion on an empty stack".into()))?;
+        top.awaiting = Some(AwaitState::Convert {
+            conversion,
+            node: Some(Rc::clone(occ)),
+            armed: true,
+            receiver: None,
+        });
+        let ctx = self.stack.top().unwrap().child_context();
+        self.stack.push(child_frame(ctx, Rc::clone(occ)))?;
+        Ok(StepOutcome::Continue)
     }
 
     /// WI-20260918-R541X (D) — the bare-head arms' guard: a head that is a TYPE
@@ -1164,7 +1498,7 @@ impl Interpreter {
         // On a fold error, drop the Forcing entry so the const isn't poisoned —
         // a later demand re-attempts (and re-reports) rather than masquerading as
         // an in-progress cycle.
-        match self.eval_node_isolated(sym, &body) {
+        match self.eval_node_isolated(sym, &body, false) {
             Ok(v) => {
                 self.const_cache
                     .insert(sym, super::ConstCacheEntry::Cached(v.clone()));
@@ -1189,6 +1523,9 @@ impl Interpreter {
         &mut self,
         op: Symbol,
         node: &Rc<NodeOccurrence>,
+        // The text is a query's or a rule's compound expression, which no typer saw
+        // ([`Frame::untyped`]).
+        untyped: bool,
     ) -> Result<Value, EvalError> {
         let fresh = match self.config.depth_cap {
             Some(cap) => super::frame::ActivationStack::with_cap(cap),
@@ -1201,6 +1538,7 @@ impl Interpreter {
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
             awaiting: None,
+            untyped,
         });
         let result = match pushed {
             Ok(()) => self.run(),
@@ -1385,6 +1723,7 @@ impl Interpreter {
             requirements,
             written_in: self.stack.top().map(|f| f.op),
             relabel,
+            result_conversion: None,
         });
         Ok(StepOutcome::Deliver(Value::Closure(handle)))
     }
@@ -1456,7 +1795,7 @@ impl Interpreter {
     /// `RequirementAtSort` (projection) or `Dictionary`
     /// (construction). No AwaitState — the grammar is closed under direct
     /// recursion.
-    fn eval_requirement_chain_node(
+    pub(super) fn eval_requirement_chain_node(
         &self,
         occ: &Rc<NodeOccurrence>,
     ) -> Result<super::value::Dictionary, EvalError> {
@@ -1519,6 +1858,16 @@ impl Interpreter {
     /// operation nor what the frame does hold. The two unbound-requirement messages
     /// this mechanism can raise say the same things.
     fn unbound_requirement_error(&self, name: Symbol) -> EvalError {
+        // In the resolver's bridge a call is handed what the rule world can give, and an
+        // instance a body reads but the bridge could not build (a guard asked about a symbolic
+        // argument) is read where it is not yet known: the read waits (proposal 073 §6.1 —
+        // what the host entry builds from a value is stage 4's).
+        if self.bridge_mode() {
+            return self.reads_unknown(&format!(
+                "the requirement `{}`",
+                self.kb.local_name_of(name)
+            ));
+        }
         let Some(top) = self.stack.top() else {
             return EvalError::Internal(format!(
                 "var_ref({}) unbound in requirement position (no current frame)",
@@ -1936,9 +2285,13 @@ impl Interpreter {
                 None
             };
 
+        // Proposal 073 §1 — where the typer stamped a member other than the operation the call
+        // names (`Leaf2.conv` for `Conv.conv` through `W3`'s provision), that member is what
+        // the call runs, decided at load; the dictionary lays out its frame. Re-dispatched
+        // through the dictionary's sort table it was `W3`'s inherited default.
         let target = match &dispatching_dict {
-            Some(dict) => self.dispatch_via_sort_ops_table(functor, dict)?,
-            None => functor,
+            Some(dict) if functor == spec_op => self.dispatch_via_sort_ops_table(functor, dict)?,
+            _ => functor,
         };
 
         // Names model (WI-237): expand the dispatching dict into
@@ -1946,15 +2299,24 @@ impl Interpreter {
         // `__req_<spec>` → each positional sub-instance). Same name
         // synthesis as the typer's IR emitter, so the callee body's
         // `var_ref(__req_*)` reads resolve against this frame.
-        let mut requirements = match dispatching_dict {
-            Some(dict) => self.expand_dispatching_dict(spec_op, target, &dict)?,
+        let mut requirements = match &dispatching_dict {
+            Some(dict) => self.expand_dispatching_dict(spec_op, target, dict)?,
             None => SmallVec::new(),
         };
         // WI-822 LEG 1: the OP-SCOPED tail, evaluated in THIS (the caller's) frame —
         // a forwarded slot is a `var_ref` into the caller's own channel, so it has to
         // be read before the callee's frame is pushed.
         self.push_op_scoped_slots(target, functor, op_dicts, &mut requirements)?;
-        self.dispatch_apply_with_requirements(target, requirements, args, named_args)
+        // Proposal 073 §2 — the call was typed at `functor`'s parameters; where the
+        // dictionary sends it to a default body of a sort with abstract values, the receiver
+        // that body reads as an instance is paired with the dictionary.
+        let pair_at = match dispatching_dict {
+            Some(dict) => self
+                .positions_to_pair(functor, target)
+                .map(|positions| Box::new((dict, positions))),
+            None => None,
+        };
+        self.dispatch_apply_pairing(target, requirements, args, named_args, pair_at)
     }
 
     /// WI-822 LEG 1 — append `target`'s OP-SCOPED requirement slots (the tail of
@@ -2421,6 +2783,130 @@ impl Interpreter {
         )
     }
 
+    /// Runtime path for `CallClass::OnInstance` (proposal 073 §2): a call on a value of an
+    /// abstract type. The arguments are evaluated first, the receiver among them; the call's
+    /// evidence for the operation's own `requires` is evaluated here, in the caller's frame.
+    fn start_apply_on_instance(
+        &mut self,
+        spec_op: Symbol,
+        abstract_sort: Symbol,
+        op_dicts: &[Option<TermId>],
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
+        let mut filled: SmallVec<[(Symbol, super::value::Dictionary); 2]> = SmallVec::new();
+        if !op_dicts.is_empty() {
+            self.push_op_scoped_slots(spec_op, spec_op, op_dicts, &mut filled)?;
+        }
+        let mut remaining: Vec<Rc<NodeOccurrence>> =
+            pos_args.iter().chain(named_args.iter().map(|(_, a)| a)).cloned().collect();
+        if remaining.is_empty() {
+            return Err(EvalError::Internal(format!(
+                "a call of `{}` on an instance has no arguments, so no receiver",
+                self.kb.qualified_name_of(spec_op)
+            )));
+        }
+        let first = remaining.remove(0);
+        self.suspend_and_push(
+            AwaitState::InstanceApplyArgs {
+                spec_op,
+                abstract_sort,
+                buffered: Vec::new(),
+                remaining,
+                filled,
+            },
+            first,
+        )
+    }
+
+    /// The call of `spec_op` on the instance its receiver is (073 §2). The abstract sort's own
+    /// member for the call (`spec_op` itself, or the member the sort writes for another spec's
+    /// operation — `Iterable.find` on a `Stream` is `Stream.find`) names the receiver; its
+    /// pair's dictionary names the member that runs. That member is entered with the
+    /// dictionary's frame, as any call through a dictionary is. A default body of the abstract
+    /// sort keeps the receiver as the pair it is, every value typed at the sort being one; a
+    /// provider's own member takes the carrier's value, and its result is converted to the type
+    /// the call was typed at ([`crate::kb::typing::member_result_conversion`]).
+    fn dispatch_on_instance(
+        &mut self,
+        spec_op: Symbol,
+        abstract_sort: Symbol,
+        mut args: Vec<Value>,
+        filled: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<StepOutcome, EvalError> {
+        let at_abstract = crate::kb::typing::resolve_op_target_checked(&self.kb, abstract_sort, spec_op)
+            .map_err(|refusal| EvalError::dispatch_refused(&self.kb, spec_op, abstract_sort, refusal))?;
+        // The receiver: the member's parameter at the abstract sort, or — where the sort
+        // writes no member of a spec over a carrier parameter and the spec's own body answers
+        // (`FiniteCollection.size`) — the operation's parameter at that carrier.
+        let receiver = crate::kb::op_info::lookup_operation_info(&self.kb, at_abstract)
+            .and_then(|info| {
+                crate::kb::typing::self_receiver_param_index(&self.kb, &info.params, abstract_sort)
+                    .or_else(|| {
+                        let spec = crate::kb::typing::impl_parent_sort_of_op(&self.kb, at_abstract)?;
+                        crate::kb::typing::receiver_param_index(&self.kb, &info.params, spec)
+                    })
+            })
+            .ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "`{}` of `{}` takes no parameter at the sort, so a call on an instance has \
+                     no receiver",
+                    self.kb.qualified_name_of(at_abstract),
+                    self.kb.qualified_name_of(abstract_sort),
+                ))
+            })?;
+        let held = args.get(receiver).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "a call of `{}` on an instance passes no argument at its receiver",
+                self.kb.qualified_name_of(at_abstract)
+            ))
+        })?;
+        let (dict, carried) = self.expect_instance(held, abstract_sort)?;
+        let target = self.dispatch_via_sort_ops_table(at_abstract, &dict)?;
+        let mut requirements = self.expand_dispatching_dict(at_abstract, target, &dict)?;
+        self.hand_spec_op_slots(spec_op, target, &filled, &mut requirements);
+        self.note_dispatch(target);
+        // A default body of a sort with abstract values — this sort's, or one its provision
+        // goes through (`Peek.peek` on a `Holder` reaching `Mid.peek`) — reads its receiver as
+        // the instance it is.
+        let abstract_default = target == at_abstract
+            || (self.cached_operation_body(target).is_some()
+                && crate::kb::typing::impl_parent_sort_of_op(&self.kb, target)
+                    .is_some_and(|s| crate::kb::typing::is_abstract_carrier_sort(&self.kb, s)));
+        if abstract_default {
+            return self.dispatch_resolved_operation(target, args, requirements);
+        }
+        args[receiver] = carried;
+        let key = (at_abstract, target);
+        let conversion = match self.member_result_conversions.get(&key) {
+            Some(c) => c.clone(),
+            None => {
+                let c = crate::kb::typing::member_result_conversion(&mut self.kb, at_abstract, target)
+                    .map_err(|why| {
+                        EvalError::Internal(format!(
+                            "the result of `{}` for `{}`: {why}",
+                            self.kb.qualified_name_of(target),
+                            self.kb.qualified_name_of(at_abstract),
+                        ))
+                    })?;
+                self.member_result_conversions.insert(key, c.clone());
+                c
+            }
+        };
+        if let Some(conversion) = conversion {
+            self.suspend_and_push(
+                AwaitState::Convert {
+                    conversion,
+                    node: None,
+                    armed: false,
+                    receiver: Some(dict),
+                },
+                crate::kb::node_occurrence::bottom_node(),
+            )?;
+        }
+        self.dispatch_resolved_operation(target, args, requirements)
+    }
+
     /// Runtime path for `CallClass::DeferToDictionary` (WI-20260929-6NMGQ): the call in a
     /// lambda's body at the type of its parameter, through the dictionary `dict` evaluates
     /// to in this frame — a slot an application of the lambda handed it, or the dictionary
@@ -2470,7 +2956,52 @@ impl Interpreter {
             self.push_op_scoped_slots(spec_op_sym, spec_op_sym, op_dicts, &mut filled)?;
             self.hand_spec_op_slots(spec_op_sym, target, &filled, &mut requirements);
         }
-        self.dispatch_apply_with_requirements(target, requirements, pos_args, named_args)
+        let pair_at = self
+            .positions_to_pair(spec_op_sym, target)
+            .map(|positions| Box::new((dispatching_dict, positions)));
+        self.dispatch_apply_pairing(target, requirements, pos_args, named_args, pair_at)
+    }
+
+    /// Proposal 073 §2 — where `target`, reached through a dictionary for a call of `spec_op`,
+    /// is a default body of a sort with abstract values, the parameters it reads as values of
+    /// that sort whose argument the call made at another type (`Iterable.iterator(c: C)` reaching
+    /// `Stream.iterator(s: Self)`): the call's dictionary is the instance they are. `None` where
+    /// nothing is paired.
+    fn positions_to_pair(&mut self, spec_op: Symbol, target: Symbol) -> Option<SmallVec<[usize; 2]>> {
+        if let Some(cached) = self.pair_positions.get(&(spec_op, target)) {
+            return cached.clone();
+        }
+        let answer = (|| {
+            let sort = crate::kb::typing::impl_parent_sort_of_op(&self.kb, target)?;
+            if !crate::kb::typing::is_abstract_carrier_sort(&self.kb, sort) {
+                return None;
+            }
+            self.cached_operation_body(target)?;
+            let member = crate::kb::op_info::lookup_operation_info(&self.kb, target)?;
+            let called = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
+            let sort = self.kb.canonical_sort_sym(sort);
+            let head = |kb: &crate::kb::KnowledgeBase, ty: &Value| {
+                crate::kb::typing::sort_functor_of_view(kb, ty)
+                    .map(|h| kb.canonical_sort_sym(kb.type_arg_owner(h).unwrap_or(h)))
+            };
+            let positions: SmallVec<[usize; 2]> = member
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(i, (_, ty))| {
+                    head(&self.kb, ty) == Some(sort)
+                        && !called.params.get(*i).is_some_and(|(_, cty)| {
+                            head(&self.kb, cty).is_some_and(|h| {
+                                crate::kb::typing::is_abstract_carrier_sort(&self.kb, h)
+                            })
+                        })
+                })
+                .map(|(i, _)| i)
+                .collect();
+            (!positions.is_empty()).then_some(positions)
+        })();
+        self.pair_positions.insert((spec_op, target), answer.clone());
+        answer
     }
 
     /// The slots a call filled for a SPEC operation's own requirements, placed in the
@@ -2757,6 +3288,19 @@ impl Interpreter {
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
+        self.dispatch_apply_pairing(target, requirements, pos_args, named_args, None)
+    }
+
+    /// [`Self::dispatch_apply_with_requirements`] with the argument positions `pair_at` names
+    /// paired with its dictionary before the call (073 §2).
+    fn dispatch_apply_pairing(
+        &mut self,
+        target: Symbol,
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        pair_at: Option<Box<(super::value::Dictionary, SmallVec<[usize; 2]>)>>,
+    ) -> Result<StepOutcome, EvalError> {
         let total_args = pos_args.len() + named_args.len();
         if total_args == 0 {
             return self.dispatch_call_with_requirements(target, Vec::new(), requirements);
@@ -2775,6 +3319,7 @@ impl Interpreter {
                 buffered: Vec::new(),
                 remaining,
                 requirements,
+                pair_at,
             },
             first,
         )
@@ -3007,16 +3552,26 @@ impl Interpreter {
                 // the callee frame — not the caller's (empty / wrong-scope)
                 // requirements. A dict-less OpRef (requires-free, or a same-sort
                 // eta that inherits) forwards the caller's requirements.
-                let mut requirements = match dict {
+                let (op, mut requirements) = match dict {
                     Some(d) => {
                         drop(requirements);
                         // WI-857: `op` is the RESOLVED target; the op the call NAMED
                         // is `named` when the minter recorded a different one
                         // (`Dictionary.resolveOp`), else `op` itself (an eta, whose
                         // captured dict is its own parent's bundle — WI-420).
-                        self.expand_dispatching_dict(named.unwrap_or(op), op, &d)?
+                        // Proposal 073 §3 — an eta of a spec operation in a body run at
+                        // an instance (`via(rank, x)` in `Sp`'s default `ranked`) runs
+                        // the member that instance's dictionary names, as a call
+                        // through the dictionary does.
+                        let target = match named {
+                            Some(_) => op,
+                            None => self.dispatch_via_sort_ops_table(op, &d)?,
+                        };
+                        let requirements =
+                            self.expand_dispatching_dict(named.unwrap_or(op), target, &d)?;
+                        (target, requirements)
                     }
-                    None => requirements,
+                    None => (op, requirements),
                 };
                 // WI-1091: the OPERATION's own slots ride BESIDE the sort half — the
                 // eta captured them at mint in its own frame, and this is where they
@@ -3186,8 +3741,11 @@ impl Interpreter {
             // another spec's same-short-name default. So a carrier that merely
             // inherits the default runs it, unchanged; a normal (non-spec) op
             // resolves `None` and runs its body directly.
-            if let Some(impl_target) =
-                self.resolve_carrier_override_by_value(target, &arg_values)?
+            if let Some(impl_target) = self
+                .untyped_caller()
+                .then(|| self.resolve_carrier_override_by_value(target, &arg_values))
+                .transpose()?
+                .flatten()
             {
                 if impl_target != target {
                     // WI-455: name the op we actually RUN. The ring was fed with
@@ -3223,6 +3781,9 @@ impl Interpreter {
                     }
                 }
             }
+            // Proposal 073 §6.1, STAGE 4'S — a host call of a spec's own body, which the host
+            // hands no dictionary: the body runs at the instance the arguments' sorts give,
+            // where the channel holds only the spec's stand-in (`Coll.viaHelper(l(3))`).
             return self.enter_operation(target, body_node, &params, arg_values, requirements);
         }
 
@@ -3253,7 +3814,12 @@ impl Interpreter {
         // target`); the guard below skips it and it falls through to the
         // WI-818 classifier — `OperationBodyMissing` for a declared op,
         // `UnknownOperation` otherwise.
-        if let Some(impl_target) = self.resolve_spec_op_target_by_value(target, &arg_values)? {
+        if let Some(impl_target) = self
+            .untyped_caller()
+            .then(|| self.resolve_spec_op_target_by_value(target, &arg_values))
+            .transpose()?
+            .flatten()
+        {
             if impl_target != target {
                 // WI-455: same as the carrier-override arm above — the ring must
                 // name the impl that runs, not just the body-less spec op the call
@@ -3813,7 +4379,7 @@ impl Interpreter {
     /// argument values ([`crate::kb::typing::resolve_bridge_requirements`]): empty where it
     /// has no chain or the values cannot pin it, entered unsupplied then, and an error for a
     /// tie (see [`Self::requirements_for_value_directed_impl`]).
-    fn requirements_at_the_values(
+    pub(super) fn requirements_at_the_values(
         &mut self,
         impl_target: Symbol,
         arg_values: &[Value],
@@ -4248,6 +4814,7 @@ impl Interpreter {
             locals,
             requirements,
             awaiting: None,
+            untyped: false,
         };
         Ok(StepOutcome::Continue)
     }
@@ -4303,6 +4870,7 @@ impl Interpreter {
             // A rule wrote it: no operation holds its source (`Closure::written_in`).
             written_in: None,
             relabel,
+            result_conversion: None,
         });
         Value::Closure(handle)
     }
@@ -4360,6 +4928,7 @@ impl Interpreter {
                 locals: SmallVec::new(),
                 requirements: SmallVec::new(),
                 awaiting: None,
+                untyped: false,
             })
             .and_then(|()| self.eta_op_ref(op, occ));
         self.stack = saved;
@@ -4383,11 +4952,19 @@ impl Interpreter {
         // inline size 1 (most lambdas need 0–1 reqs/type-args), the
         // frame-side has 2; collect across the size boundary. Single
         // arena borrow grabs param/body/both channels at once.
-        let (param_pattern, body, mut requirements, written_in, relabel) = handle.with(|c| {
-            let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
-                c.requirements.iter().cloned().collect();
-            (c.param_pattern.clone(), c.body.clone(), reqs, c.written_in, c.relabel.clone())
-        });
+        let (param_pattern, body, mut requirements, written_in, relabel, result_conversion) =
+            handle.with(|c| {
+                let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
+                    c.requirements.iter().cloned().collect();
+                (
+                    c.param_pattern.clone(),
+                    c.body.clone(),
+                    reqs,
+                    c.written_in,
+                    c.relabel.clone(),
+                    c.result_conversion.clone(),
+                )
+            });
         for (slot, dict) in handed {
             match requirements.iter_mut().find(|(s, _)| *s == slot) {
                 Some(entry) => entry.1 = dict,
@@ -4421,6 +4998,19 @@ impl Interpreter {
         for (sym, v) in bindings {
             locals.push((sym, v));
         }
+        // Proposal 073 §2 — a closure used at a type whose result is an instance: its body's
+        // value is converted where it is delivered, by a frame beneath the body's.
+        if let Some((conversion, receiver)) = result_conversion {
+            self.suspend_and_push(
+                AwaitState::Convert {
+                    conversion,
+                    node: None,
+                    armed: false,
+                    receiver,
+                },
+                crate::kb::node_occurrence::bottom_node(),
+            )?;
+        }
         // TCO: same rationale as enter_operation. A closure call in any
         // position is a tail call relative to its own apply frame. The frame
         // reports the operation that WROTE the lambda (WI-20261017-JRHZ0,
@@ -4437,6 +5027,8 @@ impl Interpreter {
             locals,
             requirements,
             awaiting: None,
+            // A lambda a rule wrote runs text no operation body holds.
+            untyped: written_in.is_none(),
         };
         Ok(StepOutcome::Continue)
     }
@@ -5063,14 +5655,48 @@ impl Interpreter {
                     self.stack.push(child_frame(ctx, next_expr))?;
                     return Ok(StepOutcome::Continue);
                 }
+                AwaitState::InstanceApplyArgs {
+                    spec_op,
+                    abstract_sort,
+                    mut buffered,
+                    mut remaining,
+                    filled,
+                } => {
+                    buffered.push(v);
+                    if remaining.is_empty() {
+                        return self.dispatch_on_instance(spec_op, abstract_sort, buffered, filled);
+                    }
+                    let next_expr = remaining.remove(0);
+                    let top = self.stack.top_mut().unwrap();
+                    top.awaiting = Some(AwaitState::InstanceApplyArgs {
+                        spec_op,
+                        abstract_sort,
+                        buffered,
+                        remaining,
+                        filled,
+                    });
+                    let ctx = self.stack.top().unwrap().child_context();
+                    self.stack.push(child_frame(ctx, next_expr))?;
+                    return Ok(StepOutcome::Continue);
+                }
                 AwaitState::ApplyWithinArgs {
                     target,
                     mut buffered,
                     mut remaining,
                     requirements,
+                    pair_at,
                 } => {
                     buffered.push(v);
                     if remaining.is_empty() {
+                        if let Some(pair) = pair_at {
+                            let (dict, positions) = *pair;
+                            for i in positions {
+                                if let Some(slot) = buffered.get_mut(i) {
+                                    let raw = std::mem::replace(slot, Value::Unit);
+                                    *slot = self.pair_with(dict.clone(), raw)?;
+                                }
+                            }
+                        }
                         return self.dispatch_call_with_requirements(
                             target,
                             buffered,
@@ -5084,6 +5710,7 @@ impl Interpreter {
                         buffered,
                         remaining,
                         requirements,
+                        pair_at,
                     });
                     let ctx = self.stack.top().unwrap().child_context();
                     self.stack.push(child_frame(ctx, next_expr))?;
@@ -5203,6 +5830,16 @@ impl Interpreter {
                     let ctx = self.stack.top().unwrap().child_context();
                     self.stack.push(child_frame(ctx, pushed_expr))?;
                     return Ok(StepOutcome::Continue);
+                }
+                // Proposal 073 §2 — the node this frame waited on has its value; convert it
+                // and deliver it on, as the node's own value.
+                AwaitState::Convert {
+                    conversion,
+                    receiver,
+                    ..
+                } => {
+                    v = self.apply_instance_conversion(&conversion, v, receiver.as_ref())?;
+                    continue;
                 }
                 AwaitState::OperationResult => {
                     // Body produced a value — that's this apply's result.
@@ -5635,6 +6272,7 @@ fn child_frame(ctx: ChildFrameContext, expr: Rc<NodeOccurrence>) -> Frame {
         locals: ctx.locals,
         requirements: ctx.requirements,
         awaiting: None,
+        untyped: ctx.untyped,
     }
 }
 

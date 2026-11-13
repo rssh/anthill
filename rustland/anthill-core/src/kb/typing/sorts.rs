@@ -625,6 +625,19 @@ pub(super) fn check_constant_bodies(
                         Some(&result.node),
                     ));
                     sources.push(Some(site.source));
+                    continue;
+                }
+                // Proposal 073 §2 — a value of a known sort used at an abstract type in the
+                // value is the instance it is there, as in an operation body.
+                for error in stamp_instance_conversions(
+                    kb,
+                    &env,
+                    TypeErrorContext::ConstValue { name: symbol },
+                    &result.node,
+                    &expected,
+                ) {
+                    errors.push(error);
+                    sources.push(Some(site.source));
                 }
             }
         }

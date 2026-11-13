@@ -2296,7 +2296,15 @@ pub(crate) fn classify_pin_or_apply_within(
         // Proposal 066 §7.4: a SAME-sort callee inherits the caller's frame only where
         // that frame serves it; a member of a provision the caller is not in holds
         // conditions the caller's frame does not, and gets its dictionary here.
+        // Proposal 073 §2 — and only where the call is at the caller's own instance: a
+        // tree whose condition is answered other than from the caller's frame is another
+        // instance of the sort (`filtered(rest, pred)` over a `Stream` inside a
+        // `FilteredStream` running over a `List`), whose dictionary the tree is.
         let inherits = impl_sort == enclosing_sort
+            && resolved_tree.as_ref().is_none_or(|tree| {
+                !matches!(tree, ResolvedRequiresNode::Conditional { sub_resolutions, .. }
+                    if sub_resolutions.iter().any(|s| !matches!(s, ResolvedRequiresNode::FromScope { .. })))
+            })
             && op_supply.is_none_or(|ctx| {
                 let key = callee_frame_key(kb, impl_op);
                 frame_serves_callee(ctx.caller_requires, key)

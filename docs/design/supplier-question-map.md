@@ -230,9 +230,12 @@ python3 docs/design/supplier-question-map/table.py /tmp/supplier
 
 About fifteen seconds on 24 cores, over the CLI. The same matrix, less the rule-body route, is the
 generated family `f-supplier-routes` (`rustland/anthill-core/tests/families/supplier_routes.rs`,
-84 programs, `scripts/families.sh f`). D2's exceptions, under ZAWX9, came off when ZAWX9
+`scripts/families.sh f`), less the abstract-receiver route too since proposal 073 stage 3 — 70
+programs. That route asks another question there: `s` in `viaShape(s: Shape)` is an instance of
+`Shape`, so the call is one at `Shape`, which runs the default or is refused at load without one,
+whoever supplies `Leaf` (it was 84 programs before). D2's exceptions, under ZAWX9, came off when ZAWX9
 landed, and the family named the five verdicts it moved. D1's and D3's, under WI-20261025-7K84M,
 came off with 7K84M, which moved thirteen. D5 was a refusal the rule does not make, which no
-property sees, and its verdict file held it. Its judge reads a tie refused at load and one
-refused when the call runs as one verdict on the receiver route alone, where only a value names
-the carrier.
+property sees, and its verdict file held it. Its judge read a tie refused at load and one
+refused when the call runs as one verdict on the receiver route alone, where only a value named
+the carrier; with that route gone a tie is refused at load on every route.

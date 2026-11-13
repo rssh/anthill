@@ -79,7 +79,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<(TypeError, crate::span::SourceId)> {
             // WI-20260929-6NMGQ: a call in a lambda's body through a dictionary the lambda
             // is handed or is built at its parameter's one type — read where the call runs,
             // by no `apply_within` this table can name. Nothing to materialize.
-            CallClass::DeferToDictionary { .. } => {}
+            CallClass::DeferToDictionary { .. } | CallClass::OnInstance { .. } => {}
             CallClass::UnresolvedSpecOp {
                 spec_op_sym,
                 spec_sort_sym,
@@ -213,6 +213,9 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<(TypeError, crate::span::SourceId)> {
             }
             CallClass::DeferToDictionary { .. } => {
                 unreachable!("DeferToDictionary survived the pre-filter");
+            }
+            CallClass::OnInstance { .. } => {
+                unreachable!("OnInstance survived the pre-filter");
             }
             CallClass::UnresolvedSpecOp { .. } => {
                 // Pre-filtered above into `errors`. Unreachable.

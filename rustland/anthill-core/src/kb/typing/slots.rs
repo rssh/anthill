@@ -4218,10 +4218,9 @@ fn resolve_call_type_arg_targets(
 ///
 /// AT THE SITE, not at each consumer, and that is the point. A requirement slot is
 /// served by one of three routes — the parent sort's dictionary build, the spec-op
-/// dispatch, or (for an OP-SCOPED `requires`) value-direction at eval, which does not
-/// read the call's selections (WI-822 LEG 1 gave that chain a dictionary channel, but
-/// the body reads it only where value-direction cannot serve the call — see
-/// [`op_scoped_defer_location`]). Measured: without this
+/// dispatch, or (for an OP-SCOPED `requires`) the operation's own slot
+/// ([`op_scoped_defer_location`]); from a host entry or a rule body, value-direction at
+/// eval, which does not read the call's selections (proposal 073 §6.1). Measured: without this
 /// check, a witness that provides the spec at OTHER bindings was refused by the
 /// spec-op route, loaded clean and died `Internal` on the dictionary route, and was
 /// silently IGNORED on the value-directed one. One site, one verdict.
@@ -4238,7 +4237,8 @@ fn resolve_call_type_arg_targets(
 ///    this rung can only ever under-refuse — never refuse a call step 0 would accept —
 ///    which is the safe direction for a check whose job is to catch what the other
 ///    routes cannot report at all.
-///  * on the VALUE-DIRECTED route a selection is **not honoured at all**: `selections`
+///  * on the VALUE-DIRECTED route — a host's or a rule body's call, no typed caller's —
+///    a selection is **not honoured at all**: `selections`
 ///    never reach eval, so `requirements_for_value_directed_impl` resolves with an
 ///    empty scope and no pin. This was first written here as "unobservable before 058
 ///    phase 3b, since with one provider the searched answer IS the pinned one" — which
@@ -4247,8 +4247,7 @@ fn resolve_call_type_arg_targets(
 ///    loaded. So it is refused above whenever two or more providers answer, and
 ///    accepted only where the pin provably cannot differ. WI-822 LEG 1 gave the
 ///    op-scoped chain a dictionary channel and this stayed: the channel exists and its
-///    call-site supply honours the pin, but the BODY reads it only where
-///    value-direction cannot serve the call (see [`op_scoped_defer_location`]).
+///    call-site supply honours the pin (see [`op_scoped_defer_location`]).
 pub(super) fn check_selection_bindings(
     kb: &mut KnowledgeBase,
     subst: &Substitution,

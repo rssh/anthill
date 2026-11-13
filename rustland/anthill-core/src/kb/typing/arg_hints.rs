@@ -829,7 +829,7 @@ pub(super) fn bind_spec_params_for_hint(
         return false;
     }
     let pos_params = positional_param_indices(kb, params, pos_args.len(), named_args);
-    let Some((spec_sort, carrier_sym, recv_ty, view, carrier_pvid, _transitive, recv_arg_sym)) =
+    let Some((spec_sort, carrier_sym, recv_ty, view, carrier_pvid, recv_arg_sym)) =
         carrier_param_receiver(
             kb,
             params,

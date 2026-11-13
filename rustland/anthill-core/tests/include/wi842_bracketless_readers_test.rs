@@ -157,10 +157,9 @@ fn probe_leaf(ns: &str, extra: &str) -> Result<Value, EvalError> {
 /// WHAT MOVED WITH IT, and where it is still measured — this row used to be the eval face
 /// of `AmbiguousSpecOpDispatch`, including its BY-ROUTE candidate rendering and its
 /// `NameableWitness` repair. None of that is lost:
-///   * the eval face itself — `wi1012_static_supplier_tie_test::a_tie_on_an_abstract_
-///     carrier_is_still_refused_at_the_call`, whose abstract-`Shape` receiver reaches
-///     value-direction with no op-scoped `requires` in the way;
-///   * the one message body across both faces — `wi1012 both_faces_render_one_message_body`;
+///   * the eval face itself is gone from operation bodies: behind an abstract `Shape` the
+///     call is at `Shape`, where `Leaf`'s two suppliers are no tie (proposal 073 §2,
+///     `wi1012_static_supplier_tie_test::a_tie_behind_an_abstract_type_is_no_tie`);
 ///   * the `NameableWitness` repair and its sentence — `wi1027` route 3, `wi1035`, `wi1043`.
 ///
 /// WHAT AN AUTHOR LOSES, stated rather than left to be noticed: `AmbiguousSpecOpDispatch`

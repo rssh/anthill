@@ -156,17 +156,14 @@ end
     );
 }
 
+/// A SELF-RECEIVER spec nothing provides: `render(w)` on `w: Widget` is a call on a `Widget`
+/// instance (proposal 073 §2), which runs the operation the instance holds, fixed where the
+/// instance is made. It loads: with no provider no instance can be made, so the call never
+/// runs, and a provision added later is what makes one. It was refused while the call was
+/// dispatched on the value, which had no provider to choose (WI-350's guard). The twin with
+/// `Pane provides Widget` drives the same `drive` body to `Pane`'s `render`.
 #[test]
-fn user_defined_self_receiver_spec_without_providers_errors_on_abstract_call() {
-    // WI-350 guard: a SELF-RECEIVER spec (`render(w: Widget)` — `w` typed as
-    // the spec sort itself, not its type-parameter) types abstract receivers
-    // through the interface and defers the impl to the runtime value's witness.
-    // But a user-defined self-receiver spec with NO provider at all has no
-    // witness — every call fails at first dispatch. The Abstract branch must
-    // fall through to the `NoCandidates` WI-325 diagnostic so a wholly-
-    // unimplemented spec is caught at type-check, not deferred to a runtime
-    // `UnknownOperation`. Distinct from the type-param-carrier case above
-    // (`describe(x: T)`), which never took the Abstract early return.
+fn a_call_on_an_instance_of_an_unprovided_spec_loads() {
     let src = r#"
 namespace test.wi325.user_self_receiver_no_provider
   import anthill.prelude.Bool
@@ -180,18 +177,22 @@ namespace test.wi325.user_self_receiver_no_provider
   sort Driver
     operation drive(w: Widget) -> Bool = render(w)
   end
+PROVIDER
 end
 "#;
-    let (_kb, errs) = try_load(src);
-    assert!(
-        !errs.is_empty(),
-        "wholly-unimplemented self-receiver spec should error on abstract call; got clean load",
+    let (_kb, errs) = try_load(&src.replace("PROVIDER", ""));
+    assert!(errs.is_empty(), "a call on an instance loads:\n{}", fmt_errs(&errs));
+    let driven = src.replace(
+        "PROVIDER",
+        "  sort Pane\n    import anthill.prelude.Bool\n    entity pane\n    \
+         provides Widget[T = Bool]\n    operation render(w: Pane) -> Bool = true\n  end\n  \
+         operation go() -> Bool = Driver.drive(pane())\n",
     );
-    let formatted = fmt_errs(&errs);
-    assert!(
-        formatted.contains("Widget"),
-        "expected a Widget spec diagnostic; got:\n{formatted}",
-    );
+    let mut interp = crate::common::interp_for(&driven);
+    let v = interp
+        .call("test.wi325.user_self_receiver_no_provider.go", &[])
+        .unwrap_or_else(|e| panic!("drive(pane()): {e:?}"));
+    assert!(matches!(v, anthill_core::eval::Value::Bool(true)), "{v:?}");
 }
 
 #[test]

@@ -404,6 +404,8 @@ impl Copier {
                 clause_condition,
                 inferred_type,
                 lowered_receiver,
+                instance_conversion,
+                call_params,
             } => {
                 receiver = lowered_receiver.borrow().as_ref().map(Weak::upgrade);
                 NodeKind::Expr {
@@ -437,6 +439,13 @@ impl Copier {
                     ),
                     // WRITTEN-ness is kept here; the pointer is `Self::finish`'s.
                     lowered_receiver: RefCell::new(receiver.as_ref().map(|_| Weak::new())),
+                    instance_conversion: RefCell::new(plain(&*instance_conversion.borrow())),
+                    call_params: RefCell::new(call_params.borrow().as_ref().map(|params| {
+                        params
+                            .iter()
+                            .map(|(name, ty)| (plain(name), self.value(ty)))
+                            .collect()
+                    })),
                 }
             }
             NodeKind::RuleHead {
@@ -838,6 +847,13 @@ impl Copier {
                 span: plain(span),
                 enclosing_sort: plain(enclosing_sort),
             },
+            CallClass::OnInstance {
+                spec_op_sym,
+                abstract_sort,
+            } => CallClass::OnInstance {
+                spec_op_sym: plain(spec_op_sym),
+                abstract_sort: plain(abstract_sort),
+            },
             CallClass::EtaOpRef {
                 dict,
                 spread_labels,
@@ -1217,6 +1233,7 @@ impl KnowledgeBase {
             sort_param_pairs_cache: RefCell::new(HashMap::new()),
             spec_carrier_param_cache: plain(&self.spec_carrier_param_cache),
             spec_self_representing_cache: plain(&self.spec_self_representing_cache),
+            abstract_carrier_cache: plain(&self.abstract_carrier_cache),
             witness_admissibility_in_flight: RefCell::new(HashSet::new()),
             resolve_cache: RefCell::new(HashMap::new()),
             empty_scope_resolve_cache: RefCell::new(HashMap::new()),

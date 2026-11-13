@@ -2705,6 +2705,12 @@ pub struct KnowledgeBase {
     // relation asks it of every provider it admits at a value position.
     pub(crate) spec_self_representing_cache: RefCell<HashMap<Symbol, bool>>,
 
+    // Proposal 073 §2 — memoized `typing::is_abstract_carrier_sort`: a self-representing
+    // sort with no constructors that some sort provides, whose values are instances. Read
+    // by eval where it pairs a value, so it is a map read there; cleared with the chain
+    // caches, a provision of a later load being what can change it.
+    pub(crate) abstract_carrier_cache: RefCell<HashMap<Symbol, bool>>,
+
     // WI-20260829-N01PY — the `(carrier, spec)` witness-admissibility questions currently
     // IN FLIGHT, and it is a correctness guard rather than a memo.
     //
@@ -3257,6 +3263,7 @@ impl KnowledgeBase {
             sort_param_pairs_cache: RefCell::new(HashMap::new()),
             spec_carrier_param_cache: RefCell::new(HashMap::new()),
             spec_self_representing_cache: RefCell::new(HashMap::new()),
+            abstract_carrier_cache: RefCell::new(HashMap::new()),
             witness_admissibility_in_flight: RefCell::new(std::collections::HashSet::new()),
             resolve_cache: RefCell::new(HashMap::new()),
             empty_scope_resolve_cache: RefCell::new(HashMap::new()),
@@ -3305,6 +3312,7 @@ impl KnowledgeBase {
         self.provider_dispatch_chain_cache.borrow_mut().clear();
         self.provision_layout_key_cache.borrow_mut().clear();
         self.provision_member_cache.borrow_mut().clear();
+        self.abstract_carrier_cache.borrow_mut().clear();
         // WI-822 LEG 1: the op-keyed half of the same layout — its names are the
         // sort half's continuation, so it goes stale for exactly the same reasons.
         self.op_requires_chain_cache.borrow_mut().clear();

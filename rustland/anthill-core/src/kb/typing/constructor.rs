@@ -915,8 +915,9 @@ fn param_leaves_belong_to_sort<V: TermView>(kb: &KnowledgeBase, t: &V, own_param
 ///
 /// The value carries no dictionary. An operation reached THROUGH it — a member dispatched
 /// on the value, an operation of a spec the sort provides — resolves the sort's `requires`
-/// from the value itself, at run time ([`crate::eval`]'s value-directed frame), and enters
-/// the frame without one where nothing answers. So a value built at an instance the
+/// at the type the call reads the value at, and from a host entry or a rule body from the
+/// value itself ([`crate::eval`]'s value-directed frame, proposal 073 §6.1), entering the
+/// frame without one where nothing answers. So a value built at an instance the
 /// requirement has no supply for is a value no operation of the sort can run on, and the
 /// construction is the last site that knows the instance.
 ///

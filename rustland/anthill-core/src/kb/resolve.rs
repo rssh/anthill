@@ -10122,6 +10122,19 @@ impl KnowledgeBase {
                 ))),
             };
         }
+        // Proposal 073 §2 — A WITNESS THAT IS AN INSTANCE carries its dictionary: a value an
+        // operation hands a clause at an abstract type (`viaSp(s: Sp)` citing `dflted(s)`) is
+        // read through the dictionary it was made with, nothing derived from its type.
+        if let Some(dict) = arg_vals
+            .first()
+            .and_then(|w| super::typing::instance_dictionary_of(self, w))
+        {
+            return if supplied {
+                BuiltinResult::Success
+            } else {
+                self.bind_read_out(out, dict, subst)
+            };
+        }
         // A READ WITH NO WITNESS is the requirement the clause's sort states, for a call with
         // no argument at its spec's carrier (`Builds.fromList([…])` in `sort Sat[C] requires
         // Builds[C = C]`): nothing the clause holds says which instance is meant, and the
@@ -12959,7 +12972,7 @@ impl KnowledgeBase {
             .head(self)
             .functor_sym()
             .expect("a compound expression heads as its reflected form");
-        let outcome = self.run_in_bridge_interp(|interp| interp.eval_node_isolated(op, node));
+        let outcome = self.run_in_bridge_interp(|interp| interp.eval_node_isolated(op, node, true));
         self.bridged_value(op, outcome, faults)
     }
 

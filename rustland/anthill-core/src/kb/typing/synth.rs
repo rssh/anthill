@@ -238,9 +238,9 @@ pub struct ResolutionScope<'a> {
     /// chain, so it is set only where the tree is named against that chain.
     ///
     /// NOT for the call's own goal, and that is WI-822 LEG 1's decision, not an
-    /// omission: an op-scoped requirement serves the call's own spec by value-directed
-    /// dispatch, and widening the top-level lookup flipped 30 working dispatches to an
-    /// unbound slot. A sub-goal has no value to direct it — `eq(a, b)` over
+    /// omission: the call's own spec is deferred to the operation's slot before the
+    /// dispatch ([`requirement_defer_class`]), and widening the top-level lookup flipped
+    /// 30 working dispatches to an unbound slot when it was measured. A sub-goal has no value to direct it — `eq(a, b)` over
     /// `Pair[A = X, B = X]` reaches `PartialEq[X]` only as `Pair`'s condition — so
     /// without this `requires PartialEq[X]` on the operation was invisible to it and
     /// the call was refused while the sort-level spelling of the same program loaded.
@@ -283,6 +283,33 @@ pub enum ResolvedRequiresNode {
 }
 
 impl ResolvedRequiresNode {
+    /// This tree as the answer to a goal of `spec`: the same instance, read as `spec`'s.
+    pub(super) fn answering(self, spec: Symbol) -> Self {
+        match self {
+            ResolvedRequiresNode::Leaf {
+                impl_sort,
+                bindings,
+                ..
+            } => ResolvedRequiresNode::Leaf {
+                impl_sort,
+                spec_sort: spec,
+                bindings,
+            },
+            ResolvedRequiresNode::Conditional {
+                impl_sort,
+                bindings,
+                sub_resolutions,
+                ..
+            } => ResolvedRequiresNode::Conditional {
+                impl_sort,
+                spec_sort: spec,
+                bindings,
+                sub_resolutions,
+            },
+            from_scope @ ResolvedRequiresNode::FromScope { .. } => from_scope,
+        }
+    }
+
     /// The spec sort this tree resolves (for diagnostics / WI-226).
     pub fn spec_sort(&self) -> Symbol {
         match self {
@@ -872,6 +899,11 @@ pub(super) enum FailedAt {
     /// The provision holds through one of several alternative clauses (066 §7), and none
     /// held.
     Alternatives,
+    /// The chosen provider is a sort with abstract values providing the goal's spec for its
+    /// own carriers, so the goal is the carrier's own instance of that sort
+    /// ([`carrier_own_instance_goal`]), and that goal failed: a call's failure there is one of
+    /// that sort's member's calls.
+    AtCarrier,
 }
 
 /// WI-857's LOCALITY provider — the provider whose dictionary a sub-goal fills — AS THE
@@ -1469,6 +1501,84 @@ pub(super) fn resolve_inner<'a>(
     let chosen_bindings = chosen.resolved_head_bindings.clone();
     let chosen_impl_subst = chosen.impl_subst.clone();
     drop(candidates);
+
+    // Proposal 073 §2 — a spec that a sort with abstract values provides for its own
+    // carriers (`Stream provides Iterable[C = Self]`) is, at a carrier of that sort, the
+    // carrier's own instance of that sort ([`carrier_own_instance_goal`]): `Iterable[C =
+    // List]` is `List`'s `Stream`, whose member answers and whose frame `Stream`'s default
+    // bodies run at.
+    if let Some(at_carrier) =
+        carrier_own_instance_goal(kb, goal, chosen_impl_sort, &chosen_impl_subst)
+    {
+        // The provision's own conditions hold first (`Mid provides Top[C = Self] :- Tag[T =
+        // T]` at a `Mid[T = String]` owes `Tag[T = String]`).
+        for condition in
+            candidate_provider_sub_goals(kb, chosen_impl_sort, &chosen_impl_subst, goal.spec_sort)
+        {
+            match resolve_inner(
+                kb,
+                &condition,
+                scope,
+                stack,
+                None,
+                None,
+                DefaultRung::Consult,
+                &mut None,
+            ) {
+                ResolutionResult::Resolved(_) => {}
+                err => {
+                    stack.pop();
+                    if at_call_goal {
+                        *report = Some(TopFailure {
+                            provider: chosen_impl_sort,
+                            at: FailedAt::Slot {
+                                goal: condition.clone(),
+                                provider_half: true,
+                            },
+                        });
+                    }
+                    return err;
+                }
+            }
+        }
+        let result = resolve_inner(
+            kb,
+            &at_carrier,
+            scope,
+            stack,
+            None,
+            None,
+            DefaultRung::Consult,
+            &mut None,
+        );
+        stack.pop();
+        if at_call_goal && !matches!(result, ResolutionResult::Resolved(_)) {
+            *report = Some(TopFailure {
+                provider: chosen_impl_sort,
+                at: FailedAt::AtCarrier,
+            });
+        }
+        return match result {
+            ResolutionResult::Resolved(tree) => {
+                ResolutionResult::Resolved(tree.answering(goal.spec_sort))
+            }
+            // The goal at the carrier is the call's own, restated: a tie there is the call's,
+            // which its bracket breaks (`Mid.get[Mid = SideA](box(n: 7))`).
+            ResolutionResult::Ambiguous {
+                goal_text,
+                mut tie,
+                forwarded,
+            } if at_call_goal && goal_text == format_goal(kb, &at_carrier) => {
+                tie.at_call_goal = true;
+                ResolutionResult::Ambiguous {
+                    goal_text,
+                    tie,
+                    forwarded,
+                }
+            }
+            other => other,
+        };
+    }
 
     // WI-857/WI-866 — the producer/consumer contract is asserted INSIDE
     // `dict_sub_goals` now, against the layout it actually built, so this list cannot
@@ -2200,6 +2310,27 @@ pub(super) fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> boo
     }
     if a.bindings.len() != b.bindings.len() || a.left_open.len() != b.left_open.len() {
         return false;
+    }
+    // A self-receiver spec's goal names its carrier apart from its bindings: `Stream` at a
+    // `MappedStream` and `Stream` at the `List` it maps over are two goals (proposal 073 §2,
+    // [`carrier_own_instance_goal`]).
+    match (&a.carrier, &b.carrier) {
+        (None, None) => {}
+        (Some(x), Some(y)) => {
+            if !same_sort_canonical(kb, x.sort, y.sort) || x.args.len() != y.args.len() {
+                return false;
+            }
+            let args_agree = x.args.iter().all(|(k, av)| {
+                y.args
+                    .iter()
+                    .find(|(kk, _)| same_label(kb, *kk, *k))
+                    .is_some_and(|(_, bv)| values_structurally_equal(kb, av, bv))
+            });
+            if !args_agree {
+                return false;
+            }
+        }
+        _ => return false,
     }
     if !a
         .left_open

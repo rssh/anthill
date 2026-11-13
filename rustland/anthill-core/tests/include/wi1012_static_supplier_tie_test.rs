@@ -17,11 +17,11 @@
 //! `a_rule_reaching_the_tie_through_an_operation_is_refused`'s program loaded CLEAN
 //! and `query_unary` on its rule returned `[]`.
 //!
-//! THE EVAL SITE STAYS. The typer's WI-444 block fires only on a statically concrete
-//! carrier, so an abstract-spec receiver still needs the late refusal —
-//! `a_tie_on_an_abstract_carrier_is_still_refused_at_the_call` drives it. That is an
-//! argument for SHARING one message body between the two faces, which
-//! `both_faces_render_one_message_body` pins.
+//! NO EVAL FACE IS LEFT. Behind an abstract `Shape` the run time chose `Leaf`'s two
+//! suppliers from the value and refused there; a value typed at `Shape` is a `Shape`
+//! instance now (proposal 073 §2), which holds no `Desc` operation, so the call at `Shape`
+//! is no tie and runs the default — `a_tie_behind_an_abstract_type_is_no_tie`. The row that
+//! held the two faces to one message body went with the second face.
 //!
 //! WHY A NEW `TypeError` VARIANT. `DispatchAmbiguous` cannot carry this tie: its
 //! `InstanceTie` holds PROVIDER symbols, and for a route-1-vs-route-2 tie both
@@ -71,11 +71,10 @@
 //! | `a_rule_reaching_the_tie_through_an_operation_is_refused` | **FAILS** |
 //! | `a_tie_in_a_branch_that_never_runs_is_refused` | **FAILS** |
 //! | `a_route_1_vs_2_tie_is_not_a_provider_tie` | **FAILS** |
-//! | `both_faces_render_one_message_body` | **FAILS** (the load half) |
-//! | `a_tie_on_an_abstract_carrier_is_still_refused_at_the_call` | ok — **by design** |
+//! | `a_tie_behind_an_abstract_type_is_no_tie` | ok — **by design** |
 //!
-//! The last row is the control the refusal must NOT consume: the eval face is what
-//! this ticket deliberately keeps. The other two controls a `[_, _, ..]` arm must
+//! The last row is the control the refusal must NOT consume: a call at a type with no
+//! provision is no tie. The other two controls a `[_, _, ..]` arm must
 //! leave alone — the 1-supplier and 0-supplier arms, the latter being every defaulted
 //! spec-op call in the tree — are NOT copied here: they are
 //! `the_carriers_own_member_still_beats_the_default` and
@@ -84,8 +83,6 @@
 //! fail if this arm over-fires.
 //!
 //! REFERENCE: WI-1010; WI-842; WI-843; `docs/design/058-implementation.md` §12–§13.
-
-use anthill_core::eval::EvalError;
 
 /// WI-1010's fixture builder, not a copy of it: this ticket refuses the very program
 /// that one drives, so the two must not drift. `tail` appends extra namespace items.
@@ -164,6 +161,15 @@ fn a_concrete_carrier_tie_is_refused_at_load() {
     // not at the declarations, which are legal.
     let (_, body) = located(&msg);
     assert!(body.starts_with("ambiguous dispatch of `"), "{msg}");
+    // One message body, `kb::typing::ambiguous_spec_op_dispatch_message`; each clause
+    // checked so a wording change is located at the clause that moved.
+    for phrase in [
+        "2 implementations are supplied for that carrier",
+        "and nothing here selects one — keep exactly one and delete the rest",
+        "No bracket names any of them",
+    ] {
+        assert!(msg.contains(phrase), "missing `{phrase}`:\n{msg}");
+    }
 }
 
 /// COST (3), THE REASON THIS TICKET EXISTS — and the measurement that found it.
@@ -226,78 +232,22 @@ fn a_tie_in_a_branch_that_never_runs_is_refused() {
     );
 }
 
-/// THE EVAL FACE, KEPT ON PURPOSE — the control the load refusal must NOT consume.
-/// `via_spec` takes an abstract-spec `Shape`, which `carrier_is_abstract_spec` makes
-/// the typer defer on, so no static pin is possible and only the runtime value names
-/// `Leaf`. The program LOADS (that is the assertion `interp_for` makes by not
-/// panicking) and the CALL is refused.
+/// THE TIE BEHIND AN ABSTRACT TYPE IS NO TIE. `via_spec` takes a `Shape`; the `Leaf` it is
+/// handed is a `Shape` instance, holding `Shape`'s operations, and `Desc.describe(s)` is a
+/// call at `T = Shape`, which nothing provides: it runs `Desc`'s default (1), as a call at
+/// any carrier without a provision does. On the tree before, the run time chose `Leaf`'s
+/// two suppliers from the value and refused the call (`AmbiguousSpecOpDispatch`); typed at
+/// `Leaf`, the parameter is refused at load
+/// (`a_concrete_carrier_tie_is_refused_at_load`'s refusal).
 #[test]
-fn a_tie_on_an_abstract_carrier_is_still_refused_at_the_call() {
+fn a_tie_behind_an_abstract_type_is_no_tie() {
     let ns = "test.wi1012.abstract";
-    let err = crate::common::interp_for(&abstract_carrier_program(ns))
-        .call(&format!("{ns}.probe"), &[])
-        .expect_err("two implementations, a carrier the typer cannot pin — refuse at the call");
-    let EvalError::AmbiguousSpecOpDispatch {
-        carrier,
-        candidates,
-        ..
-    } = &err
-    else {
-        panic!("expected AmbiguousSpecOpDispatch, got {err:?}");
-    };
-    assert!(
-        carrier.ends_with(".Leaf"),
-        "the tie is per CARRIER: {carrier}"
-    );
-    assert_eq!(candidates.len(), 2, "both routes: {candidates:?}");
-}
-
-/// THE SHARED MESSAGE BODY. The same tie, twice: `Leaf` pinned statically (refused at
-/// LOAD) and `Leaf` behind an abstract `Shape` (refused at the CALL). One sentence,
-/// one owner — `kb::typing::ambiguous_spec_op_dispatch_message` — so the two faces of
-/// one refusal cannot drift, the `unselected_instance_message` / `macro_rejection_message`
-/// discipline.
-///
-/// Compared on the SENTENCE, with the namespace-dependent names removed, since the
-/// load face prefixes `line:col` and names one namespace while the eval face names the
-/// other. Both halves are asserted non-empty first, so a helper that silently returned
-/// `""` could not pass this.
-#[test]
-fn both_faces_render_one_message_body() {
-    let load_ns = "test.wi1012.same.load";
-    let eval_ns = "test.wi1012.same.eval";
-    let load_msg = refusal(&two_suppliers(load_ns, ""));
-    let eval_err = crate::common::interp_for(&abstract_carrier_program(eval_ns))
-        .call(&format!("{eval_ns}.probe"), &[])
-        .expect_err("the eval face must still refuse");
-    let eval_msg = eval_err.to_string();
-
-    // Checked on the LOAD face only: the equality below makes the same six assertions
-    // on the eval face redundant, and asserting them twice reads as two independent
-    // checks when the second could never fail alone. These localize a wording change
-    // to the clause that moved before the equality reports a whole-string diff.
-    for phrase in [
-        "ambiguous dispatch of `",
-        "2 implementations are supplied for that carrier",
-        "and nothing here selects one — keep exactly one and delete the rest",
-        "No bracket names any of them",
-        "the carrier's own member '",
-        "an instance fact binding `describe = ",
-    ] {
-        assert!(
-            load_msg.contains(phrase),
-            "load face is missing `{phrase}`:\n{load_msg}"
-        );
-    }
-    // The load face additionally carries `line:col: `, which the eval face has no source
-    // text to resolve — strip exactly that prefix and the rest must be EQUAL, not merely
-    // similar. `refusal` and `expect_err` already guarantee both sides are non-empty.
-    let (_, load_body) = located(&load_msg);
-    assert_eq!(
-        load_body.replace(load_ns, "NS"),
-        eval_msg.replace(eval_ns, "NS"),
-        "the two faces must render ONE message body",
-    );
+    let src = abstract_carrier_program(ns);
+    assert_eq!(crate::wi1010_defaulted_op_instance_fact_test::probe(ns, &src), 1);
+    let at_leaf = src
+        .replace("operation via_spec(s: Shape)", "operation via_spec(s: Leaf)")
+        .replace(&format!("namespace {ns}"), &format!("namespace {ns}.atleaf"));
+    assert!(refusal(&at_leaf).contains("ambiguous dispatch of `"), "typed at `Leaf`, the tie is refused at load");
 }
 
 /// WHY A NEW VARIANT rather than `TypeError::DispatchAmbiguous`, pinned at the text the
@@ -329,9 +279,8 @@ fn a_route_1_vs_2_tie_is_not_a_provider_tie() {
     );
 }
 
-/// The tie behind an ABSTRACT-SPEC receiver: `via_spec` takes a `Shape`, so the typer
-/// cannot pin, and the runtime value's own sort is what reaches the two suppliers.
-/// `Shape` receives on itself, so a `Leaf` is a `Shape` (WI-20261005-KSSA4).
+/// Two suppliers of `describe` for `Leaf` behind an abstract `Shape`: `via_spec` takes a
+/// `Shape`, which receives on itself, so a `Leaf` is a `Shape` (WI-20261005-KSSA4).
 fn abstract_carrier_program(ns: &str) -> String {
     format!(
         r#"namespace {ns}

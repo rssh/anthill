@@ -79,14 +79,15 @@ fn a_host_call_of_a_body_less_spec_operation_reaches_a_conditional_member() {
         assert!(matches!(passed, Ok(Value::Int(n)) if n == want), "`call_with_requirements` at `{mk}`: {passed:?}");
         assert!(matches!(in_body, Ok(Value::Int(n)) if n == want), "body at `{mk}`: {in_body:?}");
     }
-    // The member called straight from the host is handed no dictionary for its own
-    // `requires`, on both trees: the host has no spelling for the element's instance.
+    // The member called straight from the host: the host has no spelling for the element's
+    // instance, and the entry builds its own `requires` at the argument's value, as the
+    // resolver's bridge builds a rule's call's — the host's value step, until a host call
+    // passes what its callee reads or is refused (proposal 073 §6.1, WI-20261105-CBRD2). It
+    // was handed nothing and raised `UnpinnedRequirement` while a call in a body still chose
+    // from values.
     let w = interp.call(&format!("{ns}.mk"), &[]).expect("the value is made");
     let member = interp.call(&format!("{ns}.WrapDesc.describe"), &[w]);
-    assert!(
-        matches!(member, Err(anthill_core::eval::EvalError::UnpinnedRequirement { .. })),
-        "the member with no dictionary: {member:?}"
-    );
+    assert!(matches!(member, Ok(Value::Int(12))), "the member at the value: {member:?}");
 }
 
 /// `Desc.describe` with a body in `Desc` (`= 5`): a host call reaches the member the carrier

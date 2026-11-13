@@ -1419,8 +1419,10 @@ pub(super) fn pattern_own_type(kb: &mut KnowledgeBase, pattern: &NodeOccurrence)
 ///
 /// THE QUESTION IS THE ONE AN EXPRESSION IS ASKED: would a value of the pattern's sort be
 /// admitted here. So a position typed at a sort admits its own constructors and those of
-/// every sort it is provided by — `case cons(h, t)` over a `Stream` — and a literal of the
-/// position's type. It is asked of the position's SORT, its arguments left out: what an
+/// every sort it is provided by — `case dog(n)` over an `Animal` that `Dog` provides — and a
+/// literal of the position's type. A sort with abstract values admits none: a value there is
+/// an instance, read through the sort's operations (`case cons(h, t)` over a `Stream` is
+/// refused). It is asked of the position's SORT, its arguments left out: what an
 /// argument says is said to the sub-pattern that field is threaded to, by this same check.
 ///
 /// WHICH POSITIONS CAN BE ASKED. One whose type has a sort at its head; a tuple type, which
@@ -1446,6 +1448,26 @@ fn pattern_outside_position(
 ) -> Option<TypeError> {
     let position = dealiased(kb, position);
     let admitted = match type_head(kb, &position) {
+        // A value typed at a sort with abstract values is an instance of that sort, used only
+        // through its operations (proposal 073 §2): no pattern but a binder reads it — the
+        // sort has no constructors, and the value it holds is not its provider's to match.
+        TypeHead::SortRef(sort) | TypeHead::Parameterized { base: sort }
+            if is_abstract_carrier_sort(kb, sort) =>
+        {
+            let actual = shown(kb);
+            return Some(TypeError::Other {
+                site: TypeError::here(),
+                span: Some(at.span.span),
+                context: TypeErrorContext::PatternPosition { pattern },
+                expected: format!(
+                    "a binder: a value of `{}` is an instance of `{}`, read only through its \
+                     operations",
+                    type_display_name_value(kb, &position),
+                    kb.qualified_name_of(sort),
+                ),
+                actual: format!("a pattern of `{}`", type_display_name_value(kb, &actual)),
+            });
+        }
         TypeHead::SortRef(sort) | TypeHead::Parameterized { base: sort } => {
             written.is_some_and(|written| {
                 let sort = Value::term(kb.make_sort_ref(sort));

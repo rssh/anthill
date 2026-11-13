@@ -3600,7 +3600,10 @@ pub(super) fn push_op_requires_clause(
             functor: f, ..
         } => {
             out.push(RequiresEntry {
-                required_sort: f,
+                // The sort the requirement names: its declaration, not the type face a
+                // name shared with an operation is written as (`requires Positive[T = A]`
+                // beside `operation Positive(x: Int64)`).
+                required_sort: f.plain(),
                 spec: clause.clone(),
                 // An OP-scoped `requires` is always inbound: only a SORT can carry
                 // the `provides` clause that self-supplies one.
@@ -3625,7 +3628,7 @@ fn push_op_requires_clause_term(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<R
         }
         Term::Fn { functor, .. } | Term::Ref(functor) => {
             out.push(RequiresEntry {
-                required_sort: *functor,
+                required_sort: functor.plain(),
                 spec: Value::term(tid),
                 supply: SupplySource::Required,
                 binder: None,

@@ -19,7 +19,9 @@
 //! — would a value of its sort be admitted at this position. So a position admits a literal
 //! of its type, its own sort's constructors, and those of every sort it is provided by
 //! ([`a_position_admits_what_its_sort_is_provided_by`]). It is asked of every sub-pattern
-//! with the type threaded to it, which is what "at any depth" is.
+//! with the type threaded to it, which is what "at any depth" is. A position typed at a sort
+//! with abstract values (`Stream`) admits no pattern but a binder: a value there is an
+//! instance of the sort, read through its operations (proposal 073 §2).
 //!
 //! A RIGID POSITION ADMITS NONE OF THEM
 //! ([`a_position_typed_at_a_rigid_admits_no_pattern_of_another_type`]): a type parameter of
@@ -469,10 +471,21 @@ fn a_position_admits_what_its_sort_is_provided_by() {
         ),
         7,
     );
-    // A `List` is a `Stream`.
-    answers(
+    // A `List` is a `Stream`, and a value typed at `Stream` is a `Stream` instance, read
+    // through `Stream`'s operations: `List`'s constructor is no pattern of it (proposal 073
+    // §2). It answered 7 while a call on the value chose `List`'s member from it; with the
+    // value an instance, the arm never matched (0). Passes either way: `splitFirst`, the
+    // operation that reads the value, answers 7 through the instance.
+    refused(
         "wi80259.provided.stream",
         "  operation f(s: Stream[T = Int64]) -> Int64 = match s case cons(h, _) -> h case _ -> 0\n  \
+         operation go() -> Int64 = f([7])",
+        &["pattern.cons", "is an instance of `anthill.prelude.Stream`", "a pattern of `List`"],
+    );
+    answers(
+        "wi80259.provided.stream.op",
+        "  operation f(s: Stream[T = Int64, E = {}]) -> Int64 =\n    \
+         match Stream.splitFirst(s) case some(pair(h, _)) -> h case none -> 0\n  \
          operation go() -> Int64 = f([7])",
         7,
     );

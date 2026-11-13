@@ -548,6 +548,8 @@ impl NodeOccurrence {
                     clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
+                instance_conversion: RefCell::new(None),
+                call_params: RefCell::new(None),
             },
             span,
             owner,
@@ -653,6 +655,8 @@ impl NodeOccurrence {
                     clause_condition: Cell::new(None),
                     inferred_type: RefCell::new(None),
                     lowered_receiver: RefCell::new(None),
+                    instance_conversion: RefCell::new(None),
+                    call_params: RefCell::new(None),
                 },
                 span: self.span,
                 owner: self.owner,
@@ -817,6 +821,8 @@ impl NodeOccurrence {
                     clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
+                instance_conversion: RefCell::new(None),
+                call_params: RefCell::new(None),
             },
             span: self.span,
             owner,
@@ -848,6 +854,8 @@ impl NodeOccurrence {
                     clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
+                instance_conversion: RefCell::new(None),
+                call_params: RefCell::new(None),
             },
             span: at.span,
             owner: at.owner,
@@ -944,6 +952,8 @@ impl NodeOccurrence {
                 clause_condition: dst_condition,
                 inferred_type: dst_ty,
                 lowered_receiver: _,
+                instance_conversion: dst_conv,
+                call_params: dst_params,
             },
             NodeKind::Expr {
                 expr: _,
@@ -957,6 +967,8 @@ impl NodeOccurrence {
                 clause_condition: src_condition,
                 inferred_type: src_ty,
                 lowered_receiver: _,
+                instance_conversion: src_conv,
+                call_params: src_params,
             },
         ) = (&self.kind, &src.kind)
         else {
@@ -980,6 +992,12 @@ impl NodeOccurrence {
         }
         if let Some(condition) = src_condition.get() {
             dst_condition.set(Some(condition));
+        }
+        if let Some(conv) = src_conv.borrow().as_ref() {
+            *dst_conv.borrow_mut() = Some(conv.clone());
+        }
+        if let Some(params) = src_params.borrow().as_ref() {
+            *dst_params.borrow_mut() = Some(Rc::clone(params));
         }
     }
 
@@ -1027,6 +1045,8 @@ impl NodeOccurrence {
                     clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
+                instance_conversion: RefCell::new(None),
+                call_params: RefCell::new(None),
             },
             span,
             owner,
@@ -1236,6 +1256,57 @@ impl NodeOccurrence {
         }
     }
 
+    /// Proposal 073 §2 — record what this node's value becomes where it is used. One writer
+    /// ([`super::typing::stamp_instance_conversions`]). No-op on non-Expr kinds.
+    pub fn set_instance_conversion(&self, conversion: super::typing::InstanceConversion) {
+        if let NodeKind::Expr {
+            instance_conversion,
+            ..
+        } = &self.kind
+        {
+            *instance_conversion.borrow_mut() = Some(conversion);
+        }
+    }
+
+    /// Does this node carry a conversion ([`Self::set_instance_conversion`])? The cheap
+    /// question eval asks of every node it reduces.
+    pub fn has_instance_conversion(&self) -> bool {
+        match &self.kind {
+            NodeKind::Expr {
+                instance_conversion,
+                ..
+            } => instance_conversion.borrow().is_some(),
+            _ => false,
+        }
+    }
+
+    /// The conversion [`Self::set_instance_conversion`] recorded, or `None`.
+    pub fn instance_conversion(&self) -> Option<super::typing::InstanceConversion> {
+        match &self.kind {
+            NodeKind::Expr {
+                instance_conversion,
+                ..
+            } => instance_conversion.borrow().clone(),
+            _ => None,
+        }
+    }
+
+    /// Proposal 073 §2 — record a call's parameters as its σ reads them. One writer, the
+    /// typer where it completes the call. No-op on non-Expr kinds.
+    pub fn set_call_params(&self, params: Rc<[(Symbol, crate::eval::value::Value)]>) {
+        if let NodeKind::Expr { call_params, .. } = &self.kind {
+            *call_params.borrow_mut() = Some(params);
+        }
+    }
+
+    /// The parameters [`Self::set_call_params`] recorded, or `None`.
+    pub fn call_params(&self) -> Option<Rc<[(Symbol, crate::eval::value::Value)]>> {
+        match &self.kind {
+            NodeKind::Expr { call_params, .. } => call_params.borrow().clone(),
+            _ => None,
+        }
+    }
+
     /// The typer's `CallClass` for this occurrence, copied out — for a reader that must ask
     /// which dictionary a call reads as well as where it goes (the resolver's unfold, which
     /// hands a call it hoists out of an operation body the dictionaries that body's frame
@@ -1322,6 +1393,7 @@ impl NodeOccurrence {
             // VALUE being minted, not a call being made.
             Some(CallClass::DeferToRequirement { .. })
             | Some(CallClass::DeferToDictionary { .. })
+            | Some(CallClass::OnInstance { .. })
             | Some(CallClass::UnresolvedSpecOp { .. })
             | Some(CallClass::EtaOpRef { .. }) => ApplyDispatch::Unclassified,
         }
@@ -1353,6 +1425,19 @@ impl NodeOccurrence {
     /// reads this, and it is correct THERE only because the two classes that need a
     /// requirements channel are matched earlier and routed to starts that install
     /// one; see that arm.
+    /// The operation a classified call enters, where the typer decided it: a `PinNow`'s
+    /// member, a `ConcreteApplyWithin`'s target. `None` for a call whose member is chosen
+    /// where it runs, and an unclassified one.
+    pub fn classified_target(&self) -> Option<Symbol> {
+        match self.call_class()? {
+            super::typing::CallClass::PinNow { impl_op_sym, .. } => Some(impl_op_sym),
+            super::typing::CallClass::ConcreteApplyWithin { fn_target_sym, .. } => {
+                Some(fn_target_sym)
+            }
+            _ => None,
+        }
+    }
+
     pub fn classified_apply_target(&self) -> Option<Symbol> {
         match self.apply_dispatch() {
             ApplyDispatch::Pin(s) => Some(s),
@@ -1596,6 +1681,19 @@ pub enum NodeKind {
         /// leaf case, where this node and the twin are one), so a second copy would
         /// be two facts that must agree with nothing enforcing it.
         lowered_receiver: RefCell<Option<Weak<NodeOccurrence>>>,
+        /// Proposal 073 §2 — what this node's value becomes where it is used: paired with
+        /// the dictionary of the instance it is, where a value of a known sort meets an
+        /// abstract type, or converted through a constructor's fields. `None` everywhere a
+        /// value is used at its own type. Written by the typer's instance pass
+        /// ([`super::typing::stamp_instance_conversions`]); read by eval where the node is
+        /// reduced.
+        instance_conversion: RefCell<Option<super::typing::InstanceConversion>>,
+        /// Proposal 073 §2 — on a call of an operation, the operation's parameters as the
+        /// call's σ reads them once it is complete: `List.append`'s `xs: List[T = A]` is
+        /// `List[T = Sp]` at a call whose arguments join at `Sp`. What the instance pass
+        /// converts each argument to ([`super::typing::stamp_instance_conversions`]). Written
+        /// by the typer where it completes the call; `None` on every other node.
+        call_params: RefCell<Option<Rc<[(Symbol, crate::eval::value::Value)]>>>,
     },
     /// Rule head — positional wrapper around a Term-shaped head pattern.
     /// Args are `TermId` (KB-position content); the wrap exists for span

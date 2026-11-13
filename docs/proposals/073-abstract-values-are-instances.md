@@ -161,6 +161,8 @@ Over `sort Holder { sort C = ?  operation size(c: C) -> Int64  operation size2(c
 
 ## 5. The spec text this asks for (to be agreed)
 
+Agreed with the user 2026-11-13 and written with stage 3: §5.2's paragraph below, and §4's sentences about calls in typed code (§5.1's `Stream.splitFirst` on a `Relation`, the paragraph "Value-directed dispatch still serves …", the named-slot paragraph's "The same holds for value-directed dispatch", §5.4's "reached by value"). The construction paragraph keeps its first sentence, reworded "A constructed value carries no dictionary … at the instance the caller's types say". The host-entry and rule-body sentences stay until stage 4.
+
 §5.2, replacing "A value carries no dictionary: an operation reached through it … resolves it from the value otherwise":
 
 > A value typed at a sort that is its own carrier (`rest : Stream[T, E]`) is an instance of that sort: the sort's operations as implemented by the sort that built the value. Its dictionary is fixed where its sort is known — by the member that returns it at a concrete sort, or where a value of a known sort is returned, passed or stored at the abstract type — and kept in the requirement channel. It is used only through the sort's operations, and a data structure of such values holds instances. No operation or dictionary is chosen from a value when the program runs.

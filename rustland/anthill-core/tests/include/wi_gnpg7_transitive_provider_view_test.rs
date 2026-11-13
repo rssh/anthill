@@ -75,7 +75,9 @@
 //! [`provision_routes_do_not_depend_on_declaration_order`] fail — both over specs that are
 //! their own carriers — with `wi_xzmgc`'s two rows of the same kind, its rule-bound row
 //! (a bound reads `Iterable` as standing for its providers, through the chain), and
-//! `wi_n3w68 …two_routes_binding_one_structured_type_still_load`. The requirement rows
+//! `wi_n3w68`'s two-route row, then `…two_routes_binding_one_structured_type_still_load`
+//! (refused at load since proposal 073 stage 3, `…_need_one_instance`, and not measured
+//! against this reader again). The requirement rows
 //! over `Iterable` pass either way: a requirement is supplied by resolution, which
 //! composes the chain itself.
 

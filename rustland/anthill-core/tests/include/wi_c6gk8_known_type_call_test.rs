@@ -15,8 +15,9 @@
 //!     The higher-kinded arm and the nullary path (WI-508) asked the same of a body, and a
 //!     host member there loaded clean and died at run time, "operation has no body";
 //!   * a carrier reaching the spec through a chain of provisions was deferred outright, by
-//!     the arm WI-496 added for a dispatch failure the dispatch no longer gives — kept now
-//!     only where the dispatch finds no candidate, WI-20261025-053QV's provision row;
+//!     the arm WI-496 added for a dispatch failure the dispatch no longer gives — kept by this
+//!     stage only where the dispatch finds no candidate, and removed by stage 3: that call is
+//!     refused at load (`a_provision_at_a_spec_over_a_parameter_is_no_provider_of_its_argument`);
 //!   * a provision by an intermediate spec answers with that spec's member, which the carrier
 //!     answers in its turn by its own member or the intermediate's default (`Box.get` for
 //!     `Mid.get`): the dispatch stopped there. `Top.get(box(n: 7))` over a body-less `Mid.get`
@@ -792,16 +793,20 @@ end
     assert_eq!(int(&mut interp, "c6gk8.cond.probe"), 1);
 }
 
-/// WI-496's deferral, kept where the dispatch finds no candidate at a carrier the chain
-/// reaches: a provision at `Tagger`, a spec over a parameter, answers a `Bk` that provides
-/// `Tagger[C = Bk]` (WI-20261025-053QV) — left to the run time, which walks the same chain, and
-/// answering `W.d`'s 100. FAILS with the deferral removed: refused at load, "requirement
-/// `Desc[T = Bk]` cannot be supplied". The call stays unstamped by design until 053QV's rule
-/// reaches the dispatch.
+/// A provision at a spec over a parameter is no provision of its argument's type:
+/// `W provides Desc[T = Tagger]` and `Bk provides Tagger[C = Bk]` give `Desc` no provider at
+/// `Bk`, and `Desc.d(bk(k: 0))` is refused at load, naming `Desc[T = Bk]`. Whether a value of
+/// `Bk` is admitted at `Tagger` is WI-20261025-053QV's rule, not a dispatch: the two spellings
+/// that fix the call at `Tagger` are refused as well — `[T = Tagger]` at the argument, and the
+/// witness `[Desc = W]` as `Desc.d[Desc = W](5)` over a `W` providing `Desc[T = String]` is
+/// (the selection is checked against the goal the arguments give, and at `Bk` there is none).
+/// On the tree before (proposal 073 stage 3) the bare call and the witness call loaded and the
+/// run time, walking `Bk`'s provision of `Tagger`, answered `W.d`'s 100; with only the
+/// typer's deferral to it removed and the run time's walk gone, both loaded and answered
+/// nothing ("operation has no body").
 #[test]
-fn a_provision_at_a_spec_over_a_parameter_still_answers_its_providers_value() {
-    let mut interp = interp_for(
-        r#"
+fn a_provision_at_a_spec_over_a_parameter_is_no_provider_of_its_argument() {
+    const PROGRAM: &str = r#"
 namespace c6gk8.desc
   import anthill.prelude.{Int64}
   sort Tagger
@@ -823,15 +828,57 @@ namespace c6gk8.desc
     provides Tagger[C = Bk]
     operation tag(c: Bk) -> Int64 = match c case bk(k) -> k
   end
-  operation probe() -> Int64 = Desc.d(bk(k: 0))
+  operation probe() -> Int64 = CALL
 end
-"#,
+"#;
+    let unprovided = [
+        "requirement `c6gk8.desc.Desc[T = c6gk8.desc.Bk]` cannot be supplied",
+        "`c6gk8.desc.Bk` provides no `c6gk8.desc.Desc`",
+    ];
+    crate::common::assert_refused_naming(
+        &load_errors_of(&PROGRAM.replace("CALL", "Desc.d(bk(k: 0))")),
+        &unprovided,
+        "the bare call",
     );
+    crate::common::assert_refused_naming(
+        &load_errors_of(&PROGRAM.replace("CALL", "Desc.d[Desc = W](bk(k: 0))")),
+        &unprovided,
+        "the witness selected",
+    );
+    crate::common::assert_refused_naming(
+        &load_errors_of(&PROGRAM.replace("CALL", "Desc.d[T = Tagger](bk(k: 0))")),
+        &["expected Tagger[C = ?C], got Bk"],
+        "the spec's parameter fixed",
+    );
+    // The selection's own rule, beside it: a witness at a type no provision answers.
+    let at_string = PROGRAM
+        .replace("CALL", "Desc.d[Desc = W](5)")
+        .replace("Desc[T = Tagger]", "Desc[T = String]")
+        .replace("d(x: Tagger) -> Int64 = 100", "d(x: String) -> Int64 = 100")
+        .replace("import anthill.prelude.{Int64}", "import anthill.prelude.{Int64, String}");
+    crate::common::assert_refused_naming(
+        &load_errors_of(&at_string),
+        &["`anthill.prelude.Int64` provides no `c6gk8.desc.Desc`"],
+        "a witness at a type no provision answers",
+    );
+    // The twin: a provision at the argument's own type answers it.
+    let own = PROGRAM.replace("CALL", "Desc.d(bk(k: 0))").replace(
+        "    operation tag(c: Bk) -> Int64 = match c case bk(k) -> k
+",
+        "    operation tag(c: Bk) -> Int64 = match c case bk(k) -> k
+    \
+         import c6gk8.desc.Desc
+    provides Desc[T = Bk]
+    \
+         operation d(x: Bk) -> Int64 = 7
+",
+    );
+    let mut interp = interp_for(&own);
     assert_eq!(
         decided_in_op(interp.kb(), "c6gk8.desc.probe", "c6gk8.desc.Desc.d"),
-        vec![None]
+        some("c6gk8.desc.Bk.d")
     );
-    assert_eq!(int(&mut interp, "c6gk8.desc.probe"), 100);
+    assert_eq!(int(&mut interp, "c6gk8.desc.probe"), 7);
 }
 
 /// A member only another language implements is not pinned: `Sq.area` has a cpp
