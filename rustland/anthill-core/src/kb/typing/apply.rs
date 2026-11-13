@@ -5044,6 +5044,50 @@ fn check_apply_call(
                             return Err(refusal);
                         }
                     }
+                    // … and a witness the call names that provides nothing at the receiver the
+                    // call passes: `Store.peek[Store = CB](s)` with `s: Buf[T = Int64, N =
+                    // String]` beside `CB provides Store[State = Buf[T = Int64, N = Bool]]`. The
+                    // run time ran `CB`'s member on it; with nothing at run time to find one, it
+                    // loaded and answered nothing. Only the carrier's binding is compared, the
+                    // spec's other parameters left open: one the call's result fixes at
+                    // another type than the witness's is the result's refusal (the witness's
+                    // member returning a `String` where an `Int64` is expected), and a witness
+                    // at the receiver but at other bindings `check_selection_bindings`'.
+                    if let Some(witness) = pinned_witness_for(kb, &selections, spec_sort)
+                        .filter(|_| env.in_evaluated_body())
+                        .filter(|_| !op_requires_covers_call(kb, env, &subst, spec_sort))
+                    {
+                        if let Some(carrier_param) = spec_carrier_param(kb, spec_sort) {
+                            let mut at_receiver = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                            let carrier_name = kb.local_name_of(carrier_param).to_owned();
+                            at_receiver
+                                .bindings
+                                .retain(|(k, _)| kb.local_name_of(*k) == carrier_name);
+                            // A receiver with a slot no type decides (`box(v: none)`'s bare
+                            // `Option`) is the named witness's to fix.
+                            let bindings = at_receiver.bindings.clone();
+                            let fixed = bindings.iter().all(|(_, v)| {
+                                type_is_ground(kb, v)
+                                    && !holds_a_type_var(kb, v)
+                                    && !leaves_a_slot_open(kb, v)
+                            });
+                            if !at_receiver.bindings.is_empty() && fixed {
+                                open_unwritten_params(kb, spec_sort, &mut at_receiver.bindings);
+                                let answers = collect_provides_candidates(kb, &at_receiver, None)
+                                    .iter()
+                                    .any(|c| same_sort_canonical(kb, c.impl_sort, witness));
+                                if !answers {
+                                    return Err(TypeError::WitnessDoesNotProvide {
+                                        span,
+                                        op: fn_sym,
+                                        witness,
+                                        spec: spec_sort,
+                                        at_bindings: true,
+                                    });
+                                }
+                            }
+                        }
+                    }
                     // Proposal 073 §1 — NOTHING AT RUN TIME FINDS WHAT LOAD DID NOT: a call
                     // of a spec something provides, at a callee the host does not implement,
                     // is decided by the provision answering at the call's types, read with

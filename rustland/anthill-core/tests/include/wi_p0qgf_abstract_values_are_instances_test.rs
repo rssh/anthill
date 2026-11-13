@@ -262,3 +262,40 @@ end
     );
     assert_eq!(int(&mut interp_for(&PROGRAM.replace("AT", "3")), "p0qgf.sz.go"), 10);
 }
+
+/// A witness the call names that answers nothing at the goal the call fixes in full is
+/// refused at load, naming the witness: `Store.peek[Store = CB](s)` with `s: Buf[T = Int64,
+/// N = String]` beside `CB provides Store[State = Buf[T = Int64, N = Bool]]`. On the tree
+/// before, the run time ran `CB`'s member on it (51); with the run time's route gone and this
+/// refusal backed out, it loads and answers nothing (both measured, the second with the
+/// refusal deleted). The twin at `N = Bool` answers 51.
+#[test]
+fn a_named_witness_that_answers_nothing_at_the_call_is_refused() {
+    const PROGRAM: &str = r#"
+namespace p0qgf.pin
+  import anthill.prelude.{Int64, String, Bool}
+  sort Store
+    sort State = ?
+    operation peek(s: State) -> Int64
+  end
+  sort Buf
+    sort T = ?
+    sort N = ?
+    entity buf(v: T)
+  end
+  sort CB
+    import p0qgf.pin.{Store, Buf}
+    provides Store[State = Buf[T = Int64, N = Bool]]
+    operation peek(s: Buf[T = Int64, N = Bool]) -> Int64 = s.v + 50
+  end
+  operation use(s: Buf[T = Int64, N = AT]) -> Int64 = Store.peek[Store = CB](s)
+  operation go() -> Int64 = use(buf(v: 1))
+end
+"#;
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&PROGRAM.replace("AT", "String")),
+        &["p0qgf.pin.CB provides p0qgf.pin.Store, but not at the bindings"],
+        "a witness at another binding",
+    );
+    assert_eq!(int(&mut interp_for(&PROGRAM.replace("AT", "Bool")), "p0qgf.pin.go"), 51);
+}
