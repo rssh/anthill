@@ -6533,6 +6533,27 @@ fn check_apply_call(
                 pos_results,
                 named_results,
             );
+            // A parameter type, the result or a row label projecting one of the function's own
+            // parameters (`(x: Box, y: x.E) -> x.E`) is read at the argument it takes, as a
+            // call of an operation by name reads one (kernel-language §4.4).
+            let target = match target {
+                ApplicationTarget::Tuple(fields) => ApplicationTarget::Tuple(
+                    fields
+                        .into_iter()
+                        .map(|(l, t)| Ok((l, places.read_at_arguments(kb, &t, fn_sym, span)?)))
+                        .collect::<Result<_, TypeError>>()?,
+                ),
+                ApplicationTarget::Whole(a) => {
+                    ApplicationTarget::Whole(places.read_at_arguments(kb, &a, fn_sym, span)?)
+                }
+                other => other,
+            };
+            let ret_ty = places.read_at_arguments(kb, &ret_ty, fn_sym, span)?;
+            let ret_ty = places.result_at_arguments(kb, &ret_ty);
+            let call_effects: Vec<Value> = call_effects
+                .iter()
+                .map(|e| places.read_at_arguments(kb, e, fn_sym, span))
+                .collect::<Result<_, TypeError>>()?;
             // Each label of the row as the application incurs it, in the row's order.
             let at_call: Vec<Vec<Value>> = call_effects.iter().map(|e| places.at_call(kb, e)).collect();
             // WI-516: `f(arg…)` performs the arrow's OWN call effect UNIONED with

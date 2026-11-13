@@ -41,10 +41,11 @@
 //!    [`a_callback_writing_its_own_parameter_is_refused_where_the_slot_denies_it`] at the
 //!    callback parameter, whose written arrow records none and loads clean under
 //!    `-Modify[x]`, and 13 beside.
-//! 4. A BINDER OUT OF ITS SCOPE IS REFUSED (`unplaced_binder`) — not refused. 2 FAIL:
-//!    [`a_returned_lambda_is_read_by_the_parameters_its_own_type_records`] and
-//!    `wi_0rp29_nested_projection_value_in_type_test::
-//!    a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one`.
+//! 4. A BINDER OUT OF ITS SCOPE IS REFUSED (`unplaced_binder`) — not refused. Re-measured
+//!    (WI-20261002-DNDZF part 3, where an application re-keys a returned lambda's label to the
+//!    cell it was given): 1 FAILS, `wi_0rp29_nested_projection_value_in_type_test::
+//!    a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one`, whose argument names
+//!    no place.
 //! 5. THE BINDERS RIDE THE σ WALK (`rewrite_occ_deep`) — dropped. 1 FAILS:
 //!    [`a_lambda_whose_binder_the_call_types_keeps_its_parameters`].
 //! 6. … AND THE GENERIC MAP, which instantiates a ∀ (`map_type_node`) — dropped. 1 FAILS:
@@ -175,9 +176,10 @@ fn a_lambda_of_two_parameters_out_of_a_tuple_is_read_at_their_positions() {
 
 /// A RETURNED LAMBDA IS READ BY THE PARAMETERS ITS OWN TYPE RECORDS. `mk(d)` is the lambda `mk`
 /// returns. Writing its own parameter `j` it runs, the write landing on the cell `run` hands it
-/// (5 * 10 + 5). Writing `k` — `mk`'s binder, the cell `d` the application was given — it is
-/// refused: `k` is no parameter of the returned lambda, and reading it at position 0 would
-/// charge the write to `q` and leave `d`'s undeclared.
+/// (5 * 10 + 5). Writing `k` — `mk`'s binder — the application re-keys it to the cell `d` it
+/// was given (kernel-language §4.4), and `run`'s slot, which admits only a write to its own
+/// argument, refuses `Modify[d]`. Reading `k` at position 0 would have charged the write to `q`
+/// and left `d`'s undeclared.
 #[test]
 fn a_returned_lambda_is_read_by_the_parameters_its_own_type_records() {
     let above = "  operation inner(q: Cell[V = Int64], d: Cell[V = Int64]) -> Int64 effects {Modify[q]} =";
@@ -194,8 +196,7 @@ fn a_returned_lambda_is_read_by_the_parameters_its_own_type_records() {
         &load_errors_of(&src),
         &[
             "run.f (op-arg)",
-            "`k` is a binder out of scope here, which the callback's type does not record as a \
-             parameter of its own",
+            "declares `Modify[T = d]`, which the closed row does not admit",
         ],
         "a returned lambda writing its enclosing lambda's binder",
     );

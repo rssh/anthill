@@ -377,11 +377,14 @@ impl ArgPlaces {
 /// (Cell[V = Int64], Int64))` applied as `w(p, 3)`) holds the tuple the application builds,
 /// which lies in its components' memory (§2): a label over it is charged onto each component
 /// that names a place, and a component that names none but can hold memory is refused as a
-/// placeless argument is.
+/// placeless argument is. A binder of one argument also has that argument's type, at which a
+/// projection off the binder is read ([`Self::read_at_arguments`]).
 #[derive(Default)]
 pub(super) struct ApplicationPlaces {
     /// The binders of one argument each.
     one: ArgPlaces,
+    /// The type of each one's argument.
+    arg_types: HashMap<Symbol, Value>,
     /// Each binder taking the tuple of several arguments, and the places its components name.
     whole: Vec<(Symbol, Vec<Symbol>)>,
     /// Every binder given an argument, for [`placeless_modify`].
@@ -452,6 +455,9 @@ impl ApplicationPlaces {
                     let arg = Rc::clone(typed(&at));
                     places.one.record(kb, binder, &arg);
                     places.binders.push(binder);
+                    if let Some(r) = result(&at) {
+                        places.arg_types.insert(binder, r.ty.clone());
+                    }
                 }
             }
             return;
@@ -500,6 +506,50 @@ impl ApplicationPlaces {
         let short = short_name_of(kb.local_name_of(leak.param)).to_owned();
         leak.param = kb.intern(&short);
         Some(placeless_modify_refusal(kb, fn_sym, &leak, span))
+    }
+
+    /// `ty` — a component of the function's `A`, its result or a label of its row — with each
+    /// projection off one of the function's own parameters read at the argument that parameter
+    /// takes (kernel-language §4.4): `(x: Box, y: x.E) -> x.E` applied to `box(v: 1)` and `7`
+    /// takes `y: Int64` and answers `Int64`, and applied to a variable `b` of an open `Box`, `b.E`.
+    /// A projection off any other receiver is the caller's own and is left as it is; so is `ty`
+    /// when it projects none of the parameters.
+    pub(super) fn read_at_arguments(
+        &self,
+        kb: &mut KnowledgeBase,
+        ty: &Value,
+        fn_sym: Symbol,
+        span: Option<Span>,
+    ) -> Result<Value, TypeError> {
+        if self.arg_types.is_empty() || !value_contains_projection(kb, ty) {
+            return Ok(ty.clone());
+        }
+        let mut receivers = Vec::new();
+        collect_projection_receivers(kb, ty, &mut receivers);
+        if !receivers.iter().any(|r| self.arg_types.contains_key(r)) {
+            return Ok(ty.clone());
+        }
+        let ctx = TypeErrorContext::OperationReturn {
+            op_name: fn_sym,
+            surface: None,
+        };
+        Discharge {
+            arg_syms: Some(&self.one.vars),
+            others_kept: true,
+            ..Discharge::new(&self.arg_types, Receivers::Call(None), &ctx, span)
+        }
+        .eliminate(kb, ty)
+    }
+
+    /// The function's result with each label over one of its own parameters at the argument's
+    /// place, as a call of an operation by name re-keys its return: `(k: Cell[V = Int64]) ->
+    /// (u: Unit) -> Unit @ {Modify[k]}` applied to `c` answers a function writing `c`.
+    pub(super) fn result_at_arguments(&self, kb: &mut KnowledgeBase, ret: &Value) -> Value {
+        let rekey = self.one.eff_rekey();
+        if rekey.is_empty() || !view_bears_denoted(kb, ret) {
+            return ret.clone();
+        }
+        substitute_ref_syms_value(kb, ret, &rekey)
     }
 
     /// `label`, a label of the function's own row, as the application incurs it: over the
@@ -1221,7 +1271,7 @@ pub(super) fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: 
 /// projection's definitional content (design path-dependent-types.md §6, WI-398).
 /// Returns the cyclic parameter symbols (in cycle order) when the dependencies form a
 /// cycle, else `None`.
-pub(super) fn param_projection_cycle(
+pub(crate) fn param_projection_cycle(
     kb: &KnowledgeBase,
     params: &[(Symbol, Value)],
 ) -> Option<Vec<Symbol>> {
@@ -1460,8 +1510,29 @@ pub(super) struct Discharge<'a> {
     /// ([`denoted_member_type`]) and leaves every other projection as it is
     /// ([`read_denoted_projections`]).
     pub(super) denotations: Option<(&'a TypingEnv, ScopeId)>,
+    /// The parameters of the arrows the walk is inside ([`ArrowBinders`]).
+    pub(super) bound: Option<&'a ArrowBinders<'a>>,
+    /// Is a projection off a receiver `arg_types` does not hold left as it is? An application
+    /// of a function value reads its own parameters only ([`ApplicationPlaces::read_at_arguments`]);
+    /// a projection off a name of the caller's is the caller's.
+    pub(super) others_kept: bool,
     pub(super) ctx: &'a TypeErrorContext,
     pub(super) span: Option<Span>,
+}
+
+/// The parameters of the arrows an elimination walk is inside, innermost first. A projection
+/// off one (`x.E` in `(x: Box, y: x.E) -> x.E`) is the arrow's own: it is read where the arrow
+/// is applied, at that application's arguments, and crosses this walk as it is.
+#[derive(Clone, Copy)]
+pub(super) struct ArrowBinders<'a> {
+    syms: &'a [Symbol],
+    outer: Option<&'a ArrowBinders<'a>>,
+}
+
+impl ArrowBinders<'_> {
+    fn binds(&self, sym: Symbol) -> bool {
+        self.syms.contains(&sym) || self.outer.is_some_and(|o| o.binds(sym))
+    }
 }
 
 impl<'a> Discharge<'a> {
@@ -1484,6 +1555,8 @@ impl<'a> Discharge<'a> {
             selections: &[],
             reading: None,
             denotations: None,
+            bound: None,
+            others_kept: false,
             ctx,
             span,
         }
@@ -1546,6 +1619,14 @@ fn eliminate_in(
 ) -> Result<Option<Value>, TypeError> {
     let (sp, owner) = site_of(ty);
     match extract_type(kb, ty) {
+        TypeExtractor::ExprCarried { value, .. }
+            if receiver_path_head_sym(kb, &value).is_some_and(|head| {
+                cx.bound.is_some_and(|b| b.binds(head))
+                    || (cx.others_kept && !cx.arg_types.contains_key(&head))
+            }) =>
+        {
+            Ok(None)
+        }
         TypeExtractor::ExprCarried { value, member } => match cx.denotations {
             Some((env, scope)) => {
                 denoted_member_type(kb, env, scope, &value, member, cx.ctx, cx.span).transpose()
@@ -1590,14 +1671,23 @@ fn eliminate_in(
         }
         // WI-460: a callback arrow's parameter — `(x: s.T) -> Bool @ {EffP, -Modify[x]}`.
         // The arrow keeps its own binders — the re-keys here are the callee's parameters,
-        // never the arrow's own places. Its ROW takes `row_syms` where
-        // the caller hands one.
+        // never the arrow's own places, and a projection off one is left as it is
+        // ([`ArrowBinders`]). Its ROW takes `row_syms` where the caller hands one.
         TypeExtractor::Arrow {
             param,
             result,
             effects,
             binders,
         } => {
+            let own: Vec<Symbol> = binders
+                .as_ref()
+                .map(|b| binder_list_places(kb, b).into_iter().flatten().collect())
+                .unwrap_or_default();
+            let scope = ArrowBinders { syms: &own, outer: cx.bound };
+            let cx = &Discharge {
+                bound: if own.is_empty() { cx.bound } else { Some(&scope) },
+                ..*cx
+            };
             let Some(rows) = cx.row_syms else {
                 let Some([p, r, e]) =
                     eliminate_to_children(kb, [param, result, effects], sp, owner, cx)?

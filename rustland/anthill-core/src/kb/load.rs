@@ -2852,6 +2852,14 @@ pub enum LoadError {
         span: Span,
         scope_name: String,
     },
+    /// A written arrow or a lambda whose parameter types project one another in a cycle
+    /// (`(x: y.E, y: x.E) -> R`, or `(x: x.E) -> R`): the parameters have no order to be
+    /// read in, as an operation's have none in `f(a: b.T, b: a.T)` (kernel-language §4.4).
+    /// `cycle` is the parameters' names along it, closed (`x -> y -> x`).
+    CyclicArrowProjection {
+        cycle: String,
+        span: Span,
+    },
     /// WI-709: a sort application's type ARGUMENTS do not fit the sort's declared type
     /// params — a named argument keys a param the sort never declares (`Cell[W = Int64]`;
     /// `Cell` declares only `V`), or a positional has no declared param left to bind
@@ -3379,6 +3387,7 @@ impl LoadError {
             | LoadError::UnsupportedConstraintForm { span, .. }
             | LoadError::WrittenFindDictionary { span, .. }
             | LoadError::UnresolvedTypeName { span, .. }
+            | LoadError::CyclicArrowProjection { span, .. }
             | LoadError::InvalidFieldProjection { span, .. }
             | LoadError::ForbiddenInternalAccess { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
@@ -4607,6 +4616,9 @@ impl LoadError {
                     name,
                     scope_name,
                 )
+            }
+            LoadError::CyclicArrowProjection { cycle, span } => {
+                format!("{}: {}", loc.format_start(*span), cyclic_arrow_projection_msg(cycle))
             }
             LoadError::InvalidTypeArgument { detail, span } => match span {
                 Some(sp) => {
@@ -6390,6 +6402,15 @@ impl std::fmt::Display for LoadError {
                      type-parameter or sort projection (`P.Member` / `Sort.Member`), \
                      and not a resolvable qualified sort reference",
                     name, scope_name, span.start, span.end,
+                )
+            }
+            LoadError::CyclicArrowProjection { cycle, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    cyclic_arrow_projection_msg(cycle),
+                    span.start,
+                    span.end
                 )
             }
             LoadError::InvalidTypeArgument { detail, span } => match span {
@@ -29365,12 +29386,24 @@ impl ConstFold {
     }
 }
 
-/// The parameters of a written arrow while its row is lowered ([`Loader::arrow_binder_frame`]):
-/// each named parameter's place, and whether a label of the row named one — the arrow records
+/// The ONE wording of [`LoadError::CyclicArrowProjection`].
+fn cyclic_arrow_projection_msg(cycle: &str) -> String {
+    format!(
+        "cyclic projection among an arrow's parameters: {cycle} — a parameter's type may \
+         project another parameter, not form a cycle"
+    )
+}
+
+/// The parameters of a written arrow while it is lowered ([`Loader::arrow_binder_frames`]):
+/// each named parameter's place, and whether a name in the arrow named one — the arrow records
 /// its parameters then.
 struct ArrowBinderFrame {
     names: Vec<(String, Symbol)>,
     named: bool,
+    /// Is the arrow's row being lowered? A bare name reads a parameter only there: in a
+    /// parameter type or the result it is a type (`(a: a) -> a` under a type parameter `a`),
+    /// and a parameter is named there only as a projection's receiver (`a.E`).
+    in_row: bool,
 }
 
 impl ArrowBinderFrame {
@@ -29379,7 +29412,7 @@ impl ArrowBinderFrame {
             .iter()
             .filter_map(|(name, place)| Some((name.clone()?, (*place)?)))
             .collect();
-        Self { names, named: false }
+        Self { names, named: false, in_row: false }
     }
 
     /// The place of the parameter `name`, noted as named.
@@ -29484,11 +29517,11 @@ struct Loader<'a> {
     /// defined (`<op>.f.a`). Set by the operation's parameter lowering for a parameter whose
     /// written type is an arrow, and taken by the arrow it lowers, so no other arrow sees it.
     arrow_callback: Option<(Symbol, String)>,
-    /// The parameters of the arrow whose effect row is being lowered, by name: a row label
-    /// naming one (`Modify[a]`) is that parameter's place. Set only while that row is
-    /// lowered, so the arrow's parameter and result types, and an arrow nested in them, do
-    /// not see it.
-    arrow_binder_frame: Option<ArrowBinderFrame>,
+    /// The parameters of each written arrow being lowered, innermost last: a name in the
+    /// arrow's parameter types, its result or its row that names one of them — a row label
+    /// (`Modify[a]`), a projection's receiver (`a.E`) — is that parameter's place, and an
+    /// arrow written inside sees the parameters of the arrows around it.
+    arrow_binder_frames: Vec<ArrowBinderFrame>,
     // WI-440: true while lowering the INNER label of a `-E` absence atom
     // (`TypeExpr::EffectAbsent`). An unresolved name there is upgraded from the
     // advisory `UnresolvedName` to the load-BLOCKING `ValueInTypeNotResolved`:
@@ -30133,7 +30166,7 @@ impl<'a> Loader<'a> {
             written_declaration_blocks: HashSet::new(),
             type_param_vars: HashMap::new(),
             arrow_callback: None,
-            arrow_binder_frame: None,
+            arrow_binder_frames: Vec::new(),
             in_effect_absence: false,
             in_effect_guard: false,
             in_type_position: false,
@@ -34855,7 +34888,9 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::PushOccSuppress);
                     }
                     Some(dt::LAMBDA_EXPR) => {
-                        // Lambda param is in scope for the body.
+                        // Lambda param is in scope for the body, and for the parameters'
+                        // own annotations, in any order (`lambda (y: x.E, x: Box) -> y`,
+                        // kernel-language §4.4), so the pattern is visited inside the frame.
                         let frame = self.build_pattern_scope_frame(pos_args[0]);
                         work.push(LoadWorkOp::Build(LoadBuildFrame::Lambda {
                             outer_parse_id: parse_id,
@@ -34864,14 +34899,14 @@ impl<'a> Loader<'a> {
                             work.push(LoadWorkOp::PopLocalScope);
                         }
                         work.push(LoadWorkOp::Visit(pos_args[1])); // body
-                        if !frame.is_empty() {
-                            work.push(LoadWorkOp::PushLocalScope(frame));
-                        }
                         // WI-304: param is a TermId field on the lambda, not a
                         // child occurrence — suppress its subtree.
                         work.push(LoadWorkOp::PopOccSuppress);
                         work.push(LoadWorkOp::Visit(pos_args[0])); // param
                         work.push(LoadWorkOp::PushOccSuppress);
+                        if !frame.is_empty() {
+                            work.push(LoadWorkOp::PushLocalScope(frame));
+                        }
                     }
                     // WI-605: a bare `(x, acc) -> body` where a lambda was
                     // meant — see `LoadError::ArrowTermInExprPosition` for the
@@ -40472,6 +40507,22 @@ impl<'a> Loader<'a> {
         })
     }
 
+    /// The place of the parameter `name` of the innermost arrow being lowered that has one,
+    /// noted on that arrow as named ([`Self::arrow_binder_frames`]).
+    fn arrow_binder(&mut self, name: &str) -> Option<Symbol> {
+        self.arrow_binder_frames.iter_mut().rev().find_map(|f| f.name(name))
+    }
+
+    /// [`Self::arrow_binder`] for a bare name, which names a parameter in a row only
+    /// ([`ArrowBinderFrame::in_row`]): the innermost arrow's row, and an arrow's parameters
+    /// around it.
+    fn arrow_row_binder(&mut self, name: &str) -> Option<Symbol> {
+        if !self.arrow_binder_frames.last().is_some_and(|f| f.in_row) {
+            return None;
+        }
+        self.arrow_binder(name)
+    }
+
     /// The places of a written arrow's own parameters, by position: what a label of its row
     /// names when it names one (`Modify[a]`), and what the arrow records as its binders
     /// (kernel-language §4.4). An operation's callback parameter (`callback`: the operation and
@@ -40855,12 +40906,16 @@ impl<'a> Loader<'a> {
             return None;
         }
         let head_name = segs[0].clone();
-        // WI-400 increment C: a let / lambda / match LOCAL is a value head too — consult
-        // the local-name scope stack first (mirrors `remap_symbol`), so a projection off a
-        // let-bound receiver (`let y = …; … : y.K`) resolves its head. A local binding is
-        // definitionally a value, so it skips the value-head sort/namespace gate that keeps
-        // a namespace / sort head (`Foo.T`) on the normal `remap_name` path.
-        let head_sym = if let Some(local) = self.lookup_local_name(&head_name) {
+        // A parameter of an arrow being lowered (`x` in `(x: Box, y: x.E) -> x.E`) is the
+        // innermost value of that name, as in its row. Then, WI-400 increment C: a let /
+        // lambda / match LOCAL is a value head too — consult the local-name scope stack
+        // (mirrors `remap_symbol`), so a projection off a let-bound receiver (`let y = …; … :
+        // y.K`) resolves its head. A local binding is definitionally a value, so it skips the
+        // value-head sort/namespace gate that keeps a namespace / sort head (`Foo.T`) on the
+        // normal `remap_name` path.
+        let head_sym = if let Some(place) = self.arrow_binder(&head_name) {
+            place
+        } else if let Some(local) = self.lookup_local_name(&head_name) {
             local
         } else {
             let resolved = match self
@@ -43057,12 +43112,12 @@ impl<'a> Loader<'a> {
                         return node_occurrence::TypeChild::Interned(requirement.instance);
                     }
                 }
-                // An arrow's own parameter (`a` in `Modify[a]`, in scope while that arrow's
-                // row is lowered) is its place — minted as a `Value::Node` `denoted`
-                // occurrence (not a hash-consed `Ref`).
+                // An arrow's own parameter (`a` in `Modify[a]`, in scope while that arrow is
+                // lowered) is its place — minted as a `Value::Node` `denoted` occurrence (not
+                // a hash-consed `Ref`).
                 if name.segments.len() == 1 {
-                    let nm = self.parsed.symbols.local_name(name.segments[0]);
-                    if let Some(place) = self.arrow_binder_frame.as_mut().and_then(|f| f.name(nm)) {
+                    let nm = self.parsed.symbols.local_name(name.segments[0]).to_owned();
+                    if let Some(place) = self.arrow_row_binder(&nm) {
                         return node_occurrence::TypeChild::Node(
                             self.kb.make_denoted_occ_ref(place, span, owner),
                         );
@@ -43231,22 +43286,55 @@ impl<'a> Loader<'a> {
                 effects,
             } => {
                 use node_occurrence::TypeChild;
-                // An arrow whose row names one of its own parameters (`Modify[a]`) is a
-                // `Value::Node` arrow, so the occurrence is CARRIED, not re-grounded, and it
-                // records its parameters (kernel-language §4.4). Its parameters are in scope
-                // for its row only: the frame of an enclosing arrow is put aside while this
-                // one is lowered, and its own is set for the row alone.
+                // An arrow that names one of its own parameters — a label of its row
+                // (`Modify[a]`), a projection's receiver in a parameter type or the result
+                // (`a.E`) — is a `Value::Node` arrow, so the occurrence is CARRIED, not
+                // re-grounded, and it records its parameters (kernel-language §4.4). Its
+                // parameters are in scope in all three, in any order, and for an arrow
+                // written inside them.
                 let callback = self.arrow_callback.take();
-                let saved = self.arrow_binder_frame.take();
+                let places = self.written_arrow_places(params, callback);
+                self.arrow_binder_frames.push(ArrowBinderFrame::new(&places));
                 // The arrow's `A` (kernel-language §4.4): the parameter list is the tuple for
                 // n ≠ 1, the parameter's type for one, so `(t: (a: A, b: B)) -> R` and
                 // `(a: A, b: B) -> R` are one type.
+                let param_children: Vec<TypeChild> = params
+                    .iter()
+                    .map(|(_, p)| self.type_expr_to_child(p, span, owner))
+                    .collect();
+                let projected: Vec<(Symbol, crate::eval::value::Value)> = places
+                    .iter()
+                    .zip(&param_children)
+                    .filter_map(|((_, place), c)| {
+                        Some(((*place)?, node_occurrence::type_child_as_value(c)))
+                    })
+                    .collect();
+                if let Some(cycle) = super::typing::param_projection_cycle(self.kb, &projected) {
+                    let at: Vec<usize> = cycle
+                        .iter()
+                        .filter_map(|p| places.iter().position(|(_, q)| *q == Some(*p)))
+                        .collect();
+                    let mut names: Vec<&str> =
+                        at.iter().filter_map(|i| places[*i].0.as_deref()).collect();
+                    names.extend(names.first().copied());
+                    // At the first parameter of the cycle's written type where that type is a
+                    // name, which carries its span; at the arrow's otherwise.
+                    let first = at
+                        .first()
+                        .map(|i| self.type_expr_span(&params[*i].1))
+                        .filter(|s| s.span.end > s.span.start)
+                        .unwrap_or(span);
+                    self.errors.push(LoadError::CyclicArrowProjection {
+                        cycle: names.join(" -> "),
+                        span: first.span,
+                    });
+                }
                 let param_child = if params.len() == 1 {
-                    self.type_expr_to_child(&params[0].1, span, owner)
+                    param_children.into_iter().next().expect("one parameter")
                 } else {
                     let mut fields: Vec<(Symbol, TypeChild)> = Vec::new();
                     let mut any = false;
-                    for (i, (name, p)) in params.iter().enumerate() {
+                    for (i, ((name, _), c)) in params.iter().zip(param_children).enumerate() {
                         let key = match name {
                             Some(s) => {
                                 let nm = self.parsed.symbols.local_name(*s).to_owned();
@@ -43254,7 +43342,6 @@ impl<'a> Loader<'a> {
                             }
                             None => self.kb.intern(&positional_label(i)),
                         };
-                        let c = self.type_expr_to_child(p, span, owner);
                         any |= matches!(c, TypeChild::Node(_));
                         fields.push((key, c));
                     }
@@ -43272,14 +43359,15 @@ impl<'a> Loader<'a> {
                     }
                 };
                 let result_child = self.type_expr_to_child(return_type, span, owner);
-                let places = self.written_arrow_places(params, callback);
-                self.arrow_binder_frame = Some(ArrowBinderFrame::new(&places));
+                if let Some(f) = self.arrow_binder_frames.last_mut() {
+                    f.in_row = true;
+                }
                 let effect_children: Vec<TypeChild> = effects
                     .iter()
                     .map(|e| self.type_expr_to_child(e, span, owner))
                     .collect();
-                let frame = std::mem::replace(&mut self.arrow_binder_frame, saved);
-                let binders = frame.is_some_and(|f| f.named).then(|| {
+                let frame = self.arrow_binder_frames.pop().expect("pushed at the arrow's entry");
+                let binders = frame.named.then(|| {
                     let slots: Vec<Option<Symbol>> = places.iter().map(|(_, p)| *p).collect();
                     self.kb.make_arrow_binders(&slots, span, owner)
                 });

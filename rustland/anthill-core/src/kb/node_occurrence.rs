@@ -7241,11 +7241,12 @@ pub fn substitute_occurrence(
 /// `Modify[c]` to the caller's `Modify[s]` (call-site param substitution) and a
 /// fresh result-region to the enclosing op's `result` (region escape). Only the
 /// spines an effect label takes are walked (`denoted` / `parameterized` /
-/// `effects_rows` / `arrow` + the row algebra); an `Interned` `TypeChild` carries no
-/// occurrence `Ref` (its hash-consed `Term::Ref`s are re-keyed by the term-world
-/// `substitute_ref_syms`), so it passes through. A non-`Type`/`EffectExpr`
+/// `effects_rows` / `arrow` + the row algebra); an `Interned` `TypeChild` — a ground
+/// type, which may hold a projection off a renamed parameter (`x.E` in `(x: Box, y: x.E)
+/// -> x.E`) — is re-keyed by the term-world `substitute_ref_syms`. A non-`Type`/`EffectExpr`
 /// occurrence is never an effect label and is returned unchanged.
 pub(crate) fn substitute_ref_syms_occ(
+    kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     map: &std::collections::HashMap<Symbol, Symbol>,
 ) -> Rc<NodeOccurrence> {
@@ -7256,24 +7257,24 @@ pub(crate) fn substitute_ref_syms_occ(
                 TypeNode::Var(v) => TypeNode::Var(*v),
                 TypeNode::Aliased { alias, stands_for } => TypeNode::Aliased {
                     alias: *alias,
-                    stands_for: rewrite_ref_child(stands_for, map),
+                    stands_for: rewrite_ref_child(kb, stands_for, map),
                 },
                 TypeNode::Defaulted { param, stands_for } => TypeNode::Defaulted {
                     param: *param,
-                    stands_for: rewrite_ref_child(stands_for, map),
+                    stands_for: rewrite_ref_child(kb, stands_for, map),
                 },
                 TypeNode::Denoted { value } => TypeNode::Denoted {
                     value: rewrite_ref_expr(value, map),
                 },
                 TypeNode::Parameterized { base, bindings } => TypeNode::Parameterized {
-                    base: rewrite_ref_child(base, map),
+                    base: rewrite_ref_child(kb, base, map),
                     bindings: bindings
                         .iter()
-                        .map(|(s, c)| (*s, rewrite_ref_child(c, map)))
+                        .map(|(s, c)| (*s, rewrite_ref_child(kb, c, map)))
                         .collect(),
                 },
                 TypeNode::EffectsRows { effects_expr } => TypeNode::EffectsRows {
-                    effects_expr: rewrite_ref_child(effects_expr, map),
+                    effects_expr: rewrite_ref_child(kb, effects_expr, map),
                 },
                 TypeNode::Arrow {
                     param,
@@ -7281,14 +7282,14 @@ pub(crate) fn substitute_ref_syms_occ(
                     effects,
                     binders,
                 } => TypeNode::Arrow {
-                    param: rewrite_ref_child(param, map),
-                    result: rewrite_ref_child(result, map),
-                    effects: rewrite_ref_child(effects, map),
+                    param: rewrite_ref_child(kb, param, map),
+                    result: rewrite_ref_child(kb, result, map),
+                    effects: rewrite_ref_child(kb, effects, map),
                     // The arrow's own places are re-keyed with the labels that name them.
-                    binders: binders.as_ref().map(|b| rewrite_ref_value(b, map)),
+                    binders: binders.as_ref().map(|b| rewrite_ref_value(kb, b, map, true)),
                 },
                 TypeNode::NamedTuple { fields } => TypeNode::NamedTuple {
-                    fields: rewrite_ref_value(fields, map),
+                    fields: rewrite_ref_value(kb, fields, map, true),
                 },
                 // The receiver of `o.s.E` is the field path `o.s`, an expression: its head is
                 // re-keyed as a `denoted`'s is. Read as a type child, the expression passed
@@ -7299,9 +7300,9 @@ pub(crate) fn substitute_ref_syms_occ(
                         TypeChild::Node(n) if matches!(n.kind, NodeKind::Expr { .. }) => {
                             TypeChild::Node(rewrite_ref_expr(n, map))
                         }
-                        other => rewrite_ref_child(other, map),
+                        other => rewrite_ref_child(kb, other, map),
                     },
-                    member: rewrite_ref_child(member, map),
+                    member: rewrite_ref_child(kb, member, map),
                 },
                 // WI-1083: this rewrite re-keys `Ref(sym)` effect labels, which a
                 // binder (a bare variable term) never is — so `binders` passes
@@ -7323,8 +7324,8 @@ pub(crate) fn substitute_ref_syms_occ(
                     body,
                 } => TypeNode::PolyType {
                     binders: binders.clone(),
-                    context: rewrite_ref_value(context, map),
-                    body: rewrite_ref_child(body, map),
+                    context: rewrite_ref_value(kb, context, map, true),
+                    body: rewrite_ref_child(kb, body, map),
                 },
             };
             NodeOccurrence::new_type(rebuilt, occ.span, occ.owner)
@@ -7332,21 +7333,21 @@ pub(crate) fn substitute_ref_syms_occ(
         NodeKind::EffectExpr(en) => {
             let rebuilt = match en {
                 EffectExprNode::Merge { left, right } => EffectExprNode::Merge {
-                    left: rewrite_ref_child(left, map),
-                    right: rewrite_ref_child(right, map),
+                    left: rewrite_ref_child(kb, left, map),
+                    right: rewrite_ref_child(kb, right, map),
                 },
                 EffectExprNode::Present { label } => EffectExprNode::Present {
-                    label: rewrite_ref_child(label, map),
+                    label: rewrite_ref_child(kb, label, map),
                 },
                 EffectExprNode::Guarded { label, guard } => EffectExprNode::Guarded {
-                    label: rewrite_ref_child(label, map),
-                    guard: rewrite_ref_value(guard, map),
+                    label: rewrite_ref_child(kb, label, map),
+                    guard: rewrite_ref_value(kb, guard, map, false),
                 },
                 EffectExprNode::Absent { label } => EffectExprNode::Absent {
-                    label: rewrite_ref_child(label, map),
+                    label: rewrite_ref_child(kb, label, map),
                 },
                 EffectExprNode::Open { tail } => EffectExprNode::Open {
-                    tail: rewrite_ref_child(tail, map),
+                    tail: rewrite_ref_child(kb, tail, map),
                 },
                 EffectExprNode::EmptyRow => EffectExprNode::EmptyRow,
             };
@@ -7359,24 +7360,35 @@ pub(crate) fn substitute_ref_syms_occ(
 /// Re-key Refs inside a [`TypeChild`]. `Interned` is hash-consed `Term` (re-keyed,
 /// if ever needed, by the term-world `substitute_ref_syms`); `Node` recurses.
 fn rewrite_ref_child(
+    kb: &mut KnowledgeBase,
     child: &TypeChild,
     map: &std::collections::HashMap<Symbol, Symbol>,
 ) -> TypeChild {
     match child {
-        TypeChild::Interned(t) => TypeChild::Interned(*t),
-        TypeChild::Node(n) => TypeChild::Node(substitute_ref_syms_occ(n, map)),
+        TypeChild::Interned(t) => {
+            TypeChild::Interned(crate::kb::typing::substitute_ref_syms(kb, *t, map))
+        }
+        TypeChild::Node(n) => TypeChild::Node(substitute_ref_syms_occ(kb, n, map)),
     }
 }
 
 /// WI-361: re-key `Ref` symbols inside a `Value`-carried child (a `named_tuple`'s
 /// `fields` `List[TypeField]`), mirroring [`rewrite_ref_child`]: a ground
-/// `Value::Term` passes through (a hash-consed `Term` carries no renamable
-/// occurrence ref), a poisoned `Value::Node` re-keys via [`substitute_ref_syms_occ`],
-/// and a `Value::Entity`/`Tuple` rebuilds with its children rewritten. Scalars /
-/// other carriers pass through unchanged.
-fn rewrite_ref_value(value: &Value, map: &std::collections::HashMap<Symbol, Symbol>) -> Value {
+/// `Value::Term` is re-keyed by the term-world `substitute_ref_syms` where it is a type
+/// (`types`), and passes through where it is not (an effect guard's goals), a poisoned
+/// `Value::Node` re-keys via [`substitute_ref_syms_occ`], and a `Value::Entity`/`Tuple`
+/// rebuilds with its children rewritten. Scalars / other carriers pass through unchanged.
+fn rewrite_ref_value(
+    kb: &mut KnowledgeBase,
+    value: &Value,
+    map: &std::collections::HashMap<Symbol, Symbol>,
+    types: bool,
+) -> Value {
     match value {
-        Value::Node(occ) => Value::Node(substitute_ref_syms_occ(occ, map)),
+        Value::Term { id, .. } if types => {
+            Value::term(crate::kb::typing::substitute_ref_syms(kb, *id, map))
+        }
+        Value::Node(occ) => Value::Node(substitute_ref_syms_occ(kb, occ, map)),
         Value::Entity {
             functor,
             pos,
@@ -7384,17 +7396,17 @@ fn rewrite_ref_value(value: &Value, map: &std::collections::HashMap<Symbol, Symb
             ..
         } => Value::Entity {
             functor: *functor,
-            pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
+            pos: pos.iter().map(|v| rewrite_ref_value(kb, v, map, types)).collect(),
             named: named
                 .iter()
-                .map(|(s, v)| (*s, rewrite_ref_value(v, map)))
+                .map(|(s, v)| (*s, rewrite_ref_value(kb, v, map, types)))
                 .collect(),
         },
         Value::Tuple { pos, named, .. } => Value::Tuple {
-            pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
+            pos: pos.iter().map(|v| rewrite_ref_value(kb, v, map, types)).collect(),
             named: named
                 .iter()
-                .map(|(s, v)| (*s, rewrite_ref_value(v, map)))
+                .map(|(s, v)| (*s, rewrite_ref_value(kb, v, map, types)))
                 .collect(),
         },
         other => other.clone(),

@@ -320,7 +320,7 @@ pub(crate) fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from:
         Value::Node(occ) => {
             let mut map = HashMap::new();
             map.insert(from, to);
-            Value::Node(super::node_occurrence::substitute_ref_syms_occ(occ, &map))
+            Value::Node(super::node_occurrence::substitute_ref_syms_occ(kb, occ, &map))
         }
         other => other.clone(),
     }

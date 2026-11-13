@@ -677,7 +677,7 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
                 span,
                 &format!(
                     "cyclic cross-parameter type projection among parameters: {} — a \
-                 parameter's type may project an EARLIER parameter, not form a cycle",
+                 parameter's type may project another parameter, not form a cycle",
                     names.join(" -> "),
                 ),
             ));

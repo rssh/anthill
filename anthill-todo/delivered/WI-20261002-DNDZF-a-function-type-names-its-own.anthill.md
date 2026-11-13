@@ -3,9 +3,9 @@
 - id: WI-20261002-DNDZF-a-function-type-names-its-own
 - created: 2026-10-02T16:20:53Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-02T16:20:53Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-13T12:51:49Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -30,4 +30,8 @@ ROW ADDED WITH THE USER 2026-11-06, found while settling WI-817 under proposal 0
 ### 2026-11-13T11:42:23Z — feedback — claude
 
 Part 1 delivered (cases 5 and 6, and 6T5C6). (a) A written arrow names its own parameters anywhere — an operation's result, an entity field, an alias, a let annotation, an arrow nested in a callback, a callback's result: `app2(c, mk())`, `app2(c, h.f)` run to 42 and each appD twin is refused naming -Modify[x]. (b) Two arrows differing only in parameter names are one type (unify and subtyping match parameters by position): the list `[lambda (k) -> Cell.set(k,42), lambda (j) -> Cell.set(j,43)]` and the if twin load; an element runs through app2 and is refused through appD. (c) A label naming a value in scope is compared as it stands (52; refusals). (d) A callback parameter named `result` is refused. The callback-place 'says its position itself' channel is deleted from three readers (a panic trace over anthill-core and the families reached none); the positional CallbackParam rule in unify_denoted_view is kept for lacks sets in σ. Spec §4.4 note and the alignment paragraph rewritten (agreed with the user). Rows: wi_dndzf_arrow_names_its_own_parameters_test (10); back-outs FRESH 7, RECORD 18 (11 beside), ALPHA 8, DECLARED 2, RESULT 1. Full gate 11,989 passed, 0 failed; families green on both carriers (c-callback-row 48 and e-applied-arrow 64 verdicts moved, from unresolved name to run or refusal); scaland 1 + 51 + 800. Kept open for part 3: `(x: Box, y: x.E) -> x.E` (lam(), useTakes() = 7, viaOp controls) and then P0QGF's sumWith. Found on the way, filed with the user: WI-20261113-9D1FP.
+
+### 2026-11-13T12:51:48Z — feedback — claude
+
+Part 3 delivered: a parameter type or the result of an arrow may project another of its parameters, in either order, as an operation's may (agreed with the user 2026-11-13: arrows and operations agree). lam() and lamRev() 7; useTakes() and its reversed twin 7; an untyped lambda and an operation (pick(b: Box, v: b.E)) at the slot 7; the arrow as an entity field, an alias, a let annotation, a result, curried 7; viaOp controls unchanged; a cycle ((x: y.E, y: x.E), (x: x.E), a lambda's) refused (LoadError::CyclicArrowProjection; the lambda's at the binder annotation). The application reads each projection at the argument its parameter takes (ApplicationPlaces::read_at_arguments) and re-keys its result's labels to the arguments' places as an operation call does (result_at_arguments): mk(d) of a lambda returning a lambda writes d — the wi_edpf6 and wi_0rp29 returned-lambda rows keep their refusal for that reason, wi_n2yek's run(q, mk(r)) now runs (writing r), and the binder-out-of-scope refusal is driven by an argument naming no place (mk(Cell.new(5))). A bare name in a parameter type or the result stays a type ((a: a) -> a, wi341). The occurrence Ref rewriter now re-keys hash-consed children (a projection x.E inside a Node arrow was never renamed). sumWith(add2, 2, 3) 5 and sumWith(add2, 1.5, 2.5) 4.0. Rows: wi_dndzf_arrow_parameter_projects_another_test (11), back-out ledger at its head. Spec §4.4 note and the alignment paragraph extended (agreed). Full gate 12,002 passed, 0 failed; families green on both carriers; scaland 1 + 51 + 800.
 

@@ -760,32 +760,36 @@ pub(super) fn extracted_own_binders(
     else {
         return None;
     };
+    Some(binder_list_places(kb, binders))
+}
+
+/// An arrow's `binders` list read by position: each parameter's place, `None` at a position
+/// that binds no single name (its positional label `_i`).
+pub(super) fn binder_list_places(kb: &KnowledgeBase, binders: &Value) -> Vec<Option<Symbol>> {
     let elements = value_list_elements(kb, binders);
     debug_assert!(
         !elements.is_empty() || value_is_nil_list(kb, binders),
         "an arrow's `binders` must be a list of its places (`make_arrow_binders`)",
     );
-    Some(
-        elements
-            .iter()
-            .enumerate()
-            .map(|(i, b)| match extract_type(kb, b) {
-                TypeExtractor::Denoted(inner) => {
-                    let place = place_head_sym(kb, &inner);
-                    debug_assert!(place.is_some(), "an arrow's binder {i} names no place");
-                    place
-                }
-                other => {
-                    debug_assert!(
-                        matches!(other, TypeExtractor::SortRef(s)
-                            if crate::intern::is_positional_label_at(kb.local_name_of(s), i)),
-                        "an arrow's binder {i} is neither a place nor its positional label",
-                    );
-                    None
-                }
-            })
-            .collect(),
-    )
+    elements
+        .iter()
+        .enumerate()
+        .map(|(i, b)| match extract_type(kb, b) {
+            TypeExtractor::Denoted(inner) => {
+                let place = place_head_sym(kb, &inner);
+                debug_assert!(place.is_some(), "an arrow's binder {i} names no place");
+                place
+            }
+            other => {
+                debug_assert!(
+                    matches!(other, TypeExtractor::SortRef(s)
+                        if crate::intern::is_positional_label_at(kb.local_name_of(s), i)),
+                    "an arrow's binder {i} is neither a place nor its positional label",
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 /// A declared arrow's own parameters by position ([`arrow_own_binders`]), a position that
@@ -893,9 +897,9 @@ fn substitute_ref_syms_rec(
 }
 
 /// WI-342 effects-vertical: param-name `Ref` substitution over a carrier-agnostic
-/// effect label. A ground (`Value::Term`) label rewrites via [`substitute_ref_syms`];
-/// a `Value::Node` label needs occurrence-level `Ref` rewrite — deferred to E2
-/// (no Node effect label is minted pre-E2, so it is currently unreachable).
+/// type or effect label. A ground (`Value::Term`) one rewrites via [`substitute_ref_syms`];
+/// a `Value::Node` one via the occurrence rewriter, which re-keys its hash-consed children
+/// the same way.
 pub(super) fn substitute_ref_syms_value(
     kb: &mut KnowledgeBase,
     e: &Value,
@@ -906,7 +910,7 @@ pub(super) fn substitute_ref_syms_value(
         // WI-342 E2: re-key the `Ref` spine of a `Value::Node` label (a callee's
         // `Modify[c]` → the caller's `Modify[s]`) via the occurrence rewriter.
         Value::Node(occ) => Value::Node(crate::kb::node_occurrence::substitute_ref_syms_occ(
-            occ, map,
+            kb, occ, map,
         )),
         other => other.clone(),
     }

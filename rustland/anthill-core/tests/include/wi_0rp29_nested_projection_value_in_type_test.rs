@@ -339,8 +339,9 @@
 //!     [`a_destructured_lambda_is_aligned_by_its_binders`].
 //! 65. A BINDER OUT OF ITS SCOPE REFUSED (`unplaced_binder`) — not refused. It was a binder at no
 //!     known position, a lambda's out of a tuple; what is left is a binder of an enclosing
-//!     lambda, named by a lambda it returned, whose own type records it not. Re-measured: 1
-//!     FAILS here — [`a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one`].
+//!     lambda, named by a lambda it returned, whose own type records it not, where the
+//!     application's argument names no place to re-key it to. Re-measured (WI-20261002-DNDZF
+//!     part 3): 1 FAILS here — [`a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one`].
 //! 66. THE CALLBACK'S OWN ROW VARIABLE JUDGED UNDER A CLOSED ROW — not judged. 1 FAILS:
 //!     [`a_callbacks_own_row_variable_is_not_admitted_by_a_closed_row`].
 //! 67. A CALLBACK STATING AN ABSENCE JUDGED ON WHAT IT PRESENTS — exempt. 2 FAIL:
@@ -4335,15 +4336,15 @@ end
     assert_eq!(run_src(src, "wi0rp29.cbv_destructured_ok.go"), Ok(43));
 }
 
-/// A LABEL LEFT NAMING A BINDER OUT OF ITS SCOPE IS REFUSED where the declared row speaks of a
-/// binder in the same effect. `mk(c)` is the lambda `mk` returns, whose row writes `k` — `mk`'s
-/// own binder, which the returned lambda's type does not record as a parameter of its own. Its
-/// `Modify[k]` is the write to `c` the application made it, and may or may not be the `x` that
-/// `-Modify[x]` denies; nobody states the correspondence, so the call is refused for that.
-/// FAILS under ledger part 65 (refused then as a closed row's — another verdict, on the bracket
-/// alone).
+/// A RETURNED LAMBDA'S LABEL OVER ITS ENCLOSING LAMBDA'S BINDER is the cell the application
+/// was given. `mk(d)` is the lambda `mk` returns, whose row writes `k`, `mk`'s own binder: the
+/// application re-keys it to `d` (kernel-language §4.4), as a call of an operation returning a
+/// callback re-keys its result, and `EffP = {}` admits no write to `d`. Until an applied arrow's
+/// result was re-keyed (WI-20261002-DNDZF part 3) the label stayed `k` and was refused as a
+/// binder out of its scope. FAILS under ledger part 65 (refused then as a closed row's — another
+/// verdict, on the bracket alone).
 #[test]
-fn a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one() {
+fn a_returned_lambdas_label_is_the_cell_its_application_was_given() {
     let src = r#"
 namespace wi0rp29.cbv_unplaced
   import anthill.prelude.{Int64, String, List, Cell, Modify, Unit, Bool}
@@ -4359,11 +4360,39 @@ end
     assert_refused_naming(
         &load_errors(src),
         &[
+            "app.f (op-arg)",
+            "declares `Modify[T = d]`, which the closed row does not admit",
+        ],
+        "a returned lambda writing its enclosing lambda's binder",
+    );
+}
+
+/// A LABEL LEFT NAMING A BINDER OUT OF ITS SCOPE IS REFUSED where the declared row speaks of a
+/// binder in the same effect. `mk(Cell.new(5))` hands `mk` a cell that is no value in scope, so
+/// nothing re-keys the returned lambda's `Modify[k]`: `k` is `mk`'s binder, which the returned
+/// lambda's type does not record as a parameter of its own, and may or may not be the `x` that
+/// `-Modify[x]` denies; nobody states the correspondence, so the call is refused for that.
+#[test]
+fn a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one() {
+    let src = r#"
+namespace wi0rp29.cbv_unplaced_fresh
+  import anthill.prelude.{Int64, String, List, Cell, Modify, Unit, Bool}
+  operation app[EffP](q: Cell[V = Int64], f: (x: Cell[V = Int64]) -> Unit @ {EffP, -Modify[x]}) -> Unit effects {EffP} = f(q)
+  operation go() -> Int64 =
+    let c: Cell[V = Int64] = Cell.new(1)
+    let mk = lambda (k: Cell[V = Int64]) -> lambda (j: Cell[V = Int64]) -> Cell.set(k, 42)
+    let _ = app[EffP = {}](c, mk(Cell.new(5)))
+    Cell.get(c)
+end
+"#;
+    assert_refused_naming(
+        &load_errors(src),
+        &[
             "whose row names values in scope and its own parameters",
             "`k` is a binder out of scope here, which the callback's type does not record as a \
              parameter of its own",
         ],
-        "a returned lambda writing its enclosing lambda's binder",
+        "a returned lambda writing its enclosing lambda's binder, given a fresh cell",
     );
 }
 

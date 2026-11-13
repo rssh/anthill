@@ -1609,6 +1609,57 @@ pub(super) fn lambda_binder_slots(param: &Rc<NodeOccurrence>) -> Vec<Option<Symb
     }
 }
 
+/// Each binder of a lambda's parameter pattern that writes its type — the one binder, or each
+/// of a list of binders — with that annotation, at the body's parameters as
+/// [`bind_and_label_pattern`] reads it, its projections not yet read.
+pub(super) fn written_binder_annotations(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    param: &Rc<NodeOccurrence>,
+) -> Vec<(Symbol, Value)> {
+    let binders: Vec<&Rc<NodeOccurrence>> = match param.as_pattern() {
+        Some(Pattern::Var { .. }) => vec![param],
+        Some(Pattern::Tuple { positional, .. }) => positional.iter().collect(),
+        _ => Vec::new(),
+    };
+    binders
+        .into_iter()
+        .filter_map(|b| {
+            let name = extract_pattern_var_name(b)?;
+            let written = pattern_annotation_value(kb, extract_pattern_type_ann(b)?)?;
+            Some((name, written_type_at_body_rigids(kb, env, &written)))
+        })
+        .collect()
+}
+
+/// `exp`, the function type a lambda is checked against, in the lambda's own names: the
+/// parameters it records, by position, renamed to the lambda's binders (`own`,
+/// [`lambda_binder_slots`]), so a component, the result or a row label that projects or names
+/// one of them is the lambda's (kernel-language §4.4). `exp` itself where it records none, or
+/// its arity is not the lambda's.
+pub(super) fn in_lambda_binders(
+    kb: &mut KnowledgeBase,
+    exp: &Value,
+    own: &[Option<Symbol>],
+) -> Value {
+    let Some(theirs) = arrow_own_binders(kb, exp) else {
+        return exp.clone();
+    };
+    if theirs.len() != own.len() {
+        return exp.clone();
+    }
+    let renamed: HashMap<Symbol, Symbol> = theirs
+        .iter()
+        .zip(own)
+        .filter_map(|(t, o)| Some(((*t)?, (*o)?)))
+        .filter(|(t, o)| t != o)
+        .collect();
+    if renamed.is_empty() {
+        return exp.clone();
+    }
+    substitute_ref_syms_value(kb, exp, &renamed)
+}
+
 /// A lambda's OWN TUPLE where its pattern is a list of binders — `lambda (a, b) -> …`,
 /// `lambda () -> …` — and no type around it says its `A` (kernel-language §4.4: "A lambda's tuple
 /// is its pattern's"). Positional, its components what each binder writes: its annotation, the

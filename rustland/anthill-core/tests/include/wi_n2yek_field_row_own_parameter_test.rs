@@ -221,9 +221,12 @@ fn an_operation_slot_refuses_it_by_the_same_rule() {
 }
 
 /// A LABEL OVER A BINDER OUT OF SCOPE THAT IS NOT THE CALLBACK'S OWN, at the same slot: the
-/// write to `y` a lambda returned by `lambda (y) -> …` carries. It was refused "unconstrained"
+/// write to `y` a lambda returned by `lambda (y) -> …` carries, applied to a cell that is no
+/// value in scope (`mk(Cell.new(5))`), so nothing re-keys it. It was refused "unconstrained"
 /// (MEASURED), and is refused at the argument, the row variable lacking the label — and is not
-/// called the lambda's own parameter. FAILS when backed out. A lambda applying `inner`'s callback
+/// called the lambda's own parameter. FAILS when backed out. Applied to `r`, the application
+/// re-keys the label to `r` (WI-20261002-DNDZF part 3), which the row variable takes: it runs,
+/// writing `r` ([`a_returned_lambda_applied_to_a_cell_in_scope_writes_that_cell`]). A lambda applying `inner`'s callback
 /// parameter `g` to its own `k` writes `k` (the application reads `g`'s parameter at its
 /// argument, WI-20261014-7EZS6), and is refused as a lambda writing its own parameter is; it
 /// carried `g`'s place `Modify[g.y]` before, out of scope, and was refused by the first rule.
@@ -235,7 +238,7 @@ fn a_binder_out_of_scope_is_refused_by_the_same_rule() {
             "returned",
             "  operation inner(q: Cell[V = Int64], r: Cell[V = Int64]) -> Int64 effects {Modify[q], Modify[r]} =\n    \
              let mk = lambda (y: Cell[V = Int64]) -> lambda (k: Cell[V = Int64]) -> put(y, 5)\n    \
-             run(q, mk(r))\n",
+             run(q, mk(Cell.new(5)))\n",
             "Modify[T = y]",
             false,
         ),
@@ -281,6 +284,15 @@ fn a_binder_out_of_scope_is_refused_by_the_same_rule() {
             "{name}: not the callback's own parameter: {errs:?}"
         );
     }
+}
+
+/// A RETURNED LAMBDA APPLIED TO A CELL IN SCOPE WRITES THAT CELL, which `run`'s row variable
+/// takes: `use` hands `inner` its own cell twice, and `mk(r)` writes 5 into it (5 * 10 + 5).
+#[test]
+fn a_returned_lambda_applied_to_a_cell_in_scope_writes_that_cell() {
+    let above = "  operation run[EffP](p: Cell[V = Int64], f: (k: Cell[V = Int64]) -> Int64 @ {EffP}) -> Int64 effects {EffP} = f(p)\n  operation inner(q: Cell[V = Int64], r: Cell[V = Int64]) -> Int64 effects {Modify[q], Modify[r]} =\n    let mk = lambda (y: Cell[V = Int64]) -> lambda (k: Cell[V = Int64]) -> put(y, 5)\n    run(q, mk(r))\n";
+    let src = program("win2yek.returned_in_scope", above, " effects {Modify[q]}", "    inner(q, q)");
+    assert_eq!(run_int64(&src, "win2yek.returned_in_scope.go"), Ok(55));
 }
 
 /// THE CONTROLS: what a row variable takes still binds it and runs — a lambda writing a cell in
