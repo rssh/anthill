@@ -31,3 +31,7 @@ FROM WI-20261026-8K7W0 (delivered 2026-10-27): THE DOT HALF IS GONE. A dot carri
 
 From WI-20261016-BDVYW (2026-10-27): a rule-body Error.reify over Error labels of two sorts is now refused at load, advising the boundary in an operation the rule calls, because a rule's own term writes no bracket. Once this ticket admits [T1 = …] there, that refusal's advice should name the bracket, and the bridge's account of a payload a rule-body boundary declines (the reify arm of bridge_fault_message; wi_9wvt7_reify_rule_body_test's former a_payload_the_boundary_declines_is_a_fault, wi_9wvt7_clock_handler_test's viaReifyDrain) is reachable again: those rows go back to a rule-body boundary.
 
+### 2026-11-13T22:05:31Z — feedback — claude
+
+A ROW FROM PROPOSAL 074 (decided with the user 2026-11-13, after review of 074 §2): a dictionary is written Dictionary.instance[Additive[T = Int64]](), a call whose bracket binds the sort Dictionary's parameter S. In a rule body that bracket is refused today as every call's is, so 074 stage 1 writes its rule-body rows through an operation that returns the dictionary (intInstance() -> Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]](), then ?r <=> add2(intInstance(), 2, 3) answers 5, as wi_p0qgf_spec_instance_values_test's viaRuleReturned already does). The direct spelling, rule viaRule(?r) :- ?r <=> add2(Dictionary.instance[Additive[T = Int64]](), 2, 3) answering 5, over add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b, is a row of whichever of this ticket and 074 stage 1 lands second; neither waits for the other.
+
