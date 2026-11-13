@@ -2191,7 +2191,9 @@ pub(super) fn param_supplied_slot(
         SupplySource::FromParam {
             param, binder: b, ..
         } => is_self_projection_of(kb, &bv, param, b),
-        SupplySource::Required | SupplySource::SelfSupplied => false,
+        SupplySource::Required | SupplySource::SelfSupplied | SupplySource::Instance { .. } => {
+            false
+        }
     })
 }
 
@@ -2303,6 +2305,12 @@ pub(super) fn build_op_scoped_dicts(
     // reading a DIFFERENT slot was no evidence about this one. Every parked refusal is
     // now reported, so there is no per-slot question left to key.
     for (j, entry) in op_chain.iter().enumerate() {
+        // Proposal 073 §2 — a parameter typed at a spec over a parameter supplies its own slot:
+        // the argument is the instance, placed where the callee is entered.
+        if matches!(entry.supply, SupplySource::Instance { .. }) {
+            out.push(None);
+            continue;
+        }
         // Same substitution the sort half takes: a call-site-pinned element
         // (`Zeroable[HT]` at `HT := Pebble`) becomes concrete and Strategy 3
         // constructs it; one left abstract stays open for a Strategy-1/2 forward
@@ -2607,6 +2615,9 @@ pub(super) fn build_op_scoped_dicts(
                 chain.sort_len() + j,
                 dep.required_sort,
             ),
+            SupplySource::Instance { .. } => {
+                unreachable!("an instance parameter's slot is skipped at the top of the loop")
+            }
         };
         // WI-20261013-50ZMN — by name first, as the sort half asks ([`forward_by_name`]).
         match forward_by_name(kb, &dep, caller_requires, &syms, Some(&disambig), pin) {

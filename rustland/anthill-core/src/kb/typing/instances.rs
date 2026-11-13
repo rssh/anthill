@@ -42,6 +42,12 @@ pub enum InstanceConversion {
     /// A function whose result is converted: `Car.mk`'s `(xs: List) -> Carrier` used at the
     /// spec's `(xs: List) -> Base` answers a `Base` instance where it is applied.
     Function { result: Box<InstanceConversion> },
+    /// A spec application written where that spec over a parameter is expected
+    /// (`Additive[T = Int64]` at `x: Additive`) is the instance: the node is not reduced as
+    /// the type value it spells, and its value is the dictionary `dict` evaluates to — a
+    /// construction built at load, or a forward of the frame's own slot
+    /// ([`spec_application_instance`]).
+    SpecApplication { dict: TermId },
 }
 
 /// Is `sort` an abstract sort whose values are instances (073 §2): it receives on itself
@@ -1252,6 +1258,107 @@ fn pattern_var(pattern: &Rc<NodeOccurrence>) -> Option<Symbol> {
 /// Is `functor` the constructor a list literal is read as in an operation body?
 fn is_list_literal_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
     kb.qualified_name_of(functor) == "anthill.reflect.ListLiteral"
+}
+
+/// Proposal 073 §2 — a spec application written where that spec over a parameter is expected
+/// (`add2(Additive[T = Int64], 2, 3)` over `x: Additive`) is the instance. Its type is the spec
+/// at the written arguments; its value is the dictionary built where it is written — by
+/// kernel-language §8.7's order at a known type, the clause's own under `requires Additive[T =
+/// X]`, the parameter's under `x: Additive` — stamped on the node
+/// ([`InstanceConversion::SpecApplication`]). `None` where the node is no such application:
+/// nothing or a `Type` expected, another sort written.
+pub(super) fn spec_application_instance(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    head: Symbol,
+    expected: Option<&Value>,
+) -> Option<Result<Value, TypeError>> {
+    let spec = match extract_type(kb, expected?) {
+        TypeExtractor::SortRef(s) => s,
+        TypeExtractor::Parameterized { base, .. } => base,
+        _ => return None,
+    };
+    let spec = kb.canonical_sort_sym(spec);
+    if kb.canonical_sort_sym(head) != spec || spec_over_parameter(kb, spec).is_none() {
+        return None;
+    }
+    let written = crate::persistence::print::TermPrinter::new(kb).print_occurrence(occ);
+    let refuse = |why: String| TypeError::Other {
+        site: TypeError::here(),
+        span: Some(occ.span.span),
+        context: TypeErrorContext::SpecInstance { spec },
+        expected: format!("the instance `{written}`"),
+        actual: why,
+    };
+    let Some(denoted) = type_value_denoted_type(kb, env, occ) else {
+        return Some(Err(refuse("an argument that names no type".into())));
+    };
+    let denoted = Value::term(denoted);
+    let written_args: Vec<(Symbol, Value)> = match extract_type(kb, &denoted) {
+        TypeExtractor::Parameterized { bindings, .. } => bindings,
+        _ => Vec::new(),
+    };
+    // Every parameter of the spec is written: the instance is at the type it names, and no
+    // value chooses one (058 §3.9). Keyed as a written `requires` keys them, by short name.
+    let mut keyed: Vec<(Symbol, Value)> = Vec::with_capacity(written_args.len());
+    for short in kb.type_params_of_sort(spec) {
+        let Some((_, ty)) = written_args
+            .iter()
+            .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)
+        else {
+            return Some(Err(refuse(format!(
+                "`{short}` left unwritten, and an instance is at the type its application names"
+            ))));
+        };
+        let ty = ty.clone();
+        keyed.push((kb.intern(&short), ty));
+    }
+    let (Some(view), Some(syms)) = (sort_view_value(kb, spec, keyed), ProjectionSyms::resolve(kb))
+    else {
+        return Some(Err(refuse(
+            "no dictionary can be built in this knowledge base: it holds no `anthill.reflect`".into(),
+        )));
+    };
+    let dep = RequiresEntry {
+        required_sort: spec,
+        spec: view,
+        supply: SupplySource::Required,
+        binder: None,
+    };
+    let chain = env.enclosing_frame_chain().clone();
+    let sub_chains: Vec<Vec<RequiresEntry>> = chain
+        .iter()
+        .map(|e| direct_requires_chain(kb, e.required_sort))
+        .collect();
+    let subst = Substitution::new();
+    let sigma = SigmaCtx {
+        subst: &subst,
+        param_rigids: env.param_rigids(),
+    };
+    let mut failure: Option<ResolutionResult> = None;
+    let mut tie: Option<(Symbol, UnsuppliedDispatch)> = None;
+    match build_dep_projection(
+        kb,
+        &dep,
+        &chain,
+        &sub_chains,
+        &syms,
+        Some(&sigma),
+        Some(&mut failure),
+        Some(&mut tie),
+        None,
+        DefaultRung::Consult,
+    ) {
+        Some(dict) if tie.is_none() => {
+            occ.set_instance_conversion(InstanceConversion::SpecApplication { dict });
+            Some(Ok(denoted))
+        }
+        _ => Some(Err(refuse(match &failure {
+            Some(f) => describe_resolution_failure(kb, f),
+            None => "no dictionary this scope can build or hold".into(),
+        }))),
+    }
 }
 
 /// Proposal 073 §3 — in a spec's own default body, a call of the spec's operation at the

@@ -1280,6 +1280,39 @@ impl NodeOccurrence {
         }
     }
 
+    /// Proposal 073 §2 — the dictionary a spec application stamped as an instance reads
+    /// ([`super::typing::InstanceConversion::SpecApplication`]), or `None`.
+    pub fn spec_application_dict(&self) -> Option<TermId> {
+        match &self.kind {
+            NodeKind::Expr {
+                instance_conversion,
+                ..
+            } => match &*instance_conversion.borrow() {
+                Some(super::typing::InstanceConversion::SpecApplication { dict }) => Some(*dict),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Proposal 073 §2 — forget a spec application's instance stamp: the node is typed again
+    /// where no instance is expected, and is the type value it spells there. No-op otherwise.
+    pub fn clear_spec_application(&self) {
+        if let NodeKind::Expr {
+            instance_conversion,
+            ..
+        } = &self.kind
+        {
+            let mut slot = instance_conversion.borrow_mut();
+            if matches!(
+                &*slot,
+                Some(super::typing::InstanceConversion::SpecApplication { .. })
+            ) {
+                *slot = None;
+            }
+        }
+    }
+
     /// The conversion [`Self::set_instance_conversion`] recorded, or `None`.
     pub fn instance_conversion(&self) -> Option<super::typing::InstanceConversion> {
         match &self.kind {

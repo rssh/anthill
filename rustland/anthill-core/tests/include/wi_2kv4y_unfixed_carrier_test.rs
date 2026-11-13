@@ -145,7 +145,9 @@
 //! and its ledger.
 
 use crate::common::{assert_refused_naming, load_errors_of, replace_in_fixture, run_int64};
-use crate::wi_020th_two_hop_chain_test::{at_each_spelling, Spelling, CHAIN_CALL, USER_SORT};
+use crate::wi_020th_two_hop_chain_test::{
+    at_each_spelling, Spelling, CHAIN_CALL, SPELLINGS, USER_SORT,
+};
 
 /// `Buf[T, N]` and the spec `Store`, with an operation that takes a state and one that
 /// takes nothing; `body` follows.
@@ -368,6 +370,10 @@ fn a_spec_typed_value_does_not_say_it_either() {
 /// type that holds a value rides as an occurrence — the two sides were that parameter and
 /// the cover held. Loaded at both spellings on the parent commit; after the first cut of
 /// this change at `value` only.
+///
+/// `h` is an instance of `Hold` at `h.C` (proposal 073 §2, WI-20261105-P0QGF), so the bracket
+/// advised is the one reading it, `Hold.ask[C = h.C]()`, which answers
+/// ([`the_advised_bracket_reads_the_instance_in_scope`]).
 #[test]
 fn a_value_of_the_callees_own_spec_does_not_say_it_either() {
     at_each_spelling(|sp| {
@@ -385,11 +391,40 @@ fn a_value_of_the_callees_own_spec_does_not_say_it_either() {
             &load_errors_of(&program(&ns, &body)),
             &[
                 &format!("a call of `{ns}.Hold.ask` that names no instance of `{ns}.Hold`"),
-                &format!("`{ns}.Hold.ask[C = …]()`"),
+                &format!("`{ns}.Hold.ask[C = h.C]()`"),
             ],
             &format!("`Hold.ask()` beside an `h: Hold[C = …]`, {}", sp.tag),
         );
     });
+}
+
+/// The repair the refusal above advises: `Hold.ask[C = h.C]()` reads `h`'s instance and runs
+/// `Hold`'s body at it, `P`'s `Store` answering `zero`. FAILS with the instance a parameter
+/// typed at a spec over a parameter stands for left out of the clauses that license a call:
+/// "no impl matches — unresolved: `Hold[C = h.C]`". At the `typed` spelling only: the `value`
+/// one's instance, `Hold[C = Buf[T = Int64, N = 3]]` written as a value, is refused
+/// "unresolved name '3'" on the parent commit too, a constant in a bracket read as a name
+/// (WI-20261012-6SAAP).
+#[test]
+fn the_advised_bracket_reads_the_instance_in_scope() {
+    let sp = &SPELLINGS[0];
+    let ns = format!("wi2kv4y.ownspec_repair_{}", sp.tag);
+    let at = sp.call;
+    let body = format!(
+        "\n  sort Hold\n    sort C = ?\n    requires Store[State = C]\n    \
+         operation touch(c: C) -> Int64\n    operation ask() -> Int64 = Store.zero[State = C]()\n  end\n  \
+         sort P\n    provides Store[State = {at}]\n    \
+         operation peek(s: {at}) -> Int64 = s.v + 100\n    operation zero() -> Int64 = 100\n    \
+         provides Hold[C = {at}]\n    operation touch(c: {at}) -> Int64 = c.v\n  end\n  \
+         operation run(h: Hold[C = {at}]) -> Int64 = Hold.ask[C = h.C]()\n  \
+         operation go() -> Int64 = run(Hold[C = {at}])\n"
+    );
+    assert_eq!(
+        run_int64(&program(&ns, &body), &format!("{ns}.go")),
+        Ok(100),
+        "{}",
+        sp.tag
+    );
 }
 
 /// THE TWO SPELLINGS OF ONE PROGRAM AGREE. `User.mkS()` owes the sort's requirement with

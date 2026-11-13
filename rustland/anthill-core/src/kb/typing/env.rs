@@ -535,7 +535,25 @@ impl TypingEnv {
         // precondition simply reaches nothing. The SLOTS read only the spec ones
         // ([`op_requires_chain_rc`]). Two questions, two lists, deliberately: taking
         // the licence from the slot list would silently narrow what WI-562 licenses.
-        self.op_requires = Rc::new(op_requires_entries(kb, op_sym));
+        // A parameter typed at a spec over a parameter licenses the calls at its carrier as
+        // the clause it stands for would (proposal 073 §2): each the frame holds a slot for —
+        // the chain, which drops one the author wrote the same, decides.
+        let mut licence = op_requires_entries(kb, op_sym);
+        let held: Vec<Symbol> = op_requires_chain_rc(kb, op_sym)
+            .iter()
+            .filter_map(|e| match e.supply {
+                SupplySource::Instance { param } => Some(param),
+                _ => None,
+            })
+            .collect();
+        if !held.is_empty() {
+            licence.extend(
+                param_instance_requires(kb, op_sym)
+                    .into_iter()
+                    .filter(|e| matches!(e.supply, SupplySource::Instance { param } if held.contains(&param))),
+            );
+        }
+        self.op_requires = Rc::new(licence);
         if op_requires_chain_rc(kb, op_sym).is_empty() {
             // The sort chain `set_enclosing_sort` installed IS the frame chain here,
             // and it is literally the same value `op_dict_entries` would return.

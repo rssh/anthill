@@ -1533,6 +1533,12 @@ pub enum TypeErrorContext {
     Construction {
         ctor: Symbol,
     },
+    /// Proposal 073 §2 — a spec application written where its spec over a parameter is
+    /// expected, which is the instance: one that names no type, leaves a parameter unwritten,
+    /// or that no provision answers.
+    SpecInstance {
+        spec: Symbol,
+    },
     /// A rule goal's argument against the callee's column it fills — the type the callee's
     /// clauses give that column, written or inferred. `column` is the slot's label: a named
     /// slot's key, a positional one's `_N`.
@@ -1625,6 +1631,7 @@ impl TypeErrorContext {
             TypeErrorContext::CollectionElement { construct, .. } => (*construct).to_string(),
             // (the `source` rides in `kind_tag`)
             TypeErrorContext::Construction { ctor } => kb.local_name_of(*ctor).to_string(),
+            TypeErrorContext::SpecInstance { spec } => kb.local_name_of(*spec).to_string(),
             TypeErrorContext::RuleColumn { relation, .. } => {
                 kb.local_name_of(*relation).to_string()
             }
@@ -1664,6 +1671,7 @@ impl TypeErrorContext {
                 ..
             } => "collection-element-join",
             TypeErrorContext::Construction { .. } => "construction",
+            TypeErrorContext::SpecInstance { .. } => "instance",
             TypeErrorContext::RuleColumn { .. } => "rule-column",
             TypeErrorContext::RuleBound { .. } => "rule-bound",
             TypeErrorContext::SortParameter { .. } => "sort-parameter",
@@ -1698,6 +1706,7 @@ impl TypeErrorContext {
             // element's position in `pos_args` and needs no reader to undo the display.
             TypeErrorContext::CollectionElement { index, .. } => format!("element {}", index + 1),
             TypeErrorContext::Construction { .. } => "construction".to_string(),
+            TypeErrorContext::SpecInstance { .. } => "instance".to_string(),
             TypeErrorContext::RuleColumn { column, .. } => kb.local_name_of(*column).to_string(),
             TypeErrorContext::RuleBound { var, .. } => kb.local_name_of(*var).to_string(),
             TypeErrorContext::SortParameter { param, .. } => kb.local_name_of(*param).to_string(),

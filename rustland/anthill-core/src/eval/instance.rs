@@ -10,6 +10,7 @@
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::materialize_from_handle;
+use crate::kb::term::TermId;
 use crate::kb::typing::{FieldConversion, InstanceConversion};
 
 use super::error::EvalError;
@@ -132,7 +133,22 @@ impl Interpreter {
             InstanceConversion::Function { result } => {
                 self.convert_function_result(result, v, receiver)
             }
+            // Read in place of the node ([`Self::spec_application_instance`]); a value it
+            // converted would be the type value the node spells, which nothing makes.
+            InstanceConversion::SpecApplication { .. } => Err(EvalError::Internal(
+                "a spec application's instance applied to a value: it is read in place of \
+                 the node it is stamped on"
+                    .into(),
+            )),
         }
+    }
+
+    /// Proposal 073 §2 — the value of a spec application written where its spec over a
+    /// parameter is expected: the dictionary `dict` evaluates to in the frame on top of the
+    /// stack, the node's own.
+    pub(crate) fn spec_application_instance(&mut self, dict: TermId) -> Result<Value, EvalError> {
+        let occ = materialize_from_handle(&self.kb, dict);
+        Ok(self.eval_requirement_chain_node(&occ)?.as_value().clone())
     }
 
     /// [`Self::pack`], for a dispatch that pairs an argument with the dictionary it came

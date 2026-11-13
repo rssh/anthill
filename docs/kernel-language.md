@@ -5995,6 +5995,16 @@ operation member(w: Tagger.C) -> Int64 = Tagger.probe(w)
 
 Both refusals name this spelling. The rule holds wherever a type is written for a value: an operation's parameters and return, an entity's fields — in a construction and in a fact alike — an annotated `let`, a member that backs a spec operation (§8.7), and a rule variable (§5.3).
 
+A value typed at a spec over a parameter is an instance of the spec at the carrier its type fixes: `t: Tagger` holds `Tagger`'s operations at `t.C`, and a call at `t.C` takes its dictionary from `t`. Where the spec is expected, the spec application is the instance — at a carrier the program names, the one §8.7's order selects; under `requires Tagger[C = P]`, the clause's own — and where a `Type` is expected it is the type. An application that leaves a parameter of the spec unwritten, or that no provision answers, is refused, and the instance's carrier is in its type, so no value chooses one:
+
+```anthill
+operation probeAt(t: Tagger, x: t.C) -> Int64 = Tagger.probe(x)
+operation viaB() -> Int64 = probeAt(Tagger[C = B], b(k: 0))                       -- 7
+operation viaP[P](x: P) -> Int64 requires Tagger[C = P] = probeAt(Tagger[C = P], x)
+```
+
+A member that backs a spec operation and types its receiver by such a spec takes an instance, where the spec passes the carrier, and is refused (§8.7).
+
 The reflect `provides()` rule in `typing.anthill` is provider-keyed — it joins on `SortProvidesInfo(sort_ref:)` — so it answers only for a self-providing carrier; the carrier's own question has a separate reflect spelling, `provision_carrier`, built on the `dispatch_carrier` builtin.
 
 ### 8.3 Rule Evaluation

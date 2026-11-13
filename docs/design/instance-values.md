@@ -5,8 +5,8 @@
 Implementation note for proposal 073 §2 and §6.4 (stage 3, WI-20261105-P0QGF), beside
 [`requirement-channel.md`](./requirement-channel.md). That document owns the channel a
 frame is entered with; this one owns the dictionaries that ride with VALUES of an abstract
-type. Delivered 2026-11-13; the host and rule-body routes that still read a value are
-stage 4's (WI-20261105-CBRD2), listed in §6.
+type, and a value typed at a spec over a parameter (§7). Delivered 2026-11-13; the host and
+rule-body routes that still read a value are stage 4's (WI-20261105-CBRD2), listed in §6.
 
 ## 1. Which values are instances
 
@@ -14,8 +14,9 @@ An *abstract carrier sort* is a sort that receives on itself and has no construc
 its own: `Stream`, `FiniteStream`, a user's `Mergeable`
 (`kb::typing::is_abstract_carrier_sort`). A value whose static type is such a sort is an
 instance of it. A sort that receives on a parameter (`Iterable`'s `C`, `Additive`'s `T`) is
-not one: its providers' values are not its values (kernel-language §8.2). A sort whose
-values the host represents (`LogicalStream`'s stream handles) is not one either.
+not one: its providers' values are not its values (kernel-language §8.2); a value typed at
+it is an instance of another kind, the dictionary alone (§7). A sort whose values the host
+represents (`LogicalStream`'s stream handles) is not one either.
 
 The static type alone decides it, at load. A value typed at `Stream[T = Int64, E = {}]` is
 an instance wherever it is; the same `List` value typed at `List[T = Int64]` is not.
@@ -103,8 +104,58 @@ entered with, not a value, and built no frame from values in the census. A frame
 `untyped` (`Frame::untyped`) where the code it runs was typed with no caller to pass a
 dictionary; a typed frame never takes steps 3 or 3b.
 
-## 7. Not done here
+## 7. A value typed at a spec over a parameter
 
-A value typed at a spec over a parameter (`x: Additive`, `add2(Additive[T = Int64], 2,
-3)`, `zeroOf`; 073 §2, extended 2026-11-06) is not an instance yet: those programs are
-refused at load as before.
+073 §2, extended 2026-11-06. `Additive` receives on its parameter `T`
+(`kb::typing::spec_over_parameter`), so `x: Additive` is an instance of `Additive` at `x.T`.
+There is no carrier value to pair: the value is the dictionary, `Dictionary(…, impl: P)`.
+
+```anthill
+operation add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b
+operation ints() -> Int64 = add2(Additive[T = Int64], 2, 3)                        -- 5
+operation sum2[X](a: X, b: X) -> X requires Additive[T = X] = add2(Additive[T = X], a, b)
+operation zeroOf(x: Additive) -> x.T = Additive.zero[T = x.T]()                    -- 0 at Int64
+```
+
+**The parameter's requirement.** Each parameter typed at such a spec adds an entry to its
+operation's chain, after the written and the parameter-derived ones: the spec at the
+parameter's own members, `Additive[T = x.T]`, with supply `SupplySource::Instance { param }`
+(`param_instance_requires`). A call at `x.T` in the body reads it as it reads a written
+`requires`: `a + b`, `Additive.zero[T = x.T]()`, `Additive[T = x.T].zero()`, a generic
+callee's `requires Additive[T = X]` at `X = x.T` (a forward of the slot), and a spec's
+operation with a body in the spec — the defaulted path asks the chain at a projection
+(`requirement_defer_class`), as a body-less operation's call does; a written `requires Desc[T
+= b.V]` was refused there before for the same reason. A clause the author wrote the same is
+that entry, and no second one is added.
+
+**The frame.** A call site supplies nothing for the slot (`build_op_scoped_dicts` gives
+`None`), and the SLD bridge derives nothing for it. `Interpreter::enter_operation` places
+the argument there (`Interpreter::instance_param_slots`), so the slot holds the instance
+the call passed — an application, a variable, a value an operation returned or a `let`
+bound. A rule body's call hands the application over as the node it wrote, read there as
+the instance stamped on it.
+
+**The application.** A spec application written where its spec is expected — an argument at
+such a parameter (`spec_instance_arg_hint`, also through an `if`, `match` or `let` whose
+value is one), a `let` or a result at the spec's type — is typed at the spec at the written
+arguments and stamped `InstanceConversion::SpecApplication { dict }`, the dictionary
+`build_dep_projection` resolves in scope (`spec_application_instance`): a construction at a
+known type, a forward of a clause's slot or of an instance parameter's under one. Eval reads
+the stamped node as that dictionary and never reduces it as the type value it spells; the
+check of value reads of a type parameter does not look inside it. An application that leaves
+a parameter of the spec unwritten, or that no provision answers, is refused at load. Where a
+`Type` is expected, nothing changed.
+
+The instance's `T` is in its static type, so no value chooses one: `if c then Additive[T =
+Int64] else Additive[T = Float]` is an instance at `T = ?`, and `add2` of it, `2` and `3` is
+refused, `2` not being its `T`.
+
+**A provider's member.** A member's parameter typed by the spec it provides is an instance
+too, so behind the receiver the spec passes it takes less: over `Sp { size(y: T) }` and `Car
+provides Sp[T = Self]`, `Car.size(y: Sp)` is refused at load (decided 2026-11-13), and
+`size(y: Self)` fits. The declaration rule compared such a receiver as the spec's template
+(`spec_at_provision`), which is right only for a spec that is its own carrier, whose values
+are its providers'.
+
+Not done here: the lambda and arrow spelling, `(x: Additive, a: x.T, b: x.T) -> x.T` on a
+binder (`sumWith`, WI-20261002-DNDZF).

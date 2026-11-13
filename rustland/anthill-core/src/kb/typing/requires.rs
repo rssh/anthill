@@ -166,6 +166,16 @@ pub enum SupplySource {
         /// ([`contested_account`]).
         contested: Option<(Symbol, Symbol)>,
     },
+    /// Proposal 073 §2 — SYNTHESIZED, not written: the parameter `param` is typed at a spec
+    /// over a parameter (`x: Additive`), so its value is an instance of the spec at the
+    /// carrier its type fixes, and the slot is that value. The entry is the spec at the
+    /// parameter's own members (`Additive[T = x.T]`), so a call at `x.T` reads it; the frame
+    /// takes it from the argument where the operation is entered, and a call site supplies
+    /// nothing for it ([`param_instance_requires`]).
+    Instance {
+        /// The parameter whose value is the instance.
+        param: Symbol,
+    },
 }
 
 impl SupplySource {
@@ -190,7 +200,9 @@ impl SupplySource {
     pub(crate) fn witness_in_argument_type(self) -> Option<(Symbol, Symbol)> {
         match self {
             SupplySource::FromParam { param, binder, .. } => Some((param, binder)),
-            SupplySource::Required | SupplySource::SelfSupplied => None,
+            SupplySource::Required | SupplySource::SelfSupplied | SupplySource::Instance { .. } => {
+                None
+            }
         }
     }
 }
@@ -1918,6 +1930,50 @@ pub(super) fn param_derived_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> 
     out
 }
 
+/// Proposal 073 §2 — the requirement each parameter typed at a spec over a parameter stands
+/// for: `x: Additive` is `Additive[T = x.T]`, the spec at the parameter's own members, which
+/// the parameter's value supplies ([`SupplySource::Instance`]). A call at `x.T` in the body
+/// reads it as it reads a written `requires`: it is in the operation's chain, and among the
+/// clauses that license a call (`TypingEnv::set_enclosing_op`). In the written clause's
+/// shape, before normalization.
+pub(super) fn param_instance_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry> {
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, op_sym) else {
+        return Vec::new();
+    };
+    let params: Vec<(Symbol, Value)> = rec.params.clone();
+    let mut out: Vec<RequiresEntry> = Vec::new();
+    for (pname, pty) in params {
+        let spec = match extract_type(kb, &pty) {
+            TypeExtractor::SortRef(s) => s,
+            TypeExtractor::Parameterized { base, .. } => base,
+            _ => continue,
+        };
+        if spec_over_parameter(kb, spec).is_none() {
+            continue;
+        }
+        let spec = kb.canonical_sort_sym(spec);
+        // Exactly the clause the author would write, `requires Additive[T = x.T]`, so one
+        // written the same is this entry: the spec applied to the receiver `Ref` of each of the
+        // parameter's members, keyed by its short name — whatever the parameter's type writes
+        // there, as a written clause's projection is read. Normalized where the chain is built.
+        let recv = kb.alloc(Term::Ref(pname));
+        let mut bindings: Vec<(Symbol, TermId)> = Vec::new();
+        for short in kb.type_params_of_sort(spec) {
+            let member = kb.intern(&short);
+            bindings.push((member, kb.make_expr_carried(recv, member)));
+        }
+        let base = kb.make_sort_ref(spec);
+        let applied = Value::term(kb.make_parameterized_type(base, &bindings));
+        out.push(RequiresEntry {
+            required_sort: spec,
+            spec: applied,
+            supply: SupplySource::Instance { param: pname },
+            binder: None,
+        });
+    }
+    out
+}
+
 /// Why a read a contested slot answers names no dictionary ([`SupplySource::FromParam`]'s
 /// `contested`): the slot `param`'s `binder` and the one that contests it, `other` — another
 /// parameter's, or another slot of the same parameter's carrier at the same type.
@@ -2094,6 +2150,18 @@ pub(crate) fn op_requires_chain_rc(
                 }
             }
             None => entries.push(dn),
+        }
+    }
+    // Proposal 073 §2 — a parameter typed at a spec over a parameter is an instance, and its
+    // slot is appended last. One the author also wrote as this very requirement is the
+    // written one, which the caller supplies.
+    for d in param_instance_requires(kb, op_sym) {
+        let dn = normalize_op_requires_entry(kb, &d);
+        if !entries
+            .iter()
+            .any(|e| views_structurally_equal(kb, &e.spec, &dn.spec))
+        {
+            entries.push(dn);
         }
     }
     let rc: Rc<Vec<RequiresEntry>> = Rc::new(entries);

@@ -1994,16 +1994,26 @@ end
 }
 
 /// A CARRIER-PARAMETER TYPE IS READ AT THE PROVISION, NOT AS THE SPEC'S TEMPLATE. `size(y: T)` at
-/// `provides Sp[T = Car, E9 = {Error}]` and the member's `size(y: Sp)` — every type in the spec's
-/// signature took the spec's template, so `T` read as the bare spec and the member was "parameter
-/// 1 (`y: Sp`) takes less than the spec's" (MEASURED on the tree the ninth review saw; the tree
-/// before it ran this). Only a type headed by the spec takes the template. Runs to 42.
-/// FAILS under ledger part 115.
+/// `provides Sp[T = Self, E9 = {Error}]` is `size(y: Car[V = V])`: every type in the spec's
+/// signature took the spec's template, so `T` read as the bare spec (MEASURED on the tree the
+/// ninth review saw). The member typed at its own carrier runs to 42.
+///
+/// TYPED BY THE SPEC IT TAKES LESS, as a witness's member does below. `size(y: Sp)` was compared
+/// as the spec's template and loaded, and the spec's dispatch handed it the `Car` its own
+/// signature refuses (`Car.size(k)` was refused "a `Car` is no `Sp`"); it answered 42 because
+/// the body never read `y`. A value typed at a spec over a parameter is an instance of it
+/// (proposal 073 §2, WI-20261105-P0QGF), and the member is refused (decided with the user
+/// 2026-11-13: `Sp.size(y: T)` in `Car` is `size(y: Self)`, which is a `Car`). FAILS with the
+/// receiver typed by such a spec compared as the spec's template again: it loads and dies at
+/// the call, its argument no instance. The ledger's part 115 was measured on the member typed
+/// `y: Sp`, which ran then.
 #[test]
 fn a_carrier_parameter_type_is_read_at_the_provision() {
-    let src = r#"
-namespace wi0rp29r9.cp_at_provision
-  import anthill.prelude.{Int64, String, List, Error}
+    let program = |ns: &str, receiver: &str| {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, String, List, Error}}
   sort Sp
     sort T = ?
     effects E9 = ?
@@ -2012,15 +2022,26 @@ namespace wi0rp29r9.cp_at_provision
   sort Car
     sort V = ?
     entity car(v: V)
-    provides Sp[T = Self, E9 = {Error}]
-    operation size(y: Sp) -> Int64 = 42
+    provides Sp[T = Self, E9 = {{Error}}]
+    operation size(y: {receiver}) -> Int64 = 42
   end
   operation go() -> Int64 =
     let k: Car[V = Int64] = car(v: 1)
     Sp.size(k)
 end
-"#;
-    assert_eq!(run_src(src, "wi0rp29r9.cp_at_provision.go"), Ok(42));
+"#
+        )
+    };
+    let ns = "wi0rp29r9.cp_at_provision";
+    assert_eq!(run_src(&program(ns, "Self"), &format!("{ns}.go")), Ok(42));
+    assert_refused_naming(
+        &load_errors(&program("wi0rp29r9.cp_at_provision_spec", "Sp")),
+        &[
+            "its own member 'size' does not fit 'wi0rp29r9.cp_at_provision_spec.Sp.size'",
+            "the member's `Sp` takes an instance of `Sp`",
+        ],
+        "a member typed by a spec over a parameter, behind the receiver the spec passes",
+    );
 }
 
 /// … AND A WITNESS'S MEMBER IS TYPED BY THE SORT IT PROVIDES FOR: `peek(c: Box)` behind

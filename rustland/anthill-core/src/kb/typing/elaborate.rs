@@ -2283,6 +2283,11 @@ pub(super) fn rigid_value_reads(
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(node) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
+        // A spec application read as the instance is no value read of its arguments: they
+        // are the types the instance is at (proposal 073 §2).
+        if node.spec_application_dict().is_some() {
+            continue;
+        }
         // A parameter the signature writes inline is read as a variable, `?t`, where a
         // bracket's is read by its name (WI-20260911-VNQTR, [`inline_param_read`]).
         if let Expr::Var(var) = expr {

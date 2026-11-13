@@ -536,6 +536,19 @@ pub(super) fn visit_type(
             named_args,
         } => {
             let head = *head;
+            // Proposal 073 §2 — where its spec over a parameter is expected, the application
+            // is the instance, and its arguments are types, not values to type.
+            if let Some(instance) =
+                spec_application_instance(kb, &env, &occ, head, expected.as_ref())
+            {
+                results.push(instance.map(|ty| {
+                    TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ))
+                }));
+                return;
+            }
+            // Typed again where it is no instance (a body typed by a later load, a rewrite
+            // that moved it), it is the type value it spells.
+            occ.clear_spec_application();
             let occ_clone = Rc::clone(&occ);
             work.push(TypeWorkOp::Build(TypeBuildFrame::TypeValue {
                 occ: occ_clone,
@@ -796,7 +809,18 @@ pub(super) fn visit_type(
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| !is_hof_shaped(kb, a) && arg_holds_function_value(kb, a));
-            let reads_params = has_hof_arg || has_call_arg || has_ctor_arg || has_fn_value_arg;
+            // Proposal 073 §2: a spec application over a parameter may be an instance, which
+            // its parameter's type says ([`spec_instance_arg_hint`]); any other type value
+            // still opens nothing.
+            let has_spec_application_arg = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| yields_spec_application(kb, a, None));
+            let reads_params = has_hof_arg
+                || has_call_arg
+                || has_ctor_arg
+                || has_fn_value_arg
+                || has_spec_application_arg;
             // WI-20261013-M32C2: WHAT THE CALLEE IS decides where its slots are read. A value
             // in scope — a parameter, a `let` — is a function value, whose slots are its
             // arrow's ([`function_value_param_slots`]); any other name is an operation, whose

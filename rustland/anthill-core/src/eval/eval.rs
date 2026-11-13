@@ -59,10 +59,11 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// A resolved operation body: its body node plus its params. Params are
-/// `Rc<[…]>` (not `Vec`) so a `op_body_cache` hit is a pair of refcount
-/// bumps rather than a per-call heap allocation.
-pub(crate) type OpBody = (Rc<NodeOccurrence>, Rc<[(Symbol, Value)]>);
+/// A resolved operation body: its body node, its params, and the frame slots its parameters
+/// typed at a spec over a parameter fill (`instance_param_slots`, empty for nearly every
+/// operation). `Rc<[…]>` (not `Vec`) so a `op_body_cache` hit is refcount bumps rather than a
+/// per-call heap allocation.
+pub(crate) type OpBody = (Rc<NodeOccurrence>, Rc<[(Symbol, Value)]>, Rc<[(usize, Symbol)]>);
 
 impl Interpreter {
     /// Drive the activation stack until THIS RUN's base frame completes — back to the
@@ -529,8 +530,13 @@ impl Interpreter {
         // Proposal 073 §2 — a node whose value is converted where it is used (paired with
         // the dictionary of the instance it is) is reduced in a frame of its own, with this
         // one waiting to convert what it delivers.
-        if occ.has_instance_conversion() && !self.take_armed_conversion(occ) {
-            return self.suspend_for_conversion(occ);
+        if occ.has_instance_conversion() {
+            if let Some(dict) = occ.spec_application_dict() {
+                return Ok(StepOutcome::Deliver(self.spec_application_instance(dict)?));
+            }
+            if !self.take_armed_conversion(occ) {
+                return self.suspend_for_conversion(occ);
+            }
         }
         let expr = match &occ.kind {
             NodeKind::Expr { expr, .. } => expr,
@@ -1110,7 +1116,7 @@ impl Interpreter {
         // carries the eta marker (the nullary case); otherwise fall through to the
         // zero-arg call. `spread_eta_args`/`enter_operation` handle the arity-0
         // apply (`f()`) with no indexing.
-        if let Some((_, params)) = self.cached_operation_body(sym) {
+        if let Some((_, params, _)) = self.cached_operation_body(sym) {
             if !params.is_empty() || Self::occ_is_eta_marked(occ) {
                 return Ok(StepOutcome::Deliver(self.eta_op_ref(sym, occ)?));
             }
@@ -3726,7 +3732,7 @@ impl Interpreter {
         }
 
         // 3. Anthill-defined operation body.
-        if let Some((body_node, params)) = self.cached_operation_body(target) {
+        if let Some((body_node, params, slots)) = self.cached_operation_body(target) {
             // WI-444: a DEFAULTED spec op must not SHADOW a carrier's own member
             // (typeclass default-method semantics — defaults fill GAPS, they do
             // not shadow). When `target` is a spec op and the receiver value's
@@ -3762,7 +3768,8 @@ impl Interpreter {
                             self.call_host(impl_target, &builtin, &arg_values, requirements)?;
                         return Ok(StepOutcome::Deliver(result));
                     }
-                    if let Some((impl_body, impl_params)) = self.cached_operation_body(impl_target)
+                    if let Some((impl_body, impl_params, impl_slots)) =
+                        self.cached_operation_body(impl_target)
                     {
                         self.note_dispatch(impl_target);
                         let requirements = self.requirements_for_value_directed_impl(
@@ -3775,6 +3782,7 @@ impl Interpreter {
                             impl_target,
                             impl_body,
                             &impl_params,
+                            &impl_slots,
                             arg_values,
                             requirements,
                         );
@@ -3784,7 +3792,7 @@ impl Interpreter {
             // Proposal 073 §6.1, STAGE 4'S — a host call of a spec's own body, which the host
             // hands no dictionary: the body runs at the instance the arguments' sorts give,
             // where the channel holds only the spec's stand-in (`Coll.viaHelper(l(3))`).
-            return self.enter_operation(target, body_node, &params, arg_values, requirements);
+            return self.enter_operation(target, body_node, &params, &slots, arg_values, requirements);
         }
 
         // 3b. WI-350 — a body-less spec op left un-rewritten by the typer
@@ -3830,7 +3838,7 @@ impl Interpreter {
                         self.call_host(impl_target, &builtin, &arg_values, requirements)?;
                     return Ok(StepOutcome::Deliver(result));
                 }
-                if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
+                if let Some((body_node, params, slots)) = self.cached_operation_body(impl_target) {
                     self.note_dispatch(impl_target);
                     let requirements = self.requirements_for_value_directed_impl(
                         impl_target,
@@ -3842,6 +3850,7 @@ impl Interpreter {
                         impl_target,
                         body_node,
                         &params,
+                        &slots,
                         arg_values,
                         requirements,
                     );
@@ -4136,7 +4145,7 @@ impl Interpreter {
             self.builtin_dispatch_dict = saved_dict;
             return Ok(Some(StepOutcome::Deliver(result?)));
         }
-        if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
+        if let Some((body_node, params, slots)) = self.cached_operation_body(impl_target) {
             self.note_dispatch(impl_target);
             let requirements = self.requirements_for_value_directed_impl(
                 impl_target,
@@ -4145,7 +4154,14 @@ impl Interpreter {
                 requirements.clone(),
             )?;
             return self
-                .enter_operation(impl_target, body_node, &params, arg_values.to_vec(), requirements)
+                .enter_operation(
+                    impl_target,
+                    body_node,
+                    &params,
+                    &slots,
+                    arg_values.to_vec(),
+                    requirements,
+                )
                 .map(Some);
         }
         Ok(None)
@@ -4480,7 +4496,7 @@ impl Interpreter {
         // (`OperationInfo.params`) when there is no body. `UnknownOperation` only when the op
         // has no signature at all — genuinely unknown, surfaced loudly rather than mis-applied.
         let arity = match self.cached_operation_body(op) {
-            Some((_, params)) => params.len(),
+            Some((_, params, _)) => params.len(),
             None => match crate::kb::op_info::lookup_operation_info(&self.kb, op) {
                 Some(info) => info.params.len(),
                 None => {
@@ -4499,7 +4515,7 @@ impl Interpreter {
         let takes: Option<Vec<usize>> = match spread_labels {
             Some(labels) if arity != 1 => {
                 let params: Vec<crate::intern::Symbol> = match self.cached_operation_body(op) {
-                    Some((_, params)) => params.iter().map(|(p, _)| *p).collect(),
+                    Some((_, params, _)) => params.iter().map(|(p, _)| *p).collect(),
                     None => crate::kb::op_info::lookup_operation_info(&self.kb, op)
                         .expect("the arity above was read off this record")
                         .params
@@ -4673,7 +4689,8 @@ impl Interpreter {
             return Some(cached.clone());
         }
         let (node, params) = lookup_operation_body(&self.kb, target)?;
-        let entry: OpBody = (node, params.into());
+        let slots = instance_param_slots(&mut self.kb, target);
+        let entry: OpBody = (node, params.into(), slots);
         self.op_body_cache.insert(target, entry.clone());
         Some(entry)
     }
@@ -4772,6 +4789,9 @@ impl Interpreter {
         target: Symbol,
         body_node: Rc<NodeOccurrence>,
         params: &[(Symbol, Value)],
+        // Proposal 073 §2 — the slots `params` typed at a spec over a parameter fill
+        // ([`instance_param_slots`]).
+        instance_slots: &[(usize, Symbol)],
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
     ) -> Result<StepOutcome, EvalError> {
@@ -4784,6 +4804,33 @@ impl Interpreter {
         }
         if self.profiling {
             OP_PROF.with(|p| p.borrow_mut().entry(target).or_insert((0, 0)).0 += 1);
+        }
+        // Proposal 073 §2 — a parameter typed at a spec over a parameter is the instance its
+        // slot holds: the argument, whatever the call supplied there. A rule body hands its
+        // spec application over as the node it wrote, read as the instance the typer stamped.
+        let mut arg_values = arg_values;
+        let mut requirements = requirements;
+        for &(i, slot) in instance_slots {
+            let stamped = match &arg_values[i] {
+                Value::Node(occ) => occ.spec_application_dict(),
+                _ => None,
+            };
+            if let Some(dict) = stamped {
+                arg_values[i] = self.spec_application_instance(dict)?;
+            }
+            let dict = super::value::Dictionary::from_view(&self.kb, &arg_values[i]).ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "`{}`'s parameter `{}` is typed at a spec over a parameter, and its argument \
+                     is a {}, not the instance",
+                    self.kb.qualified_name_of(target),
+                    self.kb.local_name_of(params[i].0),
+                    arg_values[i].type_name(),
+                ))
+            })?;
+            match requirements.iter_mut().find(|(s, _)| *s == slot) {
+                Some(entry) => entry.1 = dict,
+                None => requirements.push((slot, dict)),
+            }
         }
         let mut locals: SmallVec<[(Symbol, Value); 4]> = SmallVec::new();
         for (i, (pname, _ptype)) in params.iter().enumerate() {
@@ -6900,4 +6947,34 @@ fn lambda_relabel(kb: &KnowledgeBase, lambda: &Rc<NodeOccurrence>, param: &Rc<No
         }
         _ => None,
     }
+}
+
+/// Proposal 073 §2 — `op`'s parameters typed at a spec over a parameter, each with the frame
+/// slot its value holds: the op-scoped entries the typer synthesized for them
+/// (`SupplySource::Instance`), named as the frame names them. Read once per operation, into
+/// the op-body cache.
+fn instance_param_slots(kb: &mut crate::kb::KnowledgeBase, op: Symbol) -> Rc<[(usize, Symbol)]> {
+    let chain = crate::kb::typing::op_dict_entries(kb, op);
+    if !chain
+        .op_entries()
+        .iter()
+        .any(|e| matches!(e.supply, crate::kb::typing::SupplySource::Instance { .. }))
+    {
+        return Rc::from([]);
+    }
+    let names = chain.names(kb);
+    let params: Vec<Symbol> = crate::kb::op_info::lookup_operation_info(kb, op)
+        .map(|rec| rec.params.iter().map(|(p, _)| *p).collect())
+        .unwrap_or_default();
+    let mut slots: Vec<(usize, Symbol)> = Vec::new();
+    for (j, entry) in chain.op_entries().iter().enumerate() {
+        if let crate::kb::typing::SupplySource::Instance { param } = entry.supply {
+            let index = params
+                .iter()
+                .position(|p| *p == param)
+                .expect("an instance slot is synthesized from one of the operation's parameters");
+            slots.push((index, names[chain.sort_len() + j]));
+        }
+    }
+    slots.into()
 }

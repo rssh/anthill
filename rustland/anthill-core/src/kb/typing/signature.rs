@@ -368,12 +368,29 @@ pub(super) fn check_member_signature(
                             } else {
                                 format!("`{recv_short}` at its own parameters,")
                             };
-                        narrower(format!(
-                            "`{name}` is the receiver, and the spec receives every \
-                             `{recv_short}` this provision covers, where the member's `{got}` \
-                             fixes what the spec leaves open; type `{name}` as {at_own} or \
-                             write the restriction into the spec's receiver"
-                        ))
+                        // A member typed by a spec over a parameter takes an instance of it
+                        // (proposal 073 §2), and the receiver the spec passes is none.
+                        let by_spec_over_parameter = sort_functor_of_view(kb, decl_member)
+                            .is_some_and(|b| {
+                                kb.canonical_sort_sym(b) == kb.canonical_sort_sym(spec)
+                            })
+                            && spec_over_parameter(kb, spec).is_some();
+                        if by_spec_over_parameter {
+                            narrower(format!(
+                                "`{name}` is the receiver, and the spec passes it a \
+                                 `{recv_short}`, where the member's `{got}` takes an instance of \
+                                 `{spec_short}`: `{spec_short}` is a spec over a parameter, and a \
+                                 `{recv_short}` provides it without being one; type `{name}` as \
+                                 {at_own} or write the restriction into the spec's receiver"
+                            ))
+                        } else {
+                            narrower(format!(
+                                "`{name}` is the receiver, and the spec receives every \
+                                 `{recv_short}` this provision covers, where the member's `{got}` \
+                                 fixes what the spec leaves open; type `{name}` as {at_own} or \
+                                 write the restriction into the spec's receiver"
+                            ))
+                        }
                     }
                     Narrower::Receiver { sort, .. } => {
                         let recv_short = kb.local_name_of(sort).to_string();
@@ -1189,10 +1206,15 @@ fn member_narrower_than_spec(
         }
         // A member receiver typed by the SPEC ITSELF takes any provider, never fewer than the
         // spec's receiver — so it is compared as the spec's type at this provision, not as the
-        // carrier (the relation does not see a WITNESS's carrier as the spec's provider).
+        // carrier (the relation does not see a WITNESS's carrier as the spec's provider). Where
+        // the spec is its own carrier: one over a parameter has no providers among its values,
+        // and a member typed by it takes an instance of it (proposal 073 §2), compared with
+        // the receiver the spec passes — `size(y: Sp)` behind `size(y: T)` at `T = Self` is
+        // refused, a `Car` being no `Sp`.
         let by_spec = Some(i) == recv
             && sort_functor_of_view(kb, impl_pty)
-                .is_some_and(|b| kb.canonical_sort_sym(b) == spec_canon);
+                .is_some_and(|b| kb.canonical_sort_sym(b) == spec_canon)
+            && spec_over_parameter(kb, spec_canon).is_none();
         // WHAT A PROJECTION READS IS EACH ARGUMENT AS BOUND SO FAR. An argument is recorded when
         // its position is compared, and a position compared after it may bind a variable it
         // holds (`x: Car[V = W]`, then `z: W` behind `z: String`). Read as recorded, `y: x.J`
@@ -2299,13 +2321,11 @@ impl ProjectionReader {
 /// what it writes, and each slot it leaves unwritten bound as the provision binds it (`T = V`
 /// is the instance's `V`); [`member_narrower_than_spec`]'s spec side makes the rest any type.
 ///
-/// A receiver typed by the carrier PARAMETER (`peek(c: C)`, `size(y: T)`) is the SPEC at this
-/// provision too, its whole template: that is what the member's parameter typed by the spec
-/// takes. Read as whatever head `T` resolved to, the template was appended to it — `Car[V =
-/// ?V][T = …, E9 = {Error[T = ?T]}]` — and the member was refused once a row binding rode the
-/// template (MEASURED: review 9); read as the carrier the parameter is bound to, a WITNESS's
-/// (`BoxHolder provides Holder[C = Box]`) is no provider of the spec the relation can see, and
-/// `peek(c: Holder)` was refused as taking less (MEASURED: review 9's fix pass).
+/// Read only for a spec that is its own carrier. A receiver typed by the carrier PARAMETER of a
+/// spec over a parameter (`peek(c: C)`, `size(y: T)`) was read here too, as the spec's whole
+/// template, so a member typing it by the spec (`size(y: Sp)` at `Sp[T = Self]`) fitted and was
+/// handed a `Car`; such a member takes an instance of the spec (proposal 073 §2) and is compared
+/// with the receiver the spec passes, which refuses it.
 fn spec_at_provision(
     kb: &mut KnowledgeBase,
     spec_pty: &Value,

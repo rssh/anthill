@@ -3940,18 +3940,23 @@ fn check_apply_call(
             // sort provides (`Helper[X]`, `requires Coll[C = X]`) is called as an operation
             // whose requirements its caller passes.
             if carrier.is_none() && env.in_evaluated_body() && spec_has_any_providers(kb, spec_sort) {
+                // The parameter, and whether the call binds it to a projection rather than a
+                // type parameter.
                 let at_a_parameter = spec_carrier_param(kb, spec_sort).and_then(|param| {
                     let vid = declared_type_param_vid(kb, &Value::term(resolve_sort_alias(kb, param)?))?;
                     let bound = spec_param_binding(kb, &subst, vid)?;
-                    (is_type_param_view(kb, &bound)
-                        || matches!(
-                            type_head(kb, &bound),
-                            TypeHead::ExprCarried | TypeHead::RigidProjection
-                        ))
-                    .then_some(param)
+                    let projection = matches!(
+                        type_head(kb, &bound),
+                        TypeHead::ExprCarried | TypeHead::RigidProjection
+                    );
+                    (projection || is_type_param_view(kb, &bound)).then_some((param, projection))
                 });
-                if let Some(param) = at_a_parameter {
-                    match call_at_own_instance(
+                if let Some((param, at_projection)) = at_a_parameter {
+                    // At a projection (`v: x.T`), the licence above reads no clause: it names
+                    // a type parameter. A requirement at that projection — written, or the
+                    // instance a parameter typed at the spec is (073 §2) — answers as it does
+                    // for a body-less operation.
+                    let own_or_required = call_at_own_instance(
                         kb,
                         env,
                         &op,
@@ -3961,7 +3966,51 @@ fn check_apply_call(
                         named_args,
                         pos_results,
                         named_results,
-                    ) {
+                    )
+                    .or_else(|| {
+                        // At a type parameter the licence above has read every clause already.
+                        if !at_projection {
+                            return None;
+                        }
+                        let op_qn = kb.qualified_name_of(fn_sym).to_string();
+                        let op_short_sym = kb.intern(short_name_of(&op_qn));
+                        let pinned_spec = pinned_witness_for(kb, &selections, spec_sort).is_some();
+                        requirement_defer_class(
+                            kb,
+                            env,
+                            &subst,
+                            spec_sort,
+                            fn_sym,
+                            op_short_sym,
+                            pinned_spec,
+                        )
+                    });
+                    match own_or_required {
+                        Some(class @ CallClass::DeferToRequirement { .. }) => {
+                            classify_or_hold_deferral(
+                                kb,
+                                env,
+                                occ,
+                                &subst,
+                                spec_sort,
+                                pos_results,
+                                named_results,
+                                class,
+                                span,
+                                solving.as_deref_mut(),
+                            );
+                            stamp_spec_op_supply(
+                                kb,
+                                env,
+                                occ,
+                                fn_sym,
+                                &subst,
+                                &selections,
+                                &projection_receivers,
+                                &held_views,
+                                span,
+                            )?;
+                        }
                         Some(class) => {
                             occ.set_classification(class);
                             stamp_spec_op_supply(

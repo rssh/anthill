@@ -22,6 +22,56 @@ pub(super) fn hof_arg_hint(
     }
 }
 
+/// Proposal 073 §2 — a spec application written at a parameter typed at that spec over a
+/// parameter (`Additive[T = Int64]` at `x: Additive`) is the instance, which the parameter type
+/// says: it is typed against it ([`spec_application_instance`]) rather than as a type value.
+/// A conditional, a `match` or a `let` whose value is such an application is hinted too, so
+/// each application in it is the instance.
+pub(super) fn spec_instance_arg_hint(
+    kb: &KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    param_type: Option<&Value>,
+) -> Option<Value> {
+    let pt = param_type?;
+    let spec = match extract_type(kb, pt) {
+        TypeExtractor::SortRef(s) => s,
+        TypeExtractor::Parameterized { base, .. } => base,
+        _ => return None,
+    };
+    (spec_over_parameter(kb, spec).is_some()
+        && yields_spec_application(kb, arg, Some(kb.canonical_sort_sym(spec))))
+    .then(|| pt.clone())
+}
+
+/// Is the value of `occ` a spec application over a parameter — written as one, or the result
+/// of an `if`, a `match` or a `let` one of whose results is? Of `spec` where given, of any such
+/// spec otherwise.
+pub(super) fn yields_spec_application(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    spec: Option<Symbol>,
+) -> bool {
+    match occ.as_expr() {
+        Some(Expr::TypeValue { head, .. }) => match spec {
+            Some(s) => kb.canonical_sort_sym(*head) == s,
+            None => spec_over_parameter(kb, *head).is_some(),
+        },
+        Some(Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        }) => {
+            yields_spec_application(kb, then_branch, spec)
+                || yields_spec_application(kb, else_branch, spec)
+        }
+        Some(Expr::Match { branches, .. }) => branches
+            .iter()
+            .any(|b| yields_spec_application(kb, &b.body, spec)),
+        Some(Expr::Let { body, .. }) => yields_spec_application(kb, body, spec),
+        _ => false,
+    }
+}
+
 /// The `Term` an entity's field `label` declares, handed to an operation's name written there,
 /// which in a fact pattern is the term it spells (`check_bare_ref`'s quoted-field arm), or
 /// `None`. An entity constructor has no operation record for [`hof_arg_hint`] to read.
@@ -732,6 +782,7 @@ pub(super) fn one_arg_hint(
     // operation body and in a rule body alike; the declared `Type` of the slot VALIDATES
     // that value in the argument check and decides nothing about what it is.
     let base = hof_arg_hint(kb, arg, pt_hof)
+        .or_else(|| spec_instance_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| seq_slot_arg_hint(kb, arg, seq_pt, SlotOwner::Call(functor)));

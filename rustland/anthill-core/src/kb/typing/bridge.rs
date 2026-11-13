@@ -289,6 +289,11 @@ pub(crate) fn resolve_bridge_requirements_supplied(
             trees.push((*name, BridgeSlot::Supplied(d.clone())));
             continue;
         }
+        // Proposal 073 §2 — the instance a parameter typed at a spec over a parameter is: the
+        // argument, placed where the operation is entered, and nothing to derive here.
+        if matches!(entry.supply, SupplySource::Instance { .. }) {
+            continue;
+        }
         let op_half = i >= sort_len;
         // WI-20260909-S8CBV — A PROJECTION THAT DID NOT GROUND IS A DELAY, NOT A SKIP.
         //
