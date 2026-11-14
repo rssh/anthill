@@ -1451,6 +1451,25 @@ impl NodeOccurrence {
     /// call dispatches and the provider the resolved tree names — what eval's apply enters
     /// the callee through (`start_apply_same_sort`). `None` for any other class, a frame the
     /// typer built no dictionary for, and a tree that pins no provider.
+    /// The parent-bundle dictionary the typer built for a `ConcreteApplyWithin` call that
+    /// dispatches nothing — a call into another sort's operation at a concrete instance
+    /// (`CalleeFrame::Dict` with no resolved spec tree, WI-415): what the callee's frame of
+    /// sort-level dictionaries is, entered as its own sort's dictionary.
+    pub fn parent_bundle_dict(&self) -> Option<TermId> {
+        use super::typing::{CallClass, CalleeFrame};
+        let NodeKind::Expr { classification, .. } = &self.kind else {
+            return None;
+        };
+        match classification.borrow().as_deref() {
+            Some(CallClass::ConcreteApplyWithin {
+                resolved_tree: None,
+                frame: CalleeFrame::Dict(dict),
+                ..
+            }) => Some(*dict),
+            _ => None,
+        }
+    }
+
     pub fn classified_dispatch(&self) -> Option<(Symbol, Symbol, TermId)> {
         use super::typing::{CallClass, CalleeFrame};
         let NodeKind::Expr { classification, .. } = &self.kind else {

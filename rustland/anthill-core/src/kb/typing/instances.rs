@@ -387,22 +387,15 @@ fn type_mentions_var(kb: &KnowledgeBase, ty: &Value, var: Option<VarId>) -> bool
     })
 }
 
-/// The dictionary expression of the abstract sort `abstract_sort` at a value of type `actual`,
-/// whose sort is `carrier`: the instance of `carrier`'s provision, built at load, resolved in a
-/// scope — `available` is the enclosing chain the resolution may forward from, `chain` its
-/// frame names.
-pub(crate) fn dictionary_at_in_scope(
+/// The goal whose answer is the instance of the abstract sort `abstract_sort` at a value of type
+/// `actual`, whose sort is `carrier`, used at type `expected`.
+fn abstract_instance_goal(
     kb: &mut KnowledgeBase,
     abstract_sort: Symbol,
     carrier: Symbol,
     actual: &Value,
     expected: &Value,
-    available: &[RequiresEntry],
-    chain: &DictChain,
-    // The body's type parameters as its rigids: a requirement in scope at one of them covers
-    // that parameter only (`Iterable[C = Source]` is no `Iterable[C = Stream]`).
-    rigids: &[(VarId, TermId)],
-) -> Result<TermId, String> {
+) -> SortGoal {
     let args = receiver_type_args(kb, actual);
     // The abstract sort's parameters as the carrier's own provision says them at the value's
     // type (`List[T = Int64]`, `List provides Stream[T = T, E = {}]`: `T = Int64, E = {}`);
@@ -429,7 +422,7 @@ pub(crate) fn dictionary_at_in_scope(
     // the provision answering it binds.
     let mut bindings = bindings;
     open_unwritten_params(kb, abstract_sort, &mut bindings);
-    let goal = SortGoal {
+    SortGoal {
         spec_sort: abstract_sort,
         bindings,
         carrier: Some(GoalCarrier {
@@ -437,7 +430,51 @@ pub(crate) fn dictionary_at_in_scope(
             args,
         }),
         left_open: SmallVec::new(),
-    };
+    }
+}
+
+/// The dictionary of the abstract sort `abstract_sort` at a value of type `actual`, whose sort
+/// is `carrier`, used at type `expected`, as a value (073 §2): built at load from the provisions
+/// alone, for a value a rule's goal passes at a column of that sort, which no scope holds a
+/// requirement for. `Err` says why none is built.
+pub(crate) fn instance_dictionary_at(
+    kb: &mut KnowledgeBase,
+    abstract_sort: Symbol,
+    carrier: Symbol,
+    actual: &Value,
+    expected: &Value,
+) -> Result<Value, String> {
+    let goal = abstract_instance_goal(kb, abstract_sort, carrier, actual, expected);
+    match fetch_built_dictionary(kb, goal, false, DefaultRung::Consult) {
+        FindDictFetch::Fetched(dict) => Ok(dict),
+        FindDictFetch::Undecided { detail } | FindDictFetch::Defect { detail } => {
+            Err(detail.replace(" at run time:", ":"))
+        }
+        FindDictFetch::Guard(_) => Err(format!(
+            "nothing provides `{}` at `{}`",
+            kb.qualified_name_of(abstract_sort),
+            type_display_name_value(kb, actual),
+        )),
+    }
+}
+
+/// The dictionary expression of the abstract sort `abstract_sort` at a value of type `actual`,
+/// whose sort is `carrier`: the instance of `carrier`'s provision, built at load, resolved in a
+/// scope — `available` is the enclosing chain the resolution may forward from, `chain` its
+/// frame names.
+pub(crate) fn dictionary_at_in_scope(
+    kb: &mut KnowledgeBase,
+    abstract_sort: Symbol,
+    carrier: Symbol,
+    actual: &Value,
+    expected: &Value,
+    available: &[RequiresEntry],
+    chain: &DictChain,
+    // The body's type parameters as its rigids: a requirement in scope at one of them covers
+    // that parameter only (`Iterable[C = Source]` is no `Iterable[C = Stream]`).
+    rigids: &[(VarId, TermId)],
+) -> Result<TermId, String> {
+    let goal = abstract_instance_goal(kb, abstract_sort, carrier, actual, expected);
     let subst = Substitution::new();
     let sigma = SigmaCtx {
         subst: &subst,
@@ -592,6 +629,36 @@ pub(crate) fn instance_dictionary_of<V: TermView>(kb: &KnowledgeBase, v: &V) -> 
         } if functor == instance => v.pos_arg(kb, 0).map(|d| d.to_value()),
         _ => None,
     }
+}
+
+/// The provider's value an instance holds, `value` of `Instance(dict, value)`; `None` for any
+/// other value.
+pub(crate) fn instance_value_of<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Value> {
+    instance_dictionary_of(kb, v)?;
+    v.pos_arg(kb, 1).map(|value| value.to_value())
+}
+
+/// The sort with abstract values ([`is_abstract_carrier_sort`]) the type `ty` is headed by.
+pub(crate) fn abstract_carrier_of(kb: &KnowledgeBase, ty: &Value) -> Option<Symbol> {
+    let head = sort_functor_of_view(kb, ty)?;
+    let head = kb.canonical_sort_sym(kb.type_arg_owner(head).unwrap_or(head));
+    is_abstract_carrier_sort(kb, head).then_some(head)
+}
+
+/// `value` paired with `dict`, `Instance(dict, value)`, as a node at `value`'s place.
+pub(crate) fn instance_pair_node(
+    instance: Symbol,
+    dict: Value,
+    value: &Rc<NodeOccurrence>,
+) -> Rc<NodeOccurrence> {
+    let node = |e: Expr| NodeOccurrence::new_expr(e, value.span, value.owner);
+    node(Expr::Apply {
+        recv_type: None,
+        functor: instance,
+        pos_args: vec![node(Expr::Spliced(dict)), Rc::clone(value)],
+        named_args: Vec::new(),
+        type_args: Vec::new(),
+    })
 }
 
 /// Does the type `ty` name a sort with abstract values, at its head or in an argument
@@ -991,6 +1058,35 @@ impl InstanceWalk<'_> {
                     && kb.entity_field_types(*functor).is_some()
                 {
                     self.constructor_fields(kb, *functor, own.as_ref(), pos_args, named_args, site);
+                    return;
+                }
+                // A relation the body cites (`dflted(c)`) takes each argument at its column, and a
+                // column that holds instances pairs a provider's value there, as a parameter of
+                // that type does.
+                if crate::kb::op_info::lookup_operation_info(kb, target).is_none()
+                    && kb.cites_a_relation(*functor)
+                {
+                    let columns = instance_columns(kb, *functor);
+                    let column = |kb: &KnowledgeBase, key: SlotKey| {
+                        columns.iter().find(|(s, _)| same_slot(kb, s, &key)).map(|(_, t)| t.clone())
+                    };
+                    for (i, a) in pos_args.iter().enumerate() {
+                        let label = kb.intern(&crate::intern::positional_label(i + 1));
+                        let at = TypeErrorContext::RuleColumn {
+                            relation: *functor,
+                            column: label,
+                        };
+                        let slot = column(kb, SlotKey::Pos(i));
+                        self.node(kb, a, slot, &at);
+                    }
+                    for (name, a) in named_args {
+                        let at = TypeErrorContext::RuleColumn {
+                            relation: *functor,
+                            column: *name,
+                        };
+                        let slot = column(kb, SlotKey::Named(*name));
+                        self.node(kb, a, slot, &at);
+                    }
                     return;
                 }
                 let mut params: Vec<(Symbol, Value)> = if through_dictionary {

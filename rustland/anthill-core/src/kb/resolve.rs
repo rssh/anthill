@@ -5597,7 +5597,8 @@ impl SearchStream {
                     Rc::clone(self.read_layout_cache.entry(relation).or_insert_with(|| {
                         super::typing::requirement_read_counts(kb, relation).into()
                     }));
-                bind_citation_reads(kb, rid, &layout, &dicts, &fresh_nodes, &mut merged);
+                let carriers = within_requirements_carriers(kb, &original_goal);
+                bind_citation_reads(kb, rid, &layout, &dicts, &carriers, &fresh_nodes, &mut merged);
             }
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
@@ -7551,6 +7552,12 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&value) {
             return BuiltinResult::delay();
         }
+        // A value at a sort with abstract values is an instance (073 §2), the pair of its
+        // dictionary and its provider's value, whose type is the type that value has.
+        let value = match super::typing::instance_value_of(self, &value) {
+            Some(held) if super::typing::abstract_carrier_of(self, bound.carried()).is_some() => held,
+            _ => value,
+        };
         let undecided = |kb: &Self| {
             if guard && kb.value_is_ground(&value, subst) {
                 BuiltinResult::Success
@@ -10122,11 +10129,20 @@ impl KnowledgeBase {
                 ))),
             };
         }
+        // The value the call is made on: the argument at its operation's receiver. A guard's
+        // read holds the carrier's type, which is no value.
+        let witness: Option<Value> = if typed_instance.is_some() {
+            None
+        } else {
+            crate::kb::op_info::lookup_operation_info(self, op_functor)
+                .and_then(|info| super::typing::receiver_param_index(self, &info.params, spec_sort))
+                .and_then(|i| arg_vals.get(i).cloned())
+        };
         // Proposal 073 §2 — A WITNESS THAT IS AN INSTANCE carries its dictionary: a value an
         // operation hands a clause at an abstract type (`viaSp(s: Sp)` citing `dflted(s)`) is
         // read through the dictionary it was made with, nothing derived from its type.
-        if let Some(dict) = arg_vals
-            .first()
+        if let Some(dict) = witness
+            .as_ref()
             .and_then(|w| super::typing::instance_dictionary_of(self, w))
         {
             return if supplied {
@@ -10134,6 +10150,23 @@ impl KnowledgeBase {
             } else {
                 self.bind_read_out(out, dict, subst)
             };
+        }
+        // A WITNESS AT A SORT WITH ABSTRACT VALUES THAT IS NO INSTANCE was put there by no typed
+        // goal: a goal of the clause, or a query, pairs a value it passes at such a column with
+        // its sort's dictionary at load, and an operation does where it hands one on. Nothing is
+        // read from the value to find one.
+        if super::typing::is_abstract_carrier_sort(self, spec_sort) {
+            if let Some(witness) = &witness {
+                if !matches!(witness.head(self), ViewHead::Var(_)) {
+                    return BuiltinResult::Error(ResolveError::new(format!(
+                        "a value at `{}` that is no instance reached a call of `{}`: the goal \
+                         that passed it was built at run time, and no load paired it with its \
+                         sort's dictionary — ask it as a query, or cite it from typed code",
+                        self.qualified_name_of(spec_sort),
+                        self.qualified_name_of(op_functor),
+                    )));
+                }
+            }
         }
         // A READ WITH NO WITNESS is the requirement the clause's sort states, for a call with
         // no argument at its spec's carrier (`Builds.fromList([…])` in `sort Sat[C] requires
@@ -10146,6 +10179,18 @@ impl KnowledgeBase {
             } else {
                 BuiltinResult::delay()
             };
+        }
+        // Proposal 073 §6.2 — A GUARD NO CALLER PASSED A DICTIONARY is a goal no load typed: a
+        // query routes its goal's requirement where it is read, a rule body's goal where the
+        // clause is typed, and a requirement left open there is refused at load. Nothing is
+        // read from the value to supply one.
+        if !supplied && typed_instance.is_some() {
+            return BuiltinResult::Error(ResolveError::new(format!(
+                "the requirement `{}` of a clause was passed by no caller: the goal was built \
+                 at run time, and no load typed it — ask it as a query, whose types pass it, \
+                 or cite it from typed code",
+                self.qualified_name_of(spec_sort),
+            )));
         }
         let rung = if supplied {
             DefaultRung::Unranked
@@ -12309,11 +12354,11 @@ impl KnowledgeBase {
                     owed.then(|| WovenDispatch::Dispatched {
                         spec_op: *functor,
                         dict,
-                        stamps: if target == *functor {
-                            occ.op_dicts()
-                        } else {
-                            SmallVec::new()
-                        },
+                        stamps: self.stamps_at_member(
+                            occ.classified_target().unwrap_or(*functor),
+                            target,
+                            &occ.op_dicts(),
+                        ),
                     })
                 });
                 let (pos_args, named_args) = self.woven_args_at_member(*functor, args, named_args);
@@ -12481,10 +12526,14 @@ impl KnowledgeBase {
         // bridge, as eval's apply hands it to the frame it pushes. Re-derived from the
         // argument values instead, a selection the call wrote was lost:
         // `viaRule[A = Int64, WeakOrd = Descending](1, 5)` answered `Int64`'s own -1 when
-        // run from a rule, and `Descending`'s 4 from the interpreter. Only where the
-        // stamps were built for the operation that runs (`op == functor`).
-        let stamps = (woven.is_none() && op == functor)
-            .then(|| occ.op_dicts())
+        // run from a rule, and `Descending`'s 4 from the interpreter. Built for the operation
+        // the typer classified the call to, or the one it names where the typer left the
+        // member to the run, they are the member's under the member's names where another
+        // runs ([`Self::stamps_at_member`]), as eval's apply hands them.
+        let built_for = occ.classified_target().unwrap_or(functor);
+        let stamps = woven
+            .is_none()
+            .then(|| self.stamps_at_member(built_for, op, &occ.op_dicts()))
             .filter(|stamps| stamps.iter().any(Option::is_some));
         // THE DICTIONARY THE TYPER BUILT FOR THE CALL, as eval's apply enters the callee
         // through it. A spec's default body its provider inherits, written
@@ -12521,6 +12570,13 @@ impl KnowledgeBase {
     /// eval's apply does ([`WovenDispatch::Classified`]; the paragraph at its use in
     /// [`Self::reduce_op_value`] says when). `None` where the derivation answers instead.
     fn classified_entry(&mut self, occ: &NodeOccurrence, op: Symbol) -> Option<(Symbol, TermId)> {
+        // The parent-bundle dictionary the typer built for a call into another sort at a
+        // concrete instance (`CalleeFrame::Dict`, WI-415): `Holder[T = Leaf].show(leaf())` in a
+        // rule body enters `Holder.show` through `Holder`'s requirements at `Leaf`, as eval's
+        // apply does — derived from the argument values instead, which 073 §6.2 removed.
+        if let Some(dict) = occ.parent_bundle_dict().filter(|_| occ.classified_target() == Some(op)) {
+            return Some((op, dict));
+        }
         let (spec_op, provider, dict) = occ.classified_dispatch()?;
         let covered = match self.dictionary_owed_to(provider, op) {
             DictionaryOwed::Environment => true,
@@ -12860,6 +12916,41 @@ impl KnowledgeBase {
     /// about it now depends on [`EvalError::bridge_disposition`], and rides `faults`
     /// rather than the return value. See that enum, and [`ReduceFaults`] for why a sink
     /// rather than a richer return.
+    /// A call's stamps for the own `requires` of `written` — the operation the typer built them
+    /// for: its classified target, or the operation the call names (one per op-scoped slot of
+    /// `written`'s chain) — placed at the op-scoped slots of `runs`, the member that answers
+    /// the call: each of the member's own requirements takes the stamp of the spec operation's
+    /// it states ([`super::typing::member_slots_at_spec_op`]), as eval's apply hands a member
+    /// the slots a call filled (`hand_spec_op_slots`). The stamps themselves where `runs` is
+    /// `written`. Built at load, so nothing derives the member's dictionaries from the values.
+    /// (A member states its own `requires` in the spec operation's order — the refinement
+    /// check refuses another — so the stamps' positions agree whichever of the two built them.)
+    fn stamps_at_member(
+        &mut self,
+        written: Symbol,
+        runs: Symbol,
+        stamps: &SmallVec<[Option<TermId>; 2]>,
+    ) -> SmallVec<[Option<TermId>; 2]> {
+        if runs == written || stamps.iter().all(Option::is_none) {
+            return if runs == written { stamps.clone() } else { SmallVec::new() };
+        }
+        let theirs = super::typing::op_dict_entries(self, written);
+        let their_names = theirs.names(self);
+        let their_own: Vec<Symbol> = their_names[theirs.sort_len().min(their_names.len())..].to_vec();
+        let ours = super::typing::op_dict_entries(self, runs);
+        let our_names = ours.names(self);
+        let our_own: Vec<Symbol> = our_names[ours.sort_len().min(our_names.len())..].to_vec();
+        let pairs = super::typing::member_slots_at_spec_op(self, written, runs);
+        our_own
+            .iter()
+            .map(|ours| {
+                let theirs = pairs.iter().find(|(o, _)| o == ours).map(|(_, t)| *t)?;
+                let at = their_own.iter().position(|n| *n == theirs)?;
+                stamps.get(at).copied().flatten()
+            })
+            .collect()
+    }
+
     fn bridge_op_to_eval(
         &mut self,
         op: Symbol,
@@ -16323,8 +16414,27 @@ fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol,
     Some((relation, dicts))
 }
 
+/// The prefix of a [`WITHIN_REQUIREMENTS`] marker's named entry that carries the type slot `j`'s
+/// guard is at (`carrier_3: Int64`): what the citation fixed the guard's carrier to, a clause's
+/// declared type parameter (060.1 §8.10), bound when the clause opens.
+pub(crate) const WITHIN_CARRIER_PREFIX: &str = "carrier_";
+
+/// The carrier types a [`WITHIN_REQUIREMENTS`] marker writes, by slot ([`WITHIN_CARRIER_PREFIX`]).
+fn within_requirements_carriers(kb: &KnowledgeBase, goal: &Value) -> Vec<(usize, Value)> {
+    goal.named_keys(kb)
+        .into_iter()
+        .filter_map(|key| {
+            let slot = kb.local_name_of(key).strip_prefix(WITHIN_CARRIER_PREFIX)?.parse().ok()?;
+            Some((slot, goal.named_arg(kb, key)?.to_value()))
+        })
+        .collect()
+}
+
 /// Bind each requirement read of the just-opened clause `rid` to the dictionary a citation
-/// captured for it — [`WITHIN_REQUIREMENTS`]' consumer.
+/// captured for it — [`WITHIN_REQUIREMENTS`]' consumer. A guard whose carrier the citation fixed
+/// (`carriers`, by slot) has its carrier bound to that type too: the clause's declared type
+/// parameter is the citing call's instantiation (060.1 §8.10), so a column typed with it is read
+/// at that type, and nothing is read from the value for it.
 ///
 /// The clause's OFFSET in the flat layout comes from the RELATION the marker names, the
 /// list the typer routed over (`counts`, `requirement_read_counts`' layout), not from the
@@ -16339,6 +16449,7 @@ fn bind_citation_reads(
     rid: RuleId,
     counts: &[(RuleId, usize)],
     dicts: &[Value],
+    carriers: &[(usize, Value)],
     opened: &[Rc<NodeOccurrence>],
     merged: &mut Substitution,
 ) {
@@ -16350,7 +16461,8 @@ fn bind_citation_reads(
         .expect("a citation marker carries dictionaries only for reads, and a read is a `find_dictionary` goal");
     // In the order the routes were computed in: a read in a connective's goal slot as well as
     // one at the top ([`super::typing::clause_requirement_reads`]).
-    let outs: Vec<Rc<NodeOccurrence>> = super::typing::clause_requirement_reads(kb, fd, opened)
+    let reads = super::typing::clause_requirement_reads(kb, fd, opened);
+    let outs: Vec<Rc<NodeOccurrence>> = reads
         .iter()
         .map(|read| {
             Rc::clone(
@@ -16359,6 +16471,23 @@ fn bind_citation_reads(
             )
         })
         .collect();
+    for (slot, ty) in carriers {
+        let Some(read) = slot.checked_sub(offset).and_then(|i| reads.get(i)) else {
+            continue;
+        };
+        // The guard's carrier, a variable of the opened clause: its declared type parameter.
+        let Some(Expr::Apply { pos_args, .. }) = read.as_expr() else {
+            unreachable!("a requirement read is an application");
+        };
+        if let Some(Expr::Var(Var::Global(vid))) = pos_args.get(2).and_then(|c| c.as_expr()) {
+            // Unified, not overwritten: a carrier already at another type is a clause the
+            // citation's instantiation does not open.
+            let carrier = Value::Var(Var::Global(*vid));
+            if matches!(kb.unify_values(carrier, ty.clone(), merged), UnifyOutcome::Fail) {
+                merged.contradiction = true;
+            }
+        }
+    }
     assert_eq!(
         outs.len(),
         counts[at].1,

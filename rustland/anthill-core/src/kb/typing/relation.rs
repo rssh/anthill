@@ -1249,6 +1249,11 @@ pub(crate) struct PendingCitationRoutes {
     /// state (060.1 §2, [`seed_rule_citation_bracket`]), pinned where a guard's read is
     /// routed. Empty for a citation with no bracket.
     selections: Vec<InstanceSelection>,
+    /// Is this a citation an operation or `const` body writes? Its routes are all its callee
+    /// is passed, so a requirement it leaves open is refused (proposal 073 §6.2). A rule-body
+    /// goal read as a citation is not: the goal's own router completes what its bracket leaves
+    /// ([`super::rule_goal_routes`]).
+    from_operation_body: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1275,6 +1280,7 @@ fn queue_citation_routes(
         opened,
         unopened,
         selections,
+        from_operation_body: true,
     });
 }
 
@@ -2025,6 +2031,7 @@ fn goal_edge_citation(
         opened: opened.map(|(_, params)| params).unwrap_or_default(),
         unopened,
         selections,
+        from_operation_body: false,
     };
     Ok((edge, unfixed))
 }
@@ -2203,12 +2210,19 @@ fn route_requirement_read(
         let Some(Expr::Var(Var::DeBruijn(d))) = pos_args.get(2)?.as_expr() else {
             return None;
         };
-        let carrier = carrier_subst
-            .resolve_as_value(*fresh.get(*d as usize)?)?
-            .clone();
+        // Proposal 073 §6.2 — a carrier the citation leaves open is a requirement no caller
+        // passes: refused here, as a rule body's goal at such a type is at load. The read would
+        // otherwise find its dictionary from the value when the goal runs.
+        let Some(carrier) = carrier_subst.resolve_as_value(*fresh.get(*d as usize)?).cloned() else {
+            if pending.from_operation_body {
+                misfits.push(open_at_citation(render_requires_entry(kb, &demand), pending.relation));
+            }
+            return None;
+        };
         let built = anchor_sort_goal(kb, spec_sort, &[carrier], &bracket.written)?;
         let owner = Some(kb.rule_domain(rid));
-        return resolve_route(kb, chain, param_rigids, subst, &built.goal, owner, misfits);
+        let open = pending.from_operation_body;
+        return resolve_route(kb, chain, param_rigids, subst, &built.goal, owner, open, misfits);
     }
     let op_functor = occ_head_symbol(&pos_args[1])?;
     // A read for a call with no argument at its spec's carrier, in a clause whose sort requires
@@ -2259,7 +2273,8 @@ fn route_requirement_read(
     }
     // WI-20260925-P7VP4 — a SLOT read is routed from its callee's own chain entry.
     if let Some(k) = slot_read_index(kb, named_args) {
-        return op_slot_route(kb, chain, param_rigids, subst, op_functor, k, &arg_types, misfits);
+        let open = pending.from_operation_body;
+        return op_slot_route(kb, chain, param_rigids, subst, op_functor, k, &arg_types, open, misfits);
     }
     // WI-20260925-SHED7 — a `SortDomain` read is routed from the TYPE, never by a search.
     if is_sort_domain_spec(kb, spec_sort) {
@@ -2311,7 +2326,8 @@ fn route_requirement_read(
                 return None;
             }
             let owner = Some(kb.rule_domain(rid));
-            resolve_route(kb, chain, param_rigids, subst, &goal, owner, misfits)
+            let open = pending.from_operation_body;
+            resolve_route(kb, chain, param_rigids, subst, &goal, owner, open, misfits)
         }
         CarriedReading::Scope(i) => emit_route(
             kb,
@@ -2962,6 +2978,7 @@ fn sort_requirement_route(
 /// The tail every route shares: resolve `goal` against the citing caller's frame `chain` —
 /// a rigid element meeting the caller's own `requires` through `param_rigids` — and emit
 /// the tree as the projection the citation passes. `None` routes nothing.
+#[allow(clippy::too_many_arguments)]
 fn resolve_route(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
@@ -2970,6 +2987,9 @@ fn resolve_route(
     goal: &SortGoal,
     // Whose requirement `goal` is, where an unanswered one refuses the citation.
     refused_for: Option<Symbol>,
+    // Is an answer at a type the citation leaves open refused too — a citation whose routes are
+    // all its callee is passed ([`PendingCitationRoutes::from_operation_body`])?
+    open_refused: bool,
     misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
     if let Some(tie) = two_names_at_caller(kb, chain, param_rigids, subst, goal) {
@@ -2990,7 +3010,27 @@ fn resolve_route(
             });
             None
         }
+        // Proposal 073 §6.2 — at a type the citation leaves open, nothing the caller holds
+        // answers it, and no caller further out can: refused, as a rule body's goal at such a
+        // type is. The read would otherwise find its dictionary from the value when it runs.
+        _ if open_refused && refused_for.is_some() => {
+            misfits.push(open_at_citation(format_goal(kb, goal), refused_for.expect("checked")));
+            None
+        }
         _ => None,
+    }
+}
+
+/// The misfit of a requirement an operation body's citation leaves at an open type: no caller
+/// passes it, and none is read from the value when the goal runs (proposal 073 §6.2).
+fn open_at_citation(requirement: String, owner: Symbol) -> CarriedMisfit {
+    CarriedMisfit::Unprovided {
+        requirement,
+        owner,
+        why: "the citation leaves the type it is at open, so no caller passes the dictionary, \
+              and none is read from the value when the goal runs — pass an argument at the \
+              column, or write the bracket"
+            .to_string(),
     }
 }
 
@@ -3104,6 +3144,7 @@ fn slot_read_index(
 /// entry written at a PROJECTION (δ needs the receiver's value, which a type does not carry)
 /// or one these types leave open.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn op_slot_route(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
@@ -3112,6 +3153,8 @@ fn op_slot_route(
     op: Symbol,
     k: usize,
     arg_types: &[Value],
+    // An open slot is refused ([`resolve_route`]).
+    open_refused: bool,
     misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
     let rec = crate::kb::op_info::lookup_operation_info(kb, op)?;
@@ -3214,7 +3257,7 @@ fn op_slot_route(
     })
     .unwrap_or_else(|| entry.spec.clone());
     let goal = goal_from_requires_entry(kb, &RequiresEntry { spec, ..entry })?;
-    resolve_route(kb, chain, param_rigids, subst, &goal, Some(op), misfits)
+    resolve_route(kb, chain, param_rigids, subst, &goal, Some(op), open_refused, misfits)
 }
 
 /// WI-20260925-SHED7 (proposal 060 §2.3) — the route of a `SortDomain` read at the type
@@ -3287,7 +3330,7 @@ fn sort_domain_route(
     }
     let built = anchor_sort_goal(kb, spec, &[ty], &[])?;
     // A domain at a concrete type with none is the type test's to answer, not the citation's.
-    resolve_route(kb, chain, param_rigids, subst, &built.goal, None, misfits)
+    resolve_route(kb, chain, param_rigids, subst, &built.goal, None, false, misfits)
 }
 
 /// WI-714 — the free-variable columns of a relation, merged across its clauses:

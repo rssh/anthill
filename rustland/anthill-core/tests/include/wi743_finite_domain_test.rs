@@ -362,7 +362,8 @@ fn an_introducer_bound_still_delays() {
     // `domain` to be a member of a kernel `Finite[T]`/`Enumerable[T]` spec AND a
     // dictionary channel that carries a RELATION (WI-20260909-NAR1X). Neither exists,
     // and proposal 060 §2.2's "abstract T dispatches through the requirement channel"
-    // names no mechanism that does.
+    // names no mechanism that does. Asked at a value, a query being typed where it is read
+    // (proposal 073 §6.2): `g(?a)` leaves `A` open and is refused.
     let mut kb = crate::common::load_kb_with(
         r#"
 namespace test.wi743.abstractt
@@ -380,7 +381,7 @@ namespace anthill.prelude.Int64
 end
 "#,
     );
-    assert_eq!(answers(&mut kb, "test.wi743.abstractt.g(?a)"), 1);
+    assert_eq!(answers(&mut kb, "test.wi743.abstractt.g(7)"), 1);
 }
 
 #[test]

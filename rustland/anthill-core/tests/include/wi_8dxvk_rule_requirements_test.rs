@@ -4,8 +4,30 @@
 //! The five capability regressions here and WI-582 alias member fail without the fix.
 //! Operation-free Marker and invalid-binding cases pass either way as controls.
 
-use crate::common::{load_kb_with, query_unary};
-use anthill_core::eval::Value;
+use crate::common::{load_kb_with, pattern_last_ints};
+use anthill_core::kb::KnowledgeBase;
+
+/// `answer(?y) :- keep(?x, ?y)` over `src(red(), 10)` and `src(blue(), 20)` is refused at
+/// load: `?x` is a `Red` in one fact and a `Blue` in the other, so no caller can pass `keep`
+/// its requirement, and none is read from the value (proposal 073 §6.2). The rows ask `keep`
+/// at each value instead, where the query's own type builds the dictionary.
+fn answer_is_refused(keep: &str) {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&tagger(&format!("{keep}\n rule answer(?y) :- keep(?x, ?y)"))),
+        &["answer.body", "`Tagger`"],
+        keep,
+    );
+}
+
+/// The query `keep(<value>, ?y)` is refused where it is read: no provider answers the
+/// instance the guard writes at that value's type.
+fn refused_at(kb: &mut KnowledgeBase, value: &str) {
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(kb, &format!("test.dxvkTag.keep({value}, ?y)")),
+        &["Tagger"],
+        value,
+    );
+}
 
 fn source(provision: bool, rule: &str) -> String {
     source_with("", "", provision, rule)
@@ -32,14 +54,25 @@ fn operation_free_spec_requirement_executes_with_and_without_a_provider() {
             provision,
             "rule keep[A](?x: A) :- src(?x), Marker[A]",
         ));
-        let answers = query_unary(&mut kb, "test.dxvk.keep");
+        // A query is typed where it is read (073 §6.2): one leaving `A` open is refused, and
+        // one at a value passes the guard that value's dictionary or is refused for none.
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(&mut kb, "test.dxvk.keep(?x)"),
+            &["`Marker` at `keep`'s `A`"],
+            "a query leaving `A` open",
+        );
+        let refused = |kb: &mut KnowledgeBase, pattern: &str| {
+            crate::common::assert_refused_naming(
+                &crate::common::query_pattern_refusals(kb, pattern),
+                &["Marker"],
+                pattern,
+            )
+        };
         if provision {
-            assert!(
-                matches!(answers.as_slice(), [(Value::Int(1), true)]),
-                "{answers:?}"
-            );
+            assert_eq!(crate::common::pattern_hits(&mut kb, "test.dxvk.keep(1)"), 1);
+            refused(&mut kb, "test.dxvk.keep(true)");
         } else {
-            assert!(answers.is_empty(), "{answers:?}");
+            refused(&mut kb, "test.dxvk.keep(1)");
         }
     }
 }
@@ -159,21 +192,20 @@ fn named_positional_and_aliased_guards_preserve_the_written_instance() {
         "Tagger[A, Int64]",
         "IntTagger[A]",
     ] {
-        let mut kb = load_kb_with(&tagger(&format!(
-            "rule keep[A](?x: A, ?y) :- src(?x, ?y), {guard}\n rule answer(?y) :- keep(?x, ?y)"
-        )));
-        let answers = query_unary(&mut kb, "test.dxvkTag.answer");
-        assert!(
-            matches!(answers.as_slice(), [(Value::Int(10), true)]),
-            "{guard}: {answers:?}"
-        );
+        let keep = format!("rule keep[A](?x: A, ?y) :- src(?x, ?y), {guard}");
+        answer_is_refused(&keep);
+        let mut kb = load_kb_with(&tagger(&keep));
+        assert_eq!(pattern_last_ints(&mut kb, "test.dxvkTag.keep(test.dxvkTag.Red.red(), ?y)"), [10], "{guard}");
+        // The written `Out = Int64` is kept: `Blue`'s `Out` is `Bool`.
+        refused_at(&mut kb, "test.dxvkTag.Blue.blue()");
     }
-    let mut kb = load_kb_with(&tagger(
-        "rule keep[A](?x: A, ?y) :- src(?x, ?y), Tagger[A]\n rule answer(?y) :- keep(?x, ?y)",
-    ));
-    let answers = query_unary(&mut kb, "test.dxvkTag.answer");
-    assert_eq!(answers.len(), 2, "the partial guard admits both providers");
-    assert!(answers.iter().all(|(_, definite)| *definite));
+    let mut kb = load_kb_with(&tagger("rule keep[A](?x: A, ?y) :- src(?x, ?y), Tagger[A]"));
+    assert_eq!(pattern_last_ints(&mut kb, "test.dxvkTag.keep(test.dxvkTag.Red.red(), ?y)"), [10]);
+    assert_eq!(
+        pattern_last_ints(&mut kb, "test.dxvkTag.keep(test.dxvkTag.Blue.blue(), ?y)"),
+        [20],
+        "the partial guard admits both providers"
+    );
 }
 
 #[test]
@@ -184,14 +216,15 @@ fn a_partially_applied_alias_member_retains_its_instance() {
         } else {
             "x"
         };
-        let mut kb = load_kb_with(&tagger(&format!(
-            "rule keep({annotation}, ?y) :- src({variable}, ?y)\n rule answer(?y) :- keep(?x, ?y)"
-        )));
-        let answers = query_unary(&mut kb, "test.dxvkTag.answer");
-        assert!(
-            matches!(answers.as_slice(), [(Value::Int(10), true)]),
-            "{annotation}: {answers:?}"
+        let keep = format!("rule keep({annotation}, ?y) :- src({variable}, ?y)");
+        answer_is_refused(&keep);
+        let mut kb = load_kb_with(&tagger(&keep));
+        assert_eq!(
+            pattern_last_ints(&mut kb, "test.dxvkTag.keep(test.dxvkTag.Red.red(), ?y)"),
+            [10],
+            "{annotation}"
         );
+        refused_at(&mut kb, "test.dxvkTag.Blue.blue()");
     }
 }
 
@@ -210,29 +243,18 @@ fn the_written_instance_is_consumed_through_the_existing_dictionary_channel() {
         "Tagger[A, Int64]",
         "IntTagger[A]",
     ] {
-        let mut kb = load_kb_with(&tagger(&format!(
-            "rule keep[A](?x: A, ?r) :- src(?x, ?), require t: {guard}, t.code(?r)\n \
-             rule answer(?r) :- keep(?x, ?r)"
-        )));
-        let answers = query_unary(&mut kb, "test.dxvkTag.answer");
-        assert!(
-            matches!(answers.as_slice(), [(Value::Int(7), true)]),
-            "{guard}: {answers:?}"
-        );
+        let keep = format!("rule keep[A](?x: A, ?r) :- src(?x, ?), require t: {guard}, t.code(?r)");
+        answer_is_refused(&keep);
+        let mut kb = load_kb_with(&tagger(&keep));
+        assert_eq!(pattern_last_ints(&mut kb, "test.dxvkTag.keep(test.dxvkTag.Red.red(), ?y)"), [7], "{guard}");
+        refused_at(&mut kb, "test.dxvkTag.Blue.blue()");
     }
     let mut kb = load_kb_with(&tagger(
-        "rule keep[A](?x: A, ?r) :- src(?x, ?), require t: Tagger[C = A], t.code(?r)\n \
-         rule answer(?r) :- keep(?x, ?r)",
+        "rule keep[A](?x: A, ?r) :- src(?x, ?), require t: Tagger[C = A], t.code(?r)",
     ));
-    let mut answers: Vec<i64> = query_unary(&mut kb, "test.dxvkTag.answer")
-        .into_iter()
-        .map(|(v, definite)| match (v, definite) {
-            (Value::Int(n), true) => n,
-            other => panic!("a definite Int64, got {other:?}"),
-        })
-        .collect();
-    answers.sort();
-    assert_eq!(answers, vec![7, 9], "`Out` left open: both providers");
+    // `Out` left open: both providers.
+    assert_eq!(pattern_last_ints(&mut kb, "test.dxvkTag.keep(test.dxvkTag.Red.red(), ?y)"), [7]);
+    assert_eq!(pattern_last_ints(&mut kb, "test.dxvkTag.keep(test.dxvkTag.Blue.blue(), ?y)"), [9]);
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&tagger(
             "rule keep[A](?x: A, ?r) :- src(?x, ?), Tagger[C = A, Out = Int64], Tagger.code(?r)",
@@ -252,20 +274,19 @@ fn applying_an_introduced_bound_keeps_the_guards_other_bindings() {
                 format!("x: A[C = {carrier}]")
             };
             let variable = if sigil { "?x" } else { "x" };
-            let mut kb = load_kb_with(&tagger(&format!(
-                "rule keep[A]({annotation}, ?r) :- src({variable}, ?r), Tagger[C = A, Out = Bool]\n \
-                 rule answer(?r) :- keep(?x, ?r)")));
-            let answers = query_unary(&mut kb, "test.dxvkTag.answer");
-            if let Some(expected) = expected {
-                assert!(
-                    matches!(answers.as_slice(), [(Value::Int(value), true)] if *value == expected),
-                    "{answers:?}"
-                );
-            } else {
-                assert!(
-                    answers.is_empty(),
-                    "the Red provider's Out is Int64, not Bool: {answers:?}"
-                );
+            let keep = format!(
+                "rule keep[A]({annotation}, ?r) :- src({variable}, ?r), Tagger[C = A, Out = Bool]"
+            );
+            answer_is_refused(&keep);
+            let mut kb = load_kb_with(&tagger(&keep));
+            let value = format!("test.dxvkTag.{carrier}.{}()", carrier.to_lowercase());
+            match expected {
+                Some(expected) => assert_eq!(
+                    pattern_last_ints(&mut kb, &format!("test.dxvkTag.keep({value}, ?y)")),
+                    [expected]
+                ),
+                // The Red provider's Out is Int64, not Bool.
+                None => refused_at(&mut kb, &value),
             }
         }
     }

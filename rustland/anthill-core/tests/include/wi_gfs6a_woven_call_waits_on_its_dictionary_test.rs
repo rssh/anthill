@@ -4,11 +4,17 @@
 //!
 //! A rule-body call of a sort's operation whose carrier is not known at load is woven
 //! (WI-20260925-P7VP4): an inferred read `find_dictionary(Sp, op, ?s, out: ?d)` stands before
-//! it, and the call carries `?d`. The read derives `?d` from the carrier's VALUE when it runs
-//! and waits while the carrier is unbound; the call waits with `?d` among its blockers
-//! (WI-20260926-CYNPE's coarse ones), answers once it is bound, and is a conditional answer if
-//! it never is. A ground carrier known to provide no instance makes the requirement
-//! unavailable: the goal fails, stated by a head column's type or unwritten alike — a missing
+//! it, and the call carries `?d`. The read waits while the carrier is unbound; the call waits
+//! with `?d` among its blockers (WI-20260926-CYNPE's coarse ones), answers once it is bound,
+//! and is a conditional answer if it never is.
+//!
+//! Since proposal 073 §2 reached rule bodies (WI-20261105-CBRD2, decided with the user
+//! 2026-11-14), the read takes `?d` from the instance the carrier holds, and nothing derives it
+//! from the carrier's value: a column typed at `Sp` holds instances, and a goal or a query that
+//! passes a `Car` there pairs it with `Car`'s dictionary at load. A call at a variable the
+//! clause types as a `Car` (`Sp.dflt(?s, ?r), ?s <=> car(n: 1)`) is `Car`'s, decided at load. A
+//! value whose sort provides no instance (a `Van`) is refused where the goal is read; before,
+//! the goal failed when it ran, stated by a head column's type or unwritten alike — a missing
 //! provider is no undecided answer (decided by the user, 2026-10-14).
 //!
 //! `Sp` receives on itself, so a clause states its requirement by typing a head column at it
@@ -36,8 +42,8 @@
 //!     Descending](1, 5)`) and was run from a rule lost the selection: the fold bridged the
 //!     callee from its argument values and the cited rule answered `Int64`'s own.
 //!
-//! A read at a carrier that provides nothing FAILS, as it did before: `dflted(van(n: 1), ?x)`
-//! has no answer and `not(…)` over it holds.
+//! A goal at a carrier that provides nothing is refused at load: `dflted(van(n: 1), ?x)`, and
+//! `not(…)` over it. It FAILED when it ran, as it did before this ticket.
 //!
 //! ## Back-out
 //!
@@ -75,9 +81,8 @@
 //!     `a_value_slot_whose_dictionary_a_later_goal_binds_answers` (7 each), and of
 //!     `a_dictionary_never_bound_is_a_conditional_answer` (the read answers);
 //!   * a read that finds no provider answered as undecided (`read_dictionary_into`) —
-//!     `a_carrier_that_provides_none_fails` and
-//!     `a_written_require_at_a_carrier_that_provides_none_fails` (one undecided row each), and
-//!     PRVA2's four rows over carriers no provision binds;
+//!     PRVA2's four rows over carriers no provision binds, and the two `Van` rows here until
+//!     a `Van` at a column of `Sp` was refused at load (CBRD2);
 //!   * the op half's pinned no-provider slot skipped again (`resolve_bridge_requirements_
 //!     supplied`) — the three KCNA0 rows (the debug-build panic in `bridge_op_to_eval`);
 //!   * the read of that absence a FAULT, as every marker read is (`bridge_disposition`) — the
@@ -103,7 +108,7 @@
 //! the ticket's controls pass unchanged: P7VP4's and SHED7's rows, and `classic_mini_test`
 //! (tiny-sat 2, alphabet-words 27/12/100, map-colouring 6).
 
-use anthill_core::kb::resolve::{ResolveConfig, Solution, UnknownCause};
+use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::KnowledgeBase;
 
 /// `test.<ns>`: `Sp`, with a type parameter when `param` (and `Car` provides it at `T =
@@ -128,7 +133,7 @@ fn program(ns: &str, param: bool, rules: &str) -> String {
 const SIZED: &str = "  rule sized(?s, ?x) :- Sp.size(?s, ?x)\n";
 const DFLTED: &str = "  rule dflted(?s, ?x) :- Sp.dflt(?s, ?x)\n";
 
-/// The solutions of the query `pattern` — asked as a query, untyped, as the ticket asked it.
+/// The solutions of the query `pattern`, typed where it is read.
 fn ask(kb: &mut KnowledgeBase, pattern: &str) -> Vec<Solution> {
     let goal = crate::common::query_pattern_term(kb, pattern);
     kb.resolve(&[goal], &ResolveConfig::default())
@@ -139,8 +144,11 @@ fn ask(kb: &mut KnowledgeBase, pattern: &str) -> Vec<Solution> {
 fn answers(kb: &mut KnowledgeBase, pattern: &str) -> Vec<(Option<i64>, bool)> {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     let goal = crate::common::query_pattern_term(kb, pattern);
-    let r = match TermView::head(&goal, kb) {
-        ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => TermView::pos_arg(&goal, kb, pos_arity - 1)
+    // The goal as written: a goal that passes its callee a dictionary or an instance rides in
+    // its citation marker.
+    let written = anthill_core::kb::load::query_goal_as_written(kb, &goal);
+    let r = match TermView::head(&written, kb) {
+        ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => TermView::pos_arg(&written, kb, pos_arity - 1)
             .expect("the last positional is readable")
             .to_value(),
         other => panic!("`{pattern}` is not an application: {other:?}"),
@@ -162,14 +170,6 @@ fn one_int(kb: &mut KnowledgeBase, pattern: &str) -> Option<i64> {
         [(v, true)] => *v,
         other => panic!("`{pattern}`: expected one definite row, got {other:?}"),
     }
-}
-
-/// The causes each solution of `pattern` names for its undecided goals.
-fn causes(kb: &mut KnowledgeBase, pattern: &str) -> Vec<Vec<UnknownCause>> {
-    ask(kb, pattern)
-        .iter()
-        .map(|s| s.undecided.iter().map(|(_, c)| *c).collect())
-        .collect()
 }
 
 /// `qn(?r)` has no answer and the search that said so is COMPLETE — a refutation, not an
@@ -252,21 +252,24 @@ fn a_rule_citing_the_clause_answers() {
 }
 
 /// CONTROL for the element read off the provision: an element the author WROTE still selects
-/// the row. A head column typed `Sp[T = String]` at a `Car`, which provides `Sp` at `T = Int64`
-/// only, holds no `Car`, and the clause has no row; typed `Sp[T = Int64]` it answers 42. (It
-/// was `require[Sp[T = String]]`, removed by proposal 060.1 §5, whose clause WAITED — a
-/// conditional row, which a missing provider is not; and it FAILED with the provision's element
-/// taking the place of the written one, `wrongT` answering 42 definitely.)
+/// the row. A head column typed `Sp[T = String]` holds no `Car`, which provides `Sp` at `T =
+/// Int64` only: the query that passes one is refused where it is read (proposal 073 §2, the
+/// value paired at the column at load); typed `Sp[T = Int64]` it answers 42. (Before the
+/// pairing, `wrongT` had no row. It was `require[Sp[T = String]]`, removed by proposal 060.1
+/// §5, whose clause WAITED — a conditional row, which a missing provider is not; and it FAILED
+/// with the provision's element taking the place of the written one, `wrongT` answering 42
+/// definitely.)
 #[test]
 fn a_written_element_still_selects_the_row() {
     let rules = "  import anthill.prelude.{String}\n  \
                  rule wrongT(s: Sp[T = String], ?r) :- Sp.size(s, ?r)\n  \
                  rule rightT(s: Sp[T = Int64], ?r) :- Sp.size(s, ?r)\n";
     let mut kb = crate::common::load_kb_with(&program("gfs6a.written", true, rules));
-    assert_eq!(
-        answers(&mut kb, "test.gfs6a.written.wrongT(test.gfs6a.written.Car.car(n: 1), ?r)"),
-        Vec::<(Option<i64>, bool)>::new(),
-        "no row of `Sp` at `T = String` for a `Car`",
+    let pattern = "test.gfs6a.written.wrongT(test.gfs6a.written.Car.car(n: 1), ?r)";
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, pattern),
+        &["wrongT", "Sp[T = String]", "Car"],
+        pattern,
     );
     assert_eq!(
         one_int(&mut kb, "test.gfs6a.written.rightT(test.gfs6a.written.Car.car(n: 1), ?r)"),
@@ -415,13 +418,16 @@ fn a_body_less_call_a_later_goal_grounds_answers() {
 }
 
 /// `?s` never bound: one CONDITIONAL row whose residual holds the read and the call, and no
-/// undecided cause — the call waits, it is not unreduced. Before, without the parameter: a
-/// DEFINITE 7, `Sp`'s default answered for a carrier nothing chose.
+/// undecided cause — the call waits, it is not unreduced. Asked through a rule, whose variable at
+/// the column passes as it is; asked as a query, `dflted(?s, ?r)` is refused where it is read: a
+/// query has no caller to pass the instance (decided with the user, 2026-11-14). Before, without
+/// the parameter: a DEFINITE 7, `Sp`'s default answered for a carrier nothing chose.
 #[test]
 fn a_dictionary_never_bound_is_a_conditional_answer() {
     for (ns, param) in [("gfs6a.neverp", true), ("gfs6a.nevernp", false)] {
-        let mut kb = crate::common::load_kb_with(&program(ns, param, DFLTED));
-        let sols = ask(&mut kb, &format!("test.{ns}.dflted(?s, ?r)"));
+        let rules = format!("{DFLTED}  rule never(?r) :- dflted(?s, ?r)\n");
+        let mut kb = crate::common::load_kb_with(&program(ns, param, &rules));
+        let sols = ask(&mut kb, &format!("test.{ns}.never(?r)"));
         let [sol] = sols.as_slice() else {
             panic!("param: {param}: one row; got {} solutions", sols.len());
         };
@@ -437,43 +443,59 @@ fn a_dictionary_never_bound_is_a_conditional_answer() {
                 && held.iter().any(|g| g.starts_with("dflt(")),
             "param: {param}: the read and the call wait: {held:?}",
         );
+        let pattern = format!("test.{ns}.dflted(?s, ?r)");
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(&mut kb, &pattern),
+            &["dflted", "a variable of the query", "Sp"],
+            &pattern,
+        );
     }
 }
 
 // ── a carrier that provides none ────────────────────────────────────────────────────────
 
-/// `Van` provides no `Sp`: the requirement the call owes is known not to be available, so
-/// the goal fails and `not(…)` over it holds — as it did before this ticket, and as a written
-/// requirement stated by a head column's type does (the row below). FAILS with that read made undecided: one row whose
-/// cause is `Unreduced`, and the negation undecided.
+/// `Van` provides no `Sp`, so a `Van` has no instance of it, and a goal that passes one at a
+/// column of `Sp` is refused where it is read (proposal 073 §2): a rule body's goal at load,
+/// under `not(…)` too, and a query. Before the pairing the goal failed when it ran and `not(…)`
+/// over it held — and it FAILED with that read made undecided: one row whose cause is
+/// `Unreduced`, and the negation undecided.
 #[test]
-fn a_carrier_that_provides_none_fails() {
+fn a_carrier_that_provides_none_is_refused() {
     let rules = format!("{DFLTED}  rule notVan(1) :- not(dflted(van(n: 1), 7))\n");
-    let mut kb = crate::common::load_kb_with(&program("gfs6a.novan", false, &rules));
-    assert_eq!(
-        causes(&mut kb, "test.gfs6a.novan.dflted(test.gfs6a.novan.Van.van(n: 1), ?r)"),
-        Vec::<Vec<UnknownCause>>::new(),
-        "no row",
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program("gfs6a.novan", false, &rules)),
+        &["dflted", "Sp", "Van"],
+        "a goal passing a `Van`",
     );
-    assert_eq!(crate::common::one_definite_int(&mut kb, "test.gfs6a.novan.notVan"), Some(1));
+    let mut kb = crate::common::load_kb_with(&program("gfs6a.novan", false, DFLTED));
+    let pattern = "test.gfs6a.novan.dflted(test.gfs6a.novan.Van.van(n: 1), ?r)";
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, pattern),
+        &["dflted", "Sp", "Van"],
+        pattern,
+    );
 }
 
 /// A requirement the AUTHOR stated — a head column typed at the spec, `s: Sp` — at a carrier
-/// known to provide no instance does not hold: the clause fails and `not(…)` over it holds, as
-/// the unwritten one does (the row above). It failed before this ticket too, and is here for
-/// the decision that a missing provider is no undecided answer, written or not. (Stated as
-/// `require[Sp]` before proposal 060.1 §5 removed that form.)
+/// that provides no instance is refused the same way, as the unwritten one is (the row above).
+/// It failed when it ran, before the pairing. (Stated as `require[Sp]` before proposal 060.1 §5
+/// removed that form.)
 #[test]
-fn a_written_require_at_a_carrier_that_provides_none_fails() {
-    let rules = "  rule written(s: Sp, ?r) :- Sp.dflt(s, ?r)\n  \
-                 rule notWritten(1) :- not(written(van(n: 1), 43))\n";
-    let mut kb = crate::common::load_kb_with(&program("gfs6a.wrote", false, rules));
-    assert_eq!(
-        answers(&mut kb, "test.gfs6a.wrote.written(test.gfs6a.wrote.Van.van(n: 1), ?r)"),
-        Vec::<(Option<i64>, bool)>::new(),
-        "no row: the condition does not hold",
+fn a_written_require_at_a_carrier_that_provides_none_is_refused() {
+    let written = "  rule written(s: Sp, ?r) :- Sp.dflt(s, ?r)\n";
+    let rules = format!("{written}  rule notWritten(1) :- not(written(van(n: 1), 43))\n");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program("gfs6a.wrote", false, &rules)),
+        &["written", "Sp", "Van"],
+        "a goal passing a `Van`",
     );
-    assert_eq!(crate::common::one_definite_int(&mut kb, "test.gfs6a.wrote.notWritten"), Some(1));
+    let mut kb = crate::common::load_kb_with(&program("gfs6a.wrote", false, written));
+    let pattern = "test.gfs6a.wrote.written(test.gfs6a.wrote.Van.van(n: 1), ?r)";
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, pattern),
+        &["written", "Sp", "Van"],
+        pattern,
+    );
 }
 
 // ── WI-20260923-KCNA0: an operation's own requirement no provider answers ───────────────

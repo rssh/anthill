@@ -126,29 +126,39 @@ fn a_cited_guarded_goal_answers_the_passed_dictionary() {
     assert_eq!(count(kb, "notOtherR()"), (1, 1), "CONTROL: …and its `not` holds");
 }
 
-/// A guarded goal whose argument is not bound waits: with nothing binding it, one
-/// conditional answer, never a refutation, and its `not` undecided; with a later goal binding
-/// it, the goal answers once it is bound. RESOLVER: `chkG(?y)` answers nothing. The rows
-/// where a later goal binds the argument pass either way by design: the goal was asked again
-/// once its argument was bound, which this change does not touch; they hold that the new
-/// route delays rather than deciding the unbound goal.
+/// A guarded goal whose argument nothing types is refused: a query leaving `A` open where it
+/// is read, and a rule-body goal at a variable no head column reaches (`not(chkG(?z))`) at load
+/// — no caller passes the requirement, and none is read from the value when the goal runs
+/// (proposal 073 §6.2). It waited while the guard read the value: one conditional answer, and
+/// its `not` undecided. Asked at a value, or at a variable a column of its own clause or a fact
+/// types, it answers.
 #[test]
-fn a_guarded_goal_with_an_unbound_argument_waits() {
+fn a_guarded_goal_with_an_unbound_argument_is_refused() {
     let extra = r#"
   rule chkG[A](?x: A) :- Pred[T = A], Pred.ok(?x)
-  rule nope() :- not(chkG(?z))
   rule lateG[A](?x: A) :- Pred[T = A], Pred.ok(?x), src(?x)
   rule lateF[A](?x: A) :- Pred[T = A], Pred.ok(?x), src1(?x)
   rule notLateF(?y) :- src1(?y), not(lateF(?y))
 "#;
+    crate::common::assert_refused_naming(
+        &load_errors_of(&program(&format!("{extra}  rule nope() :- not(chkG(?z))\n"))),
+        &["nope.body", "`Pred` at `chkG`'s `A`"],
+        "a goal under `not` at a variable no head column reaches",
+    );
     let mut interp = interp_for(&program(extra));
     let kb = interp.kb_mut();
-    assert_eq!(count(kb, "chkG(?y)"), (0, 1), "the unbound goal waits: one conditional answer");
-    assert_eq!(count(kb, "nope()"), (0, 1), "…and its `not` is undecided");
-    assert_eq!(count(kb, "lateG(leaf(v: 3))"), (1, 1), "bound later, the goal answers true");
-    assert_eq!(count(kb, "lateG(?y)"), (1, 1), "…and that is its one answer");
-    assert_eq!(count(kb, "lateF(?y)"), (0, 0), "bound later to leaf(v: 1), it is false");
-    assert_eq!(count(kb, "notLateF(?y)"), (1, 1), "…and its `not` holds");
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(kb, &format!("{NS}.chkG(?y)")),
+        &["`Pred` at `chkG`'s `A`"],
+        "a query whose column nothing types",
+    );
+    assert_eq!(count(kb, "lateG(leaf(v: 3))"), (1, 1), "at a value, the goal answers true");
+    assert_eq!(count(kb, "lateF(leaf(v: 1))"), (0, 0), "at `leaf(v: 1)` it is false");
+    // A column its own clause types — `src(?x)` holds `Leaf`s — types the query's variable, as
+    // a rule body's goal `lateG(?y)` is typed by it.
+    assert_eq!(count(kb, "lateG(?y)"), (1, 1), "typed at `Leaf` by its column");
+    assert_eq!(count(kb, "lateF(?y)"), (0, 0), "typed at `Leaf`, and false");
+    assert_eq!(count(kb, "notLateF(?y)"), (1, 1), "…and its `not` holds, `?y` typed by `src1`");
 }
 
 /// At an open type the goal is refused as its result-column twin is, with the same refusal and

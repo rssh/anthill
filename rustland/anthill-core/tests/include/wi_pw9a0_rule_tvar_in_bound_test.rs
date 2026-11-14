@@ -39,11 +39,12 @@
 //!    the relocation on purpose — the relocation is what makes the shadowing reach depth,
 //!    the refusal is what stops that being a silent change of meaning.
 //!  * **`typing::type_bound_verdict`'s predicate** (variable → nominal, the pre-ticket
-//!    form). **3 fail**, and none of them mentions an introducer in its own right:
-//!    [`a_concrete_bound_with_no_nominal_head_restricts`],
-//!    [`and_it_holds_where_the_value_does_conform`] and
-//!    [`so_does_one_with_an_introducer_substituted_into_it`] — the last is where this
-//!    axis and the RELOCATION meet, which is why the first two carry no introducer at all.
+//!    form). **2 fail**, and neither mentions an introducer:
+//!    [`a_concrete_bound_with_no_nominal_head_restricts`] and
+//!    [`and_it_holds_where_the_value_does_conform`].
+//!    [`so_does_one_with_an_introducer_substituted_into_it`] was the third until a query
+//!    became typed where it is read (proposal 073 §6.2): its query is refused before any
+//!    verdict is asked.
 //!
 //! [`the_control_a_bare_introducer_drives`] passes under ALL FIVE back-outs BY DESIGN —
 //! it writes no introducer inside a bound and its bound is nominal. It is the yardstick
@@ -57,9 +58,22 @@ fn answers(kb: &mut KnowledgeBase, pattern: &str) -> usize {
     kb.resolve(&[goal], &ResolveConfig::default()).len()
 }
 
+/// The query `pattern` is refused where it is read, its guard's `Summable` answered by nothing
+/// at the type its argument puts the introducer at (proposal 073 §6.2): the row a bound keeps
+/// out is asked at its own value, and no value is read when the goal runs.
+fn refused(kb: &mut KnowledgeBase, pattern: &str) {
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(kb, pattern),
+        &["Summable"],
+        pattern,
+    );
+}
+
 /// A two-row table whose rows are TAGGED by their second column, so which row a bound
 /// keeps is asserted by VALUE (`g(?a, 7)` vs `g(?a, 8)`) and not by a count that any
-/// one-row outcome would satisfy. Two tables, because the two questions need different
+/// one-row outcome would satisfy. A guarded relation is asked at each row's own value
+/// (`g([1, 2], 7)`, `g([true], 8)`): a query is typed where it is read, so one at a type
+/// nothing provides `Summable` at is refused, and one that leaves `A` open is too (073 §6.2). Two tables, because the two questions need different
 /// carriers and sharing one would make a row measure the wrong thing:
 ///
 ///  * `list_src` holds `[1, 2]` (a `List[T = Int64]`, whose ELEMENT type provides
@@ -123,10 +137,10 @@ fn the_control_a_bare_introducer_drives() {
         "rule g[A](?a: A, ?b: Int64) :- src(?a, ?b), Summable[A]",
     ));
     assert_eq!(answers(&mut kb, "test.pw9a0.control.ungated(?a, ?b)"), 2);
-    // `?a: A` ≡ `?a: Summable`: `1` carries `Int64`, which provides it; `true` carries
-    // `Bool`, which does not.
-    assert_eq!(answers(&mut kb, "test.pw9a0.control.g(?a, 7)"), 1);
-    assert_eq!(answers(&mut kb, "test.pw9a0.control.g(?a, 8)"), 0);
+    // `?a: A` ≡ `?a: Summable`: `1` is an `Int64`, which provides it; `true` a `Bool`,
+    // which does not, so the query at it is refused (073 §6.2).
+    assert_eq!(answers(&mut kb, "test.pw9a0.control.g(1, 7)"), 1);
+    refused(&mut kb, "test.pw9a0.control.g(true, 8)");
 }
 
 /// THE TICKET'S FAILING ROW, sigil spelling. `?a: List[T = A]` is "a list whose element
@@ -144,18 +158,15 @@ fn a_compound_bound_filters_by_the_introducers_bound() {
     // introducer keeps NEITHER, a `List` carrier not itself providing `Summable`. So the
     // rows below are the compound bound answering a question the bare one cannot ask,
     // not a second way of writing it.
-    assert_eq!(answers(&mut kb, "test.pw9a0.sigil.bare(?a, ?b)"), 0);
+    refused(&mut kb, "test.pw9a0.sigil.bare([1, 2], 7)");
     assert_eq!(
-        answers(&mut kb, "test.pw9a0.sigil.g(?a, 7)"),
+        answers(&mut kb, "test.pw9a0.sigil.g([1, 2], 7)"),
         1,
         "the `[1, 2]` row's element type Int64 provides Summable — it must be KEPT"
     );
-    assert_eq!(
-        answers(&mut kb, "test.pw9a0.sigil.g(?a, 8)"),
-        0,
-        "the `[true]` row's element type Bool does not provide Summable — it must be \
-         FILTERED; this is the assertion a clean load cannot make"
-    );
+    // The `[true]` row's element type Bool does not provide Summable: the query at it is
+    // refused, the assertion a clean load cannot make.
+    refused(&mut kb, "test.pw9a0.sigil.g([true], 8)");
 }
 
 /// BOTH SPELLINGS, ONE ANSWER (proposal 060 §2.1). The same program with the sigil
@@ -168,8 +179,8 @@ fn the_sigil_free_spelling_answers_identically() {
         "rule g[A](a: List[T = A], b: Int64) :- src(a, b), Summable[A]",
     ));
     assert_eq!(answers(&mut kb, "test.pw9a0.param.ungated(?a, ?b)"), 2);
-    assert_eq!(answers(&mut kb, "test.pw9a0.param.g(?a, 7)"), 1);
-    assert_eq!(answers(&mut kb, "test.pw9a0.param.g(?a, 8)"), 0);
+    assert_eq!(answers(&mut kb, "test.pw9a0.param.g([1, 2], 7)"), 1);
+    refused(&mut kb, "test.pw9a0.param.g([true], 8)");
 }
 
 /// THE SILENT HALF, and the reason the §2.1 reclassifier's ParseAux DECLINE could not
@@ -184,12 +195,12 @@ fn the_sigil_free_bare_spelling_was_a_dead_clause() {
         "rule g[A](a: A, b: Int64) :- src(a, b), Summable[A]",
     ));
     assert_eq!(
-        answers(&mut kb, "test.pw9a0.parambare.g(?a, ?b)"),
+        answers(&mut kb, "test.pw9a0.parambare.g(1, ?b)"),
         1,
         "the sigil-free bare spelling must answer what its `?a: A` twin answers"
     );
-    assert_eq!(answers(&mut kb, "test.pw9a0.parambare.g(?a, 7)"), 1);
-    assert_eq!(answers(&mut kb, "test.pw9a0.parambare.g(?a, 8)"), 0);
+    assert_eq!(answers(&mut kb, "test.pw9a0.parambare.g(1, 7)"), 1);
+    refused(&mut kb, "test.pw9a0.parambare.g(true, 8)");
 }
 
 /// NO `TypeExpr` SHAPE IS SINGLED OUT, because the substitution is a fact about
@@ -206,15 +217,18 @@ fn an_introducer_denotes_its_bound_at_any_depth() {
         "rule g[A](?a: List[T = List[T = A]], ?b: Int64) :- src(?a, ?b), Summable[A]",
     ));
     assert_eq!(answers(&mut kb, "test.pw9a0.nested.ungated(?a, ?b)"), 2);
-    assert_eq!(answers(&mut kb, "test.pw9a0.nested.g(?a, ?b)"), 0);
+    // A list of lists fixes `A` and holds no row; the table's own `[1, 2]` does not fit the
+    // nested bound, so nothing fixes `A` there.
+    assert_eq!(answers(&mut kb, "test.pw9a0.nested.g([[1]], ?b)"), 0);
+    refused(&mut kb, "test.pw9a0.nested.g([1, 2], ?b)");
 
     // (b) TWO introducers, each with its own guard, in two different positions.
     let mut kb = crate::common::load_kb_with(&list_src(
         "two",
         "rule g[A, B](?a: List[T = A], ?b: B) :- src(?a, ?b), Summable[A], Summable[B]",
     ));
-    assert_eq!(answers(&mut kb, "test.pw9a0.two.g(?a, 7)"), 1);
-    assert_eq!(answers(&mut kb, "test.pw9a0.two.g(?a, 8)"), 0);
+    assert_eq!(answers(&mut kb, "test.pw9a0.two.g([1, 2], 7)"), 1);
+    refused(&mut kb, "test.pw9a0.two.g([true], 8)");
 
     // (c) The introducer as an APPLICATION's head — `A[T = Int64]` means
     // `Summable[T = Int64]`, which is a bound with a nominal head and so decides. A
@@ -228,8 +242,8 @@ fn an_introducer_denotes_its_bound_at_any_depth() {
         "rule g[A](?a: A[T = Int64], ?b: Int64) :- src(?a, ?b), Summable[A]",
     ));
     assert_eq!(answers(&mut kb, "test.pw9a0.applied.ungated(?a, ?b)"), 2);
-    assert_eq!(answers(&mut kb, "test.pw9a0.applied.g(?a, 7)"), 1);
-    assert_eq!(answers(&mut kb, "test.pw9a0.applied.g(?a, 8)"), 0);
+    assert_eq!(answers(&mut kb, "test.pw9a0.applied.g(1, 7)"), 1);
+    refused(&mut kb, "test.pw9a0.applied.g(true, 8)");
 }
 
 /// WI-582's ORIGINAL READER. A `@[simp]` equation's typed pattern is enforced by the
@@ -346,7 +360,7 @@ fn an_introducer_may_not_shadow_a_name_in_scope() {
         "noshadow",
         "rule g[A](?a: List[T = A], ?b: Int64) :- src(?a, ?b), Summable[A]",
     ));
-    assert_eq!(answers(&mut kb, "test.pw9a0.noshadow.g(?a, 7)"), 1);
+    assert_eq!(answers(&mut kb, "test.pw9a0.noshadow.g([1, 2], 7)"), 1);
     // CONTROL 2 — the same annotation with NO introducer, which is the reading the
     // refused program could otherwise have meant: it keeps the OTHER row, which is what
     // makes the two readings distinguishable and the refusal necessary.
@@ -614,9 +628,10 @@ end
 }
 
 /// THE INTRODUCER ARM of the row above: substituting a bounded type variable into an
-/// arrow or a tuple gives the same verdict as writing a concrete type there. Two axes
-/// meet in this row — back out the substitution and it fails at load with
-/// `unresolved name 'A'`; back out the verdict predicate and it answers 2 residuals.
+/// arrow or a tuple loads — back out the substitution and it fails at load with
+/// `unresolved name 'A'`. The table holds lists, which fix no `A` in an arrow or a tuple, so
+/// the query at one is refused where it is read (073 §6.2) and never reaches the verdict
+/// predicate, whose back-out this row no longer measures.
 #[test]
 fn so_does_one_with_an_introducer_substituted_into_it() {
     for (ns, rule) in [
@@ -634,6 +649,6 @@ fn so_does_one_with_an_introducer_substituted_into_it() {
             answers(&mut kb, &format!("test.pw9a0.{ns}.ungated(?a, ?b)")),
             2
         );
-        assert_eq!(answers(&mut kb, &format!("test.pw9a0.{ns}.g(?a, ?b)")), 0);
+        refused(&mut kb, &format!("test.pw9a0.{ns}.g([1, 2], ?b)"));
     }
 }

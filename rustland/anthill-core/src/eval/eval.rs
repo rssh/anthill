@@ -188,8 +188,9 @@ impl Interpreter {
         let result = self.run_from(floor, dispatched);
         self.end_host_entry(top_level, sym);
         // Proposal 073 §2 — the host works on its own values: a result that is an instance is
-        // handed back as the carrier's value, as a host operation is handed its arguments.
-        result.map(|v| self.carried_for_host(sym, v))
+        // handed back as the carrier's value, as a host operation is handed its arguments. The
+        // resolver's bridge hands it to a rule, whose value at an abstract type is the instance.
+        result.map(|v| if self.bridge_mode() { v } else { self.carried_for_host(sym, v) })
     }
 
     /// STAGE 4'S, the host entry only — the dictionary of `op`'s spec at the sort of the

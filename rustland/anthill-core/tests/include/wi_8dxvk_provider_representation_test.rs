@@ -19,7 +19,6 @@ namespace test.dxvkShared
  fact src(1, 2, 43)
  fact src(true, false, 44)
  rule keep[A](?x: A, ?y: A, ?r) :- src(?x, ?y, ?r), Marker[A]
- rule answer(?r) :- keep(?x, ?y, ?r)
 end
 namespace anthill.prelude.Int64
  import test.dxvkShared.Marker
@@ -33,17 +32,14 @@ namespace anthill.prelude.Bool
 end
 "#,
     );
-    let answers = common::query_unary(&mut kb, "test.dxvkShared.answer");
+    // Each query fixes `A` where it is read (073 §6.2): one carrier at both columns answers,
+    // and `1, true` puts the shared `A` at `Int64`, where `true` is no value of it.
+    assert_eq!(common::pattern_last_ints(&mut kb, "test.dxvkShared.keep(1, 2, ?r)"), [43]);
+    assert_eq!(common::pattern_last_ints(&mut kb, "test.dxvkShared.keep(true, false, ?r)"), [44]);
     assert_eq!(
-        answers.len(),
-        2,
-        "different carriers cannot instantiate one shared A: {answers:?}"
-    );
-    assert!(
-        answers
-            .iter()
-            .all(|(v, definite)| *definite && matches!(v, anthill_core::eval::Value::Int(43 | 44))),
-        "{answers:?}"
+        common::pattern_last_ints(&mut kb, "test.dxvkShared.keep(1, true, ?r)"),
+        Vec::<i64>::new(),
+        "different carriers cannot instantiate one shared A"
     );
 }
 
@@ -232,10 +228,18 @@ end
             "rule keep(?x: Marker.T, ?y: Marker.T, ?r) :- src(?x, ?y, ?r)")
         .replace("rule answer(?r) :- keep(?x, ?y, ?r)",
             "rule answer(?r) :- keep(?x, ?y, ?r)\n rule tags(?x: Marker.T, ?y: Marker.T, ?a, ?b) :- Marker.tag(?x, ?a), Marker.tag(?y, ?b)\n rule first(?a) :- tags(1, true, ?a, ?)\n rule second(?b) :- tags(1, true, ?, ?b)");
+    // `answer(?r) :- keep(?x, ?y, ?r)` puts each column at a type no caller fixes: refused at
+    // load (073 §6.2). Each query at values answers its row, the two columns' carriers apart.
+    common::assert_refused_naming(
+        &common::load_errors_of(&src),
+        &["answer.body", "`Marker`"],
+        "`answer` over carriers no caller fixes",
+    );
+    let src = src.replace("rule answer(?r) :- keep(?x, ?y, ?r)\n", "");
     let mut kb = common::load_kb_with(&src);
-    let answers = common::query_unary(&mut kb, "test.dxvkShared.answer");
-    assert_eq!(answers.len(), 3, "{answers:?}");
-    assert!(answers.iter().all(|(_, definite)| *definite));
+    assert_eq!(common::pattern_last_ints(&mut kb, "test.dxvkShared.keep(1, true, ?r)"), [42]);
+    assert_eq!(common::pattern_last_ints(&mut kb, "test.dxvkShared.keep(1, 2, ?r)"), [43]);
+    assert_eq!(common::pattern_last_ints(&mut kb, "test.dxvkShared.keep(true, false, ?r)"), [44]);
     assert_eq!(
         common::one_definite_int(&mut kb, "test.dxvkShared.first"),
         Some(1)

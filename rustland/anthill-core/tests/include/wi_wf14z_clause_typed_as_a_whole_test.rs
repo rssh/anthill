@@ -952,35 +952,34 @@ fn a_column_of_no_common_type_is_of_some_type() {
     }
 }
 
-/// A SPEC OPERATION'S CARRIER TAKES A VALUE OF SOME TYPE: `Desc.describe(?x, ?r)` is
-/// dispatched by each value's own sort, so `item`'s `leaf` and `other` answer `7` and `9` — a
-/// parameter of the callee's own type is no demand. Read as one, the call was refused as a
-/// demand on an un-narrowed value.
+/// A SPEC OPERATION'S CARRIER AT A VALUE OF NO ONE TYPE IS REFUSED: in `g(?r) :- item(?x),
+/// Desc.describe(?x, ?r)`, `?x` is a `Leaf` in one `item` fact and an `Other` in the other, a
+/// type no head column reaches, so no caller can pass `Desc` and none is read from the value
+/// when the call runs (proposal 073 §6.2). It was dispatched by each value's own sort, `7` and
+/// `9`. Declared at a head column and asked at each value, it answers both.
 #[test]
-fn a_spec_operations_carrier_takes_a_value_of_some_type() {
+fn a_spec_operations_carrier_at_a_value_of_no_one_type_is_refused() {
     let ns = "wiwf14z.carrier";
-    let rows = {
-        let mut kb = crate::common::load_kb_with(&program(
+    let decls = "  sort Desc\n    sort T = ?\n    operation describe(x: T) -> Int64\n  end\n  \
+         sort Leaf\n    import anthill.prelude.Int64\n    entity leaf\n    \
+         provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n  end\n  \
+         sort Other\n    import anthill.prelude.Int64\n    entity other\n    \
+         provides Desc[T = Other]\n    operation describe(x: Other) -> Int64 = 9\n  end\n  \
+         fact item(leaf())\n  fact item(other())\n";
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program(
             ns,
-            "  sort Desc\n    sort T = ?\n    operation describe(x: T) -> Int64\n  end\n  \
-             sort Leaf\n    import anthill.prelude.Int64\n    entity leaf\n    \
-             provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n  end\n  \
-             sort Other\n    import anthill.prelude.Int64\n    entity other\n    \
-             provides Desc[T = Other]\n    operation describe(x: Other) -> Int64 = 9\n  end\n  \
-             fact item(leaf())\n  fact item(other())\n  \
-             rule g(?r) :- item(?x), Desc.describe(?x, ?r)\n",
-        ));
-        let mut got: Vec<Option<i64>> = crate::common::query_unary(&mut kb, &format!("{ns}.g"))
-            .into_iter()
-            .map(|(v, _)| match v {
-                anthill_core::eval::Value::Int(i) => Some(i),
-                _ => None,
-            })
-            .collect();
-        got.sort();
-        got
-    };
-    assert_eq!(rows, [Some(7), Some(9)]);
+            &format!("{decls}  rule g(?r) :- item(?x), Desc.describe(?x, ?r)\n"),
+        )),
+        &["g.body", "a requirement of `Desc`", "no head column of the clause reaches"],
+        "a call at a value of no one type",
+    );
+    let mut kb = crate::common::load_kb_with(&program(
+        ns,
+        &format!("{decls}  rule g[A](?x: A, ?r) :- Desc[A], item(?x), Desc.describe(?x, ?r)\n"),
+    ));
+    assert_eq!(crate::common::pattern_last_ints(&mut kb, &format!("{ns}.g({ns}.Leaf.leaf(), ?r)")), [7]);
+    assert_eq!(crate::common::pattern_last_ints(&mut kb, &format!("{ns}.g({ns}.Other.other(), ?r)")), [9]);
 }
 
 /// AN EQUATION'S HEAD IS A REWRITE PATTERN, NOT DATA: its sides are stored as the reflect

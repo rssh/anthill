@@ -465,20 +465,25 @@ pub(super) fn infer_rule_body_requirements(
             let typed_at_the_spec = demand.carriers.first().and_then(|c| c.inferred_type()).is_some_and(|ty| {
                 sort_functor_of_view(kb, &ty).is_some_and(|s| same_sort_canonical(kb, s, demand.spec))
             });
-            if !demand.of_the_sort
+            let unsupplied = !demand.of_the_sort
                 && !fixed_at_the_call
                 && !typed_at_the_spec
                 && !clause_sort_supplies(kb, rid, demand.spec)
                 && !declared_guard_requires(kb, rid, &guards, &demand)
-                && !carried_by_a_named_slot(kb, rid, &demand)
-                && demand
-                    .carriers
-                    .first()
-                    .and_then(|c| c.inferred_type())
-                    .is_some_and(|at| type_reaches_the_head(kb, rid, &at))
-            {
+                && !carried_by_a_named_slot(kb, rid, &demand);
+            let at = demand.carriers.first().and_then(|c| c.inferred_type());
+            if unsupplied && at.as_ref().is_some_and(|at| type_reaches_the_head(kb, rid, at)) {
                 if !refused_load && !refused_calls.contains(&(rid, demand.call.call.span.span)) {
                     refused.push(undeclared_requirement(kb, rid, &demand.call, demand.spec));
+                }
+                continue;
+            }
+            // Proposal 073 §6.2 — at a type no head column reaches, a variable the body binds,
+            // no caller can pass the requirement, and none is read from the value when the call
+            // runs: refused, as the clause's goal at such a type is.
+            if unsupplied && !at.as_ref().is_some_and(|at| instance_is_concrete(kb, at)) {
+                if !refused_load && !refused_calls.contains(&(rid, demand.call.call.span.span)) {
+                    refused.push(open_call_requirement(kb, rid, &demand.call, demand.spec, at.is_some()));
                 }
                 continue;
             }
@@ -533,14 +538,18 @@ pub(super) fn infer_rule_body_requirements(
                 .iter()
                 .map(|entry| slot_route(kb, rid, &guards, &demand.call, entry))
                 .collect();
-            if let Some(entry) = entries
+            if let Some((entry, route)) = entries
                 .iter()
                 .zip(&routes)
-                .find(|(_, r)| matches!(r, SlotRoute::Undeclared))
-                .map(|(e, _)| e)
+                .find(|(_, r)| matches!(r, SlotRoute::Undeclared | SlotRoute::Open))
             {
                 if !refused_load && !refused_calls.contains(&(rid, demand.call.call.span.span)) {
-                    refused.push(undeclared_requirement(kb, rid, &demand.call, entry.required_sort));
+                    refused.push(match route {
+                        SlotRoute::Open => {
+                            open_call_requirement(kb, rid, &demand.call, entry.required_sort, true)
+                        }
+                        _ => undeclared_requirement(kb, rid, &demand.call, entry.required_sort),
+                    });
                 }
                 continue;
             }
@@ -627,6 +636,31 @@ fn undeclared_requirement(
     spec: Symbol,
 ) -> (TypeError, Option<crate::span::SourceId>) {
     let spec_name = short_name_of(kb.qualified_name_of(spec));
+    call_requirement_refusal(
+        kb,
+        rid,
+        call,
+        spec,
+        format!(
+            "a requirement of `{spec_name}` the clause declares, at the type the call of `{op}` is at",
+            op = kb.qualified_name_of(call.functor),
+        ),
+        format!(
+            "the clause declares none, and a rule takes no dictionary it does not declare: {}",
+            crate::parse::desugar_target::DECLARE_A_REQUIREMENT,
+        ),
+    )
+}
+
+/// A refusal of rule-body `call`, a call of `spec` in clause `rid`, located at the call.
+fn call_requirement_refusal(
+    kb: &KnowledgeBase,
+    rid: RuleId,
+    call: &DemandCall,
+    spec: Symbol,
+    expected: String,
+    actual: String,
+) -> (TypeError, Option<crate::span::SourceId>) {
     let relation = match kb.rule_head_value(rid) {
         Value::Term { id, .. } => kb.head_functor(*id).unwrap_or(spec),
         _ => spec,
@@ -639,17 +673,44 @@ fn undeclared_requirement(
                 name: relation,
                 field: RuleField::Body,
             },
-            expected: format!(
-                "a requirement of `{spec_name}` the clause declares, at the type the call of \
-                 `{op}` is at",
-                op = kb.qualified_name_of(call.functor),
-            ),
-            actual: format!(
-                "the clause declares none, and a rule takes no dictionary it does not declare: {}",
-                crate::parse::desugar_target::DECLARE_A_REQUIREMENT,
-            ),
+            expected,
+            actual,
         },
         Some(call.call.span.source),
+    )
+}
+
+/// The refusal of `call`, a rule-body call of `spec` at a type nothing at the call fixes, where
+/// no caller can pass the requirement and none is read from the value when the call runs
+/// (proposal 073 §6.2): a type no head column of clause `rid` reaches, a variable its body
+/// binds (`typed`), or a carrier the clause's typing gives no type.
+fn open_call_requirement(
+    kb: &KnowledgeBase,
+    rid: RuleId,
+    call: &DemandCall,
+    spec: Symbol,
+    typed: bool,
+) -> (TypeError, Option<crate::span::SourceId>) {
+    let spec_name = short_name_of(kb.qualified_name_of(spec));
+    let at = if typed {
+        "the call is at a type no head column of the clause reaches, a variable its body binds"
+    } else {
+        "the clause's typing gives the call's argument at the spec's carrier no type"
+    };
+    call_requirement_refusal(
+        kb,
+        rid,
+        call,
+        spec,
+        format!(
+            "a requirement of `{spec_name}` fixed where the call of `{op}` is written",
+            op = kb.qualified_name_of(call.functor),
+        ),
+        format!(
+            "{at}, so no caller can pass the dictionary, and none is read from the value when the \
+             call runs — give the variable a type, or put it in a head column and declare the \
+             requirement there"
+        ),
     )
 }
 
@@ -908,6 +969,9 @@ enum SlotRoute {
     Read,
     /// At a type of the clause that the clause declares no requirement at: refused.
     Undeclared,
+    /// At a type no head column of the clause reaches, which no caller can pass the
+    /// requirement at (proposal 073 §6.2): refused.
+    Open,
 }
 
 /// [`SlotRoute`] of slot `entry` of `call`'s chain in clause `rid`. The slot's carrier binding
@@ -966,10 +1030,11 @@ fn slot_route(
             }
         }
     }
-    if at.iter().any(|ty| instance_is_concrete(kb, ty))
-        || !at.iter().any(|ty| type_reaches_the_head(kb, rid, ty))
-    {
+    if at.iter().any(|ty| instance_is_concrete(kb, ty)) {
         return SlotRoute::Read;
+    }
+    if !at.iter().any(|ty| type_reaches_the_head(kb, rid, ty)) {
+        return SlotRoute::Open;
     }
     SlotRoute::Undeclared
 }

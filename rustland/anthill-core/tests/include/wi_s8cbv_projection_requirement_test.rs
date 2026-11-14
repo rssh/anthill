@@ -479,13 +479,24 @@ fn a_member_the_roots_bound_cannot_declare_is_a_LOAD_ERROR() {
     );
 }
 
-/// AN ELEMENT NOT YET BOUND DELAYS: at the moment the body is entered `p` may not be bound,
-/// and nothing here binds it, so the guard's read suspends and the clause residualizes —
-/// loud at the drain rather than quietly deciding the clause false (WI-067).
+/// AN ELEMENT NOTHING FIXES IS REFUSED: `anchored(?any, ?r)` leaves `p`'s `E` open where it is
+/// written, so no caller can pass `Desc[T = E]`, and none is read from the value when the goal
+/// runs — refused at load, as a query leaving it open is where it is read (proposal 073 §6.2).
+/// It residualized while the guard's read waited for the value (WI-067).
 #[test]
-fn an_unbound_carrier_suspends_too() {
-    let got = rows("test.s8cbv.rule.unbound", PROJ_RULE, "anchored(?any, ?r)");
-    assert!(matches!(got.as_slice(), [(_, false)]), "expected one INDEFINITE row, got {got:?}");
+fn an_unbound_carrier_is_refused() {
+    let src = fixture("test.s8cbv.rule.unbound", &format!("{PROJ_RULE}  rule answer(?r) :- anchored(?any, ?r)\n"));
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &["answer.body", "`Desc` at `anchored`'s `E`"],
+        "a goal leaving the element open",
+    );
+    let mut kb = crate::common::load_kb_with(&fixture("test.s8cbv.rule.unboundq", PROJ_RULE));
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "test.s8cbv.rule.unboundq.anchored(?any, ?r)"),
+        &["`Desc` at `anchored`'s `E`"],
+        "a query leaving the element open",
+    );
 }
 
 /// [`fixture`] with a carrier-bearing operation added to the spec: `describe(x: T)` has a

@@ -1891,7 +1891,7 @@ pub(crate) fn fetch_dictionary_from_type(
     fetch_built_dictionary(kb, goal, false, rung)
 }
 
-fn fetch_built_dictionary(
+pub(super) fn fetch_built_dictionary(
     kb: &mut KnowledgeBase,
     goal: SortGoal,
     from_carried_types: bool,

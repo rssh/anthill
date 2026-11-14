@@ -18,12 +18,11 @@
 //! Each test builds a dictionary on a side and asserts a VALUE — never that
 //! something loaded. The two sides are:
 //!
-//!  * **σ** — the read a rule clause's guard makes, `find_dictionary(Desc[T = A], Desc, A,
-//!    out: ?d, carrier_type: true)` for `rule probe[A](?x: A) :- Desc[T = A]`, resolved by the
-//!    SLD builtin at a carrier (`read_dictionary_into` → `fetch_dictionary`). It was
-//!    `?d = require[Desc[T]]`, which bound the dictionary to a column; proposal 060.1 §5
-//!    removed that form, no clause binds a dictionary to a column now, and the rows run the
-//!    read the clause stores ([`sigma_dictionary`]);
+//!  * **σ** — the dictionary a rule clause's guard is handed, `find_dictionary(Desc[T = A],
+//!    Desc, A, out: ?d, carrier_type: true)` for `rule probe[A](?x: A) :- Desc[T = A]`: the one
+//!    the query `probe(leaf())` passes in its citation marker, built where the query is read
+//!    (proposal 073 §6.2), and bound to the read's `out` when the clause opens
+//!    ([`sigma_dictionary`]);
 //!  * **eval** — an operation frame's `requirements` channel, entered through
 //!    `Interpreter::call_with_requirements` and read by the body's
 //!    `var_ref(__req_*)`.
@@ -124,71 +123,31 @@ namespace test.wi1045
 end
 "#;
 
-/// The single dictionary σ builds for `probe`'s guard `Desc[T = A]` at `carrier` (`Leaf`,
-/// `Other`): the read the clause stores for the guard, first of its body, opened, its
-/// carrier unified with the sort and its `out:` a fresh variable, resolved.
+/// The single dictionary σ binds for `probe`'s guard `Desc[T = A]` at `carrier` (`Leaf`,
+/// `Other`): the one the query `probe(leaf())` passes, built where the query is read (proposal
+/// 073 §6.2) and bound by the resolver to the guard's read when the clause opens. (It was the
+/// read the clause stores, run by hand at the carrier, which found its dictionary from the
+/// type when it ran — the fetch 073 §6.2 removed.)
 ///
 /// Panics on anything but one definite answer — "the query returned nothing" must
 /// never read as a pass, and a second answer would mean the read is not the
 /// single-provider case this file is about.
 fn sigma_dictionary(carrier: &str) -> (Interpreter, Value) {
-    use anthill_core::kb::node_occurrence::Expr;
-    use anthill_core::kb::term::{Literal, Term, Var};
     let mut kb = crate::common::load_kb_with(SRC);
-    let probe = kb.try_resolve_symbol("test.wi1045.probe").expect("probe in KB");
-    let rid = kb
-        .live_rule_ids()
-        .into_iter()
-        .find(|&rid| {
-            let Value::Term { id, .. } = *kb.rule_head_value(rid) else { return false };
-            matches!(kb.get_term(id), Term::Fn { functor, .. } if *functor == probe)
-        })
-        .expect("probe's clause");
-    let read = kb.rule_body_nodes(rid).first().cloned().expect("the guard's read");
-    let Some(Expr::Apply { functor, pos_args, named_args, .. }) = read.as_expr() else {
-        panic!("the guard's read is an application: {read:?}");
+    let pattern = format!("test.wi1045.probe(test.wi1045.{carrier}.{}())", carrier.to_lowercase());
+    let goal = crate::common::query_pattern_term(&mut kb, &pattern);
+    let passed = anthill_core::kb::load::query_passed_dictionaries(&kb, &goal);
+    let [value] = passed.as_slice() else {
+        panic!("the query at `{carrier}` must pass exactly one dictionary, got {}", passed.len());
     };
-    let spliced = |i: usize| match pos_args[i].as_expr() {
-        Some(Expr::Spliced(Value::Term { id, .. })) => *id,
-        other => panic!("slot {i} of the read: {other:?}"),
-    };
-    let (instance, spec) = (spliced(0), spliced(1));
-    let Some(Expr::Var(Var::DeBruijn(c))) = pos_args[2].as_expr() else {
-        panic!("the read's carrier is the clause's parameter: {:?}", pos_args[2]);
-    };
-    let (out_label, carrier_label) = (named_args[0].0, named_args[1].0);
-    assert_eq!(kb.local_name_of(out_label), "out");
-    assert_eq!(kb.local_name_of(carrier_label), "carrier_type");
-    let name = kb.intern("probe");
-    let fresh: Vec<_> = (0..=*c).map(|_| kb.fresh_var(name)).collect();
-    let instance = kb.term_from_debruijn(instance, &fresh);
-    let at = kb.alloc(Term::Var(Var::Global(fresh[*c as usize])));
-    let d = kb.fresh_var(name);
-    let out = kb.alloc(Term::Var(Var::Global(d)));
-    let yes = kb.alloc(Term::Const(Literal::Bool(true)));
-    let read_goal = kb.alloc(Term::Fn {
-        functor: *functor,
-        pos_args: smallvec::SmallVec::from_slice(&[instance, spec, at]),
-        named_args: smallvec::SmallVec::from_slice(&[(out_label, out), (carrier_label, yes)]),
-    });
-    let sort = kb.make_sort_ref_by_name(&format!("test.wi1045.{carrier}"));
-    let unify = kb
-        .try_resolve_symbol(&anthill_core::parse::desugar_target::qualified(
-            anthill_core::parse::pratt::UNIFY_FUNCTOR,
-        ))
-        .expect("unify");
-    let fix = kb.alloc(Term::Fn {
-        functor: unify,
-        pos_args: smallvec::SmallVec::from_slice(&[at, sort]),
-        named_args: smallvec::SmallVec::new(),
-    });
-    let sols = kb.resolve(&[fix, read_goal], &anthill_core::kb::resolve::ResolveConfig::default());
-    let value = match sols.as_slice() {
-        [sol] if sol.is_definite() => kb
-            .answer_binding(d, &sol.subst)
-            .unwrap_or_else(|| panic!("the read at `{carrier}` bound no dictionary")),
-        other => panic!("the read at `{carrier}` must bind exactly one dictionary, got {}", other.len()),
-    };
+    let value = value.clone();
+    // The clause runs on it: the query holds, once, definitely.
+    let sols = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    assert!(
+        matches!(sols.as_slice(), [sol] if sol.is_definite()),
+        "the query at `{carrier}` must hold once, definitely; got {} answer(s)",
+        sols.len()
+    );
     // A FRESH interpreter needs its builtins bound — `register_standard_builtins`
     // is per-interpreter, not per-KB (WI-968).
     let mut interp = Interpreter::new(kb);

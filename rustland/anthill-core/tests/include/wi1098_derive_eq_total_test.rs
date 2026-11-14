@@ -75,9 +75,7 @@
 
 use anthill_core::eval::value::Value;
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use smallvec::SmallVec;
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -177,49 +175,6 @@ fn provisions_under(kb: &KnowledgeBase, ns: &str) -> Vec<(String, String)> {
     out
 }
 
-/// A `List` of already-built element terms.
-fn list_of(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
-    let nil = kb
-        .try_resolve_symbol("anthill.prelude.List.nil")
-        .expect("List.nil");
-    let cons = kb
-        .try_resolve_symbol("anthill.prelude.List.cons")
-        .expect("List.cons");
-    let head = kb.intern("head");
-    let tail = kb.intern("tail");
-    let mut list = kb.alloc(Term::Fn {
-        functor: nil,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-    for &e in elems.iter().rev() {
-        list = kb.alloc(Term::Fn {
-            functor: cons,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(head, e), (tail, list)]),
-        });
-    }
-    list
-}
-
-fn ref_term(kb: &mut KnowledgeBase, qualified: &str) -> TermId {
-    let sym = kb
-        .try_resolve_symbol(qualified)
-        .unwrap_or_else(|| panic!("symbol {qualified} not in KB"));
-    kb.alloc(Term::Ref(sym))
-}
-
-fn goal(kb: &mut KnowledgeBase, functor: &str, args: &[TermId]) -> TermId {
-    let f = kb
-        .try_resolve_symbol(functor)
-        .unwrap_or_else(|| panic!("symbol {functor} not in KB"));
-    kb.alloc(Term::Fn {
-        functor: f,
-        pos_args: SmallVec::from_slice(args),
-        named_args: SmallVec::new(),
-    })
-}
-
 // ── AXIS 1: the headline — a provision-less entity discharges `requires Eq[T]` ──
 
 /// THE ACCEPTANCE. `List.contains` over a `provides`-less entity ANSWERS, at both
@@ -245,14 +200,17 @@ fn contains_answers_for_a_provisionless_entity() {
          that made every `contains` succeed would pass the positive half"
     );
 
-    // The RESOLVER entry, over the same carrier.
+    // The RESOLVER entry, over the same carrier: a query, typed where it is read (proposal
+    // 073 §6.2), so `hasElem`'s guard is passed the derived `Eq[T = Colour]`.
     let mut kb = crate::common::load_kb_with(NO_PROVIDES);
-    let red = ref_term(&mut kb, "wi1098.noprov.Colour.red");
-    let green = ref_term(&mut kb, "wi1098.noprov.Colour.green");
-    let blue = ref_term(&mut kb, "wi1098.noprov.Colour.blue");
-    let list = list_of(&mut kb, &[red, green]);
-    let g = goal(&mut kb, "wi1098.noprov.hasElem", &[list, red]);
-    let sols = kb.resolve(&[g], &ResolveConfig::default());
+    let has = |x: &str| {
+        format!(
+            "wi1098.noprov.hasElem([wi1098.noprov.Colour.red, wi1098.noprov.Colour.green], \
+             wi1098.noprov.Colour.{x})"
+        )
+    };
+    let goal = crate::common::query_pattern_term(&mut kb, &has("red"));
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
     assert_eq!(
         sols.len(),
         1,
@@ -265,10 +223,9 @@ fn contains_answers_for_a_provisionless_entity() {
         "a DEFINITE solution, not a residual: the bridge ran `contains` rather than \
          suspending, which is the difference between deciding and deferring"
     );
-    let list2 = list_of(&mut kb, &[red, green]);
-    let g2 = goal(&mut kb, "wi1098.noprov.hasElem", &[list2, blue]);
+    let goal2 = crate::common::query_pattern_term(&mut kb, &has("blue"));
     assert_eq!(
-        kb.resolve(&[g2], &ResolveConfig::default()).len(),
+        kb.resolve(&[goal2], &ResolveConfig::default()).len(),
         0,
         "blue is not in [red, green] — and the guard FIRING is what makes this a \
          verdict rather than a block (wi625's `NoEq` twin is the same goal shape at a \

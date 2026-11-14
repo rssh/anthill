@@ -213,16 +213,14 @@ fn an_equation_gets_no_inferred_condition() {
 }
 
 /// A CARRIER NOTHING BINDS. `rule answer(?r) :- Desc.describe(?x, ?r)` leaves `?x` free, at a
-/// type no head column reaches: no caller can fix it, so the call's dictionary is found from
-/// the value when it runs, as for a query, and nothing is declared (060.1 §4). The value never
-/// comes, and the call waits: one UNDECIDED row with `?r` free, never `?r` bound to the
-/// un-reduced call (WI-1057). So does the clause that declares it, `?x` a column at `A`,
-/// queried with `?x` free: it waits on the guard's read. Its supplier-less twin is
-/// `wi1043_bodyless_rule_body_test::an_unground_body_less_goal_binds_no_residual`. The first
-/// half FAILS with the call at a local variable refused as a head column's is
-/// (`type_reaches_the_head` answering yes); the declared half passes either way, by design.
+/// type no head column reaches: no caller can fix it, and nothing is read from the value when
+/// the call runs, so it is refused at load (proposal 073 §6.2). It loaded and waited while the
+/// call's dictionary was found from the value, one UNDECIDED row (060.1 §4, §8.8). The clause
+/// that declares it, `?x` a column at `A`, queried with `?x` free, is refused where the query is
+/// read: a query is typed there, and leaves `A` open. Its supplier-less twin is
+/// `wi1043_bodyless_rule_body_test::an_unground_body_less_goal_binds_no_residual`.
 #[test]
-fn an_unground_woven_call_delays() {
+fn an_unground_woven_call_is_refused() {
     const PROGRAM: &str = r#"
 namespace wip7vp4.unground
   import anthill.prelude.Int64
@@ -238,23 +236,20 @@ namespace wip7vp4.unground
   rule answer(?r) :- Desc.describe(?x, ?r)
 end
 "#;
-    let mut kb = crate::common::load_kb_with(PROGRAM);
-    let rows = crate::common::query_unary(&mut kb, "wip7vp4.unground.answer");
-    assert!(
-        rows.len() == 1 && !rows[0].1 && matches!(rows[0].0, Value::Var(_)),
-        "one UNDECIDED row with `?r` free — the call waits on its carrier; got {rows:?}",
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(PROGRAM),
+        &["answer.body", "a requirement of `Desc`", "no head column of the clause reaches"],
+        "a call at a local variable",
     );
     let declared = PROGRAM.replace(
         "rule answer(?r) :- Desc.describe(?x, ?r)",
         "rule answer[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)",
     );
     let mut kb = crate::common::load_kb_with(&declared);
-    let goal = crate::common::query_pattern_term(&mut kb, "wip7vp4.unground.answer(?x, ?r)");
-    let solutions = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
-    assert!(
-        solutions.len() == 1 && !solutions[0].is_definite(),
-        "one UNDECIDED row — the guard's read waits on `?x`; got {} rows",
-        solutions.len(),
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "wip7vp4.unground.answer(?x, ?r)"),
+        &["`Desc` at `answer`'s `A`"],
+        "the declared clause queried with `?x` free",
     );
 }
 
@@ -671,32 +666,30 @@ end
 }
 
 /// An operation's own `requires` at arguments nothing binds, local to the clause: `free`'s call
-/// is at a type no head column reaches, its slot found from the values when it runs (060.1 §4),
-/// and it waits: one UNDECIDED row with `?c` free. Declared, `?s` and `?t` columns at `A`, and
-/// queried with both free, the clause waits on its guard's read. The first half FAILS with a
+/// is at a type no head column reaches, so no caller can pass its slot and none is read from
+/// the values when it runs — refused at load (proposal 073 §6.2), where it waited, one
+/// UNDECIDED row. Declared, `?s` and `?t` columns at `A`, and queried with both free, the query
+/// is refused where it is read, leaving `A` open. The first half FAILS with a
 /// slot at a local variable refused as a head column's is; the declared half passes either
 /// way, by design.
 #[test]
-fn an_unground_slot_call_delays() {
-    let mut kb = crate::common::load_kb_with(&fix_program(
-        "wip7vp4.unground2",
-        "  rule free(?c) :- Util.sign(?s, ?t, ?c)\n",
-    ));
-    let rows = crate::common::query_unary(&mut kb, "wip7vp4.unground2.free");
-    assert!(
-        rows.len() == 1 && !rows[0].1 && matches!(rows[0].0, Value::Var(_)),
-        "one UNDECIDED row with `?c` free: {rows:?}",
+fn an_unground_slot_call_is_refused() {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&fix_program(
+            "wip7vp4.unground2",
+            "  rule free(?c) :- Util.sign(?s, ?t, ?c)\n",
+        )),
+        &["free.body", "no head column of the clause reaches"],
+        "a slot call at local variables",
     );
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.unground2",
         "  rule free[A](?s: A, ?t: A, ?c) :- WeakOrd[T = A], Util.sign(?s, ?t, ?c)\n",
     ));
-    let goal = crate::common::query_pattern_term(&mut kb, "wip7vp4.unground2.free(?s, ?t, ?c)");
-    let solutions = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
-    assert!(
-        solutions.len() == 1 && !solutions[0].is_definite(),
-        "one UNDECIDED row; got {} rows",
-        solutions.len(),
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "wip7vp4.unground2.free(?s, ?t, ?c)"),
+        &["`WeakOrd` at `free`'s `A`"],
+        "the declared clause queried with both free",
     );
 }
 
@@ -784,9 +777,8 @@ fn a_call_in_an_untaken_branch_costs_its_clause_nothing() {
 /// answers `99`, definitely, by its second branch. (That a citation reaches the call is
 /// `wi_rydnv_one_classification_test::a_call_in_a_branch_is_its_clauses_condition`.) FAILS with
 /// the read placed before the top-level goal instead (measured with a temporary switch): it
-/// waits on `?x`, which only the first branch uses, and `pickFree` has no definite answer. The
-/// CONTROL, `pickRod`, answers `6` and `99` either way, by design: with `?x` bound the hoisted
-/// read derives, and costs nothing.
+/// waits on `?x`, which only the first branch uses. The CONTROL, `pickRod`, answers `6` and `99`
+/// either way, by design: with `?x` bound the hoisted read derives, and costs nothing.
 #[test]
 fn a_call_in_a_branch_reads_its_condition_in_the_branch() {
     let mut kb = crate::common::load_kb_with(&fix_program(
@@ -804,19 +796,17 @@ fn a_call_in_a_branch_reads_its_condition_in_the_branch() {
         ns
     };
     assert_eq!(definite("wip7vp4.branch.pickRod"), vec![6, 99], "both branches, the first by value");
-    // A goal at a variable no head column reaches loads, its dictionary read from the value
-    // when it runs (060.1 §4). The declared requirement is the whole clause's, not one
-    // branch's: with `?x` never bound the guard's read waits, and the `99` branch with it —
-    // no definite answer, where the inferred read stood in the first branch alone.
-    let mut kb = crate::common::load_kb_with(&fix_program(
-        "wip7vp4.branchfree",
-        "  rule pickB[A](?x: A, ?c) :- Scale[T = A], (Scale.twice(?x, ?c) | ?c <=> 99)\n  \
-         rule pickFree(?c) :- pickB(?x, ?c)\n",
-    ));
-    let rows = crate::common::query_unary(&mut kb, "wip7vp4.branchfree.pickFree");
-    assert!(
-        !rows.is_empty() && rows.iter().all(|(_, d)| !*d),
-        "the clause waits on its requirement, both branches with it: {rows:?}",
+    // A goal at a variable no head column reaches is refused at load: no caller can pass the
+    // requirement, and none is read from the value (073 §6.2). The declared requirement is the
+    // whole clause's, not one branch's, so the `99` branch does not save it.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&fix_program(
+            "wip7vp4.branchfree",
+            "  rule pickB[A](?x: A, ?c) :- Scale[T = A], (Scale.twice(?x, ?c) | ?c <=> 99)\n  \
+             rule pickFree(?c) :- pickB(?x, ?c)\n",
+        )),
+        &["pickFree.body", "`Scale` at `pickB`'s `A`"],
+        "a goal at a variable no head column reaches",
     );
 }
 

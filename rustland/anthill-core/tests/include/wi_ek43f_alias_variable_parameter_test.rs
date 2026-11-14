@@ -394,8 +394,15 @@ fn a_bounding_guard_gives_the_aliases_parameters() {
   fact item(\"s\")
 ";
     for (tag, guard) in [("direct", "Tagger[C = A, Out = Int64]"), ("pos", "IT[A]"), ("named", "IT[X = A]")] {
+        // Asked at each item, a query being typed where it is read (proposal 073 §6.2): the
+        // `Int64` one holds, and the `String` one is refused, nothing providing it there.
         let mut kb = load_kb_with(&program(&format!("g{tag}"), &format!("{decls}  rule ints[A](?x: A) :- item(?x), {guard}")));
-        assert_eq!(query_unary(&mut kb, &format!("test.ek43f.g{tag}.ints")).len(), 1, "{tag}");
+        assert_eq!(crate::common::pattern_hits(&mut kb, &format!("test.ek43f.g{tag}.ints(1)")), 1, "{tag}");
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(&mut kb, &format!("test.ek43f.g{tag}.ints(\"s\")")),
+            &["Tagger"],
+            tag,
+        );
     }
     refused(
         "gout",

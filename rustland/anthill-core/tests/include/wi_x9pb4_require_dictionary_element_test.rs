@@ -431,7 +431,10 @@ end
 ///    resolve.rs: find_dictionary: two providers answer
 ///    `x9pb4_tie.Spec[C = x9pb4_tie.Carrier, Note = x9pb4_tie.Spec.Note]` at run time:
 ///    x9pb4_tie.MidA, x9pb4_tie.MidB`. An abort on a program with no defect in it.
-///  * as shipped — ONE INDEFINITE solution again.
+///  * as shipped — ONE INDEFINITE solution again, until a query became typed where it is
+///    read (proposal 073 §6.2): the query at `carrier()` is now refused there, naming both
+///    providers, as the rule body's goal at it is at load — a verdict at the query, not an
+///    abort, and no dictionary picked.
 ///
 /// THE OTHER ARM — a tie on a goal every element of which came off a CARRIED TYPE,
 /// reporting `Defect` — stays undriven, as it was through this ticket and
@@ -442,7 +445,7 @@ end
 /// NOBODY NAMED, so no provider is wrong and a delay is honest; there both providers
 /// answer the very carrier the goal names.
 #[test]
-fn a_tie_on_a_synthesized_element_delays_rather_than_reporting_a_defect() {
+fn a_tie_on_a_synthesized_element_is_refused_rather_than_reporting_a_defect() {
     let src = r#"
 namespace x9pb4_tie
   import anthill.prelude.{Int64}
@@ -474,9 +477,8 @@ namespace x9pb4_tie
   rule via[A](?x: A, ?r) :- Spec[C = A], Spec.probe(?x, ?r)
 end
 "#;
-    // Asked as a query, whose read runs. A rule's goal at `carrier()` builds the dictionary
-    // at load (060.1 §1), and the tie is refused there, naming both providers, as an
-    // operation's call at `Carrier` is.
+    // A rule's goal at `carrier()` builds the dictionary at load (060.1 §1), and the tie is
+    // refused there, naming both providers, as an operation's call at `Carrier` is.
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&src.replace(
             "  rule via[A]",
@@ -485,23 +487,13 @@ end
         &["answer.body", "two providers answer", "x9pb4_tie.MidA", "x9pb4_tie.MidB"],
         "the goal at `carrier()`",
     );
+    // The query, typed where it is read, is refused the same way: a dictionary picked here
+    // would be one of two answers picked at random.
     let mut kb = load_kb_with(src);
-    let goal = crate::common::query_pattern_term(&mut kb, "x9pb4_tie.via(x9pb4_tie.Carrier.carrier(), ?r)");
-    let sols: Vec<(anthill_core::eval::Value, bool)> = kb
-        .resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
-        .iter()
-        .map(|s| (anthill_core::eval::Value::Int(0), s.is_definite()))
-        .collect();
-    assert!(
-        sols.iter().all(|(_, definite)| !definite),
-        "two providers tying on the element NOBODY NAMED must leave the dictionary \
-         undecided — a bound `?d` here would be one of two answers picked at random. \
-         Got {sols:?}"
-    );
-    assert!(
-        !sols.is_empty(),
-        "…and it must DELAY rather than answer nothing, which is what the goal did \
-         before this ticket. Got {sols:?}"
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "x9pb4_tie.via(x9pb4_tie.Carrier.carrier(), ?r)"),
+        &["two providers answer", "x9pb4_tie.MidA", "x9pb4_tie.MidB"],
+        "the query at `carrier()`",
     );
 }
 
@@ -520,7 +512,8 @@ end
 /// one INDEFINITE solution and no carrier. Proposal 060.1 §5 removed the form; a spec that
 /// receives on itself has no guard at an introducer (no carrier parameter to bind), and a
 /// clause states its requirement by a head column typed at the spec, `x: Bag`, as an
-/// operation types a parameter. The call answers `IntBag`'s 7.
+/// operation types a parameter. The call answers `IntBag`'s 7: the citation pairs `intBag(n:
+/// 1)` with `IntBag`'s dictionary at load (proposal 073 §2).
 #[test]
 fn a_self_representing_spec_receives_its_dictionary_too() {
     let src = r#"
@@ -546,7 +539,7 @@ end
     let mut kb = load_kb_with(src);
     assert!(
         matches!(definite_unary(&mut kb, "x9pb4_sr.answer").as_slice(), [Value::Int(7)]),
-        "a column typed at a self-representing spec answers through its value's provider"
+        "a column typed at a self-representing spec answers through the instance its citation pairs"
     );
 }
 

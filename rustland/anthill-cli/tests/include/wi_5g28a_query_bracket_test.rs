@@ -4,7 +4,9 @@
 //! call-site `Wrap.holds[T = C]()` PANICKED the CLI on every tree, and L3 — which lowers
 //! the paren-less `Wrap[T = C].holds` to the applied term — made it the third spelling
 //! to (it used to answer a silent `no solutions`). The query scan now refuses all three
-//! (`load::query_bracket_errors`).
+//! (`load::query_bracket_errors`) — the call-site one, on a relation's goal, where its routing
+//! finds nothing the relation declares for it to bind, as on a rule-body goal (a query is
+//! typed where it is read, proposal 073 §6.2).
 //!
 //! BACK-OUT: drop the `SourceRole::Query` call of `query_bracket_errors` in
 //! `scan_definitions_with_sources` and the three refusal rows panic (exit 101). The
@@ -56,7 +58,7 @@ fn an_applied_receiver_bracket_is_refused() {
 fn a_call_site_bracket_is_refused() {
     assert_refused(
         "q5g28a.Wrap.holds[T = q5g28a.Colour]()",
-        "call-site type arguments `q5g28a.Wrap.holds[…](…)` are not supported here",
+        "a callee with no type-parameter list",
     );
 }
 

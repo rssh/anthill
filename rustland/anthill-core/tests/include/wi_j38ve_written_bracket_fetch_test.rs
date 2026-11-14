@@ -249,7 +249,7 @@ end
 }
 
 #[test]
-fn a_tie_a_written_element_does_not_cause_stays_a_delay() {
+fn a_tie_a_written_element_does_not_cause_is_refused_not_aborted() {
     // A REGRESSION THIS TICKET INTRODUCED AND CLOSED, measured on X9PB4's own fixture.
     //
     // `fetch_dictionary` maps a resolution TIE to `FindDictFetch::Defect` — a
@@ -272,22 +272,20 @@ fn a_tie_a_written_element_does_not_cause_stays_a_delay() {
     // BACKING OUT the `from_carried_types = false` beside the written pin made THIS ROW
     // ABORT, and nothing else in the workspace moved — measured while the requirement was
     // `?d = require[Spec[C = Carrier, Note = Int64]]` (removed by proposal 060.1 §5). It is
-    // the introducer's guard at the call's carrier now, written and bare, and it delays —
-    // asked as a query, whose read runs. A rule's goal at `carrier()` builds the dictionary at
-    // load (060.1 §1), and the tie is refused there, naming both providers, as an operation's
-    // call at `Carrier` is.
+    // the introducer's guard at the call's carrier now, written and bare. It delayed, asked
+    // as a query whose read ran, until a query became typed where it is read (proposal 073
+    // §6.2): the query at `carrier()` is refused there, naming both providers, as a rule's
+    // goal at `carrier()` is at load (060.1 §1) and an operation's call at `Carrier` is —
+    // never an abort, and never one of the two picked.
     for (ns, bracket) in [
         ("j38ve_tie_w", "Spec[C = A, Note = Int64]"),
         ("j38ve_tie_b", "Spec[A]"),
     ] {
         let mut kb = crate::common::load_kb_with(&tie(ns, bracket));
-        let goal = crate::common::query_pattern_term(&mut kb, &format!("{ns}.dict({ns}.Carrier.carrier(), ?r)"));
-        let sols = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
-        assert!(
-            !sols.is_empty() && sols.iter().all(|s| !s.is_definite()),
-            "`{bracket}`: two providers tying must leave the dictionary undecided and \
-             DELAY — never abort, and never pick one of the two. Got {} rows",
-            sols.len(),
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(&mut kb, &format!("{ns}.dict({ns}.Carrier.carrier(), ?r)")),
+            &["two providers answer", &format!("{ns}.MidA"), &format!("{ns}.MidB")],
+            bracket,
         );
         crate::common::assert_refused_naming(
             &crate::common::load_errors_of(&tie(ns, bracket).replacen(

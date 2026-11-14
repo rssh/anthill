@@ -2920,6 +2920,18 @@ pub enum LoadError {
         member: String,
         span: Span,
     },
+    /// Proposal 073 §6.2 — a goal of a query that cannot be passed a requirement its callee's
+    /// clauses take: one the query leaves open, which no caller can pass, or one no provision
+    /// builds at the query's types. A query is typed where it is read, and nothing is read
+    /// from a value for it when the goal runs.
+    QueryGoalRefused {
+        /// The relation the goal cites.
+        goal: String,
+        /// What the goal needs, and why it is not given.
+        expected: String,
+        actual: String,
+        span: Span,
+    },
     /// Proposal 070 §1.2 — `Self` written where it means nothing. `Self` is the sort it
     /// is written in, applied to that sort's own parameters, and nothing else: outside a
     /// sort there is no such sort, it takes no bindings, no declaration may take the
@@ -3066,6 +3078,11 @@ pub enum CallTypeArgsPosition {
     /// contract expression. A constructor in one of them is a term the clause matches, and
     /// is among them.
     NoChannel,
+}
+
+/// The one wording of [`LoadError::QueryGoalRefused`], shared by its two renderings.
+fn query_goal_refused_detail(goal: &str, expected: &str, actual: &str) -> String {
+    format!("the query's goal of `{goal}` needs {expected}, and {actual}")
 }
 
 /// The one wording of [`LoadError::QueryDotOnVariable`], shared by its two renderings.
@@ -3399,6 +3416,7 @@ impl LoadError {
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
             | LoadError::QueryDotOnVariable { span, .. }
+            | LoadError::QueryGoalRefused { span, .. }
             | LoadError::SelfTypeMisuse { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
@@ -4640,6 +4658,16 @@ impl LoadError {
                 "{}: {}",
                 loc.format_start(*span),
                 query_dot_on_variable_detail(receiver, member)
+            ),
+            LoadError::QueryGoalRefused {
+                goal,
+                expected,
+                actual,
+                span,
+            } => format!(
+                "{}: {}",
+                loc.format_start(*span),
+                query_goal_refused_detail(goal, expected, actual)
             ),
             LoadError::CallTypeArgsNotSupportedHere {
                 callee,
@@ -6436,6 +6464,18 @@ impl std::fmt::Display for LoadError {
                 span.start,
                 span.end
             ),
+            LoadError::QueryGoalRefused {
+                goal,
+                expected,
+                actual,
+                span,
+            } => write!(
+                f,
+                "{} at {}..{}",
+                query_goal_refused_detail(goal, expected, actual),
+                span.start,
+                span.end
+            ),
             LoadError::CallTypeArgsNotSupportedHere {
                 callee,
                 position,
@@ -7498,7 +7538,7 @@ pub fn scan_definitions_with_sources(
     if role == SourceRole::Query {
         for (i, file) in files.iter().enumerate() {
             kb.symbols.set_asking_file(Some(source_ids[i]));
-            errors.extend(query_bracket_errors(file));
+            errors.extend(query_bracket_errors(kb, global, file));
             for item in &file.items {
                 if let Item::Fact(fact) = item {
                     query_type_name_errors(kb, file, fact.term, global, false, &mut errors);
@@ -7641,7 +7681,7 @@ fn query_application_errors(
 /// The dot a paren-less citation is paired with (`Loader::citation_read_as_dot`) holds a
 /// second copy of its bracket, which a query pattern does not read — the citation is
 /// refused for that bracket — so its terms are not swept.
-fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
+fn query_bracket_errors(kb: &mut KnowledgeBase, scope: ScopeId, file: &ParsedFile) -> Vec<LoadError> {
     let key = |name: &str| file.symbols.lookup(name);
     let (type_args_key, recv_type_key) = (key("type_args"), key("recv_type"));
     let mut unread: HashSet<ParseTermId> = HashSet::new();
@@ -7681,13 +7721,21 @@ fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
         };
         let callee = file.symbols.local_name(*functor);
         let span = file.terms.span(id);
+        // A bracket on a goal of a relation binds what the relation declares (060.1 §2), as on
+        // a rule-body goal: the query converts it, and its routing refuses it where the relation
+        // declares nothing (proposal 073 §6.2).
+        let callee_sym = resolve_query_name(kb, callee, scope);
+        let cites_a_relation = query_goal_bracket_reader(kb, callee_sym);
         for &(k, v) in named_args.iter() {
             // Each channel's payload by its kind: a parameter of the pattern's own sort
             // may carry either name and be bound to a type written as an entry.
             let Term::ParseAux(aux) = file.terms.get(v) else {
                 continue;
             };
-            if Some(k) == type_args_key && matches!(aux.as_ref(), ParseAux::SortBindings(_)) {
+            if Some(k) == type_args_key
+                && matches!(aux.as_ref(), ParseAux::SortBindings(_))
+                && !cites_a_relation
+            {
                 errors.push(LoadError::CallTypeArgsNotSupportedHere {
                     callee: callee.to_string(),
                     position: CallTypeArgsPosition::NoChannel,
@@ -7706,6 +7754,13 @@ fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
         }
     }
     errors
+}
+
+/// Does a bracket written on a query goal of `functor` have a reader — a relation, whose
+/// declared type parameters and requirements it binds (060.1 §2)? The rule-body goal's gate
+/// (`Loader`'s `goal_call_type_args`).
+fn query_goal_bracket_reader(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    kb.has_kind(functor, SymbolKind::Goal) && !kb.has_kind(functor, SymbolKind::Operation)
 }
 
 /// WI-20260911-7FP1M: names in a query's type bracket must denote something.
@@ -25926,6 +25981,33 @@ fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Op
 /// it ever moves again.
 pub type QueryPattern = Rc<NodeOccurrence>;
 
+/// The dictionaries a query pattern passes its callee, in the order of its relation's layout:
+/// the slots of the citation marker it rides in ([`convert_query_term`], proposal 073 §6.2),
+/// each built where the query was read. Empty for a pattern that passes nothing.
+pub fn query_passed_dictionaries(kb: &KnowledgeBase, pattern: &QueryPattern) -> Vec<Value> {
+    let Some(marker) = super::typing::goal_marker(kb, pattern) else {
+        return Vec::new();
+    };
+    marker
+        .slots
+        .iter()
+        .map(|slot| match slot.as_expr() {
+            Some(Expr::Spliced(dict)) => dict.clone(),
+            other => panic!("a query's citation marker carries built dictionaries, got {other:?}"),
+        })
+        .collect()
+}
+
+/// The goal a query pattern writes: `pattern` itself, or the goal its citation marker carries
+/// where the query passes its callee a requirement ([`convert_query_term`], proposal 073 §6.2).
+/// For a reader of the pattern's shape; the resolver is handed the pattern.
+pub fn query_goal_as_written(kb: &KnowledgeBase, pattern: &QueryPattern) -> QueryPattern {
+    match super::typing::goal_marker(kb, pattern) {
+        Some(marker) => Rc::clone(marker.goal),
+        None => Rc::clone(pattern),
+    }
+}
+
 /// Convert a parse-time term (from `SimpleTermStore`) into a KB-resolved QUERY PATTERN,
 /// resolving symbols through the KB's scope chain.
 ///
@@ -25985,6 +26067,73 @@ pub type QueryPattern = Rc<NodeOccurrence>;
 /// ([`query_compound_expression`]); what that walk refuses is the `Err`, located in the
 /// query source.
 pub fn convert_query_term(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    parse_id: ParseTermId,
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+) -> Result<QueryPattern, Vec<LoadError>> {
+    let mut goals = convert_query_terms(kb, parsed, &[parse_id], scope, var_map)?;
+    Ok(goals.pop().expect("one goal converted for one pattern"))
+}
+
+/// The goals of one query — a conjunction sharing `var_map` — each converted as
+/// [`convert_query_term`] converts one, and typed together where they are read (proposal 073
+/// §6.2): a variable one goal's column gives a type is at that type in the others, as in a
+/// rule body. The refusals of every goal, located in the query source.
+pub fn convert_query_terms(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    parse_ids: &[ParseTermId],
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+) -> Result<Vec<QueryPattern>, Vec<LoadError>> {
+    let mut goals = Vec::with_capacity(parse_ids.len());
+    let mut errors = Vec::new();
+    for &parse_id in parse_ids {
+        match convert_query_term_unrouted(kb, parsed, parse_id, scope, var_map) {
+            Ok(goal) => goals.push((parse_id, goal)),
+            Err(e) => errors.extend(e),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let spans: Vec<Span> = goals.iter().map(|(id, _)| parsed.terms.span(*id)).collect();
+    let goals: Vec<QueryPattern> = goals.into_iter().map(|(_, g)| g).collect();
+    // A query is typed where it is read: a goal of a relation whose clauses take a dictionary
+    // is passed the one its own types build here, and one it leaves open is refused, as a rule
+    // body's goal is. Nothing reads a value for it when the goal runs.
+    super::typing::route_query_goals(kb, &goals).map_err(|refused| {
+        refused
+            .iter()
+            .map(|e| match e {
+                super::typing::TypeError::Other {
+                    context: super::typing::TypeErrorContext::Rule { name, .. },
+                    expected,
+                    actual,
+                    span,
+                    ..
+                } => LoadError::QueryGoalRefused {
+                    goal: kb.qualified_name_of(*name).to_string(),
+                    expected: expected.clone(),
+                    actual: actual.clone(),
+                    // The goal's own span where the converted node carries none (a query's
+                    // nodes are built off the store), the first goal's otherwise.
+                    span: span
+                        .filter(|s| s.end > s.start)
+                        .or_else(|| spans.first().copied())
+                        .expect("a query has a goal"),
+                }
+                .located_in(parsed),
+                other => other.to_load_error(kb),
+            })
+            .collect()
+    })
+}
+
+/// [`convert_query_term`] before its goals are typed together ([`convert_query_terms`]).
+fn convert_query_term_unrouted(
     kb: &mut KnowledgeBase,
     parsed: &ParsedFile,
     parse_id: ParseTermId,
@@ -26974,6 +27123,21 @@ fn convert_query_term_expecting(
             }
             let functor_name = parse_symbols.local_name(functor);
             let kb_functor = resolve_query_name(kb, functor_name, scope);
+            // A bracket on a relation's goal (`keep[A = Int64](?x, ?t)`) is no argument: it rides
+            // on the goal as a rule-body goal's does, lowered by the clause walk's reader below,
+            // and the query's routing reads it (proposal 073 §6.2).
+            let type_args_key = parse_symbols.lookup("type_args");
+            let goal_bracket = query_goal_bracket_reader(kb, kb_functor)
+                && named_args.iter().any(|&(k, v)| {
+                    Some(k) == type_args_key
+                        && matches!(parse_terms.get(v), Term::ParseAux(aux)
+                            if matches!(aux.as_ref(), crate::parse::ir::ParseAux::SortBindings(_)))
+                });
+            let named_args: SmallVec<[(Symbol, ParseTermId); 2]> = named_args
+                .iter()
+                .copied()
+                .filter(|&(k, _)| !(goal_bracket && Some(k) == type_args_key))
+                .collect();
             let goal_slots = match fold {
                 ConstFold::Goal => const_fold_goal_slots(kb, kb_functor, pos_args.len()),
                 _ => SmallVec::new(),
@@ -27309,7 +27473,47 @@ fn convert_query_term_expecting(
                 }
             }
 
-            nullary_query_canon(kb, kb_functor, new_pos, new_named.into_vec(), fold)
+            let expr = nullary_query_canon(kb, kb_functor, new_pos, new_named.into_vec(), fold);
+            if !goal_bracket {
+                expr
+            } else if fold != ConstFold::Goal {
+                errors.push(
+                    LoadError::CallTypeArgsNotSupportedHere {
+                        callee: functor_name.to_string(),
+                        position: CallTypeArgsPosition::NoChannel,
+                        span: parse_terms.span(parse_id),
+                    }
+                    .located_in(parsed),
+                );
+                expr
+            } else {
+                let bracket = lend_to_loader(kb, parsed, scope, var_map, errors, |loader| {
+                    loader.goal_call_type_args(parse_id)
+                });
+                match expr {
+                    Expr::Apply {
+                        recv_type,
+                        functor,
+                        pos_args,
+                        named_args,
+                        ..
+                    } => Expr::Apply {
+                        recv_type,
+                        functor,
+                        pos_args,
+                        named_args,
+                        type_args: bracket,
+                    },
+                    Expr::Ref(functor) => Expr::Apply {
+                        recv_type: None,
+                        functor,
+                        pos_args: Vec::new(),
+                        named_args: Vec::new(),
+                        type_args: bracket,
+                    },
+                    other => unreachable!("a relation's goal is an application or its name, got {other:?}"),
+                }
+            }
         }
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);

@@ -1393,12 +1393,13 @@ fn each_of_two_slots_on_one_spec_is_read_off_the_argument() {
     );
 }
 
-/// STATED LIMIT — passes either way. A slot written at the citing operation's own type
-/// parameter (`b: Box[T = A, O = P]`) is refused for the member operation's call — nothing
-/// in scope holds a dictionary for `P` — and the citation beside it loads and derives
-/// `Int64`'s own.
+/// A slot written at the citing operation's own type parameter (`b: Box[T = A, O = P]`) is
+/// refused for the member operation's call — nothing in scope holds a dictionary for `P` — and
+/// for the citation beside it: no caller passes it, and none is read from the value when the
+/// goal runs (proposal 073 §6.2). The citation loaded and derived `Int64`'s own from the
+/// value, a limit this file stated, until then.
 #[test]
-fn a_slot_at_the_citers_own_parameter_is_refused_for_a_call_and_not_for_a_citation() {
+fn a_slot_at_the_citers_own_parameter_is_refused_for_a_call_and_a_citation() {
     let outside = |ns: &str, op: &str| {
         program(
             ns,
@@ -1416,14 +1417,16 @@ fn a_slot_at_the_citers_own_parameter_is_refused_for_a_call_and_not_for_a_citati
         &["named slot `O`", "nothing in the enclosing scope holds a dictionary FOR `P`"],
         "the call is refused",
     );
-    let ns = "wi0rrqp.pcite";
-    let src = outside(
-        ns,
-        "operation cite[A, P](b: Box[T = A, O = P]) -> Int64 effects {Error, Error[EmptyStream]} =\n      \
-         Box.order(b).head.c\n    \
-         operation cited() -> Int64 effects {Error, Error[EmptyStream]} = cite(mk())",
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&outside(
+            "wi0rrqp.pcite",
+            "operation cite[A, P](b: Box[T = A, O = P]) -> Int64 effects {Error, Error[EmptyStream]} =\n      \
+             Box.order(b).head.c\n    \
+             operation cited() -> Int64 effects {Error, Error[EmptyStream]} = cite(mk())",
+        )),
+        &["`anthill.prelude.WeakOrd[T = ?A]`", "the citation leaves the type it is at open"],
+        "the citation is refused",
     );
-    assert_eq!(drive(&src, &format!("{ns}.Out.cited")), -1, "the citation loads, and derives");
 }
 
 /// A driver run as a rule's GOAL: the selection `desc` writes in its own body for an

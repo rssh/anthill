@@ -187,11 +187,11 @@ fn carriers_own_operation_still_decides() {
     );
 }
 
-/// CONTROL — the WI-519 residual. An UNGROUND receiver has nothing to decide about, and
-/// the relational view is a sound checker rather than a generator (WI-580 §5), so the
-/// goal must SUSPEND: solutions may exist, but none definite. Passes either way.
+/// An UNGROUND receiver at a type no head column reaches has no caller to pass its `Iterable`,
+/// and none is read from the value when the goal runs: refused at load (proposal 073 §6.2).
+/// It suspended to the WI-519 residual while the call's dictionary was read from the value.
 #[test]
-fn an_unground_spec_op_goal_still_suspends() {
+fn an_unground_spec_op_goal_is_refused() {
     let src = r#"
 namespace dqd5w_ung
   import anthill.prelude.{List, String, Bool}
@@ -200,11 +200,10 @@ namespace dqd5w_ung
   rule gen(?m) :- mark(?m), isEmpty(?ls)
 end
 "#;
-    let mut kb = load_kb_with(src);
-    assert_eq!(
-        definite_unary(&mut kb, "dqd5w_ung.gen").len(),
-        0,
-        "an unground `isEmpty(?ls)` must not GENERATE — it suspends to a residual"
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(src),
+        &["gen.body", "a requirement of `Iterable`", "no head column of the clause reaches"],
+        "an unground `isEmpty(?ls)`",
     );
 }
 

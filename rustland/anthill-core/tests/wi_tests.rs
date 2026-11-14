@@ -2485,3 +2485,6 @@ mod wi_pbsem_function_value_instance_at_call_test;
 
 #[path = "include/wi_zpetz_one_dispatch_test.rs"]
 mod wi_zpetz_one_dispatch_test;
+
+#[path = "include/wi_cbrd2_no_typed_caller_test.rs"]
+mod wi_cbrd2_no_typed_caller_test;
