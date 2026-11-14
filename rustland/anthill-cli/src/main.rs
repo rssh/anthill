@@ -1911,8 +1911,12 @@ fn collect_queries(
                 _ => None,
             })
             .collect();
-        let terms = load::convert_query_terms(kb, &parsed, &ids, global_scope, &mut var_map)
-            .map_err(|errors| report_query_errors(&errors, Some("--pattern")))?;
+        let converted = if args.match_heads {
+            load::convert_patterns_untyped(kb, &parsed, &ids, global_scope, &mut var_map)
+        } else {
+            load::convert_query_terms(kb, &parsed, &ids, global_scope, &mut var_map)
+        };
+        let terms = converted.map_err(|errors| report_query_errors(&errors, Some("--pattern")))?;
         if terms.is_empty() {
             eprintln!("error: no valid query pattern found");
             return Err(1);
@@ -1950,8 +1954,13 @@ fn collect_queries(
         let mut var_map = HashMap::new();
         for item in &parsed.items {
             if let Item::Fact(fact) = item {
-                let pat = load::convert_query_term(kb, &parsed, fact.term, global_scope, &mut var_map)
-                    .map_err(|errors| report_query_errors(&errors, None))?;
+                let converted = if args.match_heads {
+                    load::convert_patterns_untyped(kb, &parsed, &[fact.term], global_scope, &mut var_map)
+                        .map(|mut patterns| patterns.remove(0))
+                } else {
+                    load::convert_query_term(kb, &parsed, fact.term, global_scope, &mut var_map)
+                };
+                let pat = converted.map_err(|errors| report_query_errors(&errors, None))?;
                 let label = TermPrinter::new(kb).print_occurrence(&pat);
                 queries.push((label, vec![pat]));
             }

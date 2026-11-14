@@ -26132,6 +26132,32 @@ pub fn convert_query_terms(
     })
 }
 
+/// Patterns converted as a query's goals are and not typed as a query is: the patterns of a
+/// structural browse (`anthill query --match`), which finds the clause heads a pattern unifies
+/// with and runs no call, so a call written in it owes nothing where it is read; and a goal built
+/// at run time, which no load types.
+pub fn convert_patterns_untyped(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    parse_ids: &[ParseTermId],
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+) -> Result<Vec<QueryPattern>, Vec<LoadError>> {
+    let mut patterns = Vec::with_capacity(parse_ids.len());
+    let mut errors = Vec::new();
+    for &parse_id in parse_ids {
+        match convert_query_term_unrouted(kb, parsed, parse_id, scope, var_map) {
+            Ok(pattern) => patterns.push(pattern),
+            Err(e) => errors.extend(e),
+        }
+    }
+    if errors.is_empty() {
+        Ok(patterns)
+    } else {
+        Err(errors)
+    }
+}
+
 /// [`convert_query_term`] before its goals are typed together ([`convert_query_terms`]).
 fn convert_query_term_unrouted(
     kb: &mut KnowledgeBase,

@@ -540,8 +540,9 @@ fn a_fact_route_supplier_answers_from_a_rule_body() {
 /// `wi_p7vp4_rule_body_requirements_test::an_unground_woven_call_delays`). With none, the
 /// clause spelling, `rule answer(?r) :- Desc.describe(?x, ?r)`, is refused at load since
 /// WI-20261013-RYDNV: its instance is open at a spec nothing provides, in no sort that requires
-/// it, so no condition of the clause could hold. A QUERY is untyped (proposal 068 §6) and still
-/// reaches the hook with the goal unwoven, which is what this row drives.
+/// it, so no condition of the clause could hold. A query is typed where it is read and refused
+/// the same way (WI-20261105-CBRD2); a goal built at run time, which no load types, still
+/// reaches the hook unwoven, which is what this row drives.
 #[test]
 fn an_unground_body_less_goal_binds_no_residual() {
     use anthill_core::kb::resolve::ResolveConfig;
@@ -556,7 +557,12 @@ fn an_unground_body_less_goal_binds_no_residual() {
         "the clause spelling is refused for its instance at a spec nothing provides: {errs:?}",
     );
     let mut kb = crate::common::load_kb_with(&body_less(ns, NO_SUPPLIER_LEAF, "", ""));
-    let goal = crate::common::query_pattern_term(&mut kb, &format!("{ns}.Desc.describe(?x, ?r)"));
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, &format!("{ns}.Desc.describe(?x, ?r)")),
+        &["test.wi1043.unground.Desc.describe", "a query has no caller"],
+        "the call asked as a query, typed where it is read",
+    );
+    let goal = crate::common::run_time_goal(&mut kb, &format!("{ns}.Desc.describe(?x, ?r)"));
     let r = match TermView::head(&goal, &kb) {
         ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => TermView::pos_arg(&goal, &kb, pos_arity - 1)
             .expect("the result column is readable")

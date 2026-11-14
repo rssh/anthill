@@ -153,9 +153,23 @@ fn query_term(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::kb::load::
 /// solution is definite)`. The result column of a functional-relation goal is
 /// positional and last (WI-938), so that is the slot to read.
 fn query_answers(kb: &mut KnowledgeBase, pattern: &str) -> Vec<(Value, bool)> {
+    let goal = query_term(kb, pattern);
+    answers_of(kb, pattern, goal)
+}
+
+/// [`query_answers`] of `pattern` built at run time, which no load types.
+fn run_time_answers(kb: &mut KnowledgeBase, pattern: &str) -> Vec<(Value, bool)> {
+    let goal = crate::common::run_time_goal(kb, pattern);
+    answers_of(kb, pattern, goal)
+}
+
+fn answers_of(
+    kb: &mut KnowledgeBase,
+    pattern: &str,
+    goal: anthill_core::kb::load::QueryPattern,
+) -> Vec<(Value, bool)> {
     use anthill_core::kb::resolve::ResolveConfig;
     use anthill_core::kb::term_view::{TermView, ViewHead};
-    let goal = query_term(kb, pattern);
     // WI-20260904-J0RM4: the last positional read through `TermView`, since the pattern
     // is no longer a `TermId`. The var it names is what the answer binds.
     let r_var = match TermView::head(&goal, kb) {
@@ -241,8 +255,8 @@ fn a_two_supplier_query_is_refused() {
     let ns = "test.wi1044.tie";
     let src = two_suppliers_query_only(ns);
     let mut kb = crate::common::load_kb_with(&src);
-    let qt = query_term(&mut kb, &describe_pattern(ns));
-    let msgs = kb.ambiguous_query_dispatch(&qt);
+    // Where the query is read (WI-20261105-CBRD2): it is typed there, as a rule body's call is.
+    let msgs = crate::common::query_pattern_refusals(&mut kb, &describe_pattern(ns));
     let msg = msgs.join("\n");
     assert_eq!(msgs.len(), 1, "one call, one refusal: {msg}");
     assert!(msg.contains("ambiguous dispatch"), "{msg}");
@@ -280,19 +294,19 @@ fn the_query_refusal_shares_the_load_refusals_message_body() {
     let (_, load_body) = crate::wi1012_static_supplier_tie_test::located(&load_msg);
 
     let mut kb = crate::common::load_kb_with(&two_suppliers_query_only(ns));
-    let qt = query_term(&mut kb, &describe_pattern(ns));
-    let query_body = kb.ambiguous_query_dispatch(&qt).join("\n");
+    let query_body = crate::common::query_pattern_refusals(&mut kb, &describe_pattern(ns)).join("\n");
 
-    assert_eq!(
-        query_body, load_body,
-        "one refusal, one message body — the query face must not drift from the load face",
+    assert!(
+        query_body.starts_with(load_body),
+        "one refusal, one message body — the query face must not drift from the load face: \
+         {query_body}\nvs\n{load_body}",
     );
 }
 
 /// THE OTHER HALF OF THE TIE, and the one the refusal above does not cover: whatever
 /// the query front door does, the RESOLVER must not answer the spec's default for a
-/// call with two suppliers. Driven through `kb.resolve` directly, with no front door
-/// in the way, because that is what every other resolver consumer sees.
+/// call with two suppliers. Driven through `kb.resolve` over a goal built at run time,
+/// with no front door in the way, because that is what every other resolver consumer sees.
 ///
 /// Asserts NO definite answer rather than a specific empty shape: the resolver leaves
 /// such a call un-reduced, the WI-938 hook then declines to `unify` the result column
@@ -303,7 +317,7 @@ fn a_two_supplier_query_never_answers_the_default() {
     let ns = "test.wi1044.tierun";
     let src = two_suppliers_query_only(ns);
     let mut kb = crate::common::load_kb_with(&src);
-    let answers = query_answers(&mut kb, &describe_pattern(ns));
+    let answers = run_time_answers(&mut kb, &describe_pattern(ns));
     assert!(
         !answers
             .iter()

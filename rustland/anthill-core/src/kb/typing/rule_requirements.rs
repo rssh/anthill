@@ -2248,7 +2248,7 @@ fn collect_find_dictionary_bases(
 /// each whose requirement is statically missing (see
 /// [`check_rule_body_requirements`]). Iterative (explicit stack) so a deeply-nested
 /// body cannot overflow the host stack.
-fn check_occ_spec_op_requirements(
+pub(super) fn check_occ_spec_op_requirements(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     fd_sym: Option<Symbol>,
@@ -2446,6 +2446,33 @@ pub(super) fn check_one_spec_op_requirement(
         abstract_params,
         site: RequiresSite::Clause,
     });
+}
+
+/// The spec a call of spec operation `functor` leaves at a carrier load does not know — an
+/// argument at the spec's carrier with no type, or an abstract one ([`aligned_carrier_outcome`]'s
+/// `Suspend`) — where the call owes an instance there. A callee the host implements serves every
+/// carrier, one with no carrier parameter has its instance named by its bracket or its result,
+/// and a defaulted member of a spec with no abstract member runs its default, as the rule-body
+/// check reads them ([`check_one_spec_op_requirement`]): none is asked.
+pub(super) fn spec_at_an_unknown_carrier(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<Symbol> {
+    let (spec, defaulted) = match lookup_spec_op_dispatch(kb, functor) {
+        Some(spec) => (spec, false),
+        None => (defaulted_spec_op_parent(kb, functor)?, true),
+    };
+    let owed = !host_implements(kb, functor)
+        && op_has_spec_carrier_param(kb, functor, spec)
+        && (!defaulted || spec_has_an_abstract_member(kb, spec));
+    (owed
+        && matches!(
+            spec_op_call_carrier_outcome(kb, functor, pos_args, named_args, spec).0,
+            FindDictOutcome::Suspend
+        ))
+    .then_some(spec)
 }
 
 /// The CARRIER DECISION for one rule-body call to a spec operation — `Fire` (its carriers have

@@ -173,7 +173,7 @@ pub(crate) fn route_query_goals(
     // relation that is no goal — is refused, as in a rule body (060.1 §2), never dropped.
     let mut refused = Vec::new();
     refuse_unread_brackets(kb, query, &sites, &mut refused);
-    let mut wraps: Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> = Vec::new();
+    let mut wraps: Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> = typed_spec_op_calls(kb, &sites, &mut refused);
     for site in sites {
         let Some(callee) = relation_goal_callee(kb, &site) else {
             continue;
@@ -199,6 +199,161 @@ pub(crate) fn route_query_goals(
             })
         })
         .collect())
+}
+
+/// Proposal 073 §6.2 — each goal of a query (`sites`, its goals and the goals in their proved
+/// slots) that calls a spec operation owing an instance, or is a `<=>` holding such a call, typed
+/// as a rule body's goal is ([`dispatch_calls_in_occ`]), each query variable at the type its goals
+/// give it: a call at a type a provider answers is decided here, as the member it
+/// reaches; one at a type nothing provides, or at a type nothing fixes, is refused, a query having
+/// no caller to pass the instance. `Marker.tag(1, ?t)` is `Int64.tag`; `Marker.tag(1.5, ?t)`,
+/// `Marker.tag(?x, ?t)` and `?t <=> Marker.tag(?x)` are refused. Each typed goal paired with the
+/// site it stands for.
+fn typed_spec_op_calls(
+    kb: &mut KnowledgeBase,
+    sites: &[Rc<NodeOccurrence>],
+    refused: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
+) -> Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> {
+    // A spec-op call written as a goal, and a `<=>` one stands in: what a call owes an instance
+    // at. A comparison and a connective are the query's own term, typed here no further.
+    let unify = kb.unify_functor();
+    let calls: Vec<Rc<NodeOccurrence>> = sites
+        .iter()
+        .filter(|site| match site.as_expr() {
+            Some(Expr::Apply { functor, .. }) if *functor == unify => calls_a_spec_operation(kb, site),
+            Some(Expr::Apply { functor, .. }) => owes_an_instance(kb, *functor),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    if calls.is_empty() {
+        return Vec::new();
+    }
+    // Each variable at the type its goals give it, bound by its name, the key the typer reads a
+    // query's variable by. A name two variables share — the anonymous `?` — binds neither: one
+    // `?`'s type is no other's.
+    let mut by_name: HashMap<Symbol, (VarId, Option<Value>, bool)> = HashMap::new();
+    for site in sites {
+        for_each_var_leaf(site, &mut |var, leaf| {
+            let Var::Global(vid) = var else { return };
+            let entry = by_name.entry(vid.name()).or_insert((vid, None, false));
+            entry.2 |= entry.0 != vid;
+            if entry.1.is_none() {
+                entry.1 = leaf.inferred_type();
+            }
+        });
+    }
+    let mut env = TypingEnv::empty();
+    env.mark_rule_body_dispatch();
+    for (name, (_, ty, shared)) in by_name {
+        if let (Some(ty), false) = (ty, shared) {
+            env.bind_var(name, ty);
+        }
+    }
+    let simp = simp_gate(kb);
+    let fd = find_dictionary_symbol(kb);
+    let mut out = Vec::new();
+    for call in calls {
+        let mut errors = Vec::new();
+        let typed = dispatch_calls_in_occ(
+            kb,
+            &env,
+            &simp,
+            &call,
+            BodyPos::Goal(GoalCommit::Top),
+            None,
+            None,
+            None,
+            &mut errors,
+        );
+        // What a query's call may perform is not this pass's question: the run time declines
+        // an effectful goal, as it did before a query was typed.
+        errors.retain(|e| !matches!(e, TypeError::RuleBodyEffect { .. }));
+        check_occ_spec_op_requirements(kb, &typed, fd, &[], &mut errors);
+        if errors.is_empty() {
+            errors.extend(calls_left_to_a_clause(kb, &typed));
+        }
+        if errors.is_empty() {
+            out.push((call, typed));
+        } else {
+            refused.extend(errors.into_iter().map(|e| (e, Some(call.span.source))));
+        }
+    }
+    out
+}
+
+/// Is `functor` a spec operation whose call owes an instance — a body-less member or a defaulted
+/// one, which no host code or resolver builtin answers for every carrier? Not a comparison (an
+/// operation with a primitive, `PartialOrd.gt`): a comparison no type reaches reads the type its
+/// values carry when it runs, in a rule body as in a query, until that reading is refused too.
+fn owes_an_instance(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    (lookup_spec_op_dispatch(kb, functor).is_some() || defaulted_spec_op_parent(kb, functor).is_some())
+        && !kb.is_builtin(functor)
+        && !host_implements(kb, functor)
+        && kb.spec_op_primitive_of(functor).is_none()
+}
+
+/// Does `goal` call, anywhere in it, a spec operation that owes an instance ([`owes_an_instance`])?
+fn calls_a_spec_operation(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(goal)];
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        if matches!(expr, Expr::Apply { functor, .. } if owes_an_instance(kb, *functor)) {
+            return true;
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
+}
+
+/// The calls in a query's typed goal `typed` that the typer left open — to a clause's condition,
+/// or unresolved at a type nothing at the call fixes (`Marker.tag(?x, ?t)`) — each refused: a query has no clause
+/// to supply the dictionary and no caller to pass it, and none is read from the value when the
+/// goal runs (proposal 073 §6.2).
+fn calls_left_to_a_clause(kb: &KnowledgeBase, typed: &Rc<NodeOccurrence>) -> Vec<TypeError> {
+    let mut out = Vec::new();
+    let mut stack = vec![Rc::clone(typed)];
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        let Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } = expr
+        else {
+            for_each_child(expr, |c| stack.push(Rc::clone(c)));
+            continue;
+        };
+        let spec_text = |spec: Symbol| format!("`{}`", short_name_of(kb.qualified_name_of(spec)));
+        let open = match (node.clause_condition(), node.call_class()) {
+            (Some(ClauseCondition::Dispatch { spec } | ClauseCondition::SortRequires { spec }), _)
+            | (None, Some(CallClass::UnresolvedSpecOp { spec_sort_sym: spec, .. })) => Some(spec_text(spec)),
+            (Some(ClauseCondition::Slots), _) => {
+                Some(format!("the requirements of `{}`", kb.qualified_name_of(*functor)))
+            }
+            (None, _) => spec_at_an_unknown_carrier(kb, *functor, pos_args, named_args).map(spec_text),
+        };
+        if let Some(requirement) = open {
+            out.push(TypeError::Other {
+                site: TypeError::here(),
+                span: Some(node.span.span),
+                context: TypeErrorContext::Rule {
+                    name: *functor,
+                    field: RuleField::Body,
+                },
+                expected: format!(
+                    "a requirement, {requirement}, fixed where the call of `{}` is written",
+                    kb.qualified_name_of(*functor)
+                ),
+                actual: "the query puts it at a type nothing fixes, and a query has no caller to \
+                         pass the dictionary: give the argument a known type"
+                    .to_string(),
+            });
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    out
 }
 
 /// Each variable of a query's goals `sites` given the type the columns its relation goals put

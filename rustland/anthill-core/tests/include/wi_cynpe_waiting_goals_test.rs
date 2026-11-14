@@ -39,11 +39,12 @@
 //!     clause has no answer) and `a_parked_goal_is_never_asked_again` (the clause residualizes
 //!     before its siblings run).
 //!
-//! The unreduced call is asked as a QUERY since WI-20261013-RYDNV, the program built at run
-//! time: a clause that writes `Conv.tag("km")` is refused at load, nothing at the call fixing
-//! `Conv`'s carrier `A` (`a_clause_that_writes_the_unreduced_call_is_refused_at_load`). The
-//! siblings the clauses gave it are the query's other goals. The ledger above was measured on
-//! the clause spelling, and the query spelling was not backed out again.
+//! The unreduced call is asked as a goal built at run time, which no load types: a clause that
+//! writes `Conv.tag("km")` is refused at load, nothing at the call fixing `Conv`'s carrier `A`
+//! (WI-20261013-RYDNV), and so is the query, typed where it is read (WI-20261105-CBRD2), both in
+//! `a_clause_that_writes_the_unreduced_call_is_refused_at_load`. The siblings the clauses gave
+//! it are the goal's other conjuncts. The ledger above was measured on the clause spelling, and
+//! the later spellings were not backed out again.
 //!
 //! The CONTROLS pass either way, by design, and each says why at its site. The ticket's two
 //! controls outside this module pass unchanged: `wi519_residual_honesty_test` (every residual
@@ -122,9 +123,9 @@ fn kb() -> KnowledgeBase {
     crate::common::load_kb_with(SRC)
 }
 
-/// Resolve the conjunction `patterns`, asked as a query: its solutions and the telemetry.
+/// Resolve the conjunction `patterns`, built at run time: its solutions and the telemetry.
 fn goals(kb: &mut KnowledgeBase, patterns: &[&str]) -> (Vec<Solution>, ResolveStats) {
-    let goals = crate::common::query_goals(kb, patterns);
+    let goals = crate::common::run_time_goals(kb, patterns);
     kb.resolve_with_stats(&goals, &ResolveConfig::default())
 }
 
@@ -203,6 +204,13 @@ fn a_clause_that_writes_the_unreduced_call_is_refused_at_load() {
         .filter(|e| e.contains("wicynpe.Conv.tag") && e.contains("`Conv[A = …].tag(…)`"))
         .count();
     assert_eq!(refused, UNREDUCED_CLAUSES.len(), "one refusal per clause: {errs:#?}");
+    // A query is typed where it is read, as a clause is, and is refused the same way.
+    let mut kb = kb();
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, TAG),
+        &["wicynpe.Conv.tag", "`Conv[A = …].tag(…)`"],
+        "the call asked as a query",
+    );
 }
 
 /// PRVA2's row, the run-time half: no provider supplies `Conv.tag("km")`, so the call is

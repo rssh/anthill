@@ -94,6 +94,29 @@
 //!   off), each alone: the `?t: B` beside `Z[A]` spelling of
 //!   [`a_result_only_call_at_a_type_nothing_fixes_is_refused`].
 //!
+//! * a query's spec-op calls not typed where it is read (`typed_spec_op_calls` typing nothing):
+//!   [`a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused`], WI-1044's two
+//!   query-refusal rows, NAR1X's and CYNPE's query refusals;
+//! * a query's call left open by its typing let through (`calls_left_to_a_clause` answering
+//!   nothing): the one-provider half of
+//!   [`a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused`];
+//! * a query's comparison typed as a call (the exclusion in `owes_an_instance` off):
+//!   WI-879's `a_cross_sort_literal_pair_is_undecided_and_diagnosed`, and the CLI's
+//!   `resolver_error_render_test::an_unorderable_comparison_is_explained`;
+//! * a query's call held to a rule body's effect refusal (the `RuleBodyEffect` filter off):
+//!   [`an_effectful_call_in_a_query_keeps_its_run_time_verdict`];
+//! * a `--match` browse typed as a query (`convert_patterns_untyped` not used for it): the CLI's
+//!   `wi1044_query_supplier_tie_test::a_two_supplier_browse_is_not_refused`;
+//! * found by /code-review, each measured on the tree before its fix: a query variable bound in
+//!   the env by a name another shares (the anonymous `?`) — the anonymous half of
+//!   [`a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused`], which answered
+//!   conditionally; a defaulted member of a spec with no abstract member refused at an open
+//!   carrier — [`a_defaulted_member_at_an_open_carrier_is_left_as_in_a_rule_body`].
+//!
+//! [`a_querys_spec_op_call_is_typed_where_it_is_read`] passes with the query typing backed out,
+//! by design: the value its call reached at run time is the one its typing decides, and the row
+//! says the typing keeps it.
+//!
 //! [`a_concrete_goal_in_a_rule_body_passes_its_dictionary`] passes under each, by design: it is
 //! the route the rows above are measured against. So does
 //! [`a_guard_the_sorts_requires_or_the_bracket_supplies_a_result_only_call`], what supplies a
@@ -761,4 +784,115 @@ fn a_guard_the_sorts_requires_or_the_bracket_supplies_a_result_only_call() {
     assert_eq!(ints(&mut kb, "p.zz.viaGuardGoal[A = Int64](?t)"), [0]);
     assert_eq!(ints(&mut kb, "p.zz.viaHolder(?t)"), [0]);
     assert_eq!(ints(&mut kb, "p.zz.viaBracket(?t)"), [0]);
+}
+
+/// A query's call of a spec operation is typed where the query is read, as a rule body's goal
+/// is: at a type a provider answers it is decided there, as the member it reaches —
+/// `Marker.tag(1, ?t)` is `Int64.tag` and `Marker.tag(true, ?t)` `Bool.tag`, as a goal and as
+/// the right of `<=>`.
+#[test]
+fn a_querys_spec_op_call_is_typed_where_it_is_read() {
+    let mut kb = crate::common::load_kb_with(&marker(""));
+    assert_eq!(ints(&mut kb, "p.q2.Marker.tag(1, ?t)"), [1]);
+    assert_eq!(ints(&mut kb, "p.q2.Marker.tag(true, ?t)"), [2]);
+    assert_eq!(ints(&mut kb, "anthill.kernel.unify(p.q2.Marker.tag(1), ?t)"), [1]);
+}
+
+/// …and at a type nothing provides, or a type nothing fixes, it is refused where the query is
+/// read, a query having no caller to pass the instance and nothing reading it from a value when
+/// the goal runs: `Marker.tag(1.5, ?t)` (`Float` provides no `Marker`); `Marker.tag(?x, ?t)`
+/// beside two providers, which the call selects none of, and so with an anonymous `?` beside
+/// another one a goal types; and beside one, `Tag.tg(?x, ?r)`, `?r
+/// <=> Tag.tg(?x)` and `not(Tag.tg(?x, 3))`, which the one provider does not answer for an `?x`
+/// nothing types; and over a member that names its spec in its result alone, `Z.zz(?t)`. Each
+/// answered conditionally.
+#[test]
+fn a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused() {
+    let mut kb = crate::common::load_kb_with(&marker(""));
+    refused(
+        &mut kb,
+        "p.q2.Marker.tag(1.5, ?t)",
+        &["p.q2.Marker.tag", "`anthill.prelude.Float` provides no `p.q2.Marker`"],
+    );
+    // An anonymous `?` is no other's: the one `src` types does not type the call's.
+    for open in ["p.q2.Marker.tag(?x, ?t)", "anthill.kernel.and(p.q2.src(?), p.q2.Marker.tag(?, ?t))"] {
+        refused(&mut kb, open, &["ambiguous dispatch of `p.q2.Marker.tag`", "the call selects none"]);
+    }
+    let mut kb = crate::common::load_kb_with(&zz(""));
+    for open in [
+        "p.zz.Tag.tg(?x, ?r)",
+        "anthill.kernel.unify(?r, p.zz.Tag.tg(?x))",
+        "not(p.zz.Tag.tg(?x, 3))",
+    ] {
+        refused(&mut kb, open, &["p.zz.Tag.tg", "a query has no caller"]);
+    }
+    refused(&mut kb, "p.zz.Z.zz(?t)", &["p.zz.Z.zz", "`Z[T = …].zz(…)`"]);
+}
+
+/// CONTROL, passing either way by design: a query's comparison is not typed by this pass — a
+/// comparison no type reaches reads the type its values carry when it runs, in a rule body as in
+/// a query (the comparisons' own row of this ticket) — and a structural browse is not typed at
+/// all (`wi1044_query_supplier_tie_test::a_two_supplier_browse_is_not_refused`). `?x = 1` beside
+/// a call whose type the query fixes answers.
+#[test]
+fn a_comparison_beside_a_typed_call_is_not_typed_as_a_call() {
+    let mut kb = crate::common::load_kb_with(&marker(""));
+    assert_eq!(
+        crate::common::pattern_answer_counts(
+            &mut kb,
+            "anthill.kernel.and(p.q2.Marker.tag(1, ?t), ?t = 1)"
+        ),
+        (1, 1)
+    );
+}
+
+/// What a query's call may perform is not this typing's question: a spec operation's call
+/// that performs `Clock`, at a type its provider answers, is not refused where the query is
+/// read, as a rule body's call is ("a rule body performs no effect"), and answers nothing, as
+/// it did before the query was typed.
+#[test]
+fn an_effectful_call_in_a_query_keeps_its_run_time_verdict() {
+    let src = r#"namespace p.eff
+  import anthill.prelude.Int64
+  import anthill.prelude.Time.Clock
+  sort Clk
+    sort T = ?
+    operation stamp(x: T) -> Int64 effects {Clock}
+  end
+end
+namespace anthill.prelude.Int64
+  import p.eff.Clk
+  import anthill.prelude.Time.Clock
+  provides Clk[T = Int64]
+  operation stamp(x: Int64) -> Int64 effects {Clock} = 3
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    let pattern = "p.eff.Clk.stamp(1, ?r)";
+    assert!(crate::common::query_pattern_refusals(&mut kb, pattern).is_empty(), "not refused");
+    assert_eq!(answers(&mut kb, pattern), (0, 0));
+}
+
+/// A defaulted member of a spec with no abstract member, at a carrier nothing types, is not
+/// refused where the query is read, as it is not in a rule body (`wi1040_require_clause_dictionary_test::the_same_clause_without_require_dispatches_by_value`):
+/// whether such a call owes an instance is not this typing's question.
+#[test]
+fn a_defaulted_member_at_an_open_carrier_is_left_as_in_a_rule_body() {
+    let src = r#"namespace p.dflt
+  import anthill.prelude.Int64
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64 = 1
+  end
+  sort Leaf
+    entity leaf
+    provides Desc[T = Leaf]
+    operation describe(x: Leaf) -> Int64 = 7
+  end
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    let refusals = crate::common::query_pattern_refusals(&mut kb, "p.dflt.Desc.describe(?x, ?r)");
+    assert!(refusals.is_empty(), "not refused: {refusals:#?}");
+    assert_eq!(ints(&mut kb, "p.dflt.Desc.describe(p.dflt.Leaf.leaf(), ?r)"), [7]);
 }

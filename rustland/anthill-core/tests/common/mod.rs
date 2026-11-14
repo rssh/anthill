@@ -2803,6 +2803,45 @@ pub fn query_goals(
     goals
 }
 
+/// Goals built at run time from `patterns`, its names written in full: converted as a query's
+/// goals are and typed by no load ([`load::convert_patterns_untyped`]) — what a row driving the
+/// resolver over a goal the load would refuse asks.
+#[allow(dead_code)]
+pub fn run_time_goals(
+    kb: &mut KnowledgeBase,
+    patterns: &[&str],
+) -> Vec<anthill_core::kb::load::QueryPattern> {
+    let src: String = patterns.iter().map(|p| format!("fact {p}\n")).collect();
+    let parsed = parse::parse(&src).expect("parse run-time goals");
+    let errs = load::scan_query_definitions(kb, &[&parsed]);
+    assert!(errs.is_empty(), "run-time goals {patterns:?} failed to scan: {errs:?}");
+    let global_scope = kb.global_scope();
+    let mut var_map = std::collections::HashMap::new();
+    let ids: Vec<_> = parsed
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            anthill_core::parse::ir::Item::Fact(f) => Some(f.term),
+            _ => None,
+        })
+        .collect();
+    let goals = load::convert_patterns_untyped(kb, &parsed, &ids, global_scope, &mut var_map)
+        .unwrap_or_else(|errs| {
+            panic!(
+                "run-time goals {patterns:?} failed to convert: {:?}",
+                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(goals.len(), patterns.len(), "one goal per pattern");
+    goals
+}
+
+/// [`run_time_goals`] of one pattern.
+#[allow(dead_code)]
+pub fn run_time_goal(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::kb::load::QueryPattern {
+    run_time_goals(kb, &[pattern]).remove(0)
+}
+
 /// [`query_pattern_functor`]'s answer as a qualified name — what a suite asserting
 /// WHERE a spelling lands wants (`wi040`, `wi752`).
 #[allow(dead_code)]
