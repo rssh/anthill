@@ -26541,6 +26541,41 @@ fn positional_type_keys(
         .collect()
 }
 
+/// The positional arguments of a sort application written at a goal position (`Marker[Car]`,
+/// `Conv[Car, B = Int64]`), taken out of `pos` and paired with the parameters they bind: the goal
+/// is the one its named spelling is, `Marker[T = Car]`, as a type application is
+/// ([`normalize_type_args`]). Only the positions are named: a goal keeps a `?` binding and a slot
+/// left out as written. Nothing is taken where the sort declares no parameters, whose one
+/// positional is the instance's carrier (WI-407). `Err` where a name is bound twice, or a sort
+/// with parameters is given more positionals than it leaves unnamed.
+fn name_goal_positionals(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    named_keys: &[Symbol],
+    pos: &mut Vec<Rc<NodeOccurrence>>,
+) -> Result<Vec<(Symbol, Rc<NodeOccurrence>)>, crate::kb::TypeArgProblem> {
+    if let Some(problem) = kb.duplicate_named_binding(named_keys) {
+        return Err(problem);
+    }
+    if pos.is_empty() {
+        return Ok(Vec::new());
+    }
+    let owner = kb.type_arg_owner(sort).unwrap_or(sort);
+    let declared = kb.type_params_of_sort(owner);
+    let slots = KnowledgeBase::positional_param_slots(
+        &declared,
+        |d| named_keys.iter().any(|k| kb.local_name_of(*k) == d),
+        pos.len(),
+    );
+    if let Some(problem) = KnowledgeBase::excess_positional(&declared, &slots) {
+        return Err(problem);
+    }
+    Ok(match positional_type_keys(kb, sort, named_keys, pos.len()) {
+        Some(bound) => bound.into_iter().zip(pos.drain(..)).collect(),
+        None => Vec::new(),
+    })
+}
+
 /// Does the sort an application of `head` binds declare a default for any of its parameters?
 /// Asked before a caller reads the application's arguments, which costs a conversion of each.
 fn declares_parameter_defaults(kb: &KnowledgeBase, head: Symbol) -> bool {
@@ -27348,10 +27383,10 @@ fn convert_query_term_expecting(
             // A TYPE APPLICATION in a data slot is the term the fact holding it was stored as
             // (`Loader::convert_term_inner`): a type alias's head is the sort the alias stands
             // for, with the bindings it fixes, and the application is the one term its type
-            // is ([`normalize_type_args`]). A query has no error channel, so arguments that
-            // do not fit the sort are left as written.
+            // is ([`normalize_type_args`]). So is a sort's at a goal, as a rule body reads it.
+            // Arguments that do not fit the alias are left as written.
             let mut kb_functor = kb_functor;
-            if fold == ConstFold::Data
+            if matches!(fold, ConstFold::Data | ConstFold::Goal)
                 && parse_terms.is_type_application(parse_id)
                 && kb.has_kind(kb_functor, SymbolKind::Sort)
             {
@@ -27432,6 +27467,21 @@ fn convert_query_term_expecting(
                         new_named.insert_many(0, given);
                         kb_functor = base;
                     }
+                }
+            }
+            // A sort's bracket at a goal binds by position as by name, as in a rule body
+            // ([`name_goal_positionals`]).
+            if fold == ConstFold::Goal
+                && parse_terms.is_type_application(parse_id)
+                && kb.has_kind(kb_functor, SymbolKind::Sort)
+            {
+                let keys: Vec<Symbol> = new_named.iter().map(|(k, _)| *k).collect();
+                match name_goal_positionals(kb, kb_functor, &keys, &mut new_pos) {
+                    Ok(more) => new_named.extend(more),
+                    Err(problem) => errors.push(LoadError::InvalidTypeArgument {
+                        detail: problem.describe(kb, kb_functor),
+                        span: Some(parse_terms.span(parse_id)),
+                    }),
                 }
             }
             // A constructor's bracket binds its SORT's parameters, and is checked and
@@ -40203,7 +40253,12 @@ impl<'a> Loader<'a> {
                     // A type ALIAS's application is the sort it stands for, the bindings it
                     // fixes before the written ones, as the clause's term holds it
                     // ([`Self::applied_value_alias`]).
-                    let new_functor = if type_value {
+                    // A sort's bracket at a goal (`:- Marker[Car]`, a negand) is read as a type
+                    // application's: an alias stands for its sort, and a position binds as a name.
+                    let goal_application = at_goal
+                        && self.parsed.terms.is_type_application(parse_id)
+                        && self.kb.has_kind(new_functor, SymbolKind::Sort);
+                    let new_functor = if type_value || goal_application {
                         let owner = self.current_owner;
                         let (head, fixed) =
                             self.applied_value_alias(new_functor, &mut pos, &mut named, span, owner);
@@ -40212,6 +40267,16 @@ impl<'a> Loader<'a> {
                     } else {
                         new_functor
                     };
+                    if goal_application {
+                        let keys: Vec<Symbol> = named.iter().map(|(k, _)| *k).collect();
+                        match name_goal_positionals(self.kb, new_functor, &keys, &mut pos) {
+                            Ok(more) => named.extend(more),
+                            Err(problem) => self.errors.push(LoadError::InvalidTypeArgument {
+                                detail: problem.describe(&self.kb, new_functor),
+                                span: Some(span.span),
+                            }),
+                        }
+                    }
                     if type_value
                         || (self.term_depth > 1
                             && self.parsed.terms.is_type_application(parse_id)

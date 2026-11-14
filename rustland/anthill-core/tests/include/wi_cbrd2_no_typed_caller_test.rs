@@ -681,12 +681,7 @@ end
     )
 }
 
-/// How many answers `pattern` gets, and how many of them are definite.
-fn answers(kb: &mut KnowledgeBase, pattern: &str) -> (usize, usize) {
-    let goal = crate::common::query_pattern_term(kb, pattern);
-    let sols = kb.resolve(&[goal], &ResolveConfig::default());
-    (sols.iter().filter(|s| s.is_definite()).count(), sols.len())
-}
+use crate::common::pattern_answer_counts as answers;
 
 /// A rule body's call of a member with no argument at the spec's carrier is judged as an
 /// operation body's is: at a type its bracket or the clause gives it, a type nothing provides is

@@ -2492,3 +2492,5 @@ mod wi_cbrd2_no_typed_caller_test;
 mod wi_4kxpd_waiting_clause_test;
 #[path = "include/wi_fsnz5_reflect_form_identity_test.rs"]
 mod wi_fsnz5_reflect_form_identity_test;
+#[path = "include/positional_sort_goal_test.rs"]
+mod positional_sort_goal_test;

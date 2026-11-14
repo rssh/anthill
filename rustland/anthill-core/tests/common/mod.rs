@@ -2659,6 +2659,15 @@ pub fn pattern_hits(kb: &mut KnowledgeBase, pattern: &str) -> usize {
         .len()
 }
 
+/// How many answers the query `pattern` gets over `kb`, its names written in full, and how many
+/// of them are definite: `(definite, total)`.
+#[allow(dead_code)]
+pub fn pattern_answer_counts(kb: &mut KnowledgeBase, pattern: &str) -> (usize, usize) {
+    let goal = query_pattern_term(kb, pattern);
+    let sols = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    (sols.iter().filter(|s| s.is_definite()).count(), sols.len())
+}
+
 /// The definite integer answers the query `pattern` gives at its LAST argument, sorted —
 /// read off the goal as written, since a query passing its callee a requirement rides in
 /// the citation marker that carries it (proposal 073 §6.2).
