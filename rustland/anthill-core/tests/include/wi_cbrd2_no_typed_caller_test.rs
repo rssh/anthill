@@ -10,7 +10,8 @@
 //! A value at a sort with abstract values is an instance in a rule as in an operation (073 §2):
 //! a column the clause types at such a sort holds instances, a goal, a query or an operation
 //! body's citation that passes a provider's value there pairs it with the provider's dictionary
-//! at load, and so does a rule body's call at a parameter of that type. A variable `<=>` makes a
+//! at load, and so does a rule body's call at a parameter of that type. A query's variable there
+//! is refused: a query has no caller to pass the instance. A variable `<=>` makes a
 //! construction is of the construction's type where it fits the variable's other positions, so
 //! a call on it is decided at load.
 //!
@@ -67,6 +68,12 @@
 //!   carrier, not by the operation body's goal: QMFC5's `Cap[P = Int64]` row.
 //! * a later load typing again a body that holds a paired value (`occ_holds_instance_pair`
 //!   off): [`a_paired_body_is_not_typed_again_by_a_later_load`];
+//! * a query's variable at a column that holds instances passed as it is (decided with the
+//!   user 2026-11-14: refused): [`a_query_variable_at_a_column_that_holds_instances_is_refused`]
+//!   and GFS6A's `a_dictionary_never_bound_is_a_conditional_answer`;
+//! * a query's two columns, one at the abstract sort and one at a provider, not met at the
+//!   provider (`stamp_query_variable_types`): the `carSrc` half of
+//!   [`a_query_variable_at_a_column_that_holds_instances_is_refused`];
 //! * each of three fixes /code-review found, alone:
 //!   [`values_from_calls_and_a_later_receiver_reach_the_instance`] — a call's result of a
 //!   provider at a column of the abstract sort unified with it (`provides_the_slot` off), a
@@ -427,6 +434,30 @@ fn a_value_with_no_instance_at_the_column_is_refused() {
     );
     let mut kb = crate::common::load_kb_with(&sp(""));
     refused(&mut kb, "p.sp.dflted(p.sp.Van.van(n: 1), ?r)", &["dflted", "Sp", "Van"]);
+}
+
+/// A query's variable at a column that holds instances is refused where the query is read: a
+/// query has no caller to pass the instance, and another of its goals that would bind it is no
+/// caller either — `dflted(?s, ?r)` alone, and after `src(?s)`, whose column is an `Sp` too. A
+/// variable another goal types at a provider is paired as its value is: after `carSrc(?s)`, a
+/// `Car`, the conjunction answers `43`, whichever column is read first. The first two answered
+/// conditionally.
+#[test]
+fn a_query_variable_at_a_column_that_holds_instances_is_refused() {
+    let mut kb = crate::common::load_kb_with(&sp(
+        "  sort Mk\n    operation mkSp() -> Sp = car(n: 2)\n  end\n  \
+         rule src(?s) :- ?s <=> Mk.mkSp()\n  \
+         fact carSrc(car(n: 1))\n",
+    ));
+    refused(&mut kb, "p.sp.dflted(?s, ?r)", &["dflted", "a variable of the query", "Sp"]);
+    let both = conjunction(&mut kb, &["p.sp.src(?s)", "p.sp.dflted(?s, ?r)"]).expect_err("refused");
+    crate::common::assert_refused_naming(&both, &["dflted", "a variable of the query"], "after src");
+    assert_eq!(conjunction(&mut kb, &["p.sp.carSrc(?s)", "p.sp.dflted(?s, ?r)"]), Ok(vec![43]));
+    assert_eq!(
+        conjunction(&mut kb, &["p.sp.dflted(?s, ?r)", "p.sp.carSrc(?s)", "p.sp.dflted(?s, ?r)"]),
+        Ok(vec![43]),
+        "the abstract column read first",
+    );
 }
 
 /// Values that reach a column of `Sp` from a call: `Mk.mkCar()`, a `Car`, fits the column as a

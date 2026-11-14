@@ -1933,7 +1933,12 @@ fn narrow_to_construction(
 /// Proposal 073 §2 — does a value of type `ty` fit a slot of type `position` that is a sort
 /// with abstract values, as a provider's value does: `Mk.mkCar()`, a `Car`, at a column of `Sp`
 /// is an `Sp` there, as it is at an operation's parameter of that type.
-fn provides_the_slot(kb: &mut KnowledgeBase, subst: &Substitution, ty: &Value, position: &Value) -> bool {
+pub(super) fn provides_the_slot(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    ty: &Value,
+    position: &Value,
+) -> bool {
     let position = walk_type_deep_value(kb, subst, position);
     if abstract_carrier_of(kb, &position).is_none() {
         return false;

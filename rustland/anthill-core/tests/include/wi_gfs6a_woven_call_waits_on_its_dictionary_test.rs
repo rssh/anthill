@@ -418,13 +418,16 @@ fn a_body_less_call_a_later_goal_grounds_answers() {
 }
 
 /// `?s` never bound: one CONDITIONAL row whose residual holds the read and the call, and no
-/// undecided cause — the call waits, it is not unreduced. Before, without the parameter: a
-/// DEFINITE 7, `Sp`'s default answered for a carrier nothing chose.
+/// undecided cause — the call waits, it is not unreduced. Asked through a rule, whose variable at
+/// the column passes as it is; asked as a query, `dflted(?s, ?r)` is refused where it is read: a
+/// query has no caller to pass the instance (decided with the user, 2026-11-14). Before, without
+/// the parameter: a DEFINITE 7, `Sp`'s default answered for a carrier nothing chose.
 #[test]
 fn a_dictionary_never_bound_is_a_conditional_answer() {
     for (ns, param) in [("gfs6a.neverp", true), ("gfs6a.nevernp", false)] {
-        let mut kb = crate::common::load_kb_with(&program(ns, param, DFLTED));
-        let sols = ask(&mut kb, &format!("test.{ns}.dflted(?s, ?r)"));
+        let rules = format!("{DFLTED}  rule never(?r) :- dflted(?s, ?r)\n");
+        let mut kb = crate::common::load_kb_with(&program(ns, param, &rules));
+        let sols = ask(&mut kb, &format!("test.{ns}.never(?r)"));
         let [sol] = sols.as_slice() else {
             panic!("param: {param}: one row; got {} solutions", sols.len());
         };
@@ -439,6 +442,12 @@ fn a_dictionary_never_bound_is_a_conditional_answer() {
             held.iter().any(|g| g.starts_with("find_dictionary("))
                 && held.iter().any(|g| g.starts_with("dflt(")),
             "param: {param}: the read and the call wait: {held:?}",
+        );
+        let pattern = format!("test.{ns}.dflted(?s, ?r)");
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(&mut kb, &pattern),
+            &["dflted", "a variable of the query", "Sp"],
+            &pattern,
         );
     }
 }

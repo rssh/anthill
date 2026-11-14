@@ -203,8 +203,10 @@ pub(crate) fn route_query_goals(
 
 /// Each variable of a query's goals `sites` given the type the columns its relation goals put
 /// it at agree on, where that is a concrete type — what a clause's typing gives the same
-/// variable of the same goals in a rule body. A variable two columns put at different types, or
-/// one only an open column reaches, stays untyped.
+/// variable of the same goals in a rule body. Two columns, one at a sort with abstract values and
+/// one at a type that provides it, meet at the provider (`carSrc(?s), dflted(?s, ?r)`: a `Car`).
+/// A variable two columns put at other different types, or one only an open column reaches,
+/// stays untyped.
 fn stamp_query_variable_types(kb: &mut KnowledgeBase, sites: &[Rc<NodeOccurrence>]) {
     let mut types: HashMap<VarId, Option<Value>> = HashMap::new();
     for site in sites {
@@ -233,8 +235,17 @@ fn stamp_query_variable_types(kb: &mut KnowledgeBase, sites: &[Rc<NodeOccurrence
                 continue;
             };
             let agreed = types.entry(*vid).or_insert_with(|| Some(ty.clone()));
-            if agreed.as_ref().is_some_and(|seen| !views_structurally_equal(kb, seen, &ty)) {
-                *agreed = None;
+            if let Some(seen) = agreed.clone().filter(|seen| !views_structurally_equal(kb, seen, &ty)) {
+                // Two columns meet where one is a sort with abstract values the other's type
+                // provides: the variable is the provider's value, as in a clause.
+                let none = Substitution::new();
+                *agreed = if provides_the_slot(kb, &none, &ty, &seen) {
+                    Some(ty.clone())
+                } else if provides_the_slot(kb, &none, &seen, &ty) {
+                    Some(seen)
+                } else {
+                    None
+                };
             }
         }
     }
@@ -344,13 +355,16 @@ pub(super) fn same_slot(kb: &KnowledgeBase, a: &SlotKey, b: &SlotKey) -> bool {
 /// instances ([`instance_columns`]) paired with its sort's dictionary, built at load, as an
 /// operation body pairs an argument at a parameter of that type: `dflted(car(n: 1), ?r)`
 /// passes `Instance(<Car's Sp>, car(n: 1))`. A value at the column's own sort is an instance
-/// already and passes as it is, as does a variable no position types, which the column types.
-/// `Ok(None)` where nothing is paired; refused where the argument's type is open there, or its
-/// sort has no instance of the column's.
+/// already and passes as it is, as does a clause's variable no position types, which the column
+/// types. A query's variable there is refused: a query has no caller to pass the instance, and
+/// another of its goals that would bind it is no caller either. `Ok(None)` where nothing is
+/// paired; refused where the argument's type is open there, or its sort has no instance of the
+/// column's.
 fn pack_instance_arguments(
     kb: &mut KnowledgeBase,
     site: &Rc<NodeOccurrence>,
     callee: Symbol,
+    in_query: bool,
 ) -> Result<Option<Rc<NodeOccurrence>>, TypeError> {
     let Some(Expr::Apply {
         recv_type,
@@ -374,7 +388,7 @@ fn pack_instance_arguments(
         let Some((_, column)) = columns.iter().find(|(s, _)| same_slot(kb, s, &slot)) else {
             return Ok(Rc::clone(arg));
         };
-        let packed = pack_instance_argument(kb, callee, column, arg, instance_sym)?;
+        let packed = pack_instance_argument(kb, callee, column, arg, instance_sym, in_query)?;
         changed |= !Rc::ptr_eq(&packed, arg);
         Ok(packed)
     };
@@ -405,20 +419,13 @@ fn pack_instance_argument(
     column: &Value,
     arg: &Rc<NodeOccurrence>,
     instance_sym: Symbol,
+    in_query: bool,
 ) -> Result<Rc<NodeOccurrence>, TypeError> {
     // A pair already: a goal routed again once a callee's layout changed.
     if matches!(arg.as_expr(), Some(Expr::Apply { functor, .. }) if *functor == instance_sym) {
         return Ok(Rc::clone(arg));
     }
-    let untyped_var = matches!(arg.as_expr(), Some(Expr::Var(_))) && arg.inferred_type().is_none();
-    let ty = match goal_arg_type(kb, arg) {
-        Some(ty) if !untyped_var => ty,
-        _ => return Ok(Rc::clone(arg)),
-    };
     let sort = abstract_carrier_of(kb, column).expect("an instance column is at an abstract sort");
-    if abstract_carrier_of(kb, &ty).is_some() {
-        return Ok(Rc::clone(arg));
-    }
     let refusal = |kb: &mut KnowledgeBase, why: String| TypeError::Other {
         site: TypeError::here(),
         span: Some(arg.span.span),
@@ -433,6 +440,23 @@ fn pack_instance_argument(
         ),
         actual: why,
     };
+    let is_var = matches!(arg.as_expr(), Some(Expr::Var(_)));
+    let untyped_var = is_var && arg.inferred_type().is_none();
+    let ty = goal_arg_type(kb, arg).filter(|_| !untyped_var);
+    // An instance already, or a variable the column types: as it is — but in a query, which no
+    // caller passes one to.
+    if ty.as_ref().is_none_or(|ty| abstract_carrier_of(kb, ty).is_some()) {
+        if in_query && is_var {
+            let why = format!(
+                "a variable of the query, for which no caller passes an instance of `{}`: pass a \
+                 value of a sort that provides it",
+                short_name_of(kb.qualified_name_of(sort)),
+            );
+            return Err(refusal(kb, why));
+        }
+        return Ok(Rc::clone(arg));
+    }
+    let ty = ty.expect("read above");
     if sort_functor_of_view(kb, &ty).is_none() || !instance_is_concrete(kb, &ty) {
         let why = format!(
             "a value at `{}`, a type nothing at the goal fixes, so no instance of `{}` is known \
@@ -744,7 +768,7 @@ fn route_goal(
     callee: Symbol,
     refused: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
 ) -> Option<Rc<NodeOccurrence>> {
-    let packed = match pack_instance_arguments(kb, site, callee) {
+    let packed = match pack_instance_arguments(kb, site, callee, matches!(writer, GoalWriter::Query)) {
         Ok(packed) => packed,
         Err(refusal) => {
             refused.push((refusal, Some(site.span.source)));
