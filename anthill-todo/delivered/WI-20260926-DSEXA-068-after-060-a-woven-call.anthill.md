@@ -3,9 +3,9 @@
 - id: WI-20260926-DSEXA-068-after-060-a-woven-call
 - created: 2026-09-26T09:54:11Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-26T09:54:11Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-14T11:09:04Z
 
 - acceptance: cargo-test
 
@@ -69,4 +69,8 @@ A RULE-BODY CALL OF A MEMBER NOTHING CAN RUN ANSWERS NO SOLUTIONS, SILENTLY (fou
 ### 2026-11-02T11:20:12Z — feedback — claude
 
 DEPENDENCY REWIRED (user, 2026-11-02, dependency review): from WI-20260911-5G28A to WI-20261102-ATVC1. This umbrella was wired to 5G28A on 2026-10-14 for S7 alone (rule → rule implicit arguments); S7 and its decision B row are now that ticket, split out of 5G28A, so this no longer waits on the rest of 5G28A or on SHED7 behind it.
+
+### 2026-11-14T11:07:40Z — feedback — claude
+
+THE THREE ROWS NOT CLASSIFIED INTO A PART, run again on bba710c2 (2026-11-14). (1) The 2026-10-13 row from WI-20260925-0RRQP, a selection lost when an operation runs as a rule's goal: CURED by WI-20261013-GFS6A (38c9e23b, 2026-10-14). 0RRQP's stated limit is now a_driver_run_as_a_rules_goal_reads_its_selection, asserting 4, and P7VP4's own fixture through rule goals answers `?r <=> Driver.ruleDesc()` 4, `?r <=> Driver.ruleAsc()` -4, and `?r <=> Driver.intDesc()` -1 (its call at a concrete carrier, by design). (2) The 2026-10-13 row from WI-20261013-0GYW1, a body-less spec call at an arrow: NOT A DEFECT OF THE ARROW. The program wrote `?v = Apply.run(mk())` with `?v` free, and `=` never binds (§8.3): `?v = thirty()` over `operation thirty() -> Int64 = 30` leaves the same residual. The call at the arrow runs: `?v <=> Apply.run(mk())` answers 30, `Apply.run(mk()) = 30` holds, and `not(Apply.run(mk()) = 31)` holds. (3) The 2026-10-27 row from WI-20260908-9WVT7, a rule-body call of a member nothing can run: the spelling it measured is now refused at load; the spelling its refusal advises, the instance in a bracket, loads and answers two conditional rows at a type nothing provides. MOVED to WI-20261105-CBRD2 (user, 2026-11-14), where 073 §6.2's rule-body refusal is, and noted there. With these, no row of this ticket is left outside a delivered part or another ticket.
 
