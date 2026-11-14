@@ -53,7 +53,7 @@
 //! | test | surface+sweep | resolver `out` arm | weave |
 //! |---|---|---|---|
 //! | `a_covered_call_dispatches_through_the_clause_dictionary` | FAILS (load) | FAILS (`[]`) | ~~FAILS (`1`)~~ — see below |
-//! | `the_same_clause_without_require_dispatches_by_value` | ok | ok | ok |
+//! | `the_same_clause_without_a_requirement_is_refused` (was `…_dispatches_by_value`) | ok | ok | ok |
 //! | `a_two_supplier_carrier_has_no_reading_through_the_dictionary_either` | — | — | ok — see below |
 //! | `a_carrier_less_defaulted_call_answers_through_the_clause_dictionary` | — | — | **FAILS (`1`)** — the CONTROL |
 //! | `every_covered_call_in_the_clause_is_woven` | FAILS (load) | FAILS | **FAILS (`[]`)** |
@@ -285,21 +285,23 @@ fn a_covered_call_dispatches_through_the_clause_dictionary() {
 /// provider's two suppliers as value direction refuses them (058 §4.9); a call with no
 /// operand is one no value can direct, so there the weave is still the only thing that
 /// reaches the carrier's member. The header table says which rows moved.
+///
+/// **AND SINCE WI-20261105-CBRD2 IT IS REFUSED AT LOAD** (decided with the user 2026-11-14):
+/// a defaulted member of a spec something provides owes the instance at its carrier, as its
+/// body-less twin does, and the clause declares none — nothing is read from the value when the
+/// call runs (proposal 073 §6.2). It answered `7`, by value.
 #[test]
-fn the_same_clause_without_require_dispatches_by_value() {
+fn the_same_clause_without_a_requirement_is_refused() {
     let ns = "test.wi1040.control";
     let src = program(
         ns,
         "  rule via(?x, ?r) :- Desc.describe(?x, ?r)\n  \
            rule answer(?r) :- via(leaf(), ?r)\n",
     );
-    assert_eq!(
-        answer(ns, &src),
-        7,
-        "WI-1044: an unpinnable spec-op call is classified from its ARGUMENT VALUES at \
-         reduction time, so it reaches what `Leaf` supplies — the same answer eval's \
-         step-3 override has always given for this call. It folded the spec's `1` \
-         before, which was the resolver and the interpreter disagreeing about one call",
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &["via.body", "`Desc`", "the clause declares none"],
+        "the defaulted call owes `Desc`'s instance, which the clause does not declare",
     );
 }
 
@@ -643,21 +645,14 @@ end
         )
     };
     // THE CONTROL, MEASURED AT THE SITE rather than predicted in the header: the same
-    // program with the requirement deleted answers NOTHING. Value-directed classification
-    // (WI-1044) sees two suppliers for `Leaf` and declines to reduce the call, so the
-    // WI-938 hook has nothing to `unify` the result column with. The woven clause below
-    // now agrees with it.
-    let without = answers(
-        &format!("{ns}.control"),
-        &tie_program(&format!("{ns}.control"), "(?x, ?r) :- "),
-    );
-    assert!(
-        !without
-            .iter()
-            .any(|(v, definite)| *definite && matches!(v, Value::Int(_))),
-        "the un-woven twin must not answer: a two-supplier carrier has no single \
-         reading, and the only Int a fold could produce is the spec's DEFAULT — got \
-         {without:?}",
+    // program with the requirement deleted answered NOTHING — value-directed classification
+    // (WI-1044) saw two suppliers for `Leaf` and declined to reduce the call.
+    // Since WI-20261105-CBRD2 the twin is refused at load: the call owes `Desc`'s instance,
+    // which the clause does not declare.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&tie_program(&format!("{ns}.control"), "(?x, ?r) :- ")),
+        &["via.body", "`Desc`", "the clause declares none"],
+        "the un-woven twin",
     );
     let src = tie_program(ns, "[A](?x: A, ?r) :- Desc[T = A], ");
     let with = answers(ns, &src);
@@ -708,10 +703,13 @@ fn a_carrier_less_defaulted_call_answers_through_the_clause_dictionary() {
         control.contains("operation name() -> Int64 = 7"),
         "fixture guard: both members must have been added"
     );
-    assert_eq!(
-        answer(&control_ns, &control),
-        1,
-        "the un-woven twin: a call with no operand is one value direction cannot direct"
+    // The un-woven twin answered the default `1`, a call with no operand being one value
+    // direction cannot direct; since WI-20261105-CBRD2 it is refused at load, owing `Desc`'s
+    // instance at `?x`, which the clause does not declare.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&control),
+        &["via.body", "`Desc`", "the clause declares none"],
+        "the un-woven twin",
     );
     assert_eq!(
         answer(ns, &src(ns, "[A](?x: A, ?r) :- require d: Desc[T = A], ", "d")),

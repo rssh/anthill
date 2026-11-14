@@ -179,7 +179,9 @@ end
 
 /// A defaulted call that no goal runs reads the clause's dictionary: one in a negand, and two
 /// in the branches of a disjunction, the first at the guard's parameter and the second at a
-/// carrier of its own. It was the witness of a `require[Desc[T]]` (removed by proposal 060.1
+/// carrier of its own, guarded at a type parameter of its own (an unguarded `?y` owes `Desc`'s
+/// instance the clause does not declare, and is refused, WI-20261105-CBRD2, decided with the user
+/// 2026-11-14). It was the witness of a `require[Desc[T]]` (removed by proposal 060.1
 /// §5) and FAILED with that scan backed out (the load refused: "no such call in the rule
 /// body"), which the introducer's guard does not use. With the weave carrier-blind it answers
 /// `7, 7`, measured on the guard.
@@ -206,7 +208,7 @@ fn a_defaulted_call_no_goal_runs_is_still_a_witness() {
     operation describe(x: Gadget) -> Int64 = 9
   end
   rule notOne[A](?x: A) :- Desc[T = A], not(Desc.describe(?x, 1))
-  rule disj[A](?x: A, ?y, ?r) :- Desc[T = A], (Desc.describe(?x, ?r) | Desc.describe(?y, ?r))
+  rule disj[A, B](?x: A, ?y: B, ?r) :- Desc[T = A], Desc[T = B], (Desc.describe(?x, ?r) | Desc.describe(?y, ?r))
   rule thingIsNotOne(?r) :- notOne(thing()), ?r <=> 1
   rule both(?r) :- disj(thing(), gadget(), ?r)
 end
@@ -231,7 +233,9 @@ end
 /// (`30`) and not the call at `dark()` (`Shade`'s own `5`). And `mixed` calls `rank` beside
 /// `Util.twice`, an operation that `requires Rank`, and the passed dictionary reaches it.
 /// Each clause declares `Rank[T = A]` at its head's introducer, `?a: A`; it wrote
-/// `require[Rank[T]]`, which proposal 060.1 §5 removed.
+/// `require[Rank[T]]`, which proposal 060.1 §5 removed. `rankBoth`'s `?b` has a guard of its
+/// own, `Rank[T = B]`: a defaulted call at a column no guard covers owes an instance the clause
+/// does not declare, and is refused (WI-20261105-CBRD2, decided with the user 2026-11-14).
 const RANK_PROGRAM: &str = r#"
 namespace gp8jc.rank
   import anthill.prelude.{Int64, Error, EmptyStream}
@@ -268,7 +272,7 @@ namespace gp8jc.rank
     operation twice(x: T) -> Int64 requires Rank[T] = Int64.add(Rank.rank(x), Rank.rank(x))
   end
 
-  rule rankBoth[A](?a: A, ?b, ?r1, ?r2) :- Rank[T = A], Rank.rank(?a, ?r1), Rank.rank(?b, ?r2)
+  rule rankBoth[A, B](?a: A, ?b: B, ?r1, ?r2) :- Rank[T = A], Rank[T = B], Rank.rank(?a, ?r1), Rank.rank(?b, ?r2)
   rule mixed[A](?a: A, ?r1, ?r2) :- Rank[T = A], Util.twice(?a, ?r1), Rank.rank(?a, ?r2)
 
   sort Driver

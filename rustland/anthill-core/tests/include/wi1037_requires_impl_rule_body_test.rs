@@ -250,17 +250,27 @@ fn a_carrier_with_no_supplier_still_runs_the_default() {
 /// — so the call waits, at the bridge's entry, and the answer is still not a definite
 /// `1`. FAILS with that entry check backed out (`call_op_bridged`'s `spec_call_reads`):
 /// the default body runs for a carrier nobody knows and answers `1`.
+///
+/// AND SINCE WI-20261105-CBRD2 the clause is refused at load: the call owes an instance of
+/// `Desc`, which something provides, at a type no head column reaches (decided with the user
+/// 2026-11-14), as its body-less twin is. The run-time half is the call built at run time, which
+/// no load types.
 #[test]
 fn an_unbound_carrier_answers_nothing_rather_than_the_default() {
     let ns = "test.wi1037.unbound";
     let src = program(ns, " = 1", "  rule answer(?r) :- Desc.describe(?x, ?r)\n");
-    let mut kb = crate::common::load_kb_with(&src);
-    let sols = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &["answer.body", "`Desc`", "no head column of the clause reaches"],
+        "the clause is refused at load",
+    );
+    let mut kb = crate::common::load_kb_with(&program(ns, " = 1", ""));
+    let goal = crate::common::run_time_goal(&mut kb, &format!("{ns}.Desc.describe(?x, ?r)"));
+    let sols = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
     assert!(
-        !sols
-            .iter()
-            .any(|(v, definite)| *definite && matches!(v, anthill_core::eval::Value::Int(1))),
-        "an unbound carrier must not be answered with the spec's default: {sols:?}",
+        sols.iter().all(|sol| !sol.is_definite()),
+        "an unbound carrier must not be answered with the spec's default: {} solution(s)",
+        sols.len(),
     );
 }
 

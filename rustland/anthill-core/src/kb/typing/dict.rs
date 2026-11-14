@@ -3981,6 +3981,22 @@ pub(super) fn spec_has_an_abstract_member(kb: &KnowledgeBase, spec: Symbol) -> b
         .any(|&op| !host_implements(kb, op) && !op_has_runnable_body(kb, op))
 }
 
+/// Does a call of a defaulted member of `spec`, at a carrier load does not know, owe an instance
+/// of `spec`? Where the spec has an abstract member ([`spec_has_an_abstract_member`]), and where
+/// anything provides it: a provider may supply its own member, so the member the call runs is the
+/// instance's, which no value chooses when the call runs (proposal 073 §6.2). A sort whose every
+/// operation has a body and that nothing provides is a parameterized module: its member's call
+/// owes its declared `requires`, not an instance. Not a comparison spec (`PartialEq`,
+/// `PartialOrd`: an operation of it runs a primitive), whose call no type reaches reads the type
+/// its values carry when it runs, until that reading is refused too.
+pub(super) fn defaulted_member_owes_an_instance(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    spec_has_an_abstract_member(kb, spec)
+        || (spec_has_any_providers(kb, spec)
+            && !crate::kb::op_requirements::operations_of_sort(kb, spec)
+                .iter()
+                .any(|op| kb.spec_op_primitive_of(*op).is_some()))
+}
+
 /// WI-1102 — a call site permitted to PARK an op-slot refusal, and the location it would
 /// carry. `None` means "do not park here", which is a decision about the SITE and not
 /// about the dep; each caller's `None` says why at its own site.

@@ -392,6 +392,9 @@ fn the_query_goal_carries_no_typer_stamp() {
 /// Both fact orders are driven deliberately: with one order a stuck stamp could still
 /// produce the right count by luck (if the sticky carrier happens to be the one the
 /// threshold admits), and the reversed order is what removes that coincidence.
+///
+/// Since WI-20261105-CBRD2 the two shapes are refused as clauses (decided with the user
+/// 2026-11-14), and are driven as conjunctions built at run time, which no load types.
 #[test]
 fn a_backtracked_receiver_reclassifies_per_carrier() {
     let program = |first: &str, second: &str, tail: &str| {
@@ -431,63 +434,70 @@ fn a_backtracked_receiver_reclassifies_per_carrier() {
 "#
         )
     };
-    let definite = |first: &str, second: &str, tail: &str| -> Vec<Value> {
-        let src = program(first, second, tail);
-        let mut kb = crate::common::load_kb_with(&src);
-        crate::common::query_unary(&mut kb, "test.wi1044.bt.answer")
-            .into_iter()
-            .filter(|(_, d)| *d)
-            .map(|(v, _)| v)
+    // THE CLAUSES ARE REFUSED AT LOAD since WI-20261105-CBRD2 (decided with the user
+    // 2026-11-14): the call owes `Desc`'s instance at `?x`, a type no head column reaches, as
+    // its body-less twin does — in both shapes. What the run time does with such a call is
+    // asked of the conjunction built at run time, which no load types.
+    for (clause, why) in [
+        ("  rule answer(?r) :- pick(?x), Desc.describe(?x, ?r)\n", "no head column of the clause reaches"),
+        ("  rule answer(?r) :- pick(?r), gt(Desc.describe(?r), 6)\n", "the clause declares none"),
+    ] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&program("leaf", "twig", clause)),
+            &["answer.body", "`Desc`", why],
+            clause,
+        );
+    }
+    let definite = |first: &str, second: &str, goals: &[&str]| -> Vec<Value> {
+        let mut kb = crate::common::load_kb_with(&program(first, second, ""));
+        let goals = crate::common::run_time_goals(&mut kb, goals);
+        let var = match anthill_core::kb::term_view::TermView::head(&goals[0], &kb) {
+            anthill_core::kb::term_view::ViewHead::Functor { .. } => {
+                anthill_core::kb::term_view::TermView::pos_arg(&goals[0], &kb, 0)
+                    .expect("`pick`'s column")
+                    .to_value()
+            }
+            other => panic!("not an application: {other:?}"),
+        };
+        kb.resolve(&goals, &anthill_core::kb::resolve::ResolveConfig::default())
+            .iter()
+            .filter(|sol| sol.is_definite())
+            .map(|sol| kb.reify_value(&var, &sol.subst))
             .collect()
     };
 
-    // THE GOAL SHAPE. Two carriers, two different supplied answers, one rule body.
-    // The answers are compared as a SORTED SET: which order the two rows come back in
-    // is the resolver's clause-selection business and not this test's subject —
-    // asserting it would couple this to that (measured: `[5, 7]` for the `leaf`-first
-    // fixture, so the order is not the fact order and pinning it would be pinning an
-    // accident). What must hold is that BOTH suppliers are reached, which a stuck
-    // stamp makes impossible: it would answer one number twice.
+    // THE GOAL SHAPE. Two carriers, two different supplied answers, one conjunction.
+    // What must hold is that BOTH suppliers are reached, which a stuck stamp makes
+    // impossible: it would answer one carrier twice.
     for (first, second) in [("leaf", "twig"), ("twig", "leaf")] {
         let got = definite(
             first,
             second,
-            "  rule answer(?r) :- pick(?x), Desc.describe(?x, ?r)\n",
+            &["test.wi1044.bt.pick(?x)", "test.wi1044.bt.Desc.describe(?x, ?r)"],
         );
-        let mut ints: Vec<i64> = got
-            .iter()
-            .filter_map(|v| match v {
-                Value::Int(i) => Some(*i),
-                _ => None,
-            })
-            .collect();
-        ints.sort();
-        assert_eq!(
-            ints,
-            vec![5, 7],
-            "each activation must reclassify from ITS OWN receiver ({first} first)",
-        );
+        assert_eq!(got.len(), 2, "each activation must reclassify from ITS OWN receiver ({first} first)");
     }
 
     // THE OPERAND SHAPE, where the call is folded inside a builtin rather than
     // decided by the hook. The threshold separates the two carriers, so a stamp that
     // survived backtracking would show up as a COUNT.
-    let gt = |n: i32| format!("  rule answer(?r) :- pick(?r), gt(Desc.describe(?r), {n})\n");
+    let gt = |n: i32| format!("anthill.prelude.PartialOrd.gt(test.wi1044.bt.Desc.describe(?r), {n})");
     for (first, second) in [("leaf", "twig"), ("twig", "leaf")] {
         assert_eq!(
-            definite(first, second, &gt(6)).len(),
+            definite(first, second, &["test.wi1044.bt.pick(?r)", &gt(6)]).len(),
             1,
             "only `Leaf` supplies a 7 > 6; a stamp stuck to the first carrier would \
              fold 7 for both rows and keep two ({first} first)",
         );
         assert_eq!(
-            definite(first, second, &gt(4)).len(),
+            definite(first, second, &["test.wi1044.bt.pick(?r)", &gt(4)]).len(),
             2,
             "…and the same fixture keeps BOTH rows at a threshold under 5, so the row \
              above is a real filter and not an unrelated failure ({first} first)",
         );
     }
 }
+
 
 /// THE CONTROL THE REFUSAL MUST NOT CONSUME: a carrier with NO supplier still runs the
 /// spec's default at a query, exactly as it does in a rule body

@@ -2466,7 +2466,7 @@ pub(super) fn spec_at_an_unknown_carrier(
     };
     let owed = !host_implements(kb, functor)
         && op_has_spec_carrier_param(kb, functor, spec)
-        && (!defaulted || spec_has_an_abstract_member(kb, spec));
+        && (!defaulted || defaulted_member_owes_an_instance(kb, spec));
     (owed
         && matches!(
             spec_op_call_carrier_outcome(kb, functor, pos_args, named_args, spec).0,

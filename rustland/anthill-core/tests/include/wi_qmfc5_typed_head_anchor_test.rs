@@ -345,24 +345,33 @@ fn the_other_carrier_anchors_to_its_own_supplier() {
     );
 }
 
+/// A nullary call that names no instance, in a clause that declares none, is refused at load
+/// (decided with the user 2026-11-14): `Desc` is provided, so the member it runs is the
+/// instance's, and nothing reads that from a value. It folded the spec's default, 1.
 #[test]
-fn the_control_a_nullary_call_folds_the_spec_default() {
-    assert_eq!(answer(&program("  rule answer(?r) :- Desc.tag(?r)\n")), 1);
+fn a_nullary_call_naming_no_instance_is_refused() {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program("  rule answer(?r) :- Desc.tag(?r)\n")),
+        &["test.qmfc5.Desc.tag", "`Desc[T = …].tag(…)`"],
+        "a nullary call that names no instance",
+    );
 }
 
 // ── the yardsticks ───────────────────────────────────────────────────────────
 
-/// THE UNTYPED TWIN, with no requirement: the nullary call names no instance and folds the
-/// spec's default, 1. (It wrote `require[Desc[T = Leaf]]` and was refused, "no such call in
-/// the rule body" — no witness, no typed head to anchor.)
+/// THE UNTYPED TWIN, with no requirement: the nullary call names no instance, and is refused
+/// at load (decided with the user 2026-11-14); it folded the spec's default, 1. (It wrote
+/// `require[Desc[T = Leaf]]` and was refused, "no such call in the rule body" — no witness, no
+/// typed head to anchor.)
 #[test]
 fn the_untyped_twin_stays_refused() {
-    assert_eq!(
-        answer(&program(
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program(
             "  rule answer(?r) :- anchored(?x, ?r)\n  \
              rule anchored(?x, ?r) :- seed(?x), Desc.tag(?r)\n",
         )),
-        1,
+        &["test.qmfc5.Desc.tag", "`Desc[T = …].tag(…)`"],
+        "the untyped twin",
     );
 }
 
@@ -470,9 +479,12 @@ fn a_refining_carrier_answers_the_same_in_both_tiers() {
     let errs = crate::common::load_errors_of(&refining(
         "  rule checked(?x: Leaf, ?r) :- seed(?x), Desc.tag(?r)\n",
     ));
+    // The column's mismatch, and `Desc.tag()`, which names no instance whatever `?x` is (its
+    // signature writes nothing of `Desc`'s parameter), as in an operation body.
     assert!(
-        errs.len() == 1
-            && errs[0].contains("type mismatch in seed._1 (rule-column): expected Sub, got Leaf"),
+        errs.len() == 2
+            && errs.iter().any(|e| e.contains("type mismatch in seed._1 (rule-column): expected Sub, got Leaf"))
+            && errs.iter().any(|e| e.contains("`Desc[T = …].tag(…)`")),
         "{errs:#?}"
     );
 }

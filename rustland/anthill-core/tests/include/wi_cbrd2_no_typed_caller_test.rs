@@ -110,8 +110,16 @@
 //! * found by /code-review, each measured on the tree before its fix: a query variable bound in
 //!   the env by a name another shares (the anonymous `?`) — the anonymous half of
 //!   [`a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused`], which answered
-//!   conditionally; a defaulted member of a spec with no abstract member refused at an open
-//!   carrier — [`a_defaulted_member_at_an_open_carrier_is_left_as_in_a_rule_body`].
+//!   conditionally.
+//! * a defaulted member of a spec something provides read as owing no instance, as before
+//!   (`defaulted_member_owes_an_instance` reading the abstract member alone):
+//!   [`a_defaulted_member_at_an_open_carrier_is_refused`], and the rows of WI-1037, WI-1040 and
+//!   WI-1044 that a decision of the user (2026-11-14) moved to the refusal (GP8JC's, whose
+//!   clauses now guard each column, pass either way);
+//! * a rule body's defaulted call that names no carrier left to run its default
+//!   (`open_defaulted_call` answering nothing): the `Desc.dflt()` half of
+//!   [`a_defaulted_member_at_an_open_carrier_is_refused`], QMFC5's two nullary rows, its
+//!   refining row's second refusal, and 96ZTM's two bare twins.
 //!
 //! [`a_querys_spec_op_call_is_typed_where_it_is_read`] passes with the query typing backed out,
 //! by design: the value its call reached at run time is the one its typing decides, and the row
@@ -873,26 +881,55 @@ end
     assert_eq!(answers(&mut kb, pattern), (0, 0));
 }
 
-/// A defaulted member of a spec with no abstract member, at a carrier nothing types, is not
-/// refused where the query is read, as it is not in a rule body (`wi1040_require_clause_dictionary_test::the_same_clause_without_require_dispatches_by_value`):
-/// whether such a call owes an instance is not this typing's question.
+/// A defaulted member of a spec something provides, at a carrier nothing types, owes the
+/// instance there as its body-less twin does (decided with the user 2026-11-14): refused where the
+/// query is read, and in a rule body at a type no head column reaches, and so does one that
+/// names no carrier at all (`Desc.dflt()`), whose bracket names the instance; at a known carrier
+/// it answers the carrier's member. It answered conditionally, the rule body by value, and
+/// `Desc.dflt()` the default `2` where `Leaf` supplies `8`.
 #[test]
-fn a_defaulted_member_at_an_open_carrier_is_left_as_in_a_rule_body() {
-    let src = r#"namespace p.dflt
+fn a_defaulted_member_at_an_open_carrier_is_refused() {
+    let src = |tail: &str| {
+        format!(
+            r#"namespace p.dflt
   import anthill.prelude.Int64
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64 = 1
+    operation dflt() -> Int64 = 2
   end
   sort Leaf
     entity leaf
     provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 7
+    operation dflt() -> Int64 = 8
   end
-end
-"#;
-    let mut kb = crate::common::load_kb_with(src);
-    let refusals = crate::common::query_pattern_refusals(&mut kb, "p.dflt.Desc.describe(?x, ?r)");
-    assert!(refusals.is_empty(), "not refused: {refusals:#?}");
+  sort Twig
+    entity twig
+    provides Desc[T = Twig]
+    operation describe(x: Twig) -> Int64 = 5
+  end
+  fact pick(leaf())
+  fact pick(twig())
+{tail}end
+"#
+        )
+    };
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src("  rule answer(?r) :- pick(?x), Desc.describe(?x, ?r)\n")),
+        &["answer.body", "`Desc`", "no head column of the clause reaches"],
+        "a rule body's call at a type no head column reaches",
+    );
+    // A member that names no carrier at all, at no bracket, as a value and as the goal it is.
+    for rule in ["  rule nullary(?v) :- ?v <=> Desc.dflt()\n", "  rule nullary(?v) :- Desc.dflt(?v)\n"] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src(rule)),
+            &["p.dflt.Desc.dflt", "`Desc[T = …].dflt(…)`"],
+            rule,
+        );
+    }
+    let mut kb = crate::common::load_kb_with(&src("  rule bracketed(?v) :- ?v <=> Desc[T = Leaf].dflt()\n"));
+    refused(&mut kb, "p.dflt.Desc.describe(?x, ?r)", &["p.dflt.Desc.describe", "a query has no caller"]);
     assert_eq!(ints(&mut kb, "p.dflt.Desc.describe(p.dflt.Leaf.leaf(), ?r)"), [7]);
+    assert_eq!(ints(&mut kb, "p.dflt.bracketed(?v)"), [8]);
 }

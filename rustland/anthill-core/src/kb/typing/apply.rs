@@ -3127,9 +3127,17 @@ fn check_apply_call(
                 statically_pinned_carrier(kb, &recv_carrier, None, Some(spec_sort));
             // An interface member with no carrier the call pins is dispatched by the provider
             // at its carrier, through the dictionary a condition of the clause reads.
+            // …and one that names no carrier at all (`Desc.dflt()`, over `dflt() -> Int64`), in a
+            // rule body whose clause supplies no instance of the spec, is refused, as its
+            // body-less twin is ([`open_defaulted_call`]).
+            if carrier.is_none() && !requirement_in_scope {
+                if let Some(refusal) = open_defaulted_call(kb, env, &held_views, fn_sym, spec_sort, span) {
+                    return Err(refusal);
+                }
+            }
             if carrier.is_none()
                 && env.clause_supplies_requirements(pos_args, named_args)
-                && spec_has_an_abstract_member(kb, spec_sort)
+                && defaulted_member_owes_an_instance(kb, spec_sort)
             {
                 dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
                 // Read at the one requirement of the spec the rule's sort writes, which the
@@ -3714,7 +3722,7 @@ fn check_apply_call(
                     && provides_rows_of_spec(kb, kb.canonical_sort_sym(spec_sort))
                         .next()
                         .is_some()
-                    && spec_has_an_abstract_member(kb, spec_sort)
+                    && defaulted_member_owes_an_instance(kb, spec_sort)
                     && !op_requires_covers_call(kb, env, &subst, spec_sort);
                 if names_no_instance && !complete_and_ground && !requirement_in_scope {
                     if let Some(apart) = OpenSlotsNamedApart::of_bracket(kb, &goal) {
@@ -7519,17 +7527,63 @@ fn open_result_only_call(
     let held_by_a_guard = held
         .iter()
         .any(|h| same_sort_canonical(kb, h.spec_sort, spec) && at_the_guard(h));
-    let required_by_the_sort = env.rule_domain().is_some_and(|d| {
-        same_sort_canonical(kb, d, spec)
-            || transitive_required_sorts(kb, d)
-                .iter()
-                .any(|s| same_sort_canonical(kb, *s, spec))
-    });
-    (!held_by_a_guard && !required_by_the_sort).then(|| TypeError::MissingRequiresForSpecOp {
+    (!held_by_a_guard && !rule_sort_requires(kb, env, spec)).then(|| TypeError::MissingRequiresForSpecOp {
         span: *span,
         spec_op_sym: op,
         spec_sort_sym: spec,
         abstract_params: abstract_params.clone(),
+        site: RequiresSite::Clause,
+    })
+}
+
+/// Is the rule typed in `env` written in `spec`, or in a sort whose `requires` reach it — so that
+/// its citation fixes the instance a call of `spec` in it is at?
+fn rule_sort_requires(kb: &KnowledgeBase, env: &TypingEnv, spec: Symbol) -> bool {
+    env.rule_domain().is_some_and(|d| {
+        same_sort_canonical(kb, d, spec)
+            || transitive_required_sorts(kb, d)
+                .iter()
+                .any(|s| same_sort_canonical(kb, *s, spec))
+    })
+}
+
+/// The refusal of a rule body's call of a defaulted member that names no carrier — no argument at
+/// the spec's carrier, nothing of it in its result (`Desc.dflt()` over `dflt() -> Int64`) — of a
+/// spec whose call owes an instance ([`defaulted_member_owes_an_instance`]), where the clause
+/// supplies none: no guard of the spec and no `requires` of the sort the rule is written in. Its
+/// default ran where a provider supplies its own member (decided with the user 2026-11-14), and
+/// its body-less twin is refused in these words. `None` for any other call.
+fn open_defaulted_call(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    held: &[HeldSpecView],
+    fn_sym: Symbol,
+    spec: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if env.in_evaluated_body()
+        || !env.in_rule_body()
+        || !signature_names_no_carrier(kb, fn_sym, spec)
+        || kb.type_params_of_sort(spec).is_empty()
+        || !defaulted_member_owes_an_instance(kb, spec)
+        || host_implements(kb, fn_sym)
+    {
+        return None;
+    }
+    if held.iter().any(|h| same_sort_canonical(kb, h.spec_sort, spec)) || rule_sort_requires(kb, env, spec) {
+        return None;
+    }
+    let spec_qn = kb.qualified_name_of(spec).to_string();
+    let abstract_params: SmallVec<[Symbol; 2]> = kb
+        .type_params_of_sort(spec)
+        .iter()
+        .filter_map(|short| kb.try_resolve_symbol(&format!("{spec_qn}.{short}")))
+        .collect();
+    Some(TypeError::MissingRequiresForSpecOp {
+        span,
+        spec_op_sym: fn_sym,
+        spec_sort_sym: spec,
+        abstract_params,
         site: RequiresSite::Clause,
     })
 }

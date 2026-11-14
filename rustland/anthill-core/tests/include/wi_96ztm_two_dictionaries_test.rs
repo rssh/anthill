@@ -129,8 +129,9 @@ fn the_single_require_clause_is_unchanged() {
 }
 
 /// THE CONTROL the numbers above are read against: the same clause with the requirements
-/// deleted answers the spec's DEFAULT for both calls, `(1, 1)` — `tag()` is defaulted, and a
-/// call with nothing to say which instance it means folds it. Written without names it is
+/// deleted is refused at load — `tag()` is defaulted, `Desc` provided, and a call with nothing
+/// to say which instance it means names none (decided with the user 2026-11-14); it answered
+/// the spec's DEFAULT for both calls, `(1, 1)`. Written without names it is
 /// REFUSED at load: an unnamed requirement supplies the evidence for an instance a call names
 /// and does not say which instance that is (as in an operation body). So every `7` and `9`
 /// above arrived through a named dictionary.
@@ -144,7 +145,11 @@ fn the_control_without_the_requires_the_row_above_would_lie() {
             firsts("get2(leaf(), other(), ?r1, ?r2)")
         ),
     );
-    assert_eq!(two(ns, &bare), (Some(1), Some(1)), "no requirement: the spec's default, twice");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&bare),
+        &["test.w96ztm.ctl.Desc.tag", "`Desc[T = …].tag(…)`"],
+        "no requirement: refused (it answered the spec's default, twice)",
+    );
     let errs = refusal(&two_carriers(
         "test.w96ztm.ctlu",
         "  rule get2[A, B](?x: A, ?y: B, ?r1, ?r2) :- Desc[T = A], Desc[T = B], \
@@ -204,7 +209,7 @@ fn a_witness_grounded_pair_is_refused_whatever_the_bracket_says() {
 
 /// THE CONTROL FOR THE REFUSALS ABOVE, through the NULLARY `tag()`: one requirement under a
 /// name threads through it (`7`), where the spec default is `1` — and with the requirement
-/// deleted the same call folds that default.
+/// deleted the same call is refused, naming no instance (it folded that default).
 #[test]
 fn the_control_a_single_require_threads_through_a_nullary_call() {
     let ns = "test.w96ztm.one2";
@@ -218,7 +223,11 @@ fn the_control_a_single_require_threads_through_a_nullary_call() {
         ns,
         "  rule anchored(?x, ?r) :- Desc.tag(?r)\n  rule first(?r) :- anchored(leaf(), ?r)\n",
     );
-    assert_eq!(two(ns, &bare).0, Some(1), "no requirement: the spec DEFAULT");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&bare),
+        &["test.w96ztm.one2.Desc.tag", "`Desc[T = …].tag(…)`"],
+        "no requirement: refused (it answered the spec DEFAULT)",
+    );
 }
 
 /// THE NAME DECIDES, NOT THE WRITTEN ORDER: `d2` written first, `d1.tag` still reads the

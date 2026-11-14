@@ -247,13 +247,13 @@ pub fn answered_by_another_sort(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// Is a woven call of `op_sym` DISPATCHED — does it carry one dictionary of its sort, which
 /// selects the member — rather than the slots of its chain, its sort's `requires` and then its
 /// own? A body-less operation of a sort that may be provided ([`lookup_spec_op_dispatch`]), and a
-/// defaulted one of a sort with an abstract member, an interface its providers implement
-/// ([`defaulted_spec_op_parent`], [`spec_has_an_abstract_member`]). A member of a sort whose
-/// every operation has a body — `sort Util`, `sort Holder { sort A = ?; requires WeakOrd[T = A];
+/// defaulted one that owes an instance — of a sort with an abstract member or one something
+/// provides, an interface its providers implement ([`defaulted_spec_op_parent`],
+/// [`defaulted_member_owes_an_instance`]). A member of a sort whose every operation has a body and
+/// that nothing provides — `sort Util`, `sort Holder { sort A = ?; requires WeakOrd[T = A];
 /// operation hsign(…) = … }` — is the sort's own, and its call carries slots.
 ///
-/// The inference declines a slot demand on what this answers, and on a defaulted member of a
-/// sort something provides, whose call the carrier's value dispatches. It asked
+/// The inference declines a slot demand on what this answers. It asked
 /// [`spec_op_call_parent`] until WI-20261013-RYDNV — "a type parameter or a provider" — so
 /// `Holder.hsign`, a parametric sort's own member, was read as dispatched and woven with
 /// nothing. The resolver does not ask it: the weave marks a call it gives slots
@@ -261,7 +261,7 @@ pub fn answered_by_another_sort(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// dictionary whatever `X` declares.
 pub fn woven_call_dispatches(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     lookup_spec_op_dispatch(kb, op_sym).is_some()
-        || defaulted_spec_op_parent(kb, op_sym).is_some_and(|s| spec_has_an_abstract_member(kb, s))
+        || defaulted_spec_op_parent(kb, op_sym).is_some_and(|s| defaulted_member_owes_an_instance(kb, s))
 }
 
 /// WI-210 — `op_sym` is a body-less operation of a sort that may be provided
@@ -557,8 +557,8 @@ pub(super) struct Unselectable {
 ///
 /// NOT REFUSED: a sibling call in a member of the sort itself, which is at the instance its
 /// body was entered at (`place_sibling_call_at_callers_instance`); a sort that declares no
-/// parameter, which has no instance to name; and a rule body, whose goals are answered from
-/// the values they are fired with. A member of a sort that PROVIDES the callee's is refused
+/// parameter, which has no instance to name; and a rule body, whose calls the rule-body walk
+/// and the requirement weave decide. A member of a sort that PROVIDES the callee's is refused
 /// as any other caller is: every sort provides `TypeValue`, and exempted, `type_value()` in a
 /// member of `Box` under `requires TypeValue[T = V]` still answered `V`.
 pub(super) fn receiver_less_call_names_no_instance(

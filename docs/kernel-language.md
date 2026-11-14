@@ -2713,7 +2713,12 @@ naming the requirement and the type it is open at: over `fact src(1)` and `fact 
 `rule answer(?r) :- keep(?x, ?r)` and the query `keep(?x, ?r)` are refused, and `keep(1, ?r)`
 passes `Int64`'s instance. A query is typed where it is read, as a rule body's goal is, and
 its bracket binds what the relation declares: `keep[A = Int64](?x, ?r)` passes `Int64`'s
-instance and answers the `Int64` row.
+instance and answers the `Int64` row. A member with a default body owes its spec's instance as a
+body-less one does, where anything provides the spec: over `sort Desc { sort T = ?  operation
+describe(x: T) -> Int64 = 1 }` and `Leaf` providing it at `7`, `rule via(?x, ?r) :-
+Desc.describe(?x, ?r)` is refused. A sort whose every operation has a body and that nothing
+provides is a parameterized module, and a call of its member owes only that member's `requires`.
+A comparison is read as the next paragraph says.
 
 A call whose arguments' types are known at load is decided there, by its carrier, and
 has no condition: `rule cmpInt(?c) :- WeakOrd.compare(1, 5, ?c)` is `Int64`'s own
