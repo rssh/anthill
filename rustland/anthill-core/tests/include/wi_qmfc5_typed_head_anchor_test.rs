@@ -380,19 +380,27 @@ fn a_typed_head_beside_a_witness_call_is_unchanged() {
 
 // ── a bound that provides nothing ────────────────────────────────────────────
 
-/// A VALUE WHOSE SORT PROVIDES NOTHING FAILS THE GUARD: at `plain()` the requirement has no
-/// provider, and the query has no answer — a missing provider is no undecided answer. It was
-/// a load refusal, "head bound(s) — Plain — provide no `Desc`", at the typed head `?x: Plain`
-/// the anchor read; the introducer is no sort to check at load, and the value is what the
-/// guard reads. A rule's goal of the clause is typed by the clause, `?x` a `Plain`, and builds
-/// the dictionary at load (060.1 §1): refused there, naming `Desc[T = Plain]`.
+/// A VALUE WHOSE SORT PROVIDES NOTHING IS REFUSED: at `plain()` the requirement has no
+/// provider. It was a load refusal, "head bound(s) — Plain — provide no `Desc`", at the typed
+/// head `?x: Plain` the anchor read; the introducer is no sort to check at load. A rule's goal
+/// of the clause is typed by the clause, `?x` a `Plain`, and builds the dictionary at load
+/// (060.1 §1): refused there, naming `Desc[T = Plain]`. A query is typed where it is read
+/// (proposal 073 §6.2): at `plain()` it is refused the same way, and one leaving `?x` open is
+/// refused naming `A` — it answered nothing while the guard read the value when it ran.
 #[test]
 fn a_bound_that_does_not_provide_is_refused_by_its_own_message() {
     let anchored = "  rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], seedp(?x), d.tag(?r)\n";
     let mut kb = crate::common::load_kb_with(&program(anchored));
-    let goal = crate::common::query_pattern_term(&mut kb, "test.qmfc5.anchored(?x, ?r)");
-    let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
-    assert!(got.is_empty(), "`Plain` provides no `Desc`: no answer, got {} rows", got.len());
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "test.qmfc5.anchored(test.qmfc5.Plain.plain(), ?r)"),
+        &["test.qmfc5.Desc[T = test.qmfc5.Plain]"],
+        "the query at `plain()`",
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "test.qmfc5.anchored(?x, ?r)"),
+        &["`Desc` at `anchored`'s `A`"],
+        "the query leaving `?x` open",
+    );
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&program(&format!("  rule answer(?r) :- anchored(?x, ?r)\n{anchored}"))),
         &["answer.body", "no provider answers `test.qmfc5.Desc[T = test.qmfc5.Plain]`"],

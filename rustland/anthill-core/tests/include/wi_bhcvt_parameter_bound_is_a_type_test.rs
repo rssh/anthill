@@ -389,8 +389,9 @@ fn an_applied_alias_is_the_sort_it_stands_for() {
 
 /// A HEAD-INTRODUCED TYPE VARIABLE inside an applied bound still denotes its guard's bound
 /// (WI-20260908-PW9A0), named and positional: the list whose element type provides `Summable`
-/// is kept, the other filtered. The named half is PW9A0's row, now lowered by the type door;
-/// the positional half answered nothing before.
+/// is kept, and the query at the other is refused, nothing providing `Summable` at its element
+/// (a query is typed where it is read, proposal 073 §6.2). The named half is PW9A0's row, now
+/// lowered by the type door; the positional half answered nothing before.
 #[test]
 fn a_head_type_variable_inside_the_bound_still_resolves() {
     for bound in ["List[T = A]", "List[A]"] {
@@ -403,15 +404,16 @@ fn a_head_type_variable_inside_the_bound_still_resolves() {
                  test.bhcvttvar.Summable\n  provides Summable[T = Int64]\nend\n"
             );
             let mut kb = load_kb_with(&src);
-            let found = query_unary(&mut kb, "test.bhcvttvar.p");
-            let rendered: Vec<String> = found
-                .into_iter()
-                .map(|(v, definite)| {
-                    assert!(definite, "{spelling} `{bound}`: a definite answer");
-                    render(&mut kb, &v)
-                })
-                .collect();
-            assert_eq!(rendered, vec!["[1, 2]"], "{spelling} `{bound}`");
+            assert_eq!(
+                crate::common::pattern_hits(&mut kb, "test.bhcvttvar.p([1, 2])"),
+                1,
+                "{spelling} `{bound}`"
+            );
+            crate::common::assert_refused_naming(
+                &crate::common::query_pattern_refusals(&mut kb, "test.bhcvttvar.p([true])"),
+                &["Summable"],
+                &format!("{spelling} `{bound}`"),
+            );
         }
     }
 }

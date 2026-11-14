@@ -67,25 +67,41 @@ end
     )
 }
 
-/// The answers of the QUERY `item(?x), g(?x, ?r)`: a query has no caller, so `g`'s guard
-/// reads its dictionary from each `?x`'s type when its goal runs (060.1 §4). A rule body
-/// writing the conjunction is refused, `?x` at a type its clause declares nothing at.
-fn two_carrier_answers(ns: &str, bracket: &str) -> Vec<Option<i64>> {
+/// What the queries `g(red(), ?r)` and `g(blue(), ?r)` give, in that order: each one's definite
+/// integer answers, or `None` where the query is refused when it is read. A query is typed
+/// where it is read (proposal 073 §6.2), so each passes `g`'s guard the dictionary its
+/// argument's type builds, and one no provision answers is refused, as a rule body's goal at
+/// that type is. The conjunction `item(?x), g(?x, ?r)` leaves `A` open and is refused
+/// ([`a_logical_variable_binding_loads`]).
+fn two_carrier_answers(ns: &str, bracket: &str) -> [Option<Vec<i64>>; 2] {
     use anthill_core::kb::term_view::TermView;
     let src = two_carrier(ns, bracket);
     let mut kb = crate::common::load_kb_with(&src);
-    let goals = crate::common::query_goals(&mut kb, &[&format!("{ns}.item(?x)"), &format!("{ns}.g(?x, ?r)")]);
-    let r = TermView::pos_arg(&goals[1], &kb, 1).expect("`?r` is `g`'s second argument").to_value();
-    let solutions = kb.resolve(&goals, &anthill_core::kb::resolve::ResolveConfig::default());
-    let mut out: Vec<Option<i64>> = solutions
-        .iter()
-        .map(|sol| {
-            let v = kb.reify_value(&r, &sol.subst);
-            crate::common::scalar_int(&kb, &v).filter(|_| sol.is_definite())
-        })
-        .collect();
-    out.sort_unstable();
-    out
+    ["Red.red()", "Blue.blue()"].map(|value| {
+        let pattern = format!("{ns}.g({ns}.{value}, ?r)");
+        if !crate::common::query_pattern_refusals(&mut kb, &pattern).is_empty() {
+            return None;
+        }
+        let goal = crate::common::query_pattern_term(&mut kb, &pattern);
+        let written = anthill_core::kb::load::query_goal_as_written(&kb, &goal);
+        let r = TermView::pos_arg(&written, &kb, 1).expect("`?r` is `g`'s second argument").to_value();
+        let solutions = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+        Some(
+            solutions
+                .iter()
+                .filter(|sol| sol.is_definite())
+                .map(|sol| {
+                    let v = kb.reify_value(&r, &sol.subst);
+                    crate::common::scalar_int(&kb, &v).expect("`g` answers an integer")
+                })
+                .collect(),
+        )
+    })
+}
+
+/// Both carriers answer, `Red`'s 7 and `Blue`'s 9.
+fn both() -> [Option<Vec<i64>>; 2] {
+    [Some(vec![7]), Some(vec![9])]
 }
 
 /// The refusal text for `bracket`, or a panic if it loaded.
@@ -107,6 +123,13 @@ fn a_logical_variable_binding_loads() {
         "`Sp[C = A, P = ?p]` must load; got {:?}",
         errs.unwrap().join("\n"),
     );
+    // A query that leaves `?x`'s type open passes `g` nothing, and is refused naming `A`.
+    let mut kb = crate::common::load_kb_with(&two_carrier(ns, "Sp[C = A, P = ?p]"));
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, &format!("{ns}.g(?x, ?r)")),
+        &["`Sp` at `g`'s `A`"],
+        "a query leaving the carrier open",
+    );
 }
 
 /// The other spellings of a variable at `P` — anonymous, positional, both — answer as the
@@ -120,7 +143,7 @@ fn the_three_other_variable_spellings_load_too() {
         ("test.qhdgc.pos", "Sp[A, ?p]"),
         ("test.qhdgc.posanon", "Sp[A, ?]"),
     ] {
-        assert_eq!(two_carrier_answers(ns, bracket), vec![Some(7), Some(9)], "`{bracket}`");
+        assert_eq!(two_carrier_answers(ns, bracket), both(), "`{bracket}`");
     }
 }
 
@@ -128,33 +151,33 @@ fn the_three_other_variable_spellings_load_too() {
 
 /// THE ACCEPTANCE ROW — the dictionary is selected PER SOLUTION and answers at two carriers,
 /// `7` and `9`, both definite, with the written `P = Int64` beside the carrier. Its control is
-/// a `P` no provision states, `Bool`, which answers nothing — so the row measures the written
-/// element doing work, not the fixture. (On `require[Sp[C = ?c, P = Int64]]` the control was
+/// a `P` no provision states, `Bool`, at which each query is refused — so the row measures the
+/// written element doing work, not the fixture. (On `require[Sp[C = ?c, P = Int64]]` the control was
 /// the unwritten `Sp[C = ?c]`, which delayed then; the guard reads an unwritten element off the
 /// provision, WI-20261013-RYDNV, and it answers.)
 #[test]
 fn a_variable_element_composes_with_a_written_one_at_two_carriers() {
     assert_eq!(
         two_carrier_answers("test.qhdgc.two", "Sp[C = A, P = Int64]"),
-        vec![Some(7), Some(9)],
-        "the written `P` selects, per solution",
+        both(),
+        "the written `P` selects, per carrier",
     );
     assert_eq!(
         two_carrier_answers("test.qhdgc.twob", "Sp[C = A, P = Bool]"),
-        Vec::<Option<i64>>::new(),
-        "a `P` no provision states selects nothing — otherwise the row above measures nothing",
+        [None, None],
+        "a `P` no provision states is refused — otherwise the row above measures nothing",
     );
 }
 
 /// A VARIABLE AT `P` IS THE UNWRITTEN ELEMENT: it answers what `Sp[C = A]` answers, and not
-/// what a written sort there answers (`Bool`, nothing). FAILS with the variable kept as written
+/// what a written sort there answers (`Bool`, refused). FAILS with the variable kept as written
 /// (`provider_requirement_goal_with_provider`'s filter): it answers nothing, as on d39bd428.
 #[test]
 fn a_variable_element_reads_as_the_abstract_case() {
     let written = two_carrier_answers("test.qhdgc.abs1", "Sp[C = A, P = Bool]");
     let omitted = two_carrier_answers("test.qhdgc.abs2", "Sp[C = A]");
     let variable = two_carrier_answers("test.qhdgc.abs3", "Sp[C = A, P = ?p]");
-    assert_eq!(omitted, vec![Some(7), Some(9)], "the unwritten element, read off the provision");
+    assert_eq!(omitted, both(), "the unwritten element, read off the provision");
     assert_eq!(variable, omitted, "a variable at `P` must match the spelling that omits `P`");
     assert_ne!(
         variable, written,
@@ -163,14 +186,17 @@ fn a_variable_element_reads_as_the_abstract_case() {
 }
 
 #[test]
-fn a_variable_at_a_provider_tie_delays_rather_than_aborting() {
+fn a_variable_at_a_provider_tie_is_refused_rather_than_aborting() {
     // THE HAZARD ROW. `fetch_dictionary` maps a resolution TIE to `FindDictFetch::Defect`
     // with `debug_assert!(false, "find_dictionary: two providers answer …")` — an ABORT in
     // every debug build — but only while the goal was decided ENTIRELY by carried types.
     // A variable must not land on the carried-type path. `Carrier` reaches `Spec` through
     // TWO providers that score alike, so this program TIES; the two concrete spellings are
-    // the controls, and the variable spellings must delay as they do. (They were
-    // `require[…]` spellings, removed by proposal 060.1 §5; the guard is at `?x`'s type.)
+    // the controls, and the variable spellings must be refused as they are. (They were
+    // `require[…]` spellings, removed by proposal 060.1 §5; the guard is at `?x`'s type.) A
+    // query is typed where it is read (073 §6.2), so the tie is refused there, naming both
+    // providers, as a rule body's goal at `carrier()` is at load; it delayed while the query's
+    // guard read its dictionary when it ran.
     for bracket in [
         "Spec[C = A]",
         "Spec[C = A, Note = Int64]",
@@ -209,19 +235,14 @@ fn a_variable_at_a_provider_tie_delays_rather_than_aborting() {
 end
 "#
         );
-        // Asked as a query, whose read runs: it delays.
         let mut kb = crate::common::load_kb_with(&src);
-        let goal = crate::common::query_pattern_term(&mut kb, "test.qhdgc.tie.dict(test.qhdgc.tie.Carrier.carrier(), ?r)");
-        let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
-        assert!(
-            !got.is_empty(),
-            "`{bracket}` must answer an indefinite residual; it answered nothing at all, \
-             which is a different outcome from a delay",
-        );
-        assert!(
-            got.iter().all(|s| !s.is_definite()),
-            "`{bracket}` at a provider tie must DELAY, not decide; got {} rows",
-            got.len(),
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(
+                &mut kb,
+                "test.qhdgc.tie.dict(test.qhdgc.tie.Carrier.carrier(), ?r)",
+            ),
+            &["two providers answer", "test.qhdgc.tie.MidA", "test.qhdgc.tie.MidB"],
+            bracket,
         );
         // A rule's goal at `carrier()` builds the dictionary at load (060.1 §1), and the tie is
         // refused there, naming both providers, as an operation's call at `Carrier` is.
@@ -252,14 +273,12 @@ fn a_literal_stays_refused() {
 }
 
 /// INVERTED: a constructor is a type where a head bound reads one (WI-742 §2.1), so a guard
-/// admits it, and it states a `P` no provision has — `Sp[C = A, P = red]` answers nothing.
+/// admits it, and it states a `P` no provision has — `Sp[C = A, P = red]` is refused at each
+/// carrier.
 /// The `require[…]` lowering refused it as naming no sort.
 #[test]
 fn an_entity_constructor_stays_refused() {
-    assert_eq!(
-        two_carrier_answers("test.qhdgc.ent", "Sp[C = A, P = red]"),
-        Vec::<Option<i64>>::new(),
-    );
+    assert_eq!(two_carrier_answers("test.qhdgc.ent", "Sp[C = A, P = red]"), [None, None]);
 }
 
 #[test]

@@ -2,8 +2,10 @@
 //! requirement read and a bridged call's frame hold argument values and no caller
 //! dictionary, so each resolves its goal in an empty scope; the query `rd(leaf(), ?n)` asks
 //! `Desc[T = Leaf]` each time it runs, and the answer is read off the declarations and the
-//! provisions alone. The rows ask QUERIES: a rule's goal at a concrete type builds its
-//! callee's dictionary at load (060.1 §1), and runs no read. `typing::resolve_in_empty_scope` memoizes a ground goal's answer
+//! provisions alone. The rows ask QUERIES, which are typed where they are read (proposal 073
+//! §6.2): the query's dictionary is derived when it is converted, as a rule's goal at a
+//! concrete type builds its callee's at load (060.1 §1), and a tie or a missing provider
+//! refuses the query there. `typing::resolve_in_empty_scope` memoizes a ground goal's answer
 //! (`KnowledgeBase::empty_scope_resolve_cache`), dropped at the start of a typer run and
 //! wherever a provision row is filed or unfiled.
 //!
@@ -136,8 +138,9 @@ end
 fn definite_ints(kb: &mut KnowledgeBase, pattern: &str) -> Vec<i64> {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     let goal = crate::common::query_pattern_term(kb, pattern);
-    let n = match TermView::head(&goal, kb) {
-        ViewHead::Functor { pos_arity, .. } => TermView::pos_arg(&goal, kb, pos_arity - 1)
+    let written = anthill_core::kb::load::query_goal_as_written(kb, &goal);
+    let n = match TermView::head(&written, kb) {
+        ViewHead::Functor { pos_arity, .. } => TermView::pos_arg(&written, kb, pos_arity - 1)
             .expect("the last argument is readable")
             .to_value(),
         other => panic!("`{pattern}` is not an application: {other:?}"),
@@ -190,7 +193,13 @@ fn a_bridged_calls_frame_keeps_its_derivation() {
 #[test]
 fn a_default_declared_by_a_later_load_answers_a_kept_tie() {
     let mut kb = crate::common::load_kb_with(TIE);
-    assert_eq!(definite_ints(&mut kb, "test.qpc89.tie.rd(test.qpc89.tie.Leaf.leaf(), ?n)"), Vec::<i64>::new(), "a tie");
+    // A query is typed where it is read (proposal 073 §6.2): the tie refuses it there, and is
+    // what the memo holds.
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "test.qpc89.tie.rd(test.qpc89.tie.Leaf.leaf(), ?n)"),
+        &["two providers answer", "Rival", "Other"],
+        "a tie",
+    );
     assert!(kb.empty_scope_resolve_cache_len() > 0, "the tie is held");
     crate::common::expect_loaded(crate::common::load_in_a_later_call(
         &mut kb,
@@ -205,9 +214,13 @@ fn a_default_declared_by_a_later_load_answers_a_kept_tie() {
 #[test]
 fn a_provision_filed_after_the_derivation_answers() {
     let mut kb = crate::common::load_kb_with(CONDITIONED);
-    assert_eq!(
-        definite_ints(&mut kb, "test.qpc89.cond.rd(test.qpc89.cond.Box.box(v: test.qpc89.cond.Leaf.leaf()), ?n)"),
-        Vec::<i64>::new(),
+    // Refused where the query is read: nothing provides `Desc[T = Leaf]` (073 §6.2).
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(
+            &mut kb,
+            "test.qpc89.cond.rd(test.qpc89.cond.Box.box(v: test.qpc89.cond.Leaf.leaf()), ?n)",
+        ),
+        &["Desc[T = test.qpc89.cond.Leaf]"],
         "nothing provides `Desc[T = Leaf]`",
     );
     assert!(kb.empty_scope_resolve_cache_len() > 0, "the failed resolution is held");

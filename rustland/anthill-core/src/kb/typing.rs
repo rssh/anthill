@@ -192,6 +192,7 @@ pub(crate) use rule_constraints::is_structural_type_form;
 use rule_dispatch::*;
 use rule_goal_routes::*;
 pub(crate) use rule_goal_routes::body_without_goal_markers;
+pub(crate) use rule_goal_routes::route_query_goals;
 pub(crate) use rule_requirements::*;
 pub use rules::is_typed_head_domain_goal;
 pub use rule_requirements::is_inferred_requirement_read;

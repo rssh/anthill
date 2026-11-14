@@ -15,9 +15,10 @@
 //!    took, handed on down the recursion — the variable the clause's read binds;
 //!  * a dictionary built at load, where the goal's bracket or its arguments fix the instance
 //!    (`Wrap[T = Int64].el(?x)`, `cmp(1, 2, ?c)`);
-//!  * `__unrouted`, where nothing is passed and the callee derives its own from the values
-//!    when the goal runs. A citation that leaves the callee's sort parameter free there is
-//!    refused (`refuse_goals_left_free`).
+//!  * `__unrouted`, where nothing is passed: a read that is no guard, or a guard at a spec the
+//!    clause's sort supplies. A guard at a type nothing at the goal fixes is refused instead
+//!    (proposal 073 §6.2), and a citation that leaves the callee's sort parameter free there
+//!    is refused (`refuse_goals_left_free`).
 //!
 //! REPLACE, NOT INHERIT (op-to-rule-requirement-channel.md §1): what a goal passes is what
 //! the typer routes to it here, never what its clause happened to receive.
@@ -49,25 +50,8 @@ pub(super) fn route_rule_goal_requirements(
     kb: &mut KnowledgeBase,
 ) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
     let mut refused = Vec::new();
-    let Some(fd) = find_dictionary_symbol(kb) else {
+    let Some(mut routing) = Routing::new(kb) else {
         return refused;
-    };
-    let Some(within) = kb.try_resolve_symbol(crate::kb::resolve::WITHIN_REQUIREMENTS) else {
-        return refused;
-    };
-    let marker_pass = kb.register_pass(RULE_GOAL_ROUTES_PASS);
-    let unrouted = match crate::kb::resolve::unrouted_read(kb) {
-        Value::SymbolRef(s) => s,
-        other => unreachable!("the unrouted slot is a symbol, got {other:?}"),
-    };
-    let mut routing = Routing {
-        syms: RouteSyms {
-            fd,
-            within,
-            marker_pass,
-            unrouted,
-        },
-        layouts: HashMap::new(),
     };
     // The clauses this run routes, by relation.
     let mut clauses: Vec<(RuleId, Symbol)> = Vec::new();
@@ -118,6 +102,26 @@ struct Routing {
 }
 
 impl Routing {
+    /// `None` in a KB that never loaded the requirement reads' kernel.
+    fn new(kb: &mut KnowledgeBase) -> Option<Self> {
+        let fd = find_dictionary_symbol(kb)?;
+        let within = kb.try_resolve_symbol(crate::kb::resolve::WITHIN_REQUIREMENTS)?;
+        let marker_pass = kb.register_pass(RULE_GOAL_ROUTES_PASS);
+        let unrouted = match crate::kb::resolve::unrouted_read(kb) {
+            Value::SymbolRef(s) => s,
+            other => unreachable!("the unrouted slot is a symbol, got {other:?}"),
+        };
+        Some(Routing {
+            syms: RouteSyms {
+                fd,
+                within,
+                marker_pass,
+                unrouted,
+            },
+            layouts: HashMap::new(),
+        })
+    }
+
     fn layout(&mut self, kb: &KnowledgeBase, relation: Symbol) -> Rc<[(RuleId, usize)]> {
         Rc::clone(
             self.layouts
@@ -146,6 +150,147 @@ struct RouteSyms {
     unrouted: Symbol,
 }
 
+/// Proposal 073 §6.2 — a query is typed where it is read, as a rule body is: each goal of the
+/// conjunction `query` whose callee's clauses read a dictionary rides in its citation marker,
+/// as a rule body's goal does, carrying the dictionary the goal's own types build at load — its
+/// arguments, its bracket, and a variable at the type the query's goals give it, where their
+/// columns agree on one (`src(?x), keep(?x, ?t)` over an `Int64` `src`). A query has no caller,
+/// so a requirement at a type the query leaves open is refused, naming it, and none is read from
+/// a value when the goal runs. `Err` with the refusals.
+pub(crate) fn route_query_goals(
+    kb: &mut KnowledgeBase,
+    query: &[Rc<NodeOccurrence>],
+) -> Result<Vec<Rc<NodeOccurrence>>, Vec<TypeError>> {
+    let Some(mut routing) = Routing::new(kb) else {
+        return Ok(query.to_vec());
+    };
+    let mut sites = query.to_vec();
+    for goal in query {
+        nested_goals(kb, goal, &mut sites);
+    }
+    stamp_query_variable_types(kb, &sites);
+    // A bracket nothing reads — on a goal of a relation that declares nothing for it, or on a
+    // relation that is no goal — is refused, as in a rule body (060.1 §2), never dropped.
+    let mut refused = Vec::new();
+    refuse_unread_brackets(kb, query, &sites, &mut refused);
+    let mut wraps: Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> = Vec::new();
+    for site in sites {
+        let Some(callee) = relation_goal_callee(kb, &site) else {
+            continue;
+        };
+        if call_type_args_of(&site).is_some() && !relation_declares_type_params(kb, callee) {
+            continue;
+        }
+        if let Some(marker) = route_goal(kb, &mut routing, GoalWriter::Query, &site, callee, &mut refused) {
+            wraps.push((site, marker));
+        }
+    }
+    if !refused.is_empty() {
+        return Err(refused.into_iter().map(|(e, _)| e).collect());
+    }
+    Ok(query
+        .iter()
+        .map(|goal| {
+            map_proved_goals(kb, goal, &|_, n| {
+                wraps
+                    .iter()
+                    .find(|(site, _)| Rc::ptr_eq(site, n))
+                    .map(|(_, marker)| Rc::clone(marker))
+            })
+        })
+        .collect())
+}
+
+/// Each variable of a query's goals `sites` given the type the columns its relation goals put
+/// it at agree on, where that is a concrete type — what a clause's typing gives the same
+/// variable of the same goals in a rule body. A variable two columns put at different types, or
+/// one only an open column reaches, stays untyped.
+fn stamp_query_variable_types(kb: &mut KnowledgeBase, sites: &[Rc<NodeOccurrence>]) {
+    let mut types: HashMap<VarId, Option<Value>> = HashMap::new();
+    for site in sites {
+        let Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) = site.as_expr()
+        else {
+            continue;
+        };
+        if !kb.cites_a_relation(*functor) || kb.has_kind(*functor, crate::intern::SymbolKind::Operation) {
+            continue;
+        }
+        let args = pos_args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (SlotKey::Pos(i), a))
+            .chain(named_args.iter().map(|(k, a)| (SlotKey::Named(*k), a)));
+        for (slot, arg) in args {
+            let Some(Expr::Var(Var::Global(vid))) = arg.as_expr() else {
+                continue;
+            };
+            let Some(ty) = stamped_column_type(kb, *functor, &slot) else {
+                continue;
+            };
+            let agreed = types.entry(*vid).or_insert_with(|| Some(ty.clone()));
+            if agreed.as_ref().is_some_and(|seen| !views_structurally_equal(kb, seen, &ty)) {
+                *agreed = None;
+            }
+        }
+    }
+    for site in sites {
+        for_each_var_leaf(site, &mut |var, leaf| {
+            if let Var::Global(vid) = var {
+                if let Some(Some(ty)) = types.get(&vid) {
+                    if leaf.inferred_type().is_none() {
+                        leaf.set_inferred_type(ty.clone());
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// The concrete type every clause of `relation` gives its column `slot`, as the load typed it:
+/// a fact's argument at that slot, a rule's head variable there as its clause's typing stamped
+/// it. `None` where a clause gives none, gives an open type, or two clauses differ. Read off
+/// what the load stamped, not by typing the stored bodies again: a body the requirement weave
+/// elaborated no longer types its variables as the clause was written.
+fn stamped_column_type(kb: &mut KnowledgeBase, relation: Symbol, slot: &SlotKey) -> Option<Value> {
+    let rids: Vec<RuleId> = kb.rules_by_functor_iter(relation).collect();
+    let mut agreed: Option<Value> = None;
+    for rid in rids {
+        let head = kb.fact_head_term(rid)?;
+        let Term::Fn { pos_args, named_args, .. } = kb.get_term(head).clone() else {
+            return None;
+        };
+        let arg = match slot {
+            SlotKey::Pos(i) => pos_args.get(*i).copied(),
+            SlotKey::Named(k) => named_args
+                .iter()
+                .find(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(*k))
+                .map(|(_, a)| *a),
+        }?;
+        let ty = match kb.get_term(arg) {
+            Term::Var(Var::DeBruijn(d)) => {
+                let d = *d;
+                clause_var_stamps(kb, rid).into_iter().find(|(seen, _)| *seen == d)?.1
+            }
+            // A term's type, which the check below keeps only where it is concrete.
+            _ => value_type_term(kb, &Substitution::new(), &Value::term(arg)),
+        };
+        if !instance_is_concrete(kb, &ty) {
+            return None;
+        }
+        match &agreed {
+            Some(seen) if !views_structurally_equal(kb, seen, &ty) => return None,
+            Some(_) => {}
+            None => agreed = Some(ty),
+        }
+    }
+    agreed
+}
+
 /// Route the goals of `rid`, and store the body.
 fn route_clause_goals(
     kb: &mut KnowledgeBase,
@@ -159,7 +304,8 @@ fn route_clause_goals(
         let Some(callee) = relation_goal_callee(kb, &site) else {
             continue;
         };
-        if let Some(marker) = route_goal(kb, routing, rid, relation, &site, callee, refused) {
+        let writer = GoalWriter::Clause { rid, relation };
+        if let Some(marker) = route_goal(kb, routing, writer, &site, callee, refused) {
             wraps.push((site, marker));
         }
     }
@@ -181,13 +327,29 @@ fn route_clause_goals(
     kb.set_rule_body_nodes(rid, body);
 }
 
-/// The marker `site` — a goal of `callee` in clause `rid` — rides in, or `None` where it passes
-/// its callee nothing.
+/// Where a routed goal is written: a clause of `relation`, or a query, which no caller passes
+/// a requirement and which is typed where it is read (proposal 073 §6.2).
+#[derive(Clone, Copy)]
+enum GoalWriter {
+    Clause { rid: RuleId, relation: Symbol },
+    Query,
+}
+
+impl GoalWriter {
+    fn clause(self) -> Option<RuleId> {
+        match self {
+            GoalWriter::Clause { rid, .. } => Some(rid),
+            GoalWriter::Query => None,
+        }
+    }
+}
+
+/// The marker `site` — a goal of `callee` written by `writer` — rides in, or `None` where it
+/// passes its callee nothing.
 fn route_goal(
     kb: &mut KnowledgeBase,
     routing: &mut Routing,
-    rid: RuleId,
-    relation: Symbol,
+    writer: GoalWriter,
     site: &Rc<NodeOccurrence>,
     callee: Symbol,
     refused: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
@@ -221,8 +383,11 @@ fn route_goal(
     };
     // A goal of the clause's own relation at its own column types: the clause's parameters,
     // at its own offset in the layout.
-    let own: Option<(usize, Vec<Rc<NodeOccurrence>>)> = (callee == relation)
-        .then(|| {
+    let own: Option<(usize, Vec<Rc<NodeOccurrence>>)> = match writer {
+        GoalWriter::Clause { rid, relation } if callee == relation => Some(rid),
+        _ => None,
+    }
+    .map(|rid| {
             let at = counts.iter().position(|(r, _)| *r == rid)?;
             if !keeps_its_column_types(kb, rid, site) {
                 return None;
@@ -235,7 +400,7 @@ fn route_goal(
                 .collect();
             Some((offset, vars))
         })
-        .flatten();
+    .flatten();
     // Each position of the layout as the clause and the read it is, for the routes a declared
     // requirement of the clause gives (`declared_route`).
     let positions: Vec<(RuleId, usize)> = counts
@@ -266,11 +431,12 @@ fn route_goal(
             let elements: Vec<(u32, u32)> = guard_element_vars(kb, crid, instance.expect_term(), carrier)
                 .into_iter()
                 .filter_map(|e| {
+                    let rid = writer.clause()?;
                     let at_e = guard_carrier_at_goal(kb, site, crid, e)?;
                     Some((e, caller_param_at(kb, rid, &at_e)?))
                 })
                 .collect();
-            if let Some(var) = at.as_ref().and_then(|at| {
+            if let Some(var) = at.as_ref().zip(writer.clause()).and_then(|(at, rid)| {
                 declared_route(kb, fd, rid, spec, carrier, &elements, &instance, at, &mut tie)
             }) {
                 return GuardRoute::Declared(var);
@@ -307,14 +473,23 @@ fn route_goal(
                         }
                     }
                 }
-                Some(at) if !clause_sort_supplies(kb, rid, spec) => {
-                    if type_reaches_the_head(kb, rid, &at) {
-                        GuardRoute::Undeclared(spec)
-                    } else {
-                        GuardRoute::FromValue
-                    }
+                _ if writer.clause().is_some_and(|rid| clause_sort_supplies(kb, rid, spec)) => {
+                    GuardRoute::NoGuard
                 }
-                _ => GuardRoute::NoGuard,
+                Some(at)
+                    if writer
+                        .clause()
+                        .is_some_and(|rid| type_reaches_the_head(kb, rid, &at)) =>
+                {
+                    GuardRoute::Undeclared(spec)
+                }
+                at => GuardRoute::Open(OpenGuard {
+                    spec,
+                    clause: crid,
+                    carrier,
+                    instance,
+                    at,
+                }),
             }
         })
         .collect();
@@ -350,7 +525,12 @@ fn route_goal(
     // 060.1 §1 — at a concrete instance the requirement is built from the provisions at
     // load, and the goal is refused where none builds it, as an operation's call is.
     // A clause whose guard the loader refused is refused for it, and what it lacks follows.
-    let refused_load = kb.has_a_refused_guard(rid);
+    let refused_load = writer.clause().is_some_and(|rid| kb.has_a_refused_guard(rid));
+    // The relation the refusals below are about: the clause's own, or the query's callee.
+    let relation = match writer {
+        GoalWriter::Clause { relation, .. } => relation,
+        GoalWriter::Query => callee,
+    };
     if let Some((spec, why)) = declared.iter().find_map(|g| match g {
         GuardRoute::Unbuilt(spec, why) if !refused_load => Some((*spec, why.clone())),
         _ => None,
@@ -405,6 +585,19 @@ fn route_goal(
         ));
         return None;
     }
+    // 073 §6.2 — a requirement at a type nothing at the goal fixes is refused: a variable the
+    // clause's body binds, which no head column reaches and so no caller can type, or a query's
+    // variable, a query having no caller. Nothing is read from the value when the goal runs.
+    if let Some(open) = declared.iter().enumerate().find_map(|(j, g)| match g {
+        GuardRoute::Open(open) if !refused_load && !matches!(built.get(j), Some(Some(_))) => {
+            Some(open.clone())
+        }
+        _ => None,
+    }) {
+        let refusal = open_requirement_refusal(kb, writer, relation, callee, site, &open);
+        refused.push((refusal, Some(site.span.source)));
+        return None;
+    }
     let slots: Vec<GoalSlot> = (0..total)
         .map(|j| {
             if let Some(Some(t)) = built.get(j) {
@@ -413,8 +606,6 @@ fn route_goal(
                 GoalSlot::Own(Rc::clone(var))
             } else if let Some(GuardRoute::Concrete(dict)) = declared.get(j) {
                 GoalSlot::Built(dict.clone())
-            } else if let Some(GuardRoute::FromValue) = declared.get(j) {
-                GoalSlot::Unrouted
             } else if let Some(var) = own
                 .as_ref()
                 .and_then(|(offset, vars)| vars.get(j.checked_sub(*offset)?))
@@ -435,6 +626,22 @@ fn route_goal(
     if bracket.is_empty() && slots.iter().all(|s| matches!(s, GoalSlot::Unrouted)) {
         return None;
     }
+    // The type the goal's bracket fixes a guard's parameter at (060.1 §8.10), which the clause
+    // is read at: `keep[A = Int64](?x, ?t)` checks `?x` at `Int64`. A type the goal's arguments
+    // give needs none — each column then holds its own argument — and binding one column's
+    // there would narrow another column typed at their join.
+    let carriers: Vec<(usize, Value)> = positions
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| matches!(built.get(*j), Some(Some(_))))
+        .filter_map(|(j, &(crid, k))| {
+            let read = callee_reads.get(&crid)?.get(k)?;
+            let (_, carrier, _) = guard_read_parts(kb, read)?;
+            let param = kb.rule_type_params(crid).iter().position(|(_, d)| *d == carrier)?;
+            let name = kb.rule_type_params(crid)[param].0;
+            bracket_binding(kb, &bracket, name, param).map(|ty| (j, ty))
+        })
+        .collect();
     let (span, owner) = (site.span, site.owner);
     let node = |e: Expr| NodeOccurrence::new_expr(e, span, owner);
     let mut pos_args: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total + 2);
@@ -447,18 +654,124 @@ fn route_goal(
             GoalSlot::Unrouted => node(Expr::Ref(routing.syms.unrouted)),
         });
     }
+    let named_args: Vec<(Symbol, Rc<NodeOccurrence>)> = carriers
+        .into_iter()
+        .map(|(j, ty)| {
+            let key = kb.intern(&format!("{}{j}", crate::kb::resolve::WITHIN_CARRIER_PREFIX));
+            (key, node(Expr::Spliced(ty)))
+        })
+        .collect();
     Some(NodeOccurrence::synthesized_expr(
         Expr::Apply {
             recv_type: None,
             functor: routing.syms.within,
             pos_args,
-            named_args: Vec::new(),
+            named_args,
             type_args: bracket,
         },
         Rc::clone(site),
         routing.syms.marker_pass,
         owner,
     ))
+}
+
+/// A guard the goal puts at a type nothing fixes ([`GuardRoute::Open`]): its spec, the callee's
+/// clause and the frame slot of its carrier, its instance, and the type the goal puts there,
+/// where it says one.
+#[derive(Clone)]
+struct OpenGuard {
+    spec: Symbol,
+    clause: RuleId,
+    carrier: u32,
+    instance: Value,
+    at: Option<Value>,
+}
+
+/// The refusal of a goal of `callee` whose guard `open` it puts at a type nothing fixes: a
+/// requirement no caller passes (proposal 073 §6.2), named with the type it is open at and, at a
+/// type with a head, what the provisions say there (`ListShow`'s `E` at `List[T = ?]`).
+fn open_requirement_refusal(
+    kb: &mut KnowledgeBase,
+    writer: GoalWriter,
+    relation: Symbol,
+    callee: Symbol,
+    site: &Rc<NodeOccurrence>,
+    open: &OpenGuard,
+) -> TypeError {
+    let OpenGuard { spec, clause, carrier, instance, at } = open;
+    let (spec, at) = (*spec, at.clone());
+    let param = kb
+        .rule_type_params(*clause)
+        .iter()
+        .find(|(_, d)| d == carrier)
+        .map(|(name, _)| *name);
+    let why = at
+        .clone()
+        .filter(|t| !matches!(t.head(kb), ViewHead::Var(_)))
+        .and_then(|t| dictionary_at_goal(kb, site, callee, *clause, *carrier, instance, &t, &[]).err())
+        .map(|miss| match miss {
+            GoalDictMiss::Unfixed(why) | GoalDictMiss::Fetch(why) => why,
+        });
+    let spec_name = short_name_of(kb.qualified_name_of(spec)).to_string();
+    let callee_name = kb.local_name_of(callee).to_string();
+    let param_name = param.map(|p| kb.local_name_of(p).to_string());
+    let requirement = match &param_name {
+        Some(p) => format!("`{spec_name}` at `{callee_name}`'s `{p}`"),
+        None => format!("`{spec_name}`"),
+    };
+    let open_at = match at.as_ref().filter(|t| !matches!(t.head(kb), ViewHead::Var(_))) {
+        Some(t) => match &why {
+            Some(why) => format!(
+                "at `{}`, which leaves a type open ({why})",
+                type_display_name_value(kb, t)
+            ),
+            None => format!("at `{}`, which leaves a type open", type_display_name_value(kb, t)),
+        },
+        None => "at a type nothing fixes".to_string(),
+    };
+    let bracket = match &param_name {
+        Some(p) => format!(", or write the goal's bracket, `{callee_name}[{p} = …](…)`"),
+        None => String::new(),
+    };
+    let actual = match writer {
+        GoalWriter::Clause { .. } => format!(
+            "the goal puts it {open_at}: a variable the clause's body binds, which no head column \
+             reaches, so no caller can pass the dictionary, and none is read from the value when \
+             the goal runs — give the argument a type{bracket}"
+        ),
+        GoalWriter::Query => format!(
+            "the query puts it {open_at}, and a query has no caller to pass the dictionary: give \
+             the argument a known type{bracket}"
+        ),
+    };
+    TypeError::Other {
+        site: TypeError::here(),
+        span: Some(site.span.span),
+        context: TypeErrorContext::Rule {
+            name: relation,
+            field: RuleField::Body,
+        },
+        expected: format!("a requirement, {requirement}, fixed where the goal is written"),
+        actual,
+    }
+}
+
+/// The type a goal's bracket binds a rule's declared type parameter `name` to — by its name,
+/// or positionally at `index` of the declared list (positional = named) — or `None` where it
+/// binds none.
+fn bracket_binding(
+    kb: &KnowledgeBase,
+    bracket: &[(Option<Symbol>, Value)],
+    name: Symbol,
+    index: usize,
+) -> Option<Value> {
+    if let Some((_, ty)) = bracket
+        .iter()
+        .find(|(k, _)| k.is_some_and(|k| kb.local_name_of(k) == kb.local_name_of(name)))
+    {
+        return Some(ty.clone());
+    }
+    bracket.iter().filter(|(k, _)| k.is_none()).nth(index).map(|(_, ty)| ty.clone())
 }
 
 /// What one position of a callee's layout is given by the goal ([`route_goal`]), where it is
@@ -470,9 +783,9 @@ enum GuardRoute {
     Concrete(Value),
     /// An instance that names a type variable of the caller, which declares nothing there.
     Undeclared(Symbol),
-    /// An instance at a type no head column of the caller reaches, which no caller can fix:
-    /// the callee finds the dictionary from the value when the goal runs, as for a query.
-    FromValue,
+    /// An instance at a type nothing at the goal fixes — a type no head column of the caller
+    /// reaches, or a query's variable — which no caller can pass.
+    Open(OpenGuard),
     /// A concrete instance nothing provides, or two providers answer: why, as the fetch says.
     Unbuilt(Symbol, String),
     /// No guard, or one the caller's sort supplies: the route is what it was.
@@ -610,8 +923,8 @@ fn guard_carrier_at_goal(
 /// Does `ty` — a type the typing of clause `rid` gives a call's or goal's argument — name a
 /// variable of the type of one of the clause's head columns? Such a type is one a caller can
 /// fix, and a requirement at it is the clause's to declare; a type no head column reaches is
-/// fixed by no caller, and its dictionary is found from the value when the goal runs, as for
-/// a query (060.1 §4). A type with no variable in it reaches no head.
+/// fixed by no caller, and a requirement at it is refused (proposal 073 §6.2). A type with no
+/// variable in it reaches no head.
 pub(super) fn type_reaches_the_head(kb: &mut KnowledgeBase, rid: RuleId, ty: &Value) -> bool {
     fn collect_vars<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<Var>) {
         match ty.head(kb) {
@@ -666,7 +979,11 @@ fn goal_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Val
     };
     if construction {
         let carried = value_type_term(kb, &Substitution::new(), &Value::Node(Rc::clone(arg)));
-        if instance_is_concrete(kb, &carried) {
+        // A collection literal is at its carried type even where that leaves the element open
+        // (`[]` at `List[T = ?]`): the type a requirement at it is open at.
+        if instance_is_concrete(kb, &carried)
+            || matches!(arg.as_expr(), Some(Expr::ListLit(_) | Expr::SetLit(_)))
+        {
             return Some(carried);
         }
     }
@@ -698,9 +1015,10 @@ fn goal_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Val
             instance_is_concrete(kb, &ty).then_some(ty)
         }
         // A constructor written with no field, `rod()`, is its bare name.
+        // Its type even where it leaves a parameter open (`nil` at `List[T = ?]`): the type a
+        // requirement at it is open at, which no caller fixes.
         Some(Expr::Ref(ctor)) if kb.entity_field_types(*ctor).is_some_and(|f| f.is_empty()) => {
-            let ty = constructor_value_type(kb, *ctor, &[], &[]);
-            instance_is_concrete(kb, &ty).then_some(ty)
+            Some(constructor_value_type(kb, *ctor, &[], &[]))
         }
         _ => Some(arg.inferred_type().unwrap_or_else(|| {
             let name = kb.intern("goal_arg");
@@ -986,7 +1304,7 @@ fn goal_sites(kb: &KnowledgeBase, rid: RuleId) -> Vec<Rc<NodeOccurrence>> {
 /// The goals of clause `rid` that pass their callee nothing at some position of its layout,
 /// each with its callee: a goal in its citation marker with an `__unrouted` slot, and a bare goal
 /// of a relation whose clauses read a dictionary, which its marker would have passed nothing
-/// at all. The callee finds each such dictionary from the values when the goal runs.
+/// at all.
 pub(super) fn goals_passing_nothing(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<(Rc<NodeOccurrence>, Symbol)> {
     let unrouted = match crate::kb::resolve::unrouted_read(kb) {
         Value::SymbolRef(s) => s,

@@ -2620,6 +2620,8 @@ pub fn query_pattern_functor(
 ) -> anthill_core::intern::Symbol {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     let t = query_pattern_term(kb, pattern);
+    // The goal as written, not the citation marker a routed query rides in (073 §6.2).
+    let t = load::query_goal_as_written(kb, &t);
     // WI-20260904-J0RM4: read the head through `TermView`, not through a `Term::Fn`
     // match — the pattern rides the transient occurrence carrier now. `ViewHead::Functor`
     // is the same head its hash-consed twin reported, which is the whole contract of the
@@ -2655,6 +2657,33 @@ pub fn pattern_hits(kb: &mut KnowledgeBase, pattern: &str) -> usize {
     let goal = query_pattern_term(kb, pattern);
     kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
         .len()
+}
+
+/// The definite integer answers the query `pattern` gives at its LAST argument, sorted —
+/// read off the goal as written, since a query passing its callee a requirement rides in
+/// the citation marker that carries it (proposal 073 §6.2).
+#[allow(dead_code)]
+pub fn pattern_last_ints(kb: &mut KnowledgeBase, pattern: &str) -> Vec<i64> {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    let goal = query_pattern_term(kb, pattern);
+    let written = load::query_goal_as_written(kb, &goal);
+    let last = match TermView::head(&written, kb) {
+        ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => TermView::pos_arg(&written, kb, pos_arity - 1)
+            .expect("the last argument is readable")
+            .to_value(),
+        other => panic!("`{pattern}` is no application with an argument: {other:?}"),
+    };
+    let mut out: Vec<i64> = kb
+        .resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+        .iter()
+        .filter(|sol| sol.is_definite())
+        .map(|sol| {
+            let v = kb.reify_value(&last, &sol.subst);
+            scalar_int(kb, &v).unwrap_or_else(|| panic!("`{pattern}` answers an integer; got {v:?}"))
+        })
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 /// [`resolve_with_messages`]' fault messages alone.
@@ -2745,20 +2774,22 @@ pub fn query_goals(
     );
     let global_scope = kb.global_scope();
     let mut var_map = std::collections::HashMap::new();
-    let mut goals = Vec::new();
-    for item in &parsed.items {
-        if let anthill_core::parse::ir::Item::Fact(f) = item {
-            goals.push(
-                load::convert_query_term(kb, &parsed, f.term, global_scope, &mut var_map)
-                    .unwrap_or_else(|errs| {
-                        panic!(
-                            "query goals {patterns:?} failed to convert: {:?}",
-                            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
-                        )
-                    }),
-            );
-        }
-    }
+    let ids: Vec<_> = parsed
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            anthill_core::parse::ir::Item::Fact(f) => Some(f.term),
+            _ => None,
+        })
+        .collect();
+    // One query: its goals typed together, as a rule body's are (proposal 073 §6.2).
+    let goals = load::convert_query_terms(kb, &parsed, &ids, global_scope, &mut var_map)
+        .unwrap_or_else(|errs| {
+            panic!(
+                "query goals {patterns:?} failed to convert: {:?}",
+                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+            )
+        });
     assert_eq!(goals.len(), patterns.len(), "one goal per pattern");
     goals
 }

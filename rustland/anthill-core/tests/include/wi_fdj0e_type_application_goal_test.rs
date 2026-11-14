@@ -214,17 +214,21 @@ fn a_witness_provision_answers_the_goal_and_the_guard() {
     assert!(try_load_kb_with(&call).is_ok(), "the operation twin is supplied at `Teal`");
 }
 
-/// NO PROVIDER FAILS THE GOAL AND THE GUARD: a requirement known unavailable is no undecided
-/// answer. Both waited on 524eee80, the guard leaving `find_dictionary(Sp[C = Float], …)`. The
-/// guard is asked by a query: a rule-body goal `gg(1.5, ?r)` at concrete types is refused at
-/// load, nothing providing `Sp[C = Float]`, as an operation's call is.
+/// NO PROVIDER FAILS THE GOAL AND REFUSES THE GUARD: a requirement known unavailable is no
+/// undecided answer. Both waited on 524eee80, the guard leaving `find_dictionary(Sp[C = Float],
+/// …)`. The type application written as a goal is a type check, and fails. The guard is a
+/// requirement: a rule-body goal `gg(1.5, ?r)` at concrete types is refused at load, nothing
+/// providing `Sp[C = Float]`, as an operation's call is, and so is the query, typed where it is
+/// read (proposal 073 §6.2; decided with the user 2026-11-14 — it answered nothing before).
 #[test]
 fn no_provider_fails_the_goal_and_the_guard() {
     assert_eq!(rows(ELEMENTS, "test.fdj0e.el.floatHolds"), vec![]);
     let mut kb = load_kb_with(ELEMENTS);
-    let goal = crate::common::query_pattern_term(&mut kb, "test.fdj0e.el.gg(1.5, ?r)");
-    let sols = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
-    assert!(sols.is_empty(), "the guard at `Float` fails: {} solution(s)", sols.len());
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "test.fdj0e.el.gg(1.5, ?r)"),
+        &["nothing provides `Sp[C = Float]`"],
+        "the query at `Float`",
+    );
     let refused = try_load_kb_with(&with_tail(ELEMENTS, "  rule ggFloat(?r) :- gg(1.5, ?r)\n"))
         .err()
         .expect("the rule-body goal at `Float` is refused at load");

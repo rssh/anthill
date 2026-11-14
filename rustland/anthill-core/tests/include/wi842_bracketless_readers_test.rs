@@ -281,8 +281,9 @@ fn a_self_providing_carrier_now_answers_where_it_used_to_tie() {
 /// (kernel-language §8.3), so the compare waits for it. Before RYDNV both arms
 /// were refused at load in the `=` spelling, where the goal spelling loaded. Since 060.1 stage 2
 /// each clause declares `Desc` at `?x`'s type, and the goal at `twig()` builds the tied
-/// dictionary at load, where it is refused, as an operation's call at `Twig` is: the tied arm
-/// is asked as a query.
+/// dictionary at load, where it is refused, as an operation's call at `Twig` is; since a query
+/// is typed where it is read (proposal 073 §6.2), the tied arm asked as a query is refused there
+/// too, naming both providers, where it was one undecided answer.
 #[test]
 fn a_rule_body_tie_is_decided_when_the_goal_runs_on_both_arms() {
     let clauses = "  rule described[A](?x: A, ?y) :- Desc[A], eq(?y, Holder.probe(?x))\n  \
@@ -304,16 +305,14 @@ fn a_rule_body_tie_is_decided_when_the_goal_runs_on_both_arms() {
     );
     let eq = crate::common::query_unary(&mut kb, &format!("{ns}.viaEq"));
     assert!(eq.len() == 1 && !eq[0].1, "{ns}: the `=` spelling is undecided (`=` never binds `?y`); got {eq:?}");
-    // The tied arm, asked as queries — whose reads run — and refused as rule goals at load.
+    // The tied arm, refused as queries where they are read and as rule goals at load.
     let ns = "wi842.vd.rule.tie";
     let mut kb = crate::common::load_kb_with(&program(ns, TWIG, clauses));
     for relation in ["asGoal", "described"] {
-        let goal = crate::common::query_pattern_term(&mut kb, &format!("{ns}.{relation}({ns}.Twig.twig(), ?y)"));
-        let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
-        assert!(
-            got.len() == 1 && !got[0].is_definite(),
-            "{ns}: the tie leaves `{relation}` one undecided answer; got {} rows",
-            got.len(),
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(&mut kb, &format!("{ns}.{relation}({ns}.Twig.twig(), ?y)")),
+            &["two providers answer", "TwigA", "TwigB"],
+            relation,
         );
     }
     crate::common::assert_refused_naming(

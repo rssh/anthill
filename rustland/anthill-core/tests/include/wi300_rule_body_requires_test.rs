@@ -5,20 +5,19 @@
 //! guard is the head introducer's, `rule related[A](?x: A, ?y: A) :- PartialEq[T = A]`,
 //! read as `find_dictionary(PartialEq[T = A], PartialEq, A, out: ?d, carrier_type: true)` at
 //! the carrier the introducer names. At resolution the guard checks `provides PartialEq` —
-//! the spec it names, not `Eq` — at the current binding, by a provision written or DERIVED
-//! (`Derived`, `Partial` below), as `requires(X)` did (measured on d39bd428, the same
-//! answers):
-//!   * ground carrier WITH a provider     → the rule fires;
-//!   * ground carrier with NO provider     → the rule does not fire (even though the
-//!     structural `eq` would succeed — the guard is what blocks it);
-//!   * under-determined carrier            → SUSPEND (no definite solution).
-//! Body `eq` is `BuiltinTag::Eq` (structural), so the fire/don't-fire/suspend outcome
-//! is governed ENTIRELY by the guard.
+//! the spec it names, not `Eq` — by a provision written or DERIVED (`Derived`, `Partial`
+//! below). A query is typed where it is read (proposal 073 §6.2), so the guard is passed the
+//! dictionary the query's own types build, and nothing is read from a value when it runs:
+//!   * a carrier WITH a provider     → the rule fires;
+//!   * a carrier with NO provider     → the query is refused where it is read (even though
+//!     the structural `eq` would succeed — the guard is what refuses it);
+//!   * a carrier the query leaves open → refused too, naming `A`.
+//! Body `eq` is `BuiltinTag::Eq` (structural), so the outcome is governed ENTIRELY by the
+//! guard. (Before 073 §6.2 the guard read the carrier from the goal's values, a goal built
+//! by hand: no provider failed the goal, and an open carrier suspended it.)
 
-use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::KnowledgeBase;
-use smallvec::SmallVec;
 
 use crate::common::load_kb_with as load_with;
 
@@ -75,66 +74,43 @@ const SRC: &str = r#"
     end
 "#;
 
-/// `ctor(v: n)` — an entity term of one field `v` (`we`, `ne`, `de`).
-fn mk(kb: &mut KnowledgeBase, ctor: &str, n: i64) -> TermId {
-    mk_fields(kb, ctor, &["v"], Literal::Int(n))
+/// The query `pattern`, typed where it is read: `Err` with its refusals, or its solutions.
+fn ask(kb: &mut KnowledgeBase, pattern: &str) -> Result<Vec<Solution>, Vec<String>> {
+    let refusals = crate::common::query_pattern_refusals(kb, pattern);
+    if !refusals.is_empty() {
+        return Err(refusals);
+    }
+    let goal = crate::common::query_pattern_term(kb, pattern);
+    Ok(kb.resolve(&[goal], &ResolveConfig::default()))
 }
 
-/// `ctor(f₁: value, …)` — every named field holding `value`. The resolver does not
-/// type a query term, so an `Opaque` field takes an integer as `ne`'s does. `fields`
-/// must be in DECLARED order: that is the order the loader canonicalizes named
-/// arguments into, and a term in another order is a different term, which the
-/// blocking rows would count as a block.
-fn mk_fields(kb: &mut KnowledgeBase, ctor: &str, fields: &[&str], value: Literal) -> TermId {
-    let functor = kb
-        .try_resolve_symbol(ctor)
-        .unwrap_or_else(|| panic!("ctor {ctor} not in KB"));
-    let v = kb.alloc(Term::Const(value));
-    let named: Vec<_> = fields.iter().map(|f| (kb.intern(f), v)).collect();
-    kb.alloc(Term::Fn {
-        functor,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&named),
-    })
-}
-
-/// An unbound global query variable as a term.
-fn fresh(kb: &mut KnowledgeBase, name: &str) -> TermId {
-    let sym = kb.intern(name);
-    let vid = kb.fresh_var(sym);
-    kb.alloc(Term::Var(Var::Global(vid)))
-}
-
-fn related_solutions(
-    kb: &mut KnowledgeBase,
-    a: TermId,
-    b: TermId,
-) -> Vec<anthill_core::kb::resolve::Solution> {
-    let related = kb
-        .try_resolve_symbol("test.wi300.related")
-        .expect("test.wi300.related not in KB");
-    let goal = kb.alloc(Term::Fn {
-        functor: related,
-        pos_args: SmallVec::from_slice(&[a, b]),
-        named_args: SmallVec::new(),
-    });
-    kb.resolve(&[goal], &ResolveConfig::default())
-}
-
-fn definite_count(kb: &mut KnowledgeBase, a: TermId, b: TermId) -> usize {
-    related_solutions(kb, a, b)
+/// The definite solutions of `pattern`, which must not be refused.
+fn definite_count(kb: &mut KnowledgeBase, pattern: &str) -> usize {
+    ask(kb, pattern)
+        .unwrap_or_else(|e| panic!("`{pattern}` is refused: {e:?}"))
         .iter()
         .filter(|s| s.is_definite())
         .count()
 }
 
+/// `pattern` is refused where it is read, naming `PartialEq` and `tokens`.
+fn refused(kb: &mut KnowledgeBase, pattern: &str, tokens: &[&str]) {
+    let errs = ask(kb, pattern).err().unwrap_or_else(|| panic!("`{pattern}` must be refused"));
+    let mut want = vec!["PartialEq"];
+    want.extend_from_slice(tokens);
+    crate::common::assert_refused_naming(&errs, &want, pattern);
+}
+
+/// `related(<a>, <b>)` over [`SRC`]'s constructors, written as `Witheq.we(v: 7)`.
+fn related(a: &str, b: &str) -> String {
+    format!("test.wi300.related(test.wi300.{a}, test.wi300.{b})")
+}
+
 #[test]
 fn guard_fires_when_carrier_provides_eq() {
     let mut kb = load_with(SRC);
-    let a = mk(&mut kb, "test.wi300.Witheq.we", 7);
-    let b = mk(&mut kb, "test.wi300.Witheq.we", 7);
     assert_eq!(
-        definite_count(&mut kb, a, b),
+        definite_count(&mut kb, &related("Witheq.we(v: 7)", "Witheq.we(v: 7)")),
         1,
         "Witheq provides Eq and we(7) == we(7): the rule must fire"
     );
@@ -143,34 +119,21 @@ fn guard_fires_when_carrier_provides_eq() {
 #[test]
 fn guard_fires_but_eq_fails_for_unequal_values() {
     let mut kb = load_with(SRC);
-    let a = mk(&mut kb, "test.wi300.Witheq.we", 7);
-    let b = mk(&mut kb, "test.wi300.Witheq.we", 8);
     assert_eq!(
-        definite_count(&mut kb, a, b),
+        definite_count(&mut kb, &related("Witheq.we(v: 7)", "Witheq.we(v: 8)")),
         0,
         "guard fires (Witheq provides Eq) but we(7) != we(8): no solution"
     );
 }
 
 #[test]
-fn guard_blocks_when_carrier_has_no_provider() {
+fn guard_refuses_a_carrier_with_no_provider() {
     // The distinguishing case: `eq(ne(7), ne(7))` is structurally TRUE, but Noeq
-    // declares no `provides PartialEq[T = Noeq]` and derives none, so the guard does
-    // not fire — the rule yields nothing. Without the guard (plain `eq`) this would be
-    // a solution.
+    // declares no `provides PartialEq[T = Noeq]` and derives none, so the query is refused
+    // where it is read, as a rule body's goal at `Noeq` is at load. Without the guard
+    // (plain `eq`) this would be a solution.
     let mut kb = load_with(SRC);
-    // No answer at all, not merely no definite one: a SUSPENDED guard leaves a residual
-    // answer (measured, one, over two unbound arguments), so `definite_count` alone
-    // would not tell a block from a suspension.
-    let a = mk(&mut kb, "test.wi300.Noeq.ne", 7);
-    let b = mk(&mut kb, "test.wi300.Noeq.ne", 7);
-    let sols = related_solutions(&mut kb, a, b);
-    assert!(
-        sols.is_empty(),
-        "Noeq provides no PartialEq: the guard must block the rule despite eq \
-         succeeding, and leave no residual answer — got {} answer(s)",
-        sols.len()
-    );
+    refused(&mut kb, &related("Noeq.ne(v: 7)", "Noeq.ne(v: 7)"), &["Noeq"]);
 }
 
 /// Does a sort of [`SRC`] provide the prelude spec `spec`, by a row written or derived?
@@ -206,10 +169,8 @@ fn a_carrier_whose_fields_provide_eq_derives_it_and_passes_the_guard() {
         [true, true, false],
         "`Derived(v: Int64)` writes no provision and must derive the TOTAL equality"
     );
-    let a = mk(&mut kb, "test.wi300.Derived.de", 7);
-    let b = mk(&mut kb, "test.wi300.Derived.de", 7);
     assert_eq!(
-        definite_count(&mut kb, a, b),
+        definite_count(&mut kb, &related("Derived.de(v: 7)", "Derived.de(v: 7)")),
         1,
         "a derived PartialEq must satisfy the guard as a written one does"
     );
@@ -235,18 +196,16 @@ fn a_partial_composite_passes_a_partial_eq_guard() {
         [true, false, true],
         "`Partial(f: Float)` must derive the PARTIAL equality"
     );
-    let a = mk_fields(&mut kb, "test.wi300.Partial.pt", &["f"], Literal::Float(1.5.into()));
-    let b = mk_fields(&mut kb, "test.wi300.Partial.pt", &["f"], Literal::Float(1.5.into()));
     assert_eq!(
-        definite_count(&mut kb, a, b),
+        definite_count(&mut kb, &related("Partial.pt(f: 1.5)", "Partial.pt(f: 1.5)")),
         1,
         "a carrier with a partial equality provides PartialEq and must pass its guard"
     );
 }
 
 /// The CONTROL beside them: a carrier holding the same `Int64` field and one `Opaque`
-/// field derives nothing — `Eq` needs EVERY field — and the guard BLOCKS it: no answer
-/// at all, so not a suspension either (which would leave a residual one). This row is
+/// field derives nothing — `Eq` needs EVERY field — and the query at it is refused, as at
+/// `Noeq`. This row is
 /// what tells an `Int64` field from the reason `Derived` is admitted; `Noeq`, whose only
 /// field is `Opaque`, cannot.
 ///
@@ -264,29 +223,16 @@ fn one_field_without_eq_withholds_the_derivation_and_the_guard_blocks() {
         [false, false],
         "`Mixed(v: Int64, o: Opaque)` has a field with no equality and derives none"
     );
-    let a = mk_fields(&mut kb, "test.wi300.Mixed.mx", &["v", "o"], Literal::Int(7));
-    let b = mk_fields(&mut kb, "test.wi300.Mixed.mx", &["v", "o"], Literal::Int(7));
-    let sols = related_solutions(&mut kb, a, b);
-    assert!(
-        sols.is_empty(),
-        "Mixed provides no PartialEq: the guard must block the rule despite eq \
-         succeeding, and leave no residual answer — got {} answer(s)",
-        sols.len()
-    );
+    refused(&mut kb, &related("Mixed.mx(v: 7, o: 7)", "Mixed.mx(v: 7, o: 7)"), &["Mixed"]);
 }
 
 #[test]
-fn guard_suspends_on_under_determined_carrier() {
-    // Both arguments unbound → the carrier type is under-determined → the guard
-    // SUSPENDS (never NAF-decides). No DEFINITE solution is produced.
+fn a_query_leaving_the_carrier_open_is_refused() {
+    // Both arguments unbound: the query fixes no carrier, and no caller can pass the
+    // guard a dictionary, so the query is refused where it is read, naming `A` (073 §6.2).
+    // It suspended while the guard read the carrier from the values when it ran.
     let mut kb = load_with(SRC);
-    let a = fresh(&mut kb, "a");
-    let b = fresh(&mut kb, "b");
-    assert_eq!(
-        definite_count(&mut kb, a, b),
-        0,
-        "under-determined carrier must suspend, yielding no definite solution"
-    );
+    refused(&mut kb, "test.wi300.related(?a, ?b)", &["`related`'s `A`"]);
 }
 
 /// A GUARD NO CALL READS STILL DECIDES. WI-300's `requires(PartialEq[T])` with no body
@@ -296,18 +242,9 @@ fn guard_suspends_on_under_determined_carrier() {
 #[test]
 fn a_guard_no_call_reads_still_decides() {
     let mut kb = load_with(SRC);
-    let solo = kb.try_resolve_symbol("test.wi300.solo").expect("test.wi300.solo in KB");
-    for (ctor, want) in [("test.wi300.Witheq.we", 1), ("test.wi300.Noeq.ne", 0)] {
-        let a = mk(&mut kb, ctor, 7);
-        let goal = kb.alloc(Term::Fn {
-            functor: solo,
-            pos_args: SmallVec::from_elem(a, 1),
-            named_args: SmallVec::new(),
-        });
-        let answers = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(answers.len(), want, "{ctor}");
-        assert!(answers.iter().all(|s| s.is_definite()), "{ctor}: a conditional answer");
-    }
+    let answers = ask(&mut kb, "test.wi300.solo(test.wi300.Witheq.we(v: 7))").expect("typed at `Witheq`");
+    assert!(answers.len() == 1 && answers[0].is_definite(), "{} answer(s)", answers.len());
+    refused(&mut kb, "test.wi300.solo(test.wi300.Noeq.ne(v: 7))", &["Noeq"]);
 }
 
 /// TWO EQUAL GUARDS ARE TWO REQUIREMENTS, as an operation's two equal `requires` lines are
@@ -338,21 +275,11 @@ fn two_equal_guards_are_two_requirements() {
         end
     "#;
     let mut kb = load_with(src);
-    let twin = kb.try_resolve_symbol("test.wi300.dup.twin").expect("twin in KB");
-    for (ctor, want) in [("test.wi300.dup.Thing.thing", 1), ("test.wi300.dup.Noeq.ne", 0)] {
-        let a = mk(&mut kb, ctor, 7);
-        let goal = kb.alloc(Term::Fn {
-            functor: twin,
-            pos_args: SmallVec::from_slice(&[a, a, a]),
-            named_args: SmallVec::new(),
-        });
-        let answers = kb.resolve(&[goal], &ResolveConfig::default());
-        assert!(
-            answers.len() == want && answers.iter().all(|s| s.is_definite()),
-            "{ctor}: {} answer(s)",
-            answers.len()
-        );
-    }
+    let thing = "test.wi300.dup.Thing.thing(v: 7)";
+    let answers = ask(&mut kb, &format!("test.wi300.dup.twin({thing}, {thing}, {thing})")).expect("typed at `Thing`");
+    assert!(answers.len() == 1 && answers[0].is_definite(), "{} answer(s)", answers.len());
+    let ne = "test.wi300.dup.Noeq.ne(v: 7)";
+    refused(&mut kb, &format!("test.wi300.dup.twin({ne}, {ne}, {ne})"), &["Noeq"]);
     let free = r#"
         namespace test.wi300.free
           import anthill.prelude.{Int64, PartialEq}

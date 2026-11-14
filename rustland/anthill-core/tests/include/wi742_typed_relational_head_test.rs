@@ -449,13 +449,14 @@ namespace anthill.prelude.Int64
   provides Summable[T = Int64]
 end
 "#;
+    // Asked at the row's value, a query being typed where it is read (proposal 073 §6.2).
     let mut kb = crate::common::load_kb_with(&PROG.replace('@', ""));
-    assert_eq!(answers(&mut kb, "test.wi742.introducer.g(?a, ?b)"), 1);
+    assert_eq!(answers(&mut kb, "test.wi742.introducer.g([1, 2], ?b)"), 1);
     // THE CONTROL, and it is what makes the row above an agreement rather than a
     // coincidence: the SIGIL spelling of the identical program answers the same way, and
     // it does so with this filter backed out.
     let mut kb = crate::common::load_kb_with(&PROG.replace('@', "?"));
-    assert_eq!(answers(&mut kb, "test.wi742.introducer.g(?a, ?b)"), 1);
+    assert_eq!(answers(&mut kb, "test.wi742.introducer.g([1, 2], ?b)"), 1);
 }
 
 #[test]

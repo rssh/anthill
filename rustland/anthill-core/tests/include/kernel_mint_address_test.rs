@@ -596,63 +596,51 @@ fn load_guard_kb(rival: &str) -> KnowledgeBase {
     load_kb_with(&guard_src(rival))
 }
 
-/// `related909(c(v: 1), c(v: 1))` — the DEFINITE solutions only.
-fn guard_solutions(kb: &mut KnowledgeBase, ctor: &str) -> usize {
-    let arg = {
-        let functor = kb
-            .try_resolve_symbol(ctor)
-            .unwrap_or_else(|| panic!("ctor {ctor} not in KB"));
-        let v = kb.intern("v");
-        let one = kb.alloc(Term::Const(Literal::Int(1)));
-        kb.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(v, one)]),
-        })
-    };
-    let related = kb
-        .try_resolve_symbol("test.w909.guard.related909")
-        .expect("related909 in KB");
-    let goal: TermId = kb.alloc(Term::Fn {
-        functor: related,
-        pos_args: SmallVec::from_slice(&[arg, arg]),
-        named_args: SmallVec::new(),
-    });
-    kb.resolve(
-        &[goal],
-        &anthill_core::kb::resolve::ResolveConfig::default(),
+/// `related909(c(v: 1), c(v: 1))`, a query typed where it is read (proposal 073 §6.2): `None`
+/// where it is refused there — no provider of the guard's `Eq` at the carrier — or its
+/// DEFINITE solutions (`Solution::is_definite`, not a hand-rolled `residual.is_empty()`:
+/// WI-20260822-WZX6B found four suites counting floundered answers as decisions).
+fn guard_solutions(kb: &mut KnowledgeBase, ctor: &str) -> Option<usize> {
+    let pattern = format!("test.w909.guard.related909({ctor}(v: 1), {ctor}(v: 1))");
+    let refusals = crate::common::query_pattern_refusals(kb, &pattern);
+    if !refusals.is_empty() {
+        assert!(refusals.iter().any(|e| e.contains("Eq")), "{pattern}: {refusals:?}");
+        return None;
+    }
+    let goal = crate::common::query_pattern_term(kb, &pattern);
+    Some(
+        kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+            .iter()
+            .filter(|s| s.is_definite())
+            .count(),
     )
-    .iter()
-    // `Solution::is_definite`, not a hand-rolled `residual.is_empty()`: WI-20260822-WZX6B
-    // found four suites counting floundered answers as decisions.
-    .filter(|s| s.is_definite())
-    .count()
 }
 
 /// THE POSITIVE ARM. `Witheq` provides `Eq`, so the guard lets the rule through and the
 /// structurally-equal pair answers.
 ///
-/// PASSES EITHER WAY, and it is the row that makes the two zero-asserting rows below
-/// mean something: without it, a fixture that stopped resolving for an unrelated reason
-/// would satisfy every guard assertion in this file. Raised by `/code-review`.
+/// PASSES EITHER WAY, and it is the row that makes the two refusing rows below mean
+/// something: without it, a fixture that stopped resolving for an unrelated reason would
+/// satisfy every guard assertion in this file. Raised by `/code-review`.
 #[test]
 fn the_guard_fires_for_a_provider() {
     let mut kb = load_guard_kb("");
     assert_eq!(
         guard_solutions(&mut kb, "test.w909.guard.Witheq.we"),
-        1,
+        Some(1),
         "a carrier that provides Eq must pass the requirement guard"
     );
 }
 
-/// THE CONTROL for the blocking arm. `Noeq` has no `provides Eq`, so the guard blocks
-/// and the structurally-equal pair yields nothing. Passes either way, by design.
+/// THE CONTROL for the blocking arm. `Noeq` has no `provides Eq`, so the query at it is
+/// refused where it is read, though the pair is structurally equal. Passes either way, by
+/// design.
 #[test]
 fn the_guard_still_blocks_with_no_rival() {
     let mut kb = load_guard_kb("");
     assert_eq!(
         guard_solutions(&mut kb, "test.w909.guard.Noeq.ne"),
-        0,
+        None,
         "the requirement guard alone decides this — body `eq` is structural and would \
          succeed on its own, as the positive arm shows"
     );
@@ -661,7 +649,7 @@ fn the_guard_still_blocks_with_no_rival() {
 /// A NAMESPACE DECLARING ITS OWN `find_dictionary` DOES NOT CAPTURE THE GUARD.
 ///
 /// INVERTED ON BACK-OUT of the converter's mint of `requires(X)`, MEASURED: **1 solution,
-/// not 0**. The short mint resolved to the rival, which succeeds for any argument, so the
+/// not a refusal**. The short mint resolved to the rival, which succeeds for any argument, so the
 /// typer sweep never recognised the goal as the kernel relation, an unsatisfiable
 /// requirement stopped blocking, and the rule fired on a carrier that provides nothing.
 /// The guard's read is the typer's since proposal 060.1 §5, minted by the address. A guard that
@@ -673,7 +661,7 @@ fn a_local_find_dictionary_declaration_does_not_capture_the_guard() {
     let mut kb = load_guard_kb("      operation find_dictionary(s: Int64) -> Bool = true\n");
     assert_eq!(
         guard_solutions(&mut kb, "test.w909.guard.Noeq.ne"),
-        0,
+        None,
         "a same-spelled local declaration must not take the requirement guard's meaning"
     );
 }

@@ -5597,7 +5597,8 @@ impl SearchStream {
                     Rc::clone(self.read_layout_cache.entry(relation).or_insert_with(|| {
                         super::typing::requirement_read_counts(kb, relation).into()
                     }));
-                bind_citation_reads(kb, rid, &layout, &dicts, &fresh_nodes, &mut merged);
+                let carriers = within_requirements_carriers(kb, &original_goal);
+                bind_citation_reads(kb, rid, &layout, &dicts, &carriers, &fresh_nodes, &mut merged);
             }
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
@@ -10146,6 +10147,18 @@ impl KnowledgeBase {
             } else {
                 BuiltinResult::delay()
             };
+        }
+        // Proposal 073 §6.2 — A GUARD NO CALLER PASSED A DICTIONARY is a goal no load typed: a
+        // query routes its goal's requirement where it is read, a rule body's goal where the
+        // clause is typed, and a requirement left open there is refused at load. Nothing is
+        // read from the value to supply one.
+        if !supplied && typed_instance.is_some() {
+            return BuiltinResult::Error(ResolveError::new(format!(
+                "the requirement `{}` of a clause was passed by no caller: the goal was built \
+                 at run time, and no load typed it — ask it as a query, whose types pass it, \
+                 or cite it from typed code",
+                self.qualified_name_of(spec_sort),
+            )));
         }
         let rung = if supplied {
             DefaultRung::Unranked
@@ -16323,8 +16336,27 @@ fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol,
     Some((relation, dicts))
 }
 
+/// The prefix of a [`WITHIN_REQUIREMENTS`] marker's named entry that carries the type slot `j`'s
+/// guard is at (`carrier_3: Int64`): what the citation fixed the guard's carrier to, a clause's
+/// declared type parameter (060.1 §8.10), bound when the clause opens.
+pub(crate) const WITHIN_CARRIER_PREFIX: &str = "carrier_";
+
+/// The carrier types a [`WITHIN_REQUIREMENTS`] marker writes, by slot ([`WITHIN_CARRIER_PREFIX`]).
+fn within_requirements_carriers(kb: &KnowledgeBase, goal: &Value) -> Vec<(usize, Value)> {
+    goal.named_keys(kb)
+        .into_iter()
+        .filter_map(|key| {
+            let slot = kb.local_name_of(key).strip_prefix(WITHIN_CARRIER_PREFIX)?.parse().ok()?;
+            Some((slot, goal.named_arg(kb, key)?.to_value()))
+        })
+        .collect()
+}
+
 /// Bind each requirement read of the just-opened clause `rid` to the dictionary a citation
-/// captured for it — [`WITHIN_REQUIREMENTS`]' consumer.
+/// captured for it — [`WITHIN_REQUIREMENTS`]' consumer. A guard whose carrier the citation fixed
+/// (`carriers`, by slot) has its carrier bound to that type too: the clause's declared type
+/// parameter is the citing call's instantiation (060.1 §8.10), so a column typed with it is read
+/// at that type, and nothing is read from the value for it.
 ///
 /// The clause's OFFSET in the flat layout comes from the RELATION the marker names, the
 /// list the typer routed over (`counts`, `requirement_read_counts`' layout), not from the
@@ -16339,6 +16371,7 @@ fn bind_citation_reads(
     rid: RuleId,
     counts: &[(RuleId, usize)],
     dicts: &[Value],
+    carriers: &[(usize, Value)],
     opened: &[Rc<NodeOccurrence>],
     merged: &mut Substitution,
 ) {
@@ -16350,7 +16383,8 @@ fn bind_citation_reads(
         .expect("a citation marker carries dictionaries only for reads, and a read is a `find_dictionary` goal");
     // In the order the routes were computed in: a read in a connective's goal slot as well as
     // one at the top ([`super::typing::clause_requirement_reads`]).
-    let outs: Vec<Rc<NodeOccurrence>> = super::typing::clause_requirement_reads(kb, fd, opened)
+    let reads = super::typing::clause_requirement_reads(kb, fd, opened);
+    let outs: Vec<Rc<NodeOccurrence>> = reads
         .iter()
         .map(|read| {
             Rc::clone(
@@ -16359,6 +16393,23 @@ fn bind_citation_reads(
             )
         })
         .collect();
+    for (slot, ty) in carriers {
+        let Some(read) = slot.checked_sub(offset).and_then(|i| reads.get(i)) else {
+            continue;
+        };
+        // The guard's carrier, a variable of the opened clause: its declared type parameter.
+        let Some(Expr::Apply { pos_args, .. }) = read.as_expr() else {
+            unreachable!("a requirement read is an application");
+        };
+        if let Some(Expr::Var(Var::Global(vid))) = pos_args.get(2).and_then(|c| c.as_expr()) {
+            // Unified, not overwritten: a carrier already at another type is a clause the
+            // citation's instantiation does not open.
+            let carrier = Value::Var(Var::Global(*vid));
+            if matches!(kb.unify_values(carrier, ty.clone(), merged), UnifyOutcome::Fail) {
+                merged.contradiction = true;
+            }
+        }
+    }
     assert_eq!(
         outs.len(),
         counts[at].1,

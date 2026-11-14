@@ -2708,10 +2708,12 @@ A], WeakOrd.compare(?a, ?b, ?c)`, `rule ints(?c) :- cmp(1, 2, ?c)` loads, `rule 
 cmp(?a, ?b, ?c)` loads and hands `cmp` the dictionary it holds, at every turn of a recursion
 too. A citation fixes the clause's declared type parameters at the citing call's
 instantiation, as an operation call's are, and a dictionary it passes is the requirement's,
-whatever the value's own type. A requirement at a type no head column reaches (`rule
-answer(?r) :- keep(?x, ?r)`, `?x` bound by `keep`), and one no caller passes (a query), are
-found from the carried types when the goal runs, waiting while the value is unbound; where
-that type provides no instance, the goal fails, so `not(…)` over it holds.
+whatever the value's own type. A requirement at a type no head column reaches, or one no caller passes, is refused at load,
+naming the requirement and the type it is open at: over `fact src(1)` and `fact src(true)`,
+`rule answer(?r) :- keep(?x, ?r)` and the query `keep(?x, ?r)` are refused, and `keep(1, ?r)`
+passes `Int64`'s instance. A query is typed where it is read, as a rule body's goal is, and
+its bracket binds what the relation declares: `keep[A = Int64](?x, ?r)` passes `Int64`'s
+instance and answers the `Int64` row.
 
 A call whose arguments' types are known at load is decided there, by its carrier, and
 has no condition: `rule cmpInt(?c) :- WeakOrd.compare(1, 5, ?c)` is `Int64`'s own

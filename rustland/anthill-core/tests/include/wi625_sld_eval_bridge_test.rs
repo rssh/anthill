@@ -323,45 +323,19 @@ const CONTAINS_SRC: &str = r#"
     end
 "#;
 
-/// Build a `List` from a slice of already-built element terms (generalizes
-/// `list_term`, which is Int64-only).
-fn list_of(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
-    let nil = kb
-        .try_resolve_symbol("anthill.prelude.List.nil")
-        .expect("List.nil");
-    let cons = kb
-        .try_resolve_symbol("anthill.prelude.List.cons")
-        .expect("List.cons");
-    let head = kb.intern("head");
-    let tail = kb.intern("tail");
-    let mut list = kb.alloc(Term::Fn {
-        functor: nil,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-    for &e in elems.iter().rev() {
-        list = kb.alloc(Term::Fn {
-            functor: cons,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(head, e), (tail, list)]),
-        });
-    }
-    list
+
+
+/// The query `pattern`'s solutions, typed where it is read (proposal 073 §6.2): its guard is
+/// passed the dictionary its own argument types build.
+fn ask(kb: &mut KnowledgeBase, pattern: &str) -> Vec<anthill_core::kb::resolve::Solution> {
+    let goal = common::query_pattern_term(kb, pattern);
+    kb.resolve(&[goal], &ResolveConfig::default())
 }
 
-/// A `gap3.membertest.NoEq.nt(v: n)` entity term (a carrier with no lawful `Eq` —
-/// its field is a `Float`, so the WI-664 classification derives `NonEq` for it).
-fn nt_entity(kb: &mut KnowledgeBase, n: i64) -> TermId {
-    let f = kb
-        .try_resolve_symbol("gap3.membertest.NoEq.nt")
-        .expect("NoEq.nt");
-    let v = kb.intern("v");
-    let nv = float_term(kb, n as f64);
-    kb.alloc(Term::Fn {
-        functor: f,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(v, nv)]),
-    })
+/// The query `pattern` is refused where it is read, naming `spec`: no provider answers its
+/// guard at the query's types.
+fn refused(kb: &mut KnowledgeBase, pattern: &str, spec: &str) {
+    common::assert_refused_naming(&common::query_pattern_refusals(kb, pattern), &[spec], pattern);
 }
 
 #[test]
@@ -381,10 +355,7 @@ fn transitive_requires_contains_decides_via_member() {
     let mut kb = common::load_kb_with(CONTAINS_SRC);
     // contains([1,2,3], 2): guard fires (Int64 provides Eq), contains([1,2,3], 2) runs
     // to `true` via the bridge, eq(true, true) succeeds ⇒ one definite solution.
-    let xs = list_term(&mut kb, &[1, 2, 3]);
-    let two = int_term(&mut kb, 2);
-    let g = goal(&mut kb, "gap3.membertest.has_elem", &[xs, two]);
-    let sols = kb.resolve(&[g], &ResolveConfig::default());
+    let sols = ask(&mut kb, "gap3.membertest.has_elem([1, 2, 3], 2)");
     assert_eq!(
         sols.len(),
         1,
@@ -396,11 +367,8 @@ fn transitive_requires_contains_decides_via_member() {
     );
 
     // contains([1,2,3], 5): contains([1,2,3], 5) = false, eq(false, true) fails ⇒ none.
-    let xs2 = list_term(&mut kb, &[1, 2, 3]);
-    let five = int_term(&mut kb, 5);
-    let g2 = goal(&mut kb, "gap3.membertest.has_elem", &[xs2, five]);
     assert_eq!(
-        kb.resolve(&[g2], &ResolveConfig::default()).len(),
+        ask(&mut kb, "gap3.membertest.has_elem([1, 2, 3], 5)").len(),
         0,
         "5 is not a member of [1,2,3]",
     );
@@ -408,20 +376,16 @@ fn transitive_requires_contains_decides_via_member() {
 
 #[test]
 fn transitive_requires_guard_blocks_non_eq_element() {
-    // The requirement is enforced, not vacuous: `NoEq` declares no `Eq` instance, so
-    // the guard `DontFire`s at a `NoEq` element even though `nt(1)` IS structurally in
-    // the list — the guard checks the ELEMENT type. Without the guard (plain member) this
-    // would succeed.
+    // The requirement is enforced, not vacuous: `NoEq` declares no `Eq` instance, so the
+    // query at a `NoEq` element is refused where it is read (073 §6.2) even though `nt(1)` IS
+    // structurally in the list — the guard is at the ELEMENT type. Without the guard (plain
+    // member) this would succeed.
     let mut kb = common::load_kb_with(CONTAINS_SRC);
-    let e1 = nt_entity(&mut kb, 1);
-    let e2 = nt_entity(&mut kb, 2);
-    let list = list_of(&mut kb, &[e1, e2]);
-    let x = nt_entity(&mut kb, 1);
-    let g = goal(&mut kb, "gap3.membertest.has_elem", &[list, x]);
-    assert_eq!(
-        kb.resolve(&[g], &ResolveConfig::default()).len(),
-        0,
-        "NoEq provides no Eq: the guard must block has_elem despite nt(1) being present",
+    refused(
+        &mut kb,
+        "gap3.membertest.has_elem([gap3.membertest.NoEq.nt(v: 1.0), gap3.membertest.NoEq.nt(v: 2.0)], \
+         gap3.membertest.NoEq.nt(v: 1.0))",
+        "Eq",
     );
 }
 
@@ -659,12 +623,6 @@ const INHERITED_EQ_SRC: &str = r#"
     end
 "#;
 
-/// A raw `Float` leaf — `Float` provides `PartialEq`/`PartialOrd` (IEEE) but NOT the
-/// lawful `Eq`/`Ord` (WI-644), so it is the carrier that distinguishes "grounds the
-/// inherited-from spec" from "grounds only what the body call needs".
-fn float_term(kb: &mut KnowledgeBase, f: f64) -> TermId {
-    kb.alloc(Term::Const(Literal::Float(OrderedFloat(f))))
-}
 
 #[test]
 fn inherited_requires_eq_types_via_eq() {
@@ -682,39 +640,24 @@ fn inherited_requires_eq_types_via_eq() {
 fn inherited_requires_eq_decides_at_int64() {
     let mut kb = common::load_kb_with(INHERITED_EQ_SRC);
     // same(1, 1): guard fires (Int64 provides Eq), eq(1, 1) = true ⇒ one solution.
-    let (a, b) = (int_term(&mut kb, 1), int_term(&mut kb, 1));
-    let g = goal(&mut kb, "dirA.eqtest.same", &[a, b]);
     assert_eq!(
-        kb.resolve(&[g], &ResolveConfig::default()).len(),
+        ask(&mut kb, "dirA.eqtest.same(1, 1)").len(),
         1,
         "same(1, 1) must decide TRUE via the inherited eq witness",
     );
-
     // same(1, 2): eq(1, 2) = false ⇒ no solution.
-    let (a, b) = (int_term(&mut kb, 1), int_term(&mut kb, 2));
-    let g2 = goal(&mut kb, "dirA.eqtest.same", &[a, b]);
-    assert_eq!(
-        kb.resolve(&[g2], &ResolveConfig::default()).len(),
-        0,
-        "same(1, 2) must be false",
-    );
+    assert_eq!(ask(&mut kb, "dirA.eqtest.same(1, 2)").len(), 0, "same(1, 2) must be false");
 }
 
 #[test]
 fn inherited_requires_eq_blocks_non_eq_float() {
     // The requirement enforced is the DECLARED `Eq`, not the `PartialEq` the body `eq`
     // call itself uses. `Float` provides `PartialEq` (IEEE) but NOT `Eq` (no
-    // reflexivity at NaN), so the guard `DontFire`s at a `Float` argument even though
-    // `eq(1.0, 1.0)` would be true — proving Direction A grounds the stronger
-    // inherited-from spec, not merely the op's own.
+    // reflexivity at NaN), so the query at a `Float` argument is refused where it is read
+    // (073 §6.2) even though `eq(1.0, 1.0)` would be true — the stronger inherited-from spec
+    // is the requirement, not merely the op's own.
     let mut kb = common::load_kb_with(INHERITED_EQ_SRC);
-    let (a, b) = (float_term(&mut kb, 1.0), float_term(&mut kb, 1.0));
-    let g = goal(&mut kb, "dirA.eqtest.same", &[a, b]);
-    assert_eq!(
-        kb.resolve(&[g], &ResolveConfig::default()).len(),
-        0,
-        "Float provides PartialEq but not Eq: the guard must block `same` over Floats",
-    );
+    refused(&mut kb, "dirA.eqtest.same(1.0, 1.0)", "Eq");
 }
 
 // A `WeakOrd` guard beside `gt` — `gt` is `PartialOrd.gt`, whose op-scoped
@@ -743,22 +686,13 @@ fn inherited_requires_ordered_types_and_decides_via_gt() {
     );
     let mut kb = common::load_kb_with(INHERITED_ORD_SRC);
     // bigger(3, 1): guard fires (Int64 provides Ord), gt(3, 1) = true ⇒ one solution.
-    let (a, b) = (int_term(&mut kb, 3), int_term(&mut kb, 1));
-    let g = goal(&mut kb, "dirA.ordtest.bigger", &[a, b]);
     assert_eq!(
-        kb.resolve(&[g], &ResolveConfig::default()).len(),
+        ask(&mut kb, "dirA.ordtest.bigger(3, 1)").len(),
         1,
         "bigger(3, 1) must decide TRUE via the inherited gt witness",
     );
-
     // bigger(1, 3): gt(1, 3) = false ⇒ no solution.
-    let (a, b) = (int_term(&mut kb, 1), int_term(&mut kb, 3));
-    let g2 = goal(&mut kb, "dirA.ordtest.bigger", &[a, b]);
-    assert_eq!(
-        kb.resolve(&[g2], &ResolveConfig::default()).len(),
-        0,
-        "bigger(1, 3) must be false",
-    );
+    assert_eq!(ask(&mut kb, "dirA.ordtest.bigger(1, 3)").len(), 0, "bigger(1, 3) must be false");
 }
 
 // ── Typed op-body eq LOAD path (WI-300 Tier B, the load-time dual of Layer B) ──

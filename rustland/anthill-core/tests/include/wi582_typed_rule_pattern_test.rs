@@ -306,7 +306,9 @@ end
 /// provision before: `d(?b)` held of the row whose first column is an `Int64`.
 ///
 /// THE CONTROL is the bound spelling of what the goal meant, `d[A](?a: A, ?b) … :-
-/// Summable[A]`, which loads and answers that one row. FAILS with the body's goal sorts
+/// Summable[A]`, which loads and answers the `Int64` row where the query fixes `A` — `d(1,
+/// ?b)` is `10`, `d(true, ?b)` is refused, nothing providing `Summable` at `Bool` (a query is
+/// typed where it is read, proposal 073 §6.2). FAILS with the body's goal sorts
 /// not recorded (`note_written_domain_goal_sorts`): the program loads.
 #[test]
 fn a_written_domain_goal_at_the_spec_is_refused() {
@@ -346,12 +348,13 @@ end
         errs[0],
     );
     let mut kb = crate::common::load_kb_with(&program(
-        "rule d[A](?a: A, ?b) :- src(?a, ?b), Summable[A]\n  rule outd(?b) :- d(?a, ?b)",
+        "rule d[A](?a: A, ?b) :- src(?a, ?b), Summable[A]",
     ));
-    let rows = crate::common::query_unary(&mut kb, "test.wi582domain.outd");
-    assert!(
-        matches!(rows.as_slice(), [(anthill_core::eval::Value::Int(10), _)]),
-        "the bound spelling holds of the `Int64` row alone; got {rows:?}",
+    assert_eq!(crate::common::pattern_last_ints(&mut kb, "test.wi582domain.d(1, ?b)"), [10]);
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "test.wi582domain.d(true, ?b)"),
+        &["Summable"],
+        "the bound spelling at the `Bool` row",
     );
 }
 
@@ -400,7 +403,9 @@ end
 /// incompatible type") and no spelling of the bound could be applied from functional code.
 ///
 /// FAILS with the citation's compare made outside `spec_as_its_providers`: a load error.
-/// The uncited relation passes either way.
+/// The bare reference `keep.takeN(5)` leaves the column's type open, and its rows are an
+/// `Int64` and a `Bool`: no caller passes the requirement, so it is refused at load (proposal
+/// 073 §6.2), where it read each row's dictionary from the value.
 #[test]
 fn a_bounded_column_is_cited_with_a_providers_value() {
     let ns = "test.wi582cite";
@@ -409,11 +414,17 @@ fn a_bounded_column_is_cited_with_a_providers_value() {
         "  import anthill.prelude.{List, Error}\n  import anthill.prelude.List.{length}\n",
         "  fact src(1, 10)\n  fact src(true, 20)\n  \
          rule keep(?x: Summable.T, ?y) :- src(?x, ?y)\n  \
-         operation cited() -> Int64 effects Error = length(keep(1).takeN(5))\n  \
-         operation whole() -> Int64 effects Error = length(keep.takeN(5))",
+         operation cited() -> Int64 effects Error = length(keep(1).takeN(5))\n",
     );
     assert_eq!(crate::common::run_int64(&src, &format!("{ns}.cited")), Ok(1));
-    assert_eq!(crate::common::run_int64(&src, &format!("{ns}.whole")), Ok(1));
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src.replace(
+            "operation cited()",
+            "operation whole() -> Int64 effects Error = length(keep.takeN(5))\n  operation cited()",
+        )),
+        &["`test.wi582cite.Summable[T = ?]`", "leaves the type it is at open"],
+        "a bare citation leaving the column's requirement open",
+    );
 }
 
 /// A BOUND WITH A SLOT LEFT OPEN STILL ANSWERS. `?p: Pair[A = Summable.T]` writes no `B`:
@@ -434,12 +445,21 @@ fn a_bound_with_a_slot_left_open_still_answers() {
          rule keepOpen(?p: Pair[A = Summable.T]) :- src(?p)\n  \
          rule keepFull(?p: Pair[A = Summable.T, B = String]) :- src(?p)",
     ));
+    // Asked at each pair, a query being typed where it is read (proposal 073 §6.2): the one
+    // whose first component is an `Int64` holds, and the `Bool` one is refused.
     for rule in ["keepOpen", "keepFull"] {
-        let rows = crate::common::query_unary(&mut kb, &format!("{ns}.{rule}"));
         assert_eq!(
-            rows.len(),
+            crate::common::pattern_hits(&mut kb, &format!("{ns}.{rule}(anthill.prelude.Pair.pair(1, \"a\"))")),
             1,
-            "`{rule}` holds of the pair whose first component is an `Int64`; got {rows:?}",
+            "`{rule}` holds of the pair whose first component is an `Int64`",
+        );
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(
+                &mut kb,
+                &format!("{ns}.{rule}(anthill.prelude.Pair.pair(true, \"b\"))"),
+            ),
+            &["Summable"],
+            rule,
         );
     }
 }
@@ -569,11 +589,14 @@ end
         "rule ints(?x: IntTagger.C) :- item(?x)",
         "rule ints[A](?x: A) :- item(?x), IntTagger[A]",
     ] {
+        // Asked at each item, a query being typed where it is read (073 §6.2): the `Int64`
+        // item holds, and the `String` one is refused, its provision's `Out` not `Int64`.
         let mut kb = crate::common::load_kb_with(&program(rule));
-        let rows = crate::common::query_unary(&mut kb, &format!("{ns}.ints"));
-        assert!(
-            matches!(rows.as_slice(), [(anthill_core::eval::Value::Int(1), true)]),
-            "{rule} holds of the `Int64` item alone; got {rows:?}",
+        assert_eq!(crate::common::pattern_hits(&mut kb, &format!("{ns}.ints(1)")), 1, "{rule}");
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(&mut kb, &format!("{ns}.ints(\"s\")")),
+            &["Tagger"],
+            rule,
         );
     }
 }
@@ -644,8 +667,10 @@ end
     let mut kb = crate::common::load_kb_with(&program(
         "rule taggers(?x: Tagger.C) :- item(?x)\n  rule streams(?x: Stream) :- listed(?x)",
     ));
-    let taggers = crate::common::query_unary(&mut kb, &format!("{ns}.taggers"));
-    assert_eq!(taggers.len(), 2, "both items' sorts provide `Tagger`; got {taggers:?}");
+    // Both items' sorts provide `Tagger`: each query, typed at its item, holds (073 §6.2).
+    for item in ["1", "\"s\""] {
+        assert_eq!(crate::common::pattern_hits(&mut kb, &format!("{ns}.taggers({item})")), 1, "{item}");
+    }
     let streams = crate::common::query_unary(&mut kb, &format!("{ns}.streams"));
     assert_eq!(streams.len(), 1, "the list is a `Stream`, and the `Int64` is not; got {streams:?}");
 }

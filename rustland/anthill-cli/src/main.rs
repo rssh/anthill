@@ -1901,16 +1901,18 @@ fn collect_queries(
             load::ImportAttribution::PerFile,
         )?;
 
-        // Extract the fact term and reintern into KB
+        // Extract the fact terms and reintern into KB: one query, its goals typed together.
         let mut var_map = HashMap::new();
-        let mut terms = Vec::new();
-        for item in &parsed.items {
-            if let Item::Fact(fact) = item {
-                let pat = load::convert_query_term(kb, &parsed, fact.term, global_scope, &mut var_map)
-                    .map_err(|errors| report_query_errors(&errors, Some("--pattern")))?;
-                terms.push(pat);
-            }
-        }
+        let ids: Vec<_> = parsed
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Fact(fact) => Some(fact.term),
+                _ => None,
+            })
+            .collect();
+        let terms = load::convert_query_terms(kb, &parsed, &ids, global_scope, &mut var_map)
+            .map_err(|errors| report_query_errors(&errors, Some("--pattern")))?;
         if terms.is_empty() {
             eprintln!("error: no valid query pattern found");
             return Err(1);

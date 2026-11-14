@@ -559,7 +559,8 @@ fn the_composed_non_carrier_params_are_unaffected() {
 ///
 /// FAILS under (A) — nothing taken out of the composed view: the first two answers swap —
 /// and under (B) — the bare carrier sort supplied in place of the value's own type: the
-/// third bound holds of the list. Both measured on this row.
+/// third bound holds of the list. Both measured on this row while the guard read the value
+/// when it ran, and not since the query is typed where it is read (073 §6.2).
 #[test]
 fn a_rule_bound_that_writes_the_carrier_reads_the_composed_view() {
     let mut kb = crate::common::load_kb_with(
@@ -574,10 +575,21 @@ namespace test.xzmgc_bound
 end
 "#,
     );
-    let mut holds_of = |rule: &str| {
-        crate::common::query_unary(&mut kb, &format!("test.xzmgc_bound.{rule}")).len()
-    };
-    assert_eq!(holds_of("viaList"), 1, "the list's `Iterable` carrier is the list");
-    assert_eq!(holds_of("viaStream"), 0, "…and not the `Stream` it is reached through");
-    assert_eq!(holds_of("viaWrongList"), 0, "…nor a list of another element");
+    // Each asked at the list, a query being typed where it is read (proposal 073 §6.2): a bound
+    // that does not hold of it is refused there, where it answered nothing.
+    assert_eq!(
+        crate::common::pattern_hits(&mut kb, "test.xzmgc_bound.viaList([1, 2])"),
+        1,
+        "the list's `Iterable` carrier is the list"
+    );
+    for (rule, why) in [
+        ("viaStream", "…and not the `Stream` it is reached through"),
+        ("viaWrongList", "…nor a list of another element"),
+    ] {
+        crate::common::assert_refused_naming(
+            &crate::common::query_pattern_refusals(&mut kb, &format!("test.xzmgc_bound.{rule}([1, 2])")),
+            &["Iterable"],
+            why,
+        );
+    }
 }
