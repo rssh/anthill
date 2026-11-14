@@ -164,10 +164,11 @@ fn a_call_several_clauses_can_answer_is_their_disjunction() {
         "rules",
         r#"
 namespace test.kf2sd.rules
+  import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte}
 
-  rule related(?a, ?b) :- gte(?a, ?b)
-  rule related(?a, ?b) :- lte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- gte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- lte(?a, ?b)
 
   rule lemma: gte(?a, ?b) :- related(?a, ?b)
   proof lemma by z3 end
@@ -430,10 +431,11 @@ fn a_call_in_an_inlined_rule_is_named_with_that_rule() {
         "wrap",
         r#"
 namespace test.kf2sd.wrap
+  import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte}
 
-  rule related(?a, ?b) :- gte(?a, ?b)
-  rule related(?a, ?b) :- lte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- gte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- lte(?a, ?b)
   rule wrapper(?a, ?b) :- related(?a, ?b), gte(?a, 0.0)
 
   rule deep: gte(?a, ?b) :- wrapper(?a, ?b)
@@ -504,10 +506,11 @@ end
 /// its calls, whatever their clauses, and `related` here has two.
 const SKIPPED: &str = r#"
 namespace test.kf2sd.skipped
+  import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte}
 
-  rule related(?a, ?b) :- gte(?a, ?b)
-  rule related(?a, ?b) :- lte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- gte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- lte(?a, ?b)
 
   rule parent: gte(?a + 1.0, ?a) :- related(?a, ?b)
   proof parent

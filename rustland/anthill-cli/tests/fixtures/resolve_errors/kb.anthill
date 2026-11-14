@@ -3,8 +3,8 @@ namespace cli.mix
   import anthill.kernel.{unify}
 
   -- A clause reading `tag` beside `gt(?x, 1)` is refused at load: the typer reads
-  -- `tag`'s column as `String`. A goal the query builds is not typed at load, so
-  -- `gt(?x, 1)` reaches the resolver there as a String/Int64 pair.
+  -- `tag`'s column as `String`. A query is typed where it is read, so the query
+  -- `and(tag(?x), gt(?x, 1))` is refused the same way.
   fact tag("a")
 
   fact num(7)

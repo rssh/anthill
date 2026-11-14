@@ -691,7 +691,7 @@ namespace test.kf32.none
   import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte}
 
-  rule ordered(?a, ?b) :- gte(?a, ?b)
+  rule ordered(?a: Float, ?b: Float) :- gte(?a, ?b)
   fact limit(5.0)
   entity One(top: Float)
   fact One(top: 3.0)
@@ -790,10 +790,11 @@ fn the_verdicts_are_the_disjunctions() {
         "kf32_v_kf2sd.anthill",
         r#"
 namespace test.kf32.kf2sd
+  import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte}
 
-  rule related(?a, ?b) :- gte(?a, ?b)
-  rule related(?a, ?b) :- lte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- gte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- lte(?a, ?b)
   rule lemma: gte(?a, ?b) :- related(?a, ?b)
   proof lemma by z3 end
 

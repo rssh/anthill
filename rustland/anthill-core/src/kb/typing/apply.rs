@@ -3567,9 +3567,7 @@ fn check_apply_call(
                     ResolutionResult::NoMatch { goal_text, hint, .. }
                         if env.in_evaluated_body()
                             && goal.bindings.len() == kb.type_params_of_sort(spec_sort).len()
-                            && goal.bindings.iter().all(|(_, v)| {
-                                type_is_ground(kb, v) && !type_mentions_type_var(kb, v)
-                            }) =>
+                            && goal.bindings.iter().all(|(_, v)| type_is_fixed(kb, v)) =>
                     {
                         return Err(TypeError::DispatchNoMatch {
                             span,
@@ -3705,7 +3703,7 @@ fn check_apply_call(
                     && goal
                         .bindings
                         .iter()
-                        .all(|(_, v)| type_is_ground(kb, v) && !type_mentions_type_var(kb, v));
+                        .all(|(_, v)| type_is_fixed(kb, v));
                 // A CALL THAT NAMES NO CARRIER, ITS BRACKET WRITING AN INSTANCE NO PROVISION
                 // ANSWERS — `Pc[C = Foo, Element = Int64].both()` beside providers of `Pc` other
                 // than `Foo` — is refused as one at a carrier is (WI-20260829-H0YCE, above): its
@@ -6281,6 +6279,37 @@ fn check_apply_call(
                     } else {
                         caller_requires
                     };
+                    let has_own_half = {
+                        let chain = op_dict_entries(kb, fn_sym);
+                        chain.entries().len() > chain.sort_len()
+                    };
+                    // A SPEC operation with a body in the spec, at a type the call does not fix,
+                    // called through a dictionary of the spec the caller holds
+                    // ([`caller_holds_spec`]): its member is the one that dictionary holds, and the
+                    // body's own `requires` are owed by the provision that takes it
+                    // (`spec_body_requirements_of_row`), not by the call. In a rule's own term the
+                    // clause's condition is that dictionary.
+                    let own_half_open =
+                        has_own_half && !own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers);
+                    let spec_body_open = (own_half_open
+                        && spec_body_requires_are_the_provisions(kb, fn_sym))
+                    .then(|| defaulted_spec_op_parent(kb, fn_sym))
+                    .flatten()
+                    .filter(|spec| caller_holds_spec(kb, env, &held_views, *spec));
+                    let clause_dispatches =
+                        spec_body_open.is_some() && env.clause_supplies_requirements(pos_args, named_args);
+                    // A comparison at a type the clause leaves open and holds no dictionary of
+                    // its spec for — `rule related(?a, ?b) :- gte(?a, ?b)`, or `gte(?a, ?a)` at
+                    // the `T` of a sort that requires nothing — is a call of its spec's member as
+                    // any other is (073 §6.2): handed to the clause, which is refused where it
+                    // declares no requirement of the spec, and reads the one it declares (decided
+                    // with the user 2026-11-09).
+                    let untyped_comparison = own_half_open
+                        && spec_body_open.is_none()
+                        && env.clause_supplies_requirements(pos_args, named_args)
+                        && kb.spec_op_primitive_of(fn_sym).is_some();
+                    let spec_of_the_comparison =
+                        untyped_comparison.then(|| defaulted_spec_op_parent(kb, fn_sym)).flatten();
                     // WI-828: a σ-refused requirement is a LOAD diagnostic —
                     // classifying `dispatch_dict: None` here loaded clean and
                     // died at eval reading the unbound `__req_*`.
@@ -6293,34 +6322,40 @@ fn check_apply_call(
                         && sort_requirements_carried_by_arguments(kb, fn_sym, parent_sym, &subst);
                     let rule_body_callee =
                         (env.enclosing_op().is_none() && !sort_half_to_the_clause).then_some(fn_sym);
-                    let dispatch_dict = build_concrete_dispatch_dict(
-                        kb,
-                        // WI-20260921-3G1YT — a RULE-body site, and only then: an
-                        // operation-body site's unsuppliable deps are PARKED just below
-                        // and decided against the callee's body, which is the right
-                        // machinery; a rule body can neither park (the queue is drained
-                        // before rule bodies are typed) nor be value-rescued.
-                        // Not where the call's arguments carry the elements of the sort's
-                        // `requires`, at a spec something provides: a call of a rule's own
-                        // term leaves those to its clause, which supplies them as slots of the
-                        // woven call, as its operation's own `requires` is left.
-                        rule_body_callee,
-                        &held_views,
-                        &subst,
-                        parent_sym,
-                        callee_provision,
-                        enclosing_sort,
-                        &caller_requires,
-                        env.param_rigids(),
-                        &selections,
-                        RequirementUse::Call,
-                        // WI-945: asked for ONLY inside an operation body — see the park
-                        // below for why a rule-body goal is a different question.
-                        env.enclosing_op().is_some().then_some(&mut unsuppliable),
-                    )
-                    .map_err(|refusal| {
-                        refusal.into_type_error(span, fn_sym, parent_sym, RequirementUse::Call)
-                    })?;
+                    // An untyped comparison builds nothing here: the clause supplies its dictionary,
+                    // or the clause, or the query, is refused for it.
+                    let dispatch_dict = if untyped_comparison {
+                        None
+                    } else {
+                        build_concrete_dispatch_dict(
+                            kb,
+                            // WI-20260921-3G1YT — a RULE-body site, and only then: an
+                            // operation-body site's unsuppliable deps are PARKED just below
+                            // and decided against the callee's body, which is the right
+                            // machinery; a rule body can neither park (the queue is drained
+                            // before rule bodies are typed) nor be value-rescued.
+                            // Not where the call's arguments carry the elements of the sort's
+                            // `requires`, at a spec something provides: a call of a rule's own
+                            // term leaves those to its clause, which supplies them as slots of the
+                            // woven call, as its operation's own `requires` is left.
+                            rule_body_callee,
+                            &held_views,
+                            &subst,
+                            parent_sym,
+                            callee_provision,
+                            enclosing_sort,
+                            &caller_requires,
+                            env.param_rigids(),
+                            &selections,
+                            RequirementUse::Call,
+                            // WI-945: asked for ONLY inside an operation body — see the park
+                            // below for why a rule-body goal is a different question.
+                            env.enclosing_op().is_some().then_some(&mut unsuppliable),
+                        )
+                        .map_err(|refusal| {
+                            refusal.into_type_error(span, fn_sym, parent_sym, RequirementUse::Call)
+                        })?
+                    };
                     // WI-945 — §5.2's unconstrained-element refusal, PARKED for the
                     // pass that runs once every body is typed. A gate with a mechanism
                     // behind it rather than a corpus behind it, and a deferred report:
@@ -6418,39 +6453,12 @@ fn check_apply_call(
                     // such a call is decided at load, as in an operation body — or where one
                     // is open that no argument carries, which no condition of the clause could
                     // derive. One an argument carries is the clause's to supply.
-                    let has_own_half = {
-                        let chain = op_dict_entries(kb, fn_sym);
-                        chain.entries().len() > chain.sort_len()
-                    };
-                    // A SPEC operation with a body in the spec, at a type the call does not fix,
-                    // called through a dictionary of the spec the caller holds
-                    // ([`caller_holds_spec`]): its member is the one that dictionary holds, and the
-                    // body's own `requires` are owed by the provision that takes it
-                    // (`spec_body_requirements_of_row`), not by the call. In a rule's own term the
-                    // clause's condition is that dictionary.
-                    let own_half_open =
-                        has_own_half && !own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers);
-                    let spec_body_open = (own_half_open
-                        && spec_body_requires_are_the_provisions(kb, fn_sym))
-                    .then(|| defaulted_spec_op_parent(kb, fn_sym))
-                    .flatten()
-                    .filter(|spec| caller_holds_spec(kb, env, &held_views, *spec));
-                    let clause_dispatches =
-                        spec_body_open.is_some() && env.clause_supplies_requirements(pos_args, named_args);
-                    // A comparison at a type the clause leaves open and holds no dictionary of
-                    // its spec for — `rule related(?a, ?b) :- gte(?a, ?b)`, or `gte(?a, ?a)` at
-                    // the `T` of a sort that requires nothing — has no typed caller (073 §6.2):
-                    // it is left unclassified, owing the clause nothing, and its goal reads the
-                    // type its values carry when it runs (`KnowledgeBase::goal_builtin_tag`), as
-                    // the resolver's built-in comparison did (decided with the user 2026-11-08).
-                    let no_typed_caller = own_half_open
-                        && spec_body_open.is_none()
-                        && env.clause_supplies_requirements(pos_args, named_args)
-                        && kb.spec_op_primitive_of(fn_sym).is_some();
-                    if let Some(spec_sort) = spec_body_open.filter(|_| clause_dispatches) {
+                    if let Some(spec_sort) =
+                        spec_body_open.filter(|_| clause_dispatches).or(spec_of_the_comparison)
+                    {
                         dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
                     }
-                    if !no_typed_caller {
+                    if !untyped_comparison {
                     let own_half_to_the_clause = env.clause_supplies_requirements(pos_args, named_args)
                         && spec_body_open.is_none()
                         && own_half_open

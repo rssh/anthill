@@ -134,6 +134,13 @@ pub(crate) fn type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
     value_type_is_ground_g(kb, v, false, DenotedReading::AsWritten)
 }
 
+/// Is `v` a type a call is fixed at: [`type_is_ground`], and no unbound variable's placeholder
+/// type in it (`TypeVar(?logical_var)`, a query's untyped `?a`), which is a term and fixes
+/// nothing ([`type_mentions_type_var`]).
+pub(super) fn type_is_fixed(kb: &KnowledgeBase, v: &Value) -> bool {
+    type_is_ground(kb, v) && !type_mentions_type_var(kb, v)
+}
+
 /// [`type_is_ground`] at the DETERMINED reading ([`type_value_is_ground_g`]): a rigid counts.
 pub(super) fn type_is_determined(kb: &KnowledgeBase, v: &Value) -> bool {
     value_type_is_ground_g(kb, v, true, DenotedReading::AsWritten)

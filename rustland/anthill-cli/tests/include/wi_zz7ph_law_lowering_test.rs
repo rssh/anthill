@@ -896,6 +896,7 @@ namespace test.zz7ph.cite
 
   sort Scope
     sort T = ?
+    requires anthill.prelude.PartialOrd[T = T]
 
     rule gte_of_lte: gte(?a: T, ?a) :- lte(?a, ?a), eq(?a, ?a)
     proof gte_of_lte by trust(reason: "assumed of the carrier") end

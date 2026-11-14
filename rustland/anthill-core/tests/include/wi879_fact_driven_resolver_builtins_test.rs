@@ -453,8 +453,9 @@ fn a_nan_operand_answers_false_in_the_result_column() {
 /// it" — and /code-review measured that false: a rule variable bound by a predicate that
 /// declared no argument types had no stamped type, so the typer had nothing to refuse.
 /// Since 068-implementation §6.2's decision 3 the clause typing reads `tag`'s column as
-/// `String`, and that clause is refused at load (the third arm); the pair reaches the
-/// resolver through a goal built at run time, a query.
+/// `String`, and that clause is refused at load (the third arm); since a query is typed where it
+/// is read (proposal 073 §6.2), so is the query (the first arm). The pair reaches the resolver
+/// only through a goal built at run time, which no load typed.
 ///
 /// The answer is UNDECIDED, and the point of the finding was the DIAGNOSIS: the message
 /// used to send the reader after ordering dispatch, which would not have helped an
@@ -473,10 +474,13 @@ fn a_cross_sort_literal_pair_is_undecided_and_diagnosed() {
                     import anthill.kernel.{unify}\n\n  \
                   fact tag(\"a\")\n";
     let mut kb = crate::common::load_kb_with(&format!("{tagged}end\n"));
-    let goal = crate::common::query_pattern_term(
-        &mut kb,
-        "anthill.kernel.and(wi879.mix.tag(?x), anthill.prelude.PartialOrd.gt(?x, 1))",
+    let pattern = "anthill.kernel.and(wi879.mix.tag(?x), anthill.prelude.PartialOrd.gt(?x, 1))";
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, pattern),
+        &["type mismatch in gt.b (op-arg): expected String, got Int64"],
+        "the query, typed where it is read",
     );
+    let goal = crate::common::run_time_goal(&mut kb, pattern);
     let sols = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
     assert!(
         sols.len() == 1 && !sols[0].is_definite(),

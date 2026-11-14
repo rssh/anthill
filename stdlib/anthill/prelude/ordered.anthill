@@ -64,8 +64,8 @@ sort anthill.prelude.PartialOrd
   -- caller (`bigger[A](a: A, b: A) requires PartialOrd[T = A] = PartialOrd.gt(a, b)`)
   -- loads. `PartialOrd.gt` is no resolver builtin any more: its primitive runs the member
   -- a carrier binds to it (`Int64.gt`), behind dispatch, so a carrier that writes its own
-  -- `gt` answers in every position, and a comparison at a type no typed caller fixes (an
-  -- untyped rule's) is read at the type its values carry when it runs.
+  -- `gt` answers in every position. A comparison at a type a clause leaves open and declares
+  -- no `PartialOrd` for is refused at load (kernel-language §5.3).
   --
   -- STILL OWED: what hands that requirement to a body a provision takes, when the body
   -- runs. The evaluator builds it from the arguments on entry; WI-20261105-89J6K removes

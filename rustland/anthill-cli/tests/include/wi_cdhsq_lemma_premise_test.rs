@@ -594,6 +594,7 @@ namespace test.cdhsq.top
   sort Scope
     sort T = ?
     requires anthill.prelude.BoundedLattice[T = T]
+    requires anthill.prelude.PartialOrd[T = T]
 
     rule related(?a: T, ?b: T) :- lte(?a, ?b)
 

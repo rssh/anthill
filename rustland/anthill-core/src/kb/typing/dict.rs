@@ -1930,7 +1930,7 @@ pub(super) fn own_requirements_fixed_at(
                 entry.spec.clone()
             };
             let spec = substitute_spec_via_subst(kb, &projected, subst);
-            !value_contains_projection(kb, &spec) && type_is_ground(kb, &spec)
+            !value_contains_projection(kb, &spec) && type_is_fixed(kb, &spec)
         })
 }
 

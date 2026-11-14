@@ -282,7 +282,7 @@ namespace test.fheek.own
   import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte, lt}
 
-  rule helper(?x, ?w) :- lt(?x, ?y), lt(?y, ?w)
+  rule helper(?x: Float, ?w: Float) :- lt(?x, ?y), lt(?y, ?w)
   rule apart :- helper(?a, ?b), gte(?a, 5.0)
   proof apart by z3 end
   rule shifted(?r) :- ?r = ?y + 1.0, gte(?y, 0.0)

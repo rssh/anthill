@@ -2729,7 +2729,7 @@ a requirement of an operation's own `requires` that the call's types fix — its
 a typed head, the parameter's default — as in an operation body: over `d[T = Int64]()
 requires Desc[T = T]`, `rule v(?n) :- d(?n)` takes the provider at `Int64`, and is refused
 where none provides it. An
-equality (`=`) compares values itself and reads no dictionary. A comparison (`<`) is its carrier's member, read as any call is where the clause types it or declares its spec; at a type the clause leaves open and declares nothing for, it has no condition, and is read at the type its values carry when the goal runs. A call
+equality (`=`) compares values itself and reads no dictionary. A comparison (`<`) is its carrier's member, read as any call is where the clause types it or declares its spec, and refused at a type the clause leaves open and declares nothing for: `rule related(?a, ?b) :- gte(?a, ?b)` is refused, and `rule related[A](?a: A, ?b: A) :- PartialOrd[A], gte(?a, ?b)` loads. A call
 in a `|` or `&` branch, a negation, a quantifier's body or a discharge's consequent has its
 condition there, read beside the goal it is in, which a citation reaches as it reaches one
 before the body's own goals. A call under a `lambda`, `let`, `match` or `if` is typed as an

@@ -324,9 +324,11 @@ end
 
 const OVER_THE_CARRIER: &str = r#"
 namespace test.zz7ph.logic
+  import anthill.prelude.{PartialOrd}
   import anthill.prelude.PartialOrd.{gte}
   sort Scope
     sort T = ?
+    requires PartialOrd[T = T]
     rule p(?a: T) :- gte(?a, ?a)
   end
   rule scalar(?x) :- gte(?x, 5.0)

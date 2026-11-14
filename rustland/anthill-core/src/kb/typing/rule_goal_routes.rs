@@ -214,8 +214,8 @@ fn typed_spec_op_calls(
     sites: &[Rc<NodeOccurrence>],
     refused: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
 ) -> Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> {
-    // A spec-op call written as a goal, and a `<=>` one stands in: what a call owes an instance
-    // at. A comparison and a connective are the query's own term, typed here no further.
+    // A spec-op call written as a goal, a comparison included, and a `<=>` one stands in: what a
+    // call owes an instance at. A connective is the query's own term, typed here no further.
     let unify = kb.unify_functor();
     let calls: Vec<Rc<NodeOccurrence>> = sites
         .iter()
@@ -283,14 +283,12 @@ fn typed_spec_op_calls(
 }
 
 /// Is `functor` a spec operation whose call owes an instance — a body-less member or a defaulted
-/// one, which no host code or resolver builtin answers for every carrier? Not a comparison (an
-/// operation with a primitive, `PartialOrd.gt`): a comparison no type reaches reads the type its
-/// values carry when it runs, in a rule body as in a query, until that reading is refused too.
+/// one, which no host code or resolver builtin answers for every carrier? A comparison
+/// (`PartialOrd.gt`) is one: at a type the query leaves open it is refused, as in a clause.
 fn owes_an_instance(kb: &KnowledgeBase, functor: Symbol) -> bool {
     (lookup_spec_op_dispatch(kb, functor).is_some() || defaulted_spec_op_parent(kb, functor).is_some())
         && !kb.is_builtin(functor)
         && !host_implements(kb, functor)
-        && kb.spec_op_primitive_of(functor).is_none()
 }
 
 /// Does `goal` call, anywhere in it, a spec operation that owes an instance ([`owes_an_instance`])?
@@ -1466,6 +1464,10 @@ fn guard_carrier_at_goal(
     let frame_len = (kb.rule_arity(callee_clause) as usize).max(kb.rule_globals(callee_clause).len());
     let fresh: Vec<VarId> = (0..frame_len).map(|_| kb.fresh_var(name)).collect();
     let slots = rule_head_var_slots(kb, callee_clause);
+    // A column whose argument is an untyped variable puts the carrier at a variable, or at its
+    // placeholder (`TypeVar(?logical_var)`), which fixes nothing: another column's type is read
+    // first (`related(?x, 3)` is at `Int64`, as `related(3, ?x)` is).
+    let mut placeholder = None;
     for (column, bound) in kb.rule_type_bounds(callee_clause).to_vec() {
         if !kb.mentions_var(&bound, &|v| v == Var::DeBruijn(carrier)) {
             continue;
@@ -1490,10 +1492,14 @@ fn guard_carrier_at_goal(
         }
         let x = walk_type_deep_value(kb, &pins, &Value::Var(Var::Global(fresh[carrier as usize])));
         if !matches!(&x, Value::Var(Var::Global(v)) if *v == fresh[carrier as usize]) {
+            if matches!(x.head(kb), ViewHead::Var(_)) || type_mentions_type_var(kb, &x) {
+                placeholder.get_or_insert(x);
+                continue;
+            }
             return Some(x);
         }
     }
-    None
+    placeholder
 }
 
 /// Does `ty` — a type the typing of clause `rid` gives a call's or goal's argument — name a

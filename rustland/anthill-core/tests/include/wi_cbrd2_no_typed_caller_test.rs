@@ -100,9 +100,6 @@
 //! * a query's call left open by its typing let through (`calls_left_to_a_clause` answering
 //!   nothing): the one-provider half of
 //!   [`a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused`];
-//! * a query's comparison typed as a call (the exclusion in `owes_an_instance` off):
-//!   WI-879's `a_cross_sort_literal_pair_is_undecided_and_diagnosed`, and the CLI's
-//!   `resolver_error_render_test::an_unorderable_comparison_is_explained`;
 //! * a query's call held to a rule body's effect refusal (the `RuleBodyEffect` filter off):
 //!   [`an_effectful_call_in_a_query_keeps_its_run_time_verdict`];
 //! * a `--match` browse typed as a query (`convert_patterns_untyped` not used for it): the CLI's
@@ -123,6 +120,25 @@
 //!   operation with a body is the spec's own since (decided with the user 2026-11-14): those
 //!   rows now call a body-less member, or run the body, and what this part refuses is measured
 //!   in `wi_cbrd2_static_operation_test`, with the rest of that rule.
+//!
+//! * a comparison at a type the clause leaves open left unclassified, as before (its hand-off to
+//!   the clause off in `check_apply_call`): [`an_untyped_comparison_in_a_rule_body_is_refused`],
+//!   [`an_untyped_comparison_in_a_query_is_refused_where_it_is_read`] and SM910's
+//!   `an_untyped_comparison_is_refused_and_a_declared_one_answers`;
+//! * the call's dictionary built for such a comparison all the same: the query row above,
+//!   refused in other words (`PartialEq` at the operand's placeholder type, ambiguous among
+//!   providers);
+//! * a query's comparison left untyped (`owes_an_instance` excluding an operation with a
+//!   primitive, as before): the query row above, and WI-879's
+//!   `a_cross_sort_literal_pair_is_undecided_and_diagnosed`;
+//! * an untyped query variable's placeholder type read as fixing a requirement
+//!   (`own_requirements_fixed_at` without its `type_mentions_type_var` leg): the query row above;
+//! * a query's guard read off its first column alone (`guard_carrier_at_goal` taking a
+//!   variable's type): [`a_querys_guard_is_at_the_type_any_column_fixes`], and SM910's row
+//!   above, whose `related(?x, 3)` was refused.
+//!
+//! [`a_declared_or_typed_comparison_answers`] passes under each of the last five, by design: it
+//! is what the comparison rule leaves as it was.
 //!
 //! [`a_querys_spec_op_call_is_typed_where_it_is_read`] passes with the query typing backed out,
 //! by design: the value its call reached at run time is the one its typing decides, and the row
@@ -840,13 +856,12 @@ fn a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused() {
     refused(&mut kb, "p.zz.Z.zz(?t)", &["p.zz.Z.zz", "`Z[T = …].zz(…)`"]);
 }
 
-/// CONTROL, passing either way by design: a query's comparison is not typed by this pass — a
-/// comparison no type reaches reads the type its values carry when it runs, in a rule body as in
-/// a query (the comparisons' own row of this ticket) — and a structural browse is not typed at
-/// all (`wi1044_query_supplier_tie_test::a_two_supplier_browse_is_not_refused`). `?x = 1` beside
-/// a call whose type the query fixes answers.
+/// CONTROL, passing either way by design: a query's equality is not typed by this pass (the
+/// equality index's row of this ticket), and a structural browse is not typed at all
+/// (`wi1044_query_supplier_tie_test::a_two_supplier_browse_is_not_refused`). `?t = 1` beside a
+/// call whose type the query fixes answers.
 #[test]
-fn a_comparison_beside_a_typed_call_is_not_typed_as_a_call() {
+fn an_equality_beside_a_typed_call_is_not_typed_as_a_call() {
     let mut kb = crate::common::load_kb_with(&marker(""));
     assert_eq!(
         crate::common::pattern_answer_counts(
@@ -935,4 +950,96 @@ fn a_defaulted_member_at_an_open_carrier_is_refused() {
     for rel in ["nullary", "nullaryGoal", "bracketed"] {
         assert_eq!(ints(&mut kb, &format!("p.dflt.{rel}(?v)")), [2], "{rel}");
     }
+}
+
+/// Comparisons (item 4): `typed[A]` declares `PartialOrd` at its parameter, `H` requires `Ord`
+/// of its `T`; `tail` is written at the end of the namespace.
+fn ordering(tail: &str) -> String {
+    format!(
+        r#"namespace p.ord
+  import anthill.prelude.{{Int64, Bool, PartialOrd, Ord}}
+  import anthill.prelude.PartialOrd.{{gte, gt, lt}}
+  fact mixed(1)
+  fact mixed(true)
+  rule typed[A](?a: A, ?b: A) :- PartialOrd[T = A], gte(?a, ?b)
+  sort H
+    sort T = ?
+    requires Ord[T = T]
+    rule big(?a: T, ?b: T) :- gt(?a, ?b)
+  end
+{tail}end
+"#
+    )
+}
+
+/// A comparison at a type the clause leaves open and declares nothing for is a call of its spec's
+/// member, and is refused at load as one is (decided with the user 2026-11-09): written as a
+/// call, as an operator, under `not`, in an `if`, in a branch of `|`, and at a variable no head
+/// column reaches, and at the `T` of a sort that requires nothing. Each loaded and was read at the
+/// type its values carried when the goal ran.
+#[test]
+fn an_untyped_comparison_in_a_rule_body_is_refused() {
+    for (rule, said) in [
+        ("rule related(?a, ?b) :- gte(?a, ?b)", "a rule takes no dictionary it does not declare"),
+        ("rule infix(?a, ?b) :- ?a < ?b", "a rule takes no dictionary it does not declare"),
+        ("rule negated(?a, ?b) :- not(gte(?a, ?b))", "a rule takes no dictionary it does not declare"),
+        ("rule iff(?a, ?b, ?c) :- ?c <=> (if gte(?a, ?b) then 1 else 0)", "a rule takes no dictionary"),
+        ("rule branch(?a, ?b) :- (gte(?a, ?b) | lt(?a, ?b))", "a rule takes no dictionary it does not declare"),
+        ("rule hidden() :- mixed(?a), mixed(?b), gte(?a, ?b)", "no head column of the clause reaches"),
+        ("sort N\n    sort T = ?\n    rule big(?a: T, ?b: T) :- gt(?a, ?b)\n  end", "a rule takes no dictionary"),
+    ] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&ordering(&format!("  {rule}\n"))),
+            &["`PartialOrd`", said],
+            rule,
+        );
+    }
+}
+
+/// CONTROL, passing either way by design: the repairs the refusal names answer at each citation's
+/// type — a clause that declares `PartialOrd` at its parameter, and a rule of a sort that requires
+/// `Ord` — and a comparison its operands type is decided where it is written.
+#[test]
+fn a_declared_or_typed_comparison_answers() {
+    let mut kb = crate::common::load_kb_with(&ordering(
+        "  rule ints() :- typed(3, 1)\n  rule floats() :- typed(1.5, 2.5)\n  \
+         rule viaSort() :- H[T = Int64].big(3, 1)\n  rule lit() :- gte(3, 1)\n",
+    ));
+    for (relation, want) in [("ints", (1, 1)), ("floats", (0, 0)), ("viaSort", (1, 1)), ("lit", (1, 1))] {
+        assert_eq!(answers(&mut kb, &format!("p.ord.{relation}()")), want, "{relation}");
+    }
+}
+
+/// A query is typed where it is read, its comparisons too: one at a type nothing fixes is refused,
+/// a query having no caller to pass `PartialOrd` (`gte(?a, ?b)`, `?a < ?b`, under `not`), and a
+/// cross-sort literal pair is refused as a type mismatch, as in a clause. One the query's types fix
+/// is decided where it is read and waits on an unbound operand (`?a < 2`). Each was read at the
+/// type its values carried when it ran: the open ones answered conditionally, `1 < 1.5`
+/// undecided with a warning.
+#[test]
+fn an_untyped_comparison_in_a_query_is_refused_where_it_is_read() {
+    let mut kb = crate::common::load_kb_with(&ordering(""));
+    for open in ["anthill.prelude.PartialOrd.gte(?a, ?b)", "?a < ?b", "not(?a < ?b)"] {
+        refused(&mut kb, open, &["`PartialOrd`", "a query has no caller"]);
+    }
+    refused(&mut kb, "1 < 1.5", &["expected Int64, got Float"]);
+    assert_eq!(answers(&mut kb, "anthill.prelude.PartialOrd.gte(3, 1)"), (1, 1));
+    assert!(crate::common::query_pattern_refusals(&mut kb, "?a < 2").is_empty(), "`?a < 2` is at Int64");
+    assert_eq!(answers(&mut kb, "?a < 2"), (0, 1), "it waits on `?a`");
+}
+
+/// A query's goal of a relation that declares a requirement at its parameter is at the type any
+/// column fixes, whichever column the typed argument stands in: `typed(?x, 3)` is at `Int64`, as
+/// `typed(3, ?x)` is, and `typed(?x, 3.5)` at `Float`; `typed(?x, ?y)` is refused. The first
+/// column alone was read, and `typed(?x, 3)` was refused, "at a type nothing fixes", where the same
+/// citation in a rule body loads.
+#[test]
+fn a_querys_guard_is_at_the_type_any_column_fixes() {
+    let mut kb = crate::common::load_kb_with(&ordering("  rule viaRule(?x) :- typed(?x, 3)\n"));
+    for at in ["p.ord.typed(?x, 3)", "p.ord.typed(3, ?x)", "p.ord.typed(?x, 3.5)"] {
+        assert!(crate::common::query_pattern_refusals(&mut kb, at).is_empty(), "`{at}` is decided");
+        assert_eq!(answers(&mut kb, at), (0, 1), "`{at}` waits on `?x`");
+    }
+    assert_eq!(answers(&mut kb, "p.ord.typed(7, 3)"), (1, 1));
+    refused(&mut kb, "p.ord.typed(?x, ?y)", &["`PartialOrd` at `typed`'s `A`", "a query has no caller"]);
 }

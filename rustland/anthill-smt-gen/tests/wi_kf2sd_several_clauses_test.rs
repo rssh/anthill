@@ -26,6 +26,7 @@ use anthill_smt_gen::{
 
 const SOURCE: &str = r#"
 namespace test.kf2sd.emit
+  import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte}
 
   sort Drone
@@ -33,8 +34,8 @@ namespace test.kf2sd.emit
     entity Follower
   end
 
-  rule related(?a, ?b) :- gte(?a, ?b)
-  rule related(?a, ?b) :- lte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- gte(?a, ?b)
+  rule related(?a: Float, ?b: Float) :- lte(?a, ?b)
 
   rule read: gte(?a, ?b) :- related(?a, ?b)
 

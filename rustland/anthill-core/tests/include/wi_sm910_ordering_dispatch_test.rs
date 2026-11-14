@@ -39,8 +39,11 @@
 //!   `WeakOrd[T = A]`, and wi_d5wfq's `NoUnit` / `viaNo` naming `Unit`;
 //! - the result column out of `sem_eq_core` (`pos_arity < 3` read as a test):
 //!   `equality_reads_its_result_column` answers with `?r` free;
-//! - `no_typed_caller` off in `check_apply_call`:
-//!   `an_untyped_comparison_runs_at_the_type_its_values_carry` is refused;
+//! - `no_typed_caller` off in `check_apply_call`: the row that held an untyped comparison
+//!   to the type its values carry was refused. Since WI-20261105-CBRD2 (2026-11-14) that
+//!   comparison is refused at load, and
+//!   `an_untyped_comparison_is_refused_and_a_declared_one_answers` holds the refusal; its
+//!   back-out is measured in `wi_cbrd2_no_typed_caller_test`'s header;
 //! - semantic equality answered from the provider's table again in `resolve_at_goal`:
 //!   `a_binding_eq_is_the_calls_member` is undecided at the bridge's re-entry cap, and
 //!   wi_tsys6's `a_circular_binding_runs_to_the_step_budget` is undecided instead;
@@ -324,15 +327,14 @@ end
 }
 
 /// A comparison at a type the clause leaves open, with no dictionary of `PartialOrd` declared,
-/// has no typed caller: it loads, owing the clause nothing, and its goal is read at the type
-/// its values carry when it runs (decided with the user 2026-11-08) — `Float`, `Int64` and
-/// `String` here, a delay while unbound — as the resolver's built-in comparison was. So does
-/// one at the `T` of a sort that requires nothing. Fails with `no_typed_caller` off in
-/// `check_apply_call`: `related` and `Scope.p` are refused "a rule takes no dictionary it
-/// does not declare".
+/// is refused at load, as any call of a spec's member is (decided with the user 2026-11-09,
+/// replacing the run-time reading of 2026-11-08): `related`, `chain` and `Scope.p`, at the `T` of
+/// a sort that requires nothing, each named "a rule takes no dictionary it does not declare". The
+/// repair the refusal names loads and answers at each citation's type — `Float`, `Int64` and
+/// `String`, a delay while unbound — as the run-time reading did.
 #[test]
-fn an_untyped_comparison_runs_at_the_type_its_values_carry() {
-    let src = r#"namespace sm910.untyped
+fn an_untyped_comparison_is_refused_and_a_declared_one_answers() {
+    let untyped = r#"namespace sm910.untyped
   import anthill.prelude.PartialOrd.{gte, gt}
   import anthill.prelude.PartialEq.{eq}
   rule related(?a, ?b) :- gte(?a, ?b)
@@ -341,10 +343,32 @@ fn an_untyped_comparison_runs_at_the_type_its_values_carry() {
     sort T = ?
     rule p(?a: T) :- gte(?a, ?a)
   end
+end
+"#;
+    let errors = crate::common::load_errors_of(untyped);
+    for relation in ["related.body", "chain.body", "p.body"] {
+        crate::common::assert_refused_naming(
+            &errors,
+            &[relation, "a requirement of `PartialOrd` the clause declares", "a rule takes no dictionary"],
+            relation,
+        );
+    }
+    let src = r#"namespace sm910.untyped
+  import anthill.prelude.{Int64, PartialOrd}
+  import anthill.prelude.PartialOrd.{gte, gt}
+  import anthill.prelude.PartialEq.{eq}
+  rule related[A](?a: A, ?b: A) :- PartialOrd[T = A], gte(?a, ?b)
+  rule chain[A](?x: A, ?y: A, ?z: A) :- PartialOrd[T = A], eq(?x, ?y), gt(?y, ?z)
+  sort Scope
+    sort T = ?
+    requires PartialOrd[T = T]
+    rule p(?a: T) :- gte(?a, ?a)
+  end
   rule floats() :- related(5.0, 1.0)
   rule ints() :- related(1, 5)
   rule strings() :- related("b", "a")
   rule linked() :- chain(2, 2, 1)
+  rule scoped() :- Scope[T = Int64].p(3)
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
@@ -353,17 +377,10 @@ end
         ("sm910.untyped.ints()", Some(false)),
         ("sm910.untyped.strings()", Some(true)),
         ("sm910.untyped.linked()", Some(true)),
+        ("sm910.untyped.scoped()", Some(true)),
         ("sm910.untyped.related(?x, 3)", None),
     ] {
-        let goal = crate::common::query_pattern_term(&mut kb, pattern);
-        let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
-        let verdict = match got.as_slice() {
-            [] => Some(false),
-            [one] if one.is_definite() => Some(true),
-            [_] => None,
-            _ => panic!("`{pattern}`: {} rows", got.len()),
-        };
-        assert_eq!(verdict, want, "`{pattern}`");
+        assert_eq!(holds(&mut kb, pattern), want, "`{pattern}`");
     }
 }
 

@@ -14,9 +14,13 @@
 //! on. The behaviour was user-visible and untested for exactly as long as it was
 //! unreachable to a test.
 //!
+//! Since a query is typed where it is read (proposal 073 §6.2), `gt("a", 1)` is refused
+//! before it runs, and the fault the channel carries here is one a well-typed query meets
+//! when it runs: `1 / 0`.
+//!
 //! CONTROLS: `a_well_typed_comparison_warns_about_nothing` passes either way by design —
 //! it says the channel is not simply always loud. Back out the render loop in
-//! `main.rs` and `an_unorderable_comparison_is_explained` alone fails.
+//! `main.rs` and `a_fault_the_search_meets_is_explained` alone fails.
 
 use crate::common::{anthill, fixtures_dir};
 
@@ -25,24 +29,39 @@ fn query(goal: &str) -> crate::common::Output {
     anthill(&["query", "-p", kb.to_str().unwrap(), goal])
 }
 
+/// A fault the search meets when a goal runs is explained, before the rows: `?x <=> 1 / 0`
+/// raises in `Int64.div`, and the query says the call produced no value and the search is
+/// incomplete. An un-evaluable goal does not pass as a refutation (WI-879's property, which the
+/// channel had to keep).
 #[test]
-fn an_unorderable_comparison_is_explained() {
-    let out = query("anthill.kernel.and(cli.mix.tag(?x), anthill.prelude.PartialOrd.gt(?x, 1))");
+fn a_fault_the_search_meets_is_explained() {
+    let out = query("?x <=> 1 / 0");
     assert!(
-        out.has_diagnostic("warning:", "two DIFFERENT literal sorts"),
-        "the query must explain WHY the goal could not be decided, naming the operand \
-         sorts;\nstdout:\n{}\nstderr:\n{}",
+        out.has_diagnostic("warning:", "could not be evaluated by the resolver"),
+        "the query must explain why the goal produced no value;\nstdout:\n{}\nstderr:\n{}",
         out.stdout,
         out.stderr
     );
-    // The answer itself is unchanged: still a conditional row carrying the residual.
-    // This is WI-879's property, which the error channel had to preserve rather than
-    // replace — an un-evaluable goal residualizes, it does not vanish and does not fail.
     assert!(
-        out.stdout.contains("residual"),
-        "the residual answer must still print;\nstdout:\n{}",
+        out.stdout.contains("the search is INCOMPLETE"),
+        "an empty answer here is undecided, not refuted;\nstdout:\n{}",
         out.stdout
     );
+}
+
+/// The `String`/`Int64` pair asked as a query is refused where the query is read, naming the
+/// types, as it is in a clause (below): it reached the resolver, which explained it as a fault
+/// and answered a residual.
+#[test]
+fn an_unorderable_comparison_in_a_query_is_refused_where_it_is_read() {
+    let out = query("anthill.kernel.and(cli.mix.tag(?x), anthill.prelude.PartialOrd.gt(?x, 1))");
+    assert!(
+        out.has_diagnostic("error:", "type mismatch in gt.b (op-arg): expected String, got Int64"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(!out.stdout.contains("residual"), "nothing ran;\nstdout:\n{}", out.stdout);
 }
 
 /// The same comparison written in a clause is refused at load, the column `tag` gives `?x`

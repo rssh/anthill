@@ -331,18 +331,21 @@ fn wi9c2pz_the_inherited_type_reaches_the_published_schema() {
 // ── (3) A variable joins EVERY class its calls link it to ─────────────────
 
 /// `eq(?x, ?y)` and `gt(?y, ?z)` share `?y`, so all three variables carry one type. The calls
-/// are the only typing source and the citation's arguments the values. A generator goal
+/// are the only typing source of `?y` and `?z` — `?x` is written at `A`, whose `PartialOrd` the
+/// clause declares for `gt` (a comparison at a type the clause leaves open is refused, decided
+/// with the user 2026-11-09) — and the citation's arguments the values. The back-outs the
+/// CONTROL notes below cite were measured before `?x` was written at `A`. A generator goal
 /// beside them would type the columns itself since WI-20261013-WF14Z (a rule goal reads its
 /// callee's columns: `gen3` over `g`'s fields made all three `Int64`), and the refusal below
 /// would then be the column's, not the link's.
 const CHAIN_OK: &str = r#"
 namespace test.wi9c2pz.ch
-  import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.{String, Int64, List, PartialOrd}
   import anthill.prelude.List.{length}
   import anthill.prelude.PartialOrd.{gt}
   import anthill.prelude.PartialEq.{eq}
 
-  rule chain(?x, ?y, ?z) :- eq(?x, ?y), gt(?y, ?z)
+  rule chain[A](?x: A, ?y, ?z) :- PartialOrd[T = A], eq(?x, ?y), gt(?y, ?z)
 
   operation rows() -> Int64 effects Error =
     let r = chain(2, 2, 1)
@@ -354,12 +357,12 @@ end
 /// link `x ~ y ~ z` can refuse. Its own namespace because it must not load.
 const CHAIN_BAD: &str = r#"
 namespace test.wi9c2pz.chainbad
-  import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.{String, Int64, List, PartialOrd}
   import anthill.prelude.List.{length}
   import anthill.prelude.PartialOrd.{gt}
   import anthill.prelude.PartialEq.{eq}
 
-  rule chain(?x, ?y, ?z) :- eq(?x, ?y), gt(?y, ?z)
+  rule chain[A](?x: A, ?y, ?z) :- PartialOrd[T = A], eq(?x, ?y), gt(?y, ?z)
 
   operation rows() -> Int64 effects Error =
     let r = chain(2, 2, "x")
