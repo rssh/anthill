@@ -7,10 +7,17 @@
 //! which no head column reaches, or a query's variable — it is refused at load, naming the
 //! requirement and where it is open.
 //!
+//! A value at a sort with abstract values is an instance in a rule as in an operation (073 §2):
+//! a column the clause types at such a sort holds instances, a goal, a query or an operation
+//! body's citation that passes a provider's value there pairs it with the provider's dictionary
+//! at load, and so does a rule body's call at a parameter of that type. A variable `<=>` makes a
+//! construction is of the construction's type where it fits the variable's other positions, so
+//! a call on it is decided at load.
+//!
 //! ## What fails with each part backed out
 //!
-//! Measured with temporary switches in one build (a small binary including this file), then
-//! removed. The control is every switch unset: all thirteen pass.
+//! Measured with temporary switches in one build, then removed. The control is every switch
+//! unset: every row passes.
 //!
 //! * the query's routing (`route_query_goals` handing the query back unrouted):
 //!   [`a_query_is_typed_where_it_is_read`],
@@ -39,6 +46,32 @@
 //!   deriving them from the values: [`a_member_is_handed_the_calls_dictionaries`];
 //! * the bridge ignoring the dictionary the typer built for a call into another sort, deriving
 //!   the frame from the values: [`a_call_into_another_sort_enters_through_its_built_dictionary`].
+//!
+//! * a variable `<=>` makes a construction's left at its other positions' type
+//!   (`narrow_to_construction` off): [`a_call_at_a_variable_the_clause_types_is_decided_at_load`]
+//!   and the later-binding half of [`a_goal_pairs_a_value_at_a_column_that_holds_instances`],
+//!   with GFS6A's four rows that bind `?s <=> car(n: 1)` after the call;
+//! * a goal's or a query's value at a column that holds instances left unpaired
+//!   (`pack_instance_arguments` answering nothing): [`a_goal_pairs_a_value_at_a_column_that_holds_instances`],
+//!   [`a_value_with_no_instance_at_the_column_is_refused`], the query half of
+//!   [`a_value_no_load_paired_is_an_error_when_it_runs`], and eight GFS6A rows;
+//! * a rule body's call left unpaired (`pack_call_arguments` answering nothing):
+//!   [`a_rule_bodys_call_pairs_its_argument_at_load`];
+//! * an operation body's citation of such a column left unpaired (the instance walk's relation
+//!   arm off): GFS6A's `an_operation_citing_the_clause_answers`;
+//! * the read of a value no load paired deriving its dictionary again:
+//!   [`a_value_no_load_paired_is_an_error_when_it_runs`];
+//! * a typed head's type test reading the pair, not the value it holds: GFS6A's two
+//!   typed-head rows, QMFC5's and X9PB4's self-representing rows;
+//! * the dictionary built by the guard's fetch, which takes `Cap`'s one parameter for its
+//!   carrier, not by the operation body's goal: QMFC5's `Cap[P = Int64]` row.
+//! * a later load typing again a body that holds a paired value (`occ_holds_instance_pair`
+//!   off): [`a_paired_body_is_not_typed_again_by_a_later_load`];
+//! * each of three fixes /code-review found, alone:
+//!   [`values_from_calls_and_a_later_receiver_reach_the_instance`] — a call's result of a
+//!   provider at a column of the abstract sort unified with it (`provides_the_slot` off), a
+//!   result handed to a rule opened to its carrier's value (`carried_for_host` in the bridge),
+//!   the read's witness taken from the first argument.
 //!
 //! [`a_concrete_goal_in_a_rule_body_passes_its_dictionary`] passes under each, by design: it is
 //! the route the rows above are measured against.
@@ -330,6 +363,181 @@ fn a_call_into_another_sort_enters_through_its_built_dictionary() {
     assert_eq!(ints(&mut kb, "bb.viaRival(?x)"), [9]);
     assert_eq!(crate::common::run_int64(BUNDLE, "bb.opRival"), Ok(9), "the operation body's twin");
 }
+
+// ── a sort with abstract values: its column holds instances ─────────────────────────────
+
+/// 073 §2's abstract sort: `Sp` receives on itself and has no constructors, `Car` provides it
+/// with members of its own, `Van` provides nothing, and `dflted` reads `Sp.dflt` at its column,
+/// behind a read of `Sp`'s dictionary. `tail` is written at the end of the namespace.
+fn sp(tail: &str) -> String {
+    format!(
+        "namespace p.sp\n  import anthill.prelude.{{Int64}}\n  \
+         sort Sp\n    operation size(s: Sp) -> Int64\n    operation dflt(s: Sp) -> Int64 = 7\n    \
+         operation pick(k: Int64, s: Sp) -> Int64\n  end\n  \
+         sort Car\n    entity car(n: Int64)\n    provides Sp\n    \
+         operation size(c: Car) -> Int64 = 42\n    operation dflt(c: Car) -> Int64 = 43\n    \
+         operation pick(k: Int64, c: Car) -> Int64 = 44\n  end\n  \
+         sort Van\n    entity van(n: Int64)\n  end\n  \
+         rule dflted(?s, ?x) :- Sp.dflt(?s, ?x)\n{tail}end\n"
+    )
+}
+
+/// A call at a variable the clause's typing makes a `Car` is decided at load, as an operation
+/// body's call on a `Car` is: in `late(?r) :- Sp.dflt(?s, ?r), ?s <=> car(n: 1)`, `?s` is at
+/// `Sp` where the call takes it and a `Car` where `<=>` builds it, so it is a `Car`, and the call
+/// is `Car`'s, with no read before it. It was woven behind a read that took `Car`'s dictionary
+/// from the value once `?s` was bound.
+#[test]
+fn a_call_at_a_variable_the_clause_types_is_decided_at_load() {
+    let mut kb = crate::common::load_kb_with(&sp("  rule late(?r) :- Sp.dflt(?s, ?r), ?s <=> car(n: 1)\n"));
+    assert!(
+        crate::common::body_calls(&kb, "p.sp.late")
+            .iter()
+            .all(|(callee, _, _)| callee != "find_dictionary"),
+        "no read: {:?}",
+        crate::common::body_calls(&kb, "p.sp.late"),
+    );
+    assert_eq!(ints(&mut kb, "p.sp.late(?r)"), [43]);
+}
+
+/// A column a clause types at a sort with abstract values holds instances: a goal that passes a
+/// `Car` there pairs it with `Car`'s dictionary of `Sp` at load, as an operation body passing it
+/// at a parameter typed `Sp` does, and the clause's read takes the instance's. So `dflted(car(n:
+/// 1), ?r)` answers `43` as a rule body's goal, as a query, and with the `Car` bound by a later
+/// goal (`dflted(?s, ?r), ?s <=> car(n: 1)`); the read took `Car`'s dictionary from the value.
+#[test]
+fn a_goal_pairs_a_value_at_a_column_that_holds_instances() {
+    let mut kb = crate::common::load_kb_with(&sp(
+        "  rule viaCar(?r) :- dflted(car(n: 1), ?r)\n  \
+         rule viaVar(?r) :- dflted(?s, ?r), ?s <=> car(n: 1)\n",
+    ));
+    assert_eq!(ints(&mut kb, "p.sp.viaCar(?r)"), [43]);
+    assert_eq!(ints(&mut kb, "p.sp.viaVar(?r)"), [43]);
+    assert_eq!(ints(&mut kb, "p.sp.dflted(p.sp.Car.car(n: 1), ?r)"), [43], "asked as a query");
+}
+
+/// A value whose sort has no instance of `Sp` at the column is refused where the goal is read: a
+/// `Van`, as a rule body's goal and as a query. It failed when the goal ran.
+#[test]
+fn a_value_with_no_instance_at_the_column_is_refused() {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&sp("  rule viaVan(?r) :- dflted(van(n: 1), ?r)\n")),
+        &["dflted", "Sp", "Van"],
+        "a `Van` at a column of `Sp`",
+    );
+    let mut kb = crate::common::load_kb_with(&sp(""));
+    refused(&mut kb, "p.sp.dflted(p.sp.Van.van(n: 1), ?r)", &["dflted", "Sp", "Van"]);
+}
+
+/// Values that reach a column of `Sp` from a call: `Mk.mkCar()`, a `Car`, fits the column as a
+/// provider's value does and is paired at load; `Mk.mkSp()` answers an `Sp`, an instance, which
+/// the bridge hands the rule as it is. And a call whose receiver is its second parameter reads
+/// the instance there: `Sp.pick(1, ?s, ?r)`. Each answers `Car`'s member. Before, the first
+/// was refused at load (`expected Car, got Sp`), the second's instance was opened to the bare
+/// `car(n: 2)`, and the third's read took the literal `1` for its witness.
+#[test]
+fn values_from_calls_and_a_later_receiver_reach_the_instance() {
+    let mut kb = crate::common::load_kb_with(&sp(
+        "  sort Mk\n    operation mkCar() -> Car = car(n: 1)\n    operation mkSp() -> Sp = car(n: 2)\n  end\n  \
+         rule viaMkCar(?r) :- dflted(Mk.mkCar(), ?r)\n  \
+         rule viaMkSp(?r) :- dflted(Mk.mkSp(), ?r)\n  \
+         rule picked(?s, ?r) :- Sp.pick(1, ?s, ?r)\n  \
+         rule viaPick(?r) :- picked(car(n: 1), ?r)\n",
+    ));
+    assert_eq!(ints(&mut kb, "p.sp.viaMkCar(?r)"), [43]);
+    assert_eq!(ints(&mut kb, "p.sp.viaMkSp(?r)"), [43]);
+    assert_eq!(ints(&mut kb, "p.sp.viaPick(?r)"), [44]);
+}
+
+/// A goal no load typed that passes a value of a provider at such a column passes no instance:
+/// an error when the clause's read meets it, never a dictionary read from the value. The same
+/// goal asked as a query answers.
+#[test]
+fn a_value_no_load_paired_is_an_error_when_it_runs() {
+    use anthill_core::kb::term::{Literal, Term};
+    use smallvec::SmallVec;
+    let mut kb = crate::common::load_kb_with(&sp(""));
+    let dflted = kb.try_resolve_symbol("p.sp.dflted").expect("dflted");
+    let car = kb.try_resolve_symbol("p.sp.Car.car").expect("car");
+    let n = kb.try_resolve_symbol("p.sp.Car.car.n").expect("car's field");
+    let one = kb.alloc(Term::Const(Literal::Int(1)));
+    let value = kb.alloc(Term::Fn {
+        functor: car,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(n, one)]),
+    });
+    let r = kb.intern("r");
+    let r = kb.fresh_var(r);
+    let r = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(r)));
+    let goal = kb.alloc(Term::Fn {
+        functor: dflted,
+        pos_args: SmallVec::from_slice(&[value, r]),
+        named_args: SmallVec::new(),
+    });
+    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    assert!(sols.iter().all(|s| !s.is_definite()), "no definite answer: {} row(s)", sols.len());
+    assert!(
+        stats.errors.iter().any(|e| e.message.contains("a value at `p.sp.Sp` that is no instance")),
+        "{:?}",
+        stats.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    assert_eq!(ints(&mut kb, "p.sp.dflted(p.sp.Car.car(n: 1), ?r)"), [43], "asked as a query");
+}
+
+/// A rule body's call passes a value at a parameter typed by a sort with abstract values as an
+/// operation body's does: paired at load with the dictionary of the type the clause gives it.
+/// `total(Bag.bag(x: 1))` at `total(s: Sp)` passes `Bag[T = Int64]`'s `Sp`, which holds where
+/// `Tagger[T = Int64]` does, and answers `40`, as `opTotal` does. The SLD bridge paired the
+/// value by its sort, `Bag` at no `T`, where the provision's condition is not decided, and a
+/// debug build aborted.
+#[test]
+fn a_rule_bodys_call_pairs_its_argument_at_load() {
+    let mut kb = crate::common::load_kb_with(CONDITIONAL);
+    assert_eq!(ints(&mut kb, "p.bag.viaTotal(?r)"), [40]);
+    assert_eq!(crate::common::run_int64(CONDITIONAL, "p.bag.opTotal"), Ok(40), "the operation body's twin");
+}
+
+/// A body that holds a value paired at load was typed by that load: a later load does not type
+/// it again, and `viaTotal` still answers `40` after one, as does the goal of `p.sp` paired at a
+/// column, `viaCar`. Typed again, the later load was refused: the pair's dictionary is spliced
+/// in, `expected surface expression, got bottom / post-elaboration form`.
+#[test]
+fn a_paired_body_is_not_typed_again_by_a_later_load() {
+    let mut kb = crate::common::load_kb_with(CONDITIONAL);
+    let later = "namespace p.later\n  import anthill.prelude.{Int64}\n  rule one(1) :- true\nend\n";
+    crate::common::expect_loaded(crate::common::load_in_a_later_call(&mut kb, later, Default::default()));
+    assert_eq!(ints(&mut kb, "p.bag.viaTotal(?r)"), [40]);
+    let mut kb = crate::common::load_kb_with(&sp("  rule viaCar(?r) :- dflted(car(n: 1), ?r)\n"));
+    crate::common::expect_loaded(crate::common::load_in_a_later_call(&mut kb, later, Default::default()));
+    assert_eq!(ints(&mut kb, "p.sp.viaCar(?r)"), [43]);
+}
+
+const CONDITIONAL: &str = r#"namespace p.bag
+  import anthill.prelude.{Int64}
+  sort Tagger
+    sort T = ?
+    operation tag(x: T) -> Int64
+  end
+  sort Sp
+    operation dflt(s: Sp) -> Int64 = 7
+  end
+  sort Bag
+    sort T = ?
+    entity bag(x: T)
+    requires Tagger[T = T]
+    provides Sp
+    operation dflt(b: Bag) -> Int64 = 40
+  end
+  operation total(s: Sp) -> Int64 = Sp.dflt(s)
+  rule viaTotal(?r) :- ?r <=> total(Bag.bag(x: 1))
+  operation opTotal() -> Int64 = total(Bag.bag(x: 1))
+end
+namespace anthill.prelude.Int64
+  import p.bag.Tagger
+  provides Tagger[T = Int64]
+  operation tag(x: Int64) -> Int64 = 1
+end
+"#;
 
 const MEMBER: &str = r#"namespace mm
   import anthill.prelude.{Int64, List}

@@ -512,7 +512,8 @@ end
 /// one INDEFINITE solution and no carrier. Proposal 060.1 §5 removed the form; a spec that
 /// receives on itself has no guard at an introducer (no carrier parameter to bind), and a
 /// clause states its requirement by a head column typed at the spec, `x: Bag`, as an
-/// operation types a parameter. The call answers `IntBag`'s 7.
+/// operation types a parameter. The call answers `IntBag`'s 7: the citation pairs `intBag(n:
+/// 1)` with `IntBag`'s dictionary at load (proposal 073 §2).
 #[test]
 fn a_self_representing_spec_receives_its_dictionary_too() {
     let src = r#"
@@ -538,7 +539,7 @@ end
     let mut kb = load_kb_with(src);
     assert!(
         matches!(definite_unary(&mut kb, "x9pb4_sr.answer").as_slice(), [Value::Int(7)]),
-        "a column typed at a self-representing spec answers through its value's provider"
+        "a column typed at a self-representing spec answers through the instance its citation pairs"
     );
 }
 

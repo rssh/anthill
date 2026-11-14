@@ -7552,6 +7552,12 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&value) {
             return BuiltinResult::delay();
         }
+        // A value at a sort with abstract values is an instance (073 §2), the pair of its
+        // dictionary and its provider's value, whose type is the type that value has.
+        let value = match super::typing::instance_value_of(self, &value) {
+            Some(held) if super::typing::abstract_carrier_of(self, bound.carried()).is_some() => held,
+            _ => value,
+        };
         let undecided = |kb: &Self| {
             if guard && kb.value_is_ground(&value, subst) {
                 BuiltinResult::Success
@@ -10123,11 +10129,20 @@ impl KnowledgeBase {
                 ))),
             };
         }
+        // The value the call is made on: the argument at its operation's receiver. A guard's
+        // read holds the carrier's type, which is no value.
+        let witness: Option<Value> = if typed_instance.is_some() {
+            None
+        } else {
+            crate::kb::op_info::lookup_operation_info(self, op_functor)
+                .and_then(|info| super::typing::receiver_param_index(self, &info.params, spec_sort))
+                .and_then(|i| arg_vals.get(i).cloned())
+        };
         // Proposal 073 §2 — A WITNESS THAT IS AN INSTANCE carries its dictionary: a value an
         // operation hands a clause at an abstract type (`viaSp(s: Sp)` citing `dflted(s)`) is
         // read through the dictionary it was made with, nothing derived from its type.
-        if let Some(dict) = arg_vals
-            .first()
+        if let Some(dict) = witness
+            .as_ref()
             .and_then(|w| super::typing::instance_dictionary_of(self, w))
         {
             return if supplied {
@@ -10135,6 +10150,23 @@ impl KnowledgeBase {
             } else {
                 self.bind_read_out(out, dict, subst)
             };
+        }
+        // A WITNESS AT A SORT WITH ABSTRACT VALUES THAT IS NO INSTANCE was put there by no typed
+        // goal: a goal of the clause, or a query, pairs a value it passes at such a column with
+        // its sort's dictionary at load, and an operation does where it hands one on. Nothing is
+        // read from the value to find one.
+        if super::typing::is_abstract_carrier_sort(self, spec_sort) {
+            if let Some(witness) = &witness {
+                if !matches!(witness.head(self), ViewHead::Var(_)) {
+                    return BuiltinResult::Error(ResolveError::new(format!(
+                        "a value at `{}` that is no instance reached a call of `{}`: the goal \
+                         that passed it was built at run time, and no load paired it with its \
+                         sort's dictionary — ask it as a query, or cite it from typed code",
+                        self.qualified_name_of(spec_sort),
+                        self.qualified_name_of(op_functor),
+                    )));
+                }
+            }
         }
         // A READ WITH NO WITNESS is the requirement the clause's sort states, for a call with
         // no argument at its spec's carrier (`Builds.fromList([…])` in `sort Sat[C] requires

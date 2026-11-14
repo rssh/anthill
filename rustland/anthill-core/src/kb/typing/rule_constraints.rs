@@ -160,6 +160,14 @@ enum LatePosition {
         lambda: Rc<NodeOccurrence>,
         other: Rc<NodeOccurrence>,
     },
+    /// A variable on one side of an equality whose other side constructs a value (`?s <=>
+    /// car(n: 1)`): the variable is of the construction's sort where its other positions are
+    /// at a type that sort conforms to, a spec it provides (`Sp.dflt(?s, ?r)`), as an
+    /// operation body's `let` is of its value's type. Read once every other position is.
+    ConstructedValue {
+        construction: Rc<NodeOccurrence>,
+        var: u32,
+    },
     /// A bounded quantifier's binder (`(forall ?e in ?xs: …)`): an element of the collection,
     /// once the clause types it.
     Element {
@@ -920,6 +928,14 @@ pub(super) fn collect_occurrence_type_constraints(
                         });
                     }
                 }
+                for (construction, other) in [(a, b), (b, a)] {
+                    if let (Some(var), true) = (other.var_key(kb), constructs_a_value(kb, construction)) {
+                        st.late.push(LatePosition::ConstructedValue {
+                            construction: Rc::clone(construction),
+                            var,
+                        });
+                    }
+                }
             }
             // THE CALL'S RESULT IS OF THE SLOT IT FILLS, and at goal position the extra
             // argument of `f(a₁…aₙ, ?r)` is that result (§5.3's functional relation): what
@@ -1032,6 +1048,16 @@ fn operation_name_as_function(
     }
     let position = walk_type_deep_value(kb, subst, position);
     operation_name_is_function_value(kb, op, &position)
+}
+
+/// Whether `value` is a construction: a constructor's application, or a constructor that
+/// takes no field written as its name.
+fn constructs_a_value(kb: &KnowledgeBase, value: &Rc<NodeOccurrence>) -> bool {
+    match value.as_expr() {
+        Some(Expr::Apply { functor, .. }) => kb.is_entity_constructor(*functor),
+        Some(Expr::Ref(name)) => kb.entity_field_types(*name).is_some_and(|fields| fields.is_empty()),
+        _ => false,
+    }
 }
 
 /// Is there a lambda in `value`, outside any other lambda's body?
@@ -1790,6 +1816,7 @@ pub(super) fn settle_late_positions(
     // and a result whose type is computed from its operands (`field_access`'s `FieldOf`,
     // the field's type once the receiver's is known).
     let mut waiting: Vec<LatePosition> = Vec::new();
+    let mut constructed: Vec<LatePosition> = Vec::new();
     while !st.late.is_empty() {
         for late in std::mem::take(&mut st.late) {
             if let LatePosition::RuleGoal { functor, goal } = &late {
@@ -1837,6 +1864,10 @@ pub(super) fn settle_late_positions(
                 | LatePosition::LambdaValue { .. }
                 | LatePosition::Element { .. } => true,
                 LatePosition::RuleGoal { .. } => false,
+                LatePosition::ConstructedValue { .. } => {
+                    constructed.push(late);
+                    continue;
+                }
             };
             if computed || !settle_typed_position(kb, rid, st, &late, &rigids, disagreements) {
                 waiting.push(late);
@@ -1855,8 +1886,66 @@ pub(super) fn settle_late_positions(
             break;
         }
     }
+    for late in constructed {
+        if let LatePosition::ConstructedValue { construction, var } = late {
+            narrow_to_construction(kb, st, &construction, var);
+        }
+    }
     demands_on_some_type(kb, rid, st);
     rigids
+}
+
+/// [`LatePosition::ConstructedValue`]: `var` is of `construction`'s type where its other
+/// positions are at a type that one conforms to and does not unify with — a spec its sort
+/// provides. Where the two unify, or neither fits the other, the walk has said all there is,
+/// and the call that holds a misfit reports it.
+fn narrow_to_construction(
+    kb: &mut KnowledgeBase,
+    st: &mut ClauseConstraints,
+    construction: &Rc<NodeOccurrence>,
+    var: u32,
+) {
+    let Some(existing) = st.var_types.get(&var).cloned() else {
+        return;
+    };
+    let ty = argument_type(kb, st, construction);
+    if !instance_is_concrete(kb, &ty) {
+        return;
+    }
+    let existing = walk_type_deep_value(kb, &st.subst, &existing);
+    if unify_types(kb, &mut st.subst.clone(), &existing, &ty) {
+        return;
+    }
+    let context = TypeErrorContext::Rule {
+        name: kb.intern("clause"),
+        field: RuleField::Body,
+    };
+    let conforms = matches!(
+        validate_arg_against_param(kb, &mut st.subst.clone(), &ty, &existing, None, context, None),
+        ArgValidation::Ok
+    );
+    if conforms {
+        st.param_backed.remove(&var);
+        st.var_types.insert(var, ty);
+    }
+}
+
+/// Proposal 073 §2 — does a value of type `ty` fit a slot of type `position` that is a sort
+/// with abstract values, as a provider's value does: `Mk.mkCar()`, a `Car`, at a column of `Sp`
+/// is an `Sp` there, as it is at an operation's parameter of that type.
+fn provides_the_slot(kb: &mut KnowledgeBase, subst: &Substitution, ty: &Value, position: &Value) -> bool {
+    let position = walk_type_deep_value(kb, subst, position);
+    if abstract_carrier_of(kb, &position).is_none() {
+        return false;
+    }
+    let context = TypeErrorContext::Rule {
+        name: kb.intern("clause"),
+        field: RuleField::Body,
+    };
+    matches!(
+        validate_arg_against_param(kb, &mut subst.clone(), ty, &position, None, context, None),
+        ArgValidation::Ok
+    )
 }
 
 /// Read one late position that types a slot by a type ([`LatePosition::CallResult`],
@@ -1929,11 +2018,22 @@ fn settle_typed_position(
             (SlotOf::Arg(binder), ty, context, binder.span)
         }
         LatePosition::RuleGoal { .. } => unreachable!("a rule goal is read by its columns"),
+        LatePosition::ConstructedValue { .. } => {
+            unreachable!("a constructed value is read after every other position")
+        }
     };
     let mut trial = st.trial();
     let fits = match slot {
         SlotOf::Type(position) if says_nothing_of_a_value(kb, position) => true,
-        SlotOf::Type(position) => unify_types(kb, &mut trial.subst, position, &ty),
+        SlotOf::Type(position) => {
+            let mut attempt = trial.subst.clone();
+            if unify_types(kb, &mut attempt, position, &ty) {
+                trial.subst = attempt;
+                true
+            } else {
+                provides_the_slot(kb, &trial.subst, &ty, position)
+            }
+        }
         SlotOf::Arg(arg) => constrain_occurrence_at(kb, &mut trial, arg, &ty),
     };
     if fits {

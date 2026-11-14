@@ -291,6 +291,393 @@ fn stamped_column_type(kb: &mut KnowledgeBase, relation: Symbol, slot: &SlotKey)
     agreed
 }
 
+/// Proposal 073 §2 — the columns of `relation` that hold instances: a column the clause typing
+/// puts at a sort with abstract values (`?s` of `dflted(?s, ?x) :- Sp.dflt(?s, ?x)`, an `Sp`)
+/// and each clause writes as a variable, with that type.
+pub(super) fn instance_columns(kb: &mut KnowledgeBase, relation: Symbol) -> Vec<(SlotKey, Value)> {
+    let Some(columns) = rule_goal_columns(kb, relation) else {
+        return Vec::new();
+    };
+    let rids: Vec<RuleId> = kb.rules_by_functor_iter(relation).collect();
+    columns
+        .into_iter()
+        .filter_map(|(slot, ty)| {
+            let ColumnType::Of(ty) = ty else {
+                return None;
+            };
+            abstract_carrier_of(kb, &ty)?;
+            rids.iter()
+                .all(|&rid| head_slot_is_a_variable(kb, rid, &slot))
+                .then_some((slot, ty))
+        })
+        .collect()
+}
+
+/// Does the clause `rid` write its head slot `slot` as a variable?
+fn head_slot_is_a_variable(kb: &KnowledgeBase, rid: RuleId, slot: &SlotKey) -> bool {
+    let Some(head) = kb.fact_head_term(rid) else {
+        return false;
+    };
+    let Term::Fn { pos_args, named_args, .. } = kb.get_term(head) else {
+        return false;
+    };
+    let arg = match slot {
+        SlotKey::Pos(i) => pos_args.get(*i).copied(),
+        SlotKey::Named(k) => named_args
+            .iter()
+            .find(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(*k))
+            .map(|(_, a)| *a),
+    };
+    arg.is_some_and(|a| matches!(kb.get_term(a), Term::Var(_)))
+}
+
+/// One head slot, a named one by its field's name.
+pub(super) fn same_slot(kb: &KnowledgeBase, a: &SlotKey, b: &SlotKey) -> bool {
+    match (a, b) {
+        (SlotKey::Pos(i), SlotKey::Pos(j)) => i == j,
+        (SlotKey::Named(x), SlotKey::Named(y)) => kb.local_name_of(*x) == kb.local_name_of(*y),
+        _ => false,
+    }
+}
+
+/// Proposal 073 §2 — `site`, a goal of `callee`, with each argument at a column that holds
+/// instances ([`instance_columns`]) paired with its sort's dictionary, built at load, as an
+/// operation body pairs an argument at a parameter of that type: `dflted(car(n: 1), ?r)`
+/// passes `Instance(<Car's Sp>, car(n: 1))`. A value at the column's own sort is an instance
+/// already and passes as it is, as does a variable no position types, which the column types.
+/// `Ok(None)` where nothing is paired; refused where the argument's type is open there, or its
+/// sort has no instance of the column's.
+fn pack_instance_arguments(
+    kb: &mut KnowledgeBase,
+    site: &Rc<NodeOccurrence>,
+    callee: Symbol,
+) -> Result<Option<Rc<NodeOccurrence>>, TypeError> {
+    let Some(Expr::Apply {
+        recv_type,
+        functor,
+        pos_args,
+        named_args,
+        type_args,
+    }) = site.as_expr()
+    else {
+        return Ok(None);
+    };
+    let columns = instance_columns(kb, callee);
+    if columns.is_empty() {
+        return Ok(None);
+    }
+    let Some(instance_sym) = kb.try_resolve_symbol("anthill.realization.runtime.Instance") else {
+        return Ok(None);
+    };
+    let mut changed = false;
+    let mut pack = |kb: &mut KnowledgeBase, slot: SlotKey, arg: &Rc<NodeOccurrence>| {
+        let Some((_, column)) = columns.iter().find(|(s, _)| same_slot(kb, s, &slot)) else {
+            return Ok(Rc::clone(arg));
+        };
+        let packed = pack_instance_argument(kb, callee, column, arg, instance_sym)?;
+        changed |= !Rc::ptr_eq(&packed, arg);
+        Ok(packed)
+    };
+    let pos: Vec<Rc<NodeOccurrence>> = pos_args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| pack(kb, SlotKey::Pos(i), a))
+        .collect::<Result<_, TypeError>>()?;
+    let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+        .iter()
+        .map(|(k, a)| Ok((*k, pack(kb, SlotKey::Named(*k), a)?)))
+        .collect::<Result<_, TypeError>>()?;
+    Ok(changed.then(|| {
+        site.rebuilt_expr(Expr::Apply {
+            recv_type: recv_type.clone(),
+            functor: *functor,
+            pos_args: pos,
+            named_args: named,
+            type_args: type_args.clone(),
+        })
+    }))
+}
+
+/// [`pack_instance_arguments`] for one argument `arg` at a column of type `column`.
+fn pack_instance_argument(
+    kb: &mut KnowledgeBase,
+    callee: Symbol,
+    column: &Value,
+    arg: &Rc<NodeOccurrence>,
+    instance_sym: Symbol,
+) -> Result<Rc<NodeOccurrence>, TypeError> {
+    // A pair already: a goal routed again once a callee's layout changed.
+    if matches!(arg.as_expr(), Some(Expr::Apply { functor, .. }) if *functor == instance_sym) {
+        return Ok(Rc::clone(arg));
+    }
+    let untyped_var = matches!(arg.as_expr(), Some(Expr::Var(_))) && arg.inferred_type().is_none();
+    let ty = match goal_arg_type(kb, arg) {
+        Some(ty) if !untyped_var => ty,
+        _ => return Ok(Rc::clone(arg)),
+    };
+    let sort = abstract_carrier_of(kb, column).expect("an instance column is at an abstract sort");
+    if abstract_carrier_of(kb, &ty).is_some() {
+        return Ok(Rc::clone(arg));
+    }
+    let refusal = |kb: &mut KnowledgeBase, why: String| TypeError::Other {
+        site: TypeError::here(),
+        span: Some(arg.span.span),
+        context: TypeErrorContext::Rule {
+            name: callee,
+            field: RuleField::Body,
+        },
+        expected: format!(
+            "a value whose sort provides `{}`, the type of the column of `{}` it is passed at",
+            short_name_of(kb.qualified_name_of(sort)),
+            kb.qualified_name_of(callee),
+        ),
+        actual: why,
+    };
+    if sort_functor_of_view(kb, &ty).is_none() || !instance_is_concrete(kb, &ty) {
+        let why = format!(
+            "a value at `{}`, a type nothing at the goal fixes, so no instance of `{}` is known \
+             for it",
+            type_display_name_value(kb, &ty),
+            short_name_of(kb.qualified_name_of(sort)),
+        );
+        return Err(refusal(kb, why));
+    }
+    // The column's own written type first: `Car provides Sp[T = Int64]` is no `Sp[T = String]`.
+    let context = TypeErrorContext::Rule {
+        name: callee,
+        field: RuleField::Body,
+    };
+    let fits = matches!(
+        validate_arg_against_param(kb, &mut Substitution::new(), &ty, column, None, context, None),
+        ArgValidation::Ok
+    );
+    let carrier = sort_functor_of_view(kb, &ty).expect("read above");
+    let carrier = kb.canonical_sort_sym(kb.type_arg_owner(carrier).unwrap_or(carrier));
+    let built = if fits {
+        instance_dictionary_at(kb, sort, carrier, &ty, column)
+    } else {
+        Err(format!("it is no `{}`", type_display_name_value(kb, column)))
+    };
+    let dict = match built {
+        Ok(dict) => dict,
+        Err(why) => {
+            let why = format!("a `{}`: {why}", type_display_name_value(kb, &ty));
+            return Err(refusal(kb, why));
+        }
+    };
+    Ok(instance_pair_node(instance_sym, dict, arg))
+}
+
+/// Proposal 073 §2 — the body of `rid` with each argument of an operation's call at a parameter
+/// typed by a sort with abstract values paired with its sort's dictionary at load, as an
+/// operation body's argument is: `head(cons(7, nil))` passes `Instance(<List's Stream>, cons(7,
+/// nil))`, and `total([car(n: 1), van(n: 2)])` at `xs: List[T = Sp]` each element at `Sp`. A
+/// value whose type the clause does not know is passed as it is, and nothing pairs it when the
+/// call runs. `None` where nothing is paired.
+fn pack_call_arguments(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<Rc<NodeOccurrence>>> {
+    let instance_sym = kb.try_resolve_symbol("anthill.realization.runtime.Instance")?;
+    let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    let packed: Vec<Rc<NodeOccurrence>> =
+        body.iter().map(|g| pack_calls_under(kb, g, instance_sym)).collect();
+    packed
+        .iter()
+        .zip(&body)
+        .any(|(a, b)| !Rc::ptr_eq(a, b))
+        .then_some(packed)
+}
+
+/// [`pack_call_arguments`] for the tree under `node`, children first.
+fn pack_calls_under(
+    kb: &mut KnowledgeBase,
+    node: &Rc<NodeOccurrence>,
+    instance_sym: Symbol,
+) -> Rc<NodeOccurrence> {
+    let Some(expr) = node.as_expr() else {
+        return Rc::clone(node);
+    };
+    let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+    for_each_child(expr, |c| children.push(Rc::clone(c)));
+    let rebuilt: Vec<Rc<NodeOccurrence>> =
+        children.iter().map(|c| pack_calls_under(kb, c, instance_sym)).collect();
+    let node = crate::kb::simp_rewrite::reassemble(node, &rebuilt);
+    let (functor, pos_args, named_args) = match node.as_expr() {
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) => (*functor, pos_args.clone(), named_args.clone()),
+        Some(Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            ..
+        }) => (*functor, args.clone(), named_args.clone()),
+        _ => return node,
+    };
+    let target = node.classified_target().unwrap_or(functor);
+    let params: Vec<(Symbol, Value)> = match node.call_params().filter(|_| target == functor) {
+        Some(at_call) => at_call.to_vec(),
+        None => match crate::kb::op_info::lookup_operation_info(kb, target) {
+            Some(info) => info.params.clone(),
+            None => return node,
+        },
+    };
+    if !params.iter().any(|(_, ty)| type_names_abstract_carrier(kb, ty)) {
+        return node;
+    }
+    let pos_params = positional_param_indices(kb, &params, pos_args.len(), &named_args);
+    let mut changed = false;
+    let pos: Vec<Rc<NodeOccurrence>> = pos_args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let at = pos_params.get(i).copied().flatten().and_then(|p| params.get(p));
+            match at.and_then(|(_, ty)| pack_at_type(kb, a, ty, instance_sym)) {
+                Some(packed) => {
+                    changed = true;
+                    packed
+                }
+                None => Rc::clone(a),
+            }
+        })
+        .collect();
+    let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+        .iter()
+        .map(|(k, a)| {
+            let at = params.iter().find(|(p, _)| kb.local_name_of(*p) == kb.local_name_of(*k));
+            match at.map(|(_, ty)| ty.clone()).and_then(|ty| pack_at_type(kb, a, &ty, instance_sym)) {
+                Some(packed) => {
+                    changed = true;
+                    (*k, packed)
+                }
+                None => (*k, Rc::clone(a)),
+            }
+        })
+        .collect();
+    if !changed {
+        return node;
+    }
+    let expr = match node.as_expr().expect("read above").clone() {
+        Expr::Apply {
+            recv_type,
+            functor,
+            type_args,
+            ..
+        } => Expr::Apply {
+            recv_type,
+            functor,
+            pos_args: pos,
+            named_args: named,
+            type_args,
+        },
+        Expr::ApplyWithin {
+            functor,
+            requirements,
+            type_args,
+            ..
+        } => Expr::ApplyWithin {
+            functor,
+            args: pos,
+            named_args: named,
+            requirements,
+            type_args,
+        },
+        _ => unreachable!("a call, read above"),
+    };
+    node.rebuilt_expr(expr)
+}
+
+/// `arg` as a value at type `expected`: paired where `expected` is a sort with abstract values
+/// and `arg` is of a sort that provides it, its fields so where it is a construction at a type
+/// that holds such a sort (`cons(car(n: 1), nil)` at `List[T = Sp]`). `None` where nothing is
+/// paired: a value at the abstract sort already, or one whose type is not known here.
+fn pack_at_type(
+    kb: &mut KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    expected: &Value,
+    instance_sym: Symbol,
+) -> Option<Rc<NodeOccurrence>> {
+    match arg.as_expr()? {
+        Expr::Apply { functor, .. } if *functor == instance_sym => return None,
+        _ => {}
+    }
+    if let Some(sort) = abstract_carrier_of(kb, expected) {
+        let untyped_var = matches!(arg.as_expr(), Some(Expr::Var(_))) && arg.inferred_type().is_none();
+        let ty = goal_arg_type(kb, arg).filter(|_| !untyped_var)?;
+        if abstract_carrier_of(kb, &ty).is_some() || !instance_is_concrete(kb, &ty) {
+            return None;
+        }
+        let carrier = sort_functor_of_view(kb, &ty)?;
+        let carrier = kb.canonical_sort_sym(kb.type_arg_owner(carrier).unwrap_or(carrier));
+        let dict = instance_dictionary_at(kb, sort, carrier, &ty, expected).ok()?;
+        return Some(instance_pair_node(instance_sym, dict, arg));
+    }
+    if !type_names_abstract_carrier(kb, expected) {
+        return None;
+    }
+    let (_, type_args) = parametric_view_parts(kb, expected)?;
+    match arg.as_expr()? {
+        Expr::ListLit(elems) => {
+            let elem = type_args.first().map(|(_, t)| t.clone())?;
+            let mut changed = false;
+            let packed: Vec<Rc<NodeOccurrence>> = elems
+                .iter()
+                .map(|e| match pack_at_type(kb, e, &elem, instance_sym) {
+                    Some(p) => {
+                        changed = true;
+                        p
+                    }
+                    None => Rc::clone(e),
+                })
+                .collect();
+            changed.then(|| arg.rebuilt_expr(Expr::ListLit(packed)))
+        }
+        Expr::Apply {
+            recv_type,
+            functor,
+            pos_args,
+            named_args,
+            type_args: written,
+        } => {
+            let sort = kb.sort_of_constructor(*functor)?;
+            let fields = kb.entity_field_types(*functor)?.to_vec();
+            let mut changed = false;
+            let mut field_at = |kb: &mut KnowledgeBase, field: Option<&(Symbol, Value)>, a: &Rc<NodeOccurrence>| {
+                let packed = field
+                    .and_then(|(_, fty)| field_type_at(kb, sort, fty, expected, &type_args))
+                    .and_then(|ty| pack_at_type(kb, a, &ty, instance_sym));
+                match packed {
+                    Some(p) => {
+                        changed = true;
+                        p
+                    }
+                    None => Rc::clone(a),
+                }
+            };
+            let pos: Vec<Rc<NodeOccurrence>> =
+                pos_args.iter().enumerate().map(|(i, a)| field_at(kb, fields.get(i), a)).collect();
+            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+                .iter()
+                .map(|(k, a)| {
+                    let field = fields.iter().find(|(f, _)| kb.local_name_of(*f) == kb.local_name_of(*k));
+                    (*k, field_at(kb, field, a))
+                })
+                .collect();
+            changed.then(|| {
+                arg.rebuilt_expr(Expr::Apply {
+                    recv_type: recv_type.clone(),
+                    functor: *functor,
+                    pos_args: pos,
+                    named_args: named,
+                    type_args: written.clone(),
+                })
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Route the goals of `rid`, and store the body.
 fn route_clause_goals(
     kb: &mut KnowledgeBase,
@@ -299,6 +686,9 @@ fn route_clause_goals(
     relation: Symbol,
     refused: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
 ) {
+    if let Some(body) = pack_call_arguments(kb, rid) {
+        kb.set_rule_body_nodes(rid, body);
+    }
     let mut wraps: Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> = Vec::new();
     for site in goal_sites(kb, rid) {
         let Some(callee) = relation_goal_callee(kb, &site) else {
@@ -354,9 +744,16 @@ fn route_goal(
     callee: Symbol,
     refused: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
 ) -> Option<Rc<NodeOccurrence>> {
+    let packed = match pack_instance_arguments(kb, site, callee) {
+        Ok(packed) => packed,
+        Err(refusal) => {
+            refused.push((refusal, Some(site.span.source)));
+            return None;
+        }
+    };
     let counts = routing.layout(kb, callee);
     let total: usize = counts.iter().map(|(_, n)| n).sum();
-    if total == 0 {
+    if total == 0 && packed.is_none() {
         return None;
     }
     // The bracket's instance, built here: nothing a caller passes can change it — a sort's
@@ -623,7 +1020,7 @@ fn route_goal(
         Some(Expr::Apply { type_args, .. }) => type_args.clone(),
         _ => Vec::new(),
     };
-    if bracket.is_empty() && slots.iter().all(|s| matches!(s, GoalSlot::Unrouted)) {
+    if bracket.is_empty() && packed.is_none() && slots.iter().all(|s| matches!(s, GoalSlot::Unrouted)) {
         return None;
     }
     // The type the goal's bracket fixes a guard's parameter at (060.1 §8.10), which the clause
@@ -645,7 +1042,7 @@ fn route_goal(
     let (span, owner) = (site.span, site.owner);
     let node = |e: Expr| NodeOccurrence::new_expr(e, span, owner);
     let mut pos_args: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total + 2);
-    pos_args.push(with_type_args(site, Vec::new()));
+    pos_args.push(with_type_args(packed.as_ref().unwrap_or(site), Vec::new()));
     pos_args.push(node(Expr::Ref(callee)));
     for slot in slots {
         pos_args.push(match slot {
@@ -1354,6 +1751,23 @@ pub(super) fn occ_holds_goal_marker(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence
     let mut sites = vec![Rc::clone(goal)];
     nested_goals(kb, goal, &mut sites);
     sites.iter().any(|n| goal_marker(kb, n).is_some())
+}
+
+/// Does `goal` hold a value the routing paired with its dictionary ([`pack_call_arguments`])?
+/// A body holding one was typed by the load that routed it.
+pub(super) fn occ_holds_instance_pair(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>) -> bool {
+    let Some(instance) = kb.try_resolve_symbol("anthill.realization.runtime.Instance") else {
+        return false;
+    };
+    let mut stack = vec![Rc::clone(goal)];
+    while let Some(n) = stack.pop() {
+        let Some(expr) = n.as_expr() else { continue };
+        if matches!(expr, Expr::Apply { functor, .. } if *functor == instance) {
+            return true;
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
 }
 
 
