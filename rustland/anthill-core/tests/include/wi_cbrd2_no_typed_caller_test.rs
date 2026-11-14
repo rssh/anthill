@@ -10,7 +10,7 @@
 //! ## What fails with each part backed out
 //!
 //! Measured with temporary switches in one build (a small binary including this file), then
-//! removed. The control is every switch unset: all eleven pass.
+//! removed. The control is every switch unset: all thirteen pass.
 //!
 //! * the query's routing (`route_query_goals` handing the query back unrouted):
 //!   [`a_query_is_typed_where_it_is_read`],
@@ -34,6 +34,11 @@
 //!   [`a_call_at_a_variable_no_head_column_reaches_is_refused`];
 //! * an operation body's citation leaving a requirement open left unrouted:
 //!   [`a_citation_from_an_operation_leaving_a_requirement_open_is_refused`].
+//!
+//! * the bridge entering a spec call's member with no stamps for its own `requires`, the member
+//!   deriving them from the values: [`a_member_is_handed_the_calls_dictionaries`];
+//! * the bridge ignoring the dictionary the typer built for a call into another sort, deriving
+//!   the frame from the values: [`a_call_into_another_sort_enters_through_its_built_dictionary`].
 //!
 //! [`a_concrete_goal_in_a_rule_body_passes_its_dictionary`] passes under each, by design: it is
 //! the route the rows above are measured against.
@@ -299,3 +304,88 @@ fn a_goal_no_load_typed_is_an_error_when_it_runs() {
     );
     assert_eq!(ints(&mut kb, "p.q2.keep(1, ?t)"), [1], "asked as a query");
 }
+
+// ── the SLD bridge: a rule body's call carries what the typer built ──────────────
+
+/// A spec call whose member has `requires` of its own: `Desc.pair(Coin.coin(n: 5), Mk.ints())`
+/// in a rule body runs `Coin.pair`, and the member's `Tagger[T = U]` at `U = List[T = Int64]` is
+/// the dictionary the typer built for the spec operation's own `requires`, handed to the member
+/// under its names, as an operation body's call is: `110`, `ListTag`'s 100 plus 10. The value
+/// `[]` carries `List[T = ?]`, so the bridge's derivation from it found no `Tagger` and the goal
+/// failed in silence.
+#[test]
+fn a_member_is_handed_the_calls_dictionaries() {
+    let mut kb = crate::common::load_kb_with(MEMBER);
+    assert_eq!(ints(&mut kb, "mm.viaEmpty(?r)"), [110]);
+    assert_eq!(crate::common::run_int64(MEMBER, "mm.opEmpty"), Ok(110), "the operation body's twin");
+}
+
+/// A call into another sort's operation at a concrete instance enters through the dictionary the
+/// typer built for it: `Holder[T = Leaf, D = Rival].show(leaf())` in a rule body answers `9`,
+/// the witness its bracket names, as the operation body's twin does. The bridge derived the
+/// frame from the value instead, which names no witness, and the goal was left undecided.
+#[test]
+fn a_call_into_another_sort_enters_through_its_built_dictionary() {
+    let mut kb = crate::common::load_kb_with(BUNDLE);
+    assert_eq!(ints(&mut kb, "bb.viaRival(?x)"), [9]);
+    assert_eq!(crate::common::run_int64(BUNDLE, "bb.opRival"), Ok(9), "the operation body's twin");
+}
+
+const MEMBER: &str = r#"namespace mm
+  import anthill.prelude.{Int64, List}
+  import anthill.prelude.Numeric.{add}
+  sort Tagger
+    sort T = ?
+    operation tag(x: T) -> Int64
+  end
+  sort ListTag
+    sort E = ?
+    requires Tagger[T = E]
+    provides Tagger[T = List[T = E]]
+    operation tag(x: List[T = E]) -> Int64 = 100
+  end
+  sort Desc
+    sort T = ?
+    operation pair[U](x: T, y: U) -> Int64 requires Tagger[T = U]
+  end
+  sort Coin
+    entity coin(n: Int64)
+    provides Desc[T = Coin]
+    operation pair[U](x: Coin, y: U) -> Int64 requires Tagger[T = U] = add(10, Tagger.tag(y))
+  end
+  sort Mk
+    operation ints() -> List[T = Int64] = []
+  end
+  rule viaEmpty(?r) :- ?r <=> Desc.pair(Coin.coin(n: 5), Mk.ints())
+  operation opEmpty() -> Int64 = Desc.pair(Coin.coin(n: 5), Mk.ints())
+end
+namespace anthill.prelude.Int64
+  import mm.Tagger
+  provides Tagger[T = Int64]
+  operation tag(x: Int64) -> Int64 = 1
+end
+"#;
+
+const BUNDLE: &str = r#"namespace bb
+  import anthill.prelude.{Int64}
+  sort Desc
+    sort T = ?
+    operation label(x: T) -> Int64
+  end
+  sort Leaf
+    entity leaf
+    provides Desc[T = Leaf]
+    operation label(x: Leaf) -> Int64 = 7
+  end
+  sort Rival
+    provides Desc[T = Leaf]
+    operation label(x: Leaf) -> Int64 = 9
+  end
+  sort Holder[T]
+    requires D: Desc[T = T]
+    operation show(x: T) -> Int64 = Desc.label(x)
+  end
+  rule viaRival(?x) :- ?x <=> Holder[T = Leaf, D = Rival].show(leaf())
+  operation opRival() -> Int64 = Holder[T = Leaf, D = Rival].show(leaf())
+end
+"#;

@@ -12322,11 +12322,11 @@ impl KnowledgeBase {
                     owed.then(|| WovenDispatch::Dispatched {
                         spec_op: *functor,
                         dict,
-                        stamps: if target == *functor {
-                            occ.op_dicts()
-                        } else {
-                            SmallVec::new()
-                        },
+                        stamps: self.stamps_at_member(
+                            occ.classified_target().unwrap_or(*functor),
+                            target,
+                            &occ.op_dicts(),
+                        ),
                     })
                 });
                 let (pos_args, named_args) = self.woven_args_at_member(*functor, args, named_args);
@@ -12494,10 +12494,14 @@ impl KnowledgeBase {
         // bridge, as eval's apply hands it to the frame it pushes. Re-derived from the
         // argument values instead, a selection the call wrote was lost:
         // `viaRule[A = Int64, WeakOrd = Descending](1, 5)` answered `Int64`'s own -1 when
-        // run from a rule, and `Descending`'s 4 from the interpreter. Only where the
-        // stamps were built for the operation that runs (`op == functor`).
-        let stamps = (woven.is_none() && op == functor)
-            .then(|| occ.op_dicts())
+        // run from a rule, and `Descending`'s 4 from the interpreter. Built for the operation
+        // the typer classified the call to, or the one it names where the typer left the
+        // member to the run, they are the member's under the member's names where another
+        // runs ([`Self::stamps_at_member`]), as eval's apply hands them.
+        let built_for = occ.classified_target().unwrap_or(functor);
+        let stamps = woven
+            .is_none()
+            .then(|| self.stamps_at_member(built_for, op, &occ.op_dicts()))
             .filter(|stamps| stamps.iter().any(Option::is_some));
         // THE DICTIONARY THE TYPER BUILT FOR THE CALL, as eval's apply enters the callee
         // through it. A spec's default body its provider inherits, written
@@ -12534,6 +12538,13 @@ impl KnowledgeBase {
     /// eval's apply does ([`WovenDispatch::Classified`]; the paragraph at its use in
     /// [`Self::reduce_op_value`] says when). `None` where the derivation answers instead.
     fn classified_entry(&mut self, occ: &NodeOccurrence, op: Symbol) -> Option<(Symbol, TermId)> {
+        // The parent-bundle dictionary the typer built for a call into another sort at a
+        // concrete instance (`CalleeFrame::Dict`, WI-415): `Holder[T = Leaf].show(leaf())` in a
+        // rule body enters `Holder.show` through `Holder`'s requirements at `Leaf`, as eval's
+        // apply does — derived from the argument values instead, which 073 §6.2 removed.
+        if let Some(dict) = occ.parent_bundle_dict().filter(|_| occ.classified_target() == Some(op)) {
+            return Some((op, dict));
+        }
         let (spec_op, provider, dict) = occ.classified_dispatch()?;
         let covered = match self.dictionary_owed_to(provider, op) {
             DictionaryOwed::Environment => true,
@@ -12873,6 +12884,41 @@ impl KnowledgeBase {
     /// about it now depends on [`EvalError::bridge_disposition`], and rides `faults`
     /// rather than the return value. See that enum, and [`ReduceFaults`] for why a sink
     /// rather than a richer return.
+    /// A call's stamps for the own `requires` of `written` — the operation the typer built them
+    /// for: its classified target, or the operation the call names (one per op-scoped slot of
+    /// `written`'s chain) — placed at the op-scoped slots of `runs`, the member that answers
+    /// the call: each of the member's own requirements takes the stamp of the spec operation's
+    /// it states ([`super::typing::member_slots_at_spec_op`]), as eval's apply hands a member
+    /// the slots a call filled (`hand_spec_op_slots`). The stamps themselves where `runs` is
+    /// `written`. Built at load, so nothing derives the member's dictionaries from the values.
+    /// (A member states its own `requires` in the spec operation's order — the refinement
+    /// check refuses another — so the stamps' positions agree whichever of the two built them.)
+    fn stamps_at_member(
+        &mut self,
+        written: Symbol,
+        runs: Symbol,
+        stamps: &SmallVec<[Option<TermId>; 2]>,
+    ) -> SmallVec<[Option<TermId>; 2]> {
+        if runs == written || stamps.iter().all(Option::is_none) {
+            return if runs == written { stamps.clone() } else { SmallVec::new() };
+        }
+        let theirs = super::typing::op_dict_entries(self, written);
+        let their_names = theirs.names(self);
+        let their_own: Vec<Symbol> = their_names[theirs.sort_len().min(their_names.len())..].to_vec();
+        let ours = super::typing::op_dict_entries(self, runs);
+        let our_names = ours.names(self);
+        let our_own: Vec<Symbol> = our_names[ours.sort_len().min(our_names.len())..].to_vec();
+        let pairs = super::typing::member_slots_at_spec_op(self, written, runs);
+        our_own
+            .iter()
+            .map(|ours| {
+                let theirs = pairs.iter().find(|(o, _)| o == ours).map(|(_, t)| *t)?;
+                let at = their_own.iter().position(|n| *n == theirs)?;
+                stamps.get(at).copied().flatten()
+            })
+            .collect()
+    }
+
     fn bridge_op_to_eval(
         &mut self,
         op: Symbol,
