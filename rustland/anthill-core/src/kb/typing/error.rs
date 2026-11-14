@@ -1548,6 +1548,10 @@ pub enum TypeErrorContext {
     SpecInstance {
         spec: Symbol,
     },
+    /// Proposal 074 §2 — `Dictionary.instance[S]()` at an `S` that has no dictionary: a sort
+    /// with constructors or with values of its own, a marker, an application leaving a
+    /// parameter unwritten or fixed by nothing, or one no provision answers.
+    DictionaryInstance,
     /// A rule goal's argument against the callee's column it fills — the type the callee's
     /// clauses give that column, written or inferred. `column` is the slot's label: a named
     /// slot's key, a positional one's `_N`.
@@ -1641,6 +1645,7 @@ impl TypeErrorContext {
             // (the `source` rides in `kind_tag`)
             TypeErrorContext::Construction { ctor } => kb.local_name_of(*ctor).to_string(),
             TypeErrorContext::SpecInstance { spec } => kb.local_name_of(*spec).to_string(),
+            TypeErrorContext::DictionaryInstance => "Dictionary".to_string(),
             TypeErrorContext::RuleColumn { relation, .. } => {
                 kb.local_name_of(*relation).to_string()
             }
@@ -1681,6 +1686,7 @@ impl TypeErrorContext {
             } => "collection-element-join",
             TypeErrorContext::Construction { .. } => "construction",
             TypeErrorContext::SpecInstance { .. } => "instance",
+            TypeErrorContext::DictionaryInstance => "dictionary-instance",
             TypeErrorContext::RuleColumn { .. } => "rule-column",
             TypeErrorContext::RuleBound { .. } => "rule-bound",
             TypeErrorContext::SortParameter { .. } => "sort-parameter",
@@ -1716,6 +1722,7 @@ impl TypeErrorContext {
             TypeErrorContext::CollectionElement { index, .. } => format!("element {}", index + 1),
             TypeErrorContext::Construction { .. } => "construction".to_string(),
             TypeErrorContext::SpecInstance { .. } => "instance".to_string(),
+            TypeErrorContext::DictionaryInstance => "instance".to_string(),
             TypeErrorContext::RuleColumn { column, .. } => kb.local_name_of(*column).to_string(),
             TypeErrorContext::RuleBound { var, .. } => kb.local_name_of(*var).to_string(),
             TypeErrorContext::SortParameter { param, .. } => kb.local_name_of(*param).to_string(),

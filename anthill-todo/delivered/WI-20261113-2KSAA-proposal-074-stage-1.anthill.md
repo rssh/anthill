@@ -3,9 +3,9 @@
 - id: WI-20261113-2KSAA-proposal-074-stage-1
 - created: 2026-11-13T23:01:09Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-13T23:01:09Z
+- status_at: 2026-11-14T08:29:09Z
 
 - acceptance: cargo-test
 
@@ -24,4 +24,12 @@ ROWS ADDED AFTER REVIEW (proposal 074 §2, decided with the user 2026-11-13): th
 ### 2026-11-13T23:23:10Z — feedback — claude
 
 SPLIT AFTER THE THIRD REVIEW (with the user, 2026-11-13): two parts of this ticket moved to tickets of their own, each landing green without this stage. The handed-dictionary rule (T13: viaParam and viaMember answer 2 handed Alt's dictionary; what a handed dictionary covers — a callee's clause, its chain, the two-answer and nested-binder refusals) is stage 9, WI-20261113-0FTHQ. The host boundary (zeroOf() and add2(7, 2, 3) named refusals at the boundary; sum2(2, 3) and add2(intInstance(), 2, 3) controls; the Scala emitter measured on a dictionary parameter) is stage 10, WI-20261113-S4D63. Their rows hand a dictionary as the tree does today until this stage lands; this stage rewrites them with 073's rows. The rest of the description stands: the built-in, the class reading (now with sorts that have values of their own: an opaque sort X = ?, or one that receives on itself through a provides at itself, see proposal §2), the print form, the rule-body rows and the census.
+
+### 2026-11-14T05:57:59Z — feedback — user
+
+DECIDED WITH THE USER WHILE DOING THE STAGE (2026-11-14): (1) the term ABSTRACT SORT = a sort with no constructors (kernel-language already used it for sort T = ? and 073 for Stream); a data sort is one with constructors (§5.1). (2) Two kinds of abstract sort, not four classes: one with a dictionary — its chain declares operations and none receives on it — and one with values of its own — opaque, received on (own operation or a provides at itself of a spec with operations), or with no operation anywhere in its chain, whose values are its providers' (the census measured 80 such sorts across ~20 suites used as existential returns, WI-391..488; reading them as empty dictionaries would refuse them all). wi903 and wi_8dxvk, which wrote ?x: Summable.T over an operation-free Summable provided at Int64, give the sort an operation. (3) A data sort has the dictionary of its own requires; a dictionary holds operations only — its type, every parameter written, selects the provider. (4) The ProjAdditive row moved to stage 3 (WI-20261113-Q2C01), which builds the dictionary of a sort nothing provides; stage 1 refuses it naming that stage. Census: the first traced gate lost wi_tests to a heap-corruption abort (WI-20261104-5AZBW-like); the second covered every binary.
+
+### 2026-11-14T08:29:04Z — feedback — user
+
+DELIVERED (2026-11-14): rows in wi_2ksaa_dictionary_instance_test (T1-T9 in §2's spelling, the kept refusals, the built-in's refusals, the classes) and in wi_9bkz4 (class moves behind a seal, both ways; a clause's dictionary with no provider where written), wi_8dxvk, wi903, wi_2kv4y, cpp-gen unsupported_test; the three 073 suites rewritten. Back-outs: 22 parts measured over 286 rows, 20 fail named rows (ledger at the end of wi_2ksaa_dictionary_instance_test), 2 failed none and their code was removed. Gate: rustland 36 binaries 12051 passed / 0 failed / 17 ignored; families.sh green on both carriers, no verdict moved; scaland testFull 1 + 51 + 800 = 852 green. kernel-language §8.2 agreed with the user.
 

@@ -2,25 +2,20 @@
 //! INSTANCE OF IT AT THE CARRIER ITS TYPE FIXES (`docs/design/instance-values.md` §7).
 //!
 //! `x: Additive` holds `Additive`'s operations at `x.T`, and a call at `x.T` takes its
-//! dictionary from `x`. Where the spec is expected, the spec application is the instance:
-//! `Additive[T = Int64]` is the dictionary load builds by kernel-language §8.7's order, and
-//! under `requires Additive[T = X]`, `Additive[T = X]` is the clause's own. Where a `Type` is
+//! dictionary from `x`. The dictionary is written as proposal 074 §2 writes one
+//! (WI-20261113-2KSAA): `Dictionary.instance[Additive[T = Int64]]()` is the dictionary load
+//! builds by kernel-language §8.7's order, and under `requires Additive[T = X]`,
+//! `Dictionary.instance[Additive[T = X]]()` is the clause's own. 073 part 2 wrote the spec
+//! application itself there, `add2(Additive[T = Int64], 2, 3)`; that is a type wherever it is
+//! written now, refused where a dictionary is expected (074 §1.1), and where a `Type` is
 //! expected the same text is a `Type` value, as before.
 //!
-//! CONTROLS, measured with a temporary switch per part in one build, then removed. Every row
-//! that answers a value fails with the parameter's requirement backed out (its body is
-//! refused "missing `requires Additive[T = …]`"), with the application read as the instance
-//! backed out (refused "type 'anthill.prelude.Type' has no member 'T'"), and with the frame's
-//! slot left unfilled ("`__req_additive` not bound"); besides those, a row fails with: the
-//! check of a type parameter read as a value looking inside the application (`sum2`'s `X` is
-//! then refused, "nothing in scope requires `TypeValue[T = X]`"),
-//! `an_application_under_the_clause_is_the_clauses_instance` and
-//! `the_instance_is_passed_on`; the defaulted path's read of the requirement at a projection,
-//! the three rows through `describePlus`; the bridge leaving the slot to the argument,
-//! `a_rule_bodys_call_takes_the_instance` alone. `an_application_where_a_type_is_expected_is_the_type`
-//! and the refusal rows of programs refused before (`a_value_of_a_provider_is_no_instance`,
-//! `an_instance_is_no_value_of_its_carrier`, `a_dot_on_the_instance_stays_refused`) pass in every
-//! configuration by design.
+//! CONTROLS: the rows that answer a value fail with `Dictionary.instance`'s typer arm backed
+//! out (the call is then an ordinary call of an operation nothing provides); the ledger of the
+//! stage's back-outs is in `wi_2ksaa_dictionary_instance_test`. `an_application_where_a_type_
+//! is_expected_is_the_type` and the refusal rows of programs refused before
+//! (`a_value_of_a_provider_is_no_instance`, `an_instance_is_no_value_of_its_carrier`,
+//! `a_dot_on_the_instance_stays_refused`) pass in every configuration by design.
 
 use anthill_core::eval::{Interpreter, Value};
 
@@ -51,6 +46,7 @@ fn program(ns: &str, ops: &str) -> String {
         r#"
 namespace p0qgf.{ns}
   import anthill.prelude.{{Int64, Float, Additive, Type}}
+  import anthill.realization.runtime.Dictionary
   operation add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b
 {ops}
 end
@@ -60,7 +56,7 @@ end
 
 /// 073 §2's generic caller of `add2`, handing it the instance it is given.
 const SUM2: &str =
-    "  operation sum2[X](a: X, b: X) -> X requires Additive[T = X] = add2(Additive[T = X], a, b)\n";
+    "  operation sum2[X](a: X, b: X) -> X requires Additive[T = X] = add2(Dictionary.instance[Additive[T = X]](), a, b)\n";
 
 /// A user's spec whose second operation has a body in the spec, and its provider.
 const DESC: &str = r#"
@@ -81,7 +77,7 @@ const DESC: &str = r#"
 /// 073 §2: `ints()` answers 5, the instance built at load at `Int64`.
 #[test]
 fn an_application_at_a_known_type_is_the_instance_load_builds() {
-    let src = program("known", "  operation ints() -> Int64 = add2(Additive[T = Int64], 2, 3)");
+    let src = program("known", "  operation ints() -> Int64 = add2(Dictionary.instance[Additive[T = Int64]](), 2, 3)");
     assert_eq!(int(&mut interp_for(&src), "p0qgf.known.ints"), 5);
 }
 
@@ -108,8 +104,8 @@ fn a_member_that_takes_no_carrier_reads_the_instance() {
         "zero",
         "  operation zeroOf(x: Additive) -> x.T = Additive.zero[T = x.T]()
   operation zeroOfApplied(x: Additive) -> x.T = Additive[T = x.T].zero()
-  operation zeroInt() -> Int64 = zeroOf(Additive[T = Int64])
-  operation zeroIntApplied() -> Int64 = zeroOfApplied(Additive[T = Int64])",
+  operation zeroInt() -> Int64 = zeroOf(Dictionary.instance[Additive[T = Int64]]())
+  operation zeroIntApplied() -> Int64 = zeroOfApplied(Dictionary.instance[Additive[T = Int64]]())",
     );
     let mut interp = interp_for(&src);
     assert_eq!(int(&mut interp, "p0qgf.zero.zeroInt"), 0);
@@ -138,9 +134,9 @@ fn the_instance_is_passed_on() {
         "pass",
         &format!(
             "{SUM2}  operation passOn(x: Additive, a: x.T, b: x.T) -> x.T = add2(x, a, b)
-  operation passOnInts() -> Int64 = passOn(Additive[T = Int64], 2, 3)
+  operation passOnInts() -> Int64 = passOn(Dictionary.instance[Additive[T = Int64]](), 2, 3)
   operation viaGeneric(x: Additive, a: x.T, b: x.T) -> x.T = sum2(a, b)
-  operation viaGenericInts() -> Int64 = viaGeneric(Additive[T = Int64], 2, 3)"
+  operation viaGenericInts() -> Int64 = viaGeneric(Dictionary.instance[Additive[T = Int64]](), 2, 3)"
         ),
     );
     let mut interp = interp_for(&src);
@@ -155,8 +151,8 @@ fn two_instances_each_answer_their_own_carrier() {
         "two",
         "  operation second(x: Additive, y: Additive, a: x.T, b: y.T) -> y.T = b + b
   operation first(x: Additive, y: Additive, a: x.T, b: y.T) -> x.T = a + a
-  operation secondFloat() -> Float = second(Additive[T = Int64], Additive[T = Float], 1, 2.5)
-  operation firstInt() -> Int64 = first(Additive[T = Int64], Additive[T = Float], 1, 2.5)",
+  operation secondFloat() -> Float = second(Dictionary.instance[Additive[T = Int64]](), Dictionary.instance[Additive[T = Float]](), 1, 2.5)
+  operation firstInt() -> Int64 = first(Dictionary.instance[Additive[T = Int64]](), Dictionary.instance[Additive[T = Float]](), 1, 2.5)",
     );
     let mut interp = interp_for(&src);
     assert_eq!(shown(&mut interp, "p0qgf.two.secondFloat"), "5.0");
@@ -168,10 +164,10 @@ fn two_instances_each_answer_their_own_carrier() {
 fn an_instance_returned_or_bound() {
     let src = program(
         "held",
-        "  operation intInstance() -> Additive[T = Int64] = Additive[T = Int64]
+        "  operation intInstance() -> Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()
   operation returned() -> Int64 = add2(intInstance(), 2, 3)
   operation bound() -> Int64 =
-    let k: Additive[T = Int64] = Additive[T = Int64]
+    let k: Additive[T = Int64] = Dictionary.instance()
     add2(k, 2, 3)",
     );
     let mut interp = interp_for(&src);
@@ -185,8 +181,8 @@ fn a_user_spec_and_its_spec_body_at_the_instance() {
     let src = program(
         "user",
         &format!(
-            "{DESC}  operation dLeaf() -> Int64 = d(Desc[T = Leaf], leaf())
-  operation dPlusLeaf() -> Int64 = dPlus(Desc[T = Leaf], leaf())"
+            "{DESC}  operation dLeaf() -> Int64 = d(Dictionary.instance[Desc[T = Leaf]](), leaf())
+  operation dPlusLeaf() -> Int64 = dPlus(Dictionary.instance[Desc[T = Leaf]](), leaf())"
         ),
     );
     let mut interp = interp_for(&src);
@@ -199,7 +195,7 @@ fn a_user_spec_and_its_spec_body_at_the_instance() {
 fn a_host_call_passes_the_instance() {
     let src = program(
         "host",
-        "  operation intInstance() -> Additive[T = Int64] = Additive[T = Int64]",
+        "  operation intInstance() -> Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()",
     );
     let mut interp = interp_for(&src);
     let dict = call(&mut interp, "p0qgf.host.intInstance");
@@ -209,24 +205,41 @@ fn a_host_call_passes_the_instance() {
     }
 }
 
-/// A rule body's call: the application it writes, an instance an operation returns, and a
-/// spec body reached through it.
+/// A rule body's call reaches a dictionary through an operation that returns one (proposal 074
+/// §2, "In a rule body"): an instance an operation returns, and a spec body reached through it.
+/// A rule body reads no bracket on a call until WI-20261024-TC54R, so it writes no
+/// `Dictionary.instance[…]()` of its own ([`a_rule_body_writes_no_dictionary_of_its_own`]).
 #[test]
 fn a_rule_bodys_call_takes_the_instance() {
     let src = program(
         "rule",
         &format!(
-            "{DESC}  operation intInstance() -> Additive[T = Int64] = Additive[T = Int64]
-  rule viaRule(?r) :- ?r <=> add2(Additive[T = Int64], 2, 3)
+            "{DESC}  operation intInstance() -> Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()
+  operation leafDesc() -> Desc[T = Leaf] = Dictionary.instance[Desc[T = Leaf]]()
   rule viaRuleReturned(?r) :- ?r <=> add2(intInstance(), 2, 3)
-  rule viaRuleDefaulted(?r) :- ?r <=> dPlus(Desc[T = Leaf], leaf())"
+  rule viaRuleDefaulted(?r) :- ?r <=> dPlus(leafDesc(), leaf())"
         ),
     );
     let mut interp = interp_for(&src);
     let kb = interp.kb_mut();
-    assert_eq!(one_definite_int(kb, "p0qgf.rule.viaRule"), Some(5));
     assert_eq!(one_definite_int(kb, "p0qgf.rule.viaRuleReturned"), Some(5));
     assert_eq!(one_definite_int(kb, "p0qgf.rule.viaRuleDefaulted"), Some(8));
+}
+
+/// The two spellings a rule body cannot write: 073's spec application, a type (proposal 074
+/// §1.1), and `Dictionary.instance[…]()`, whose bracket a rule body does not read until
+/// WI-20261024-TC54R (kernel-language §5.4). Whichever of 074 stage 1 and TC54R lands second
+/// turns the second into a row answering 5.
+#[test]
+fn a_rule_body_writes_no_dictionary_of_its_own() {
+    let errors = refused("  rule viaRule(?r) :- ?r <=> add2(Additive[T = Int64], 2, 3)");
+    assert!(says(&errors, "written `Dictionary.instance[Additive[T = Int64]]()`"), "{errors:?}");
+    let errors =
+        refused("  rule viaRule(?r) :- ?r <=> add2(Dictionary.instance[Additive[T = Int64]](), 2, 3)");
+    assert!(
+        says(&errors, "call-site type arguments `Dictionary.instance[…](…)` are not supported here"),
+        "{errors:?}"
+    );
 }
 
 /// A spec's operation with a body in the spec, at a requirement written at a projection: the
@@ -263,6 +276,7 @@ end
 const HEAD: &str = r#"
 namespace p0qgf.refused
   import anthill.prelude.{Int64, Float, Additive, Bool}
+  import anthill.realization.runtime.Dictionary
   operation add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b
 "#;
 
@@ -291,31 +305,35 @@ fn an_instance_is_no_value_of_its_carrier() {
     assert!(says(&errors, "got Additive[T = x.T]"), "{errors:?}");
 }
 
-/// 058 §3.9: no value chooses a type. The conditional's instance is at `T = ?`, and `2` is not
-/// its `T`. Refused before too, there because the application was a `Type`, which is the text
-/// it fails on with the application read as the instance backed out.
+/// 058 §3.9: no value chooses a type. A conditional over two dictionaries at two types has no
+/// one type, and is refused at its branches.
 #[test]
 fn a_conditional_over_two_instances_fixes_no_carrier() {
     let errors = refused(
-        "  operation bad(c: Bool) -> Int64 =\n    add2(if c then Additive[T = Int64] else Additive[T = Float], 2, 3)",
+        "  operation bad(c: Bool) -> Int64 =\n    add2(if c then Dictionary.instance[Additive[T = Int64]]() else Dictionary.instance[Additive[T = Float]](), 2, 3)",
     );
-    assert!(says(&errors, "expected x.T, got Int64"), "{errors:?}");
+    assert!(
+        says(&errors, "expected Additive[T = Int64], got Additive[T = Float]"),
+        "{errors:?}"
+    );
 }
 
-/// An application that leaves the carrier unwritten is no instance: which `T` it is at is not
-/// in its type. Refused before too, as a `Type`; fails with the instance reading backed out.
+/// A dictionary of an application that leaves the carrier unwritten is refused: which `T` it is
+/// at is not in its type. The bare sort where the dictionary is expected is the type it spells.
 #[test]
 fn an_application_leaving_the_carrier_unwritten_is_refused() {
+    let errors = refused("  operation bad() -> Int64 = add2(Dictionary.instance[Additive](), 2, 3)");
+    assert!(says(&errors, "leaves `T` unwritten"), "{errors:?}");
     let errors = refused("  operation bad() -> Int64 = add2(Additive, 2, 3)");
-    assert!(says(&errors, "`T` left unwritten"), "{errors:?}");
+    assert!(says(&errors, "a spec application is a type"), "{errors:?}");
 }
 
 /// An application at a type no provision answers has no instance. Refused before too, as a
 /// `Type`; fails with the instance reading backed out.
 #[test]
 fn an_application_no_provision_answers_is_refused() {
-    let errors = refused("  operation bad() -> Bool = add2(Additive[T = Bool], true, false)");
-    assert!(says(&errors, "expected the instance `Additive[T = Bool]`"), "{errors:?}");
+    let errors = refused("  operation bad() -> Bool = add2(Dictionary.instance[Additive[T = Bool]](), true, false)");
+    assert!(says(&errors, "expected the dictionary of `Additive[T = Bool]`"), "{errors:?}");
 }
 
 /// `x.zero()` stays refused (decided with the user 2026-11-06): a dot passes its receiver as the

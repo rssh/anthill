@@ -153,6 +153,17 @@ pub trait PrintView: TermSource {
     }
 }
 
+/// Proposal 074 §3 — is `item` a dictionary VALUE, `Dictionary(sub0 .. subN, impl: S)`, rather
+/// than the type `Dictionary[S = …]` the same functor heads? It prints as the value it is,
+/// `Dictionary(impl: Int64)`, its sub-dictionaries positional before `impl` — where the
+/// type's bracket made it `Dictionary[impl = Int64]`, the type of a sort applied. Told
+/// apart by the one `impl` key, which the type has not.
+fn is_dictionary_value(kb: &KnowledgeBase, item: &ViewItem<'static>, sym: Symbol) -> bool {
+    crate::kb::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, impl_key)| {
+        ctor == sym && item.named_keys(kb) == [impl_key]
+    })
+}
+
 impl PrintView for KnowledgeBase {
     type Item = ViewItem<'static>;
 
@@ -195,8 +206,8 @@ impl PrintView for KnowledgeBase {
         item.named_field(self, key).map(owned_item)
     }
 
-    fn heads_only_a_type(&self, _item: &Self::Item, sym: Symbol) -> bool {
-        self.is_type_value_head(sym)
+    fn heads_only_a_type(&self, item: &Self::Item, sym: Symbol) -> bool {
+        self.is_type_value_head(sym) && !is_dictionary_value(self, item, sym)
     }
 
     /// An occurrence the walk does not spell ([`TermPrinter::write_own_occurrence`]), and an

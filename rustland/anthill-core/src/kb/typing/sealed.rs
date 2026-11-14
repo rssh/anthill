@@ -990,6 +990,105 @@ fn type_heads<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<Symbol>) {
     });
 }
 
+/// (4) A LATER LOAD THAT MOVES A SEALED SORT FROM ONE CLASS TO ANOTHER (proposal 074 §2,
+/// "Which sorts have a dictionary"; kernel-language §8.2). A sort's class is read off its
+/// declaration, secondary entries included, and the sealed bodies were typed reading values of
+/// each sealed sort by the class it had then ([`SealedDeclarations::class_at_seal`]). A later
+/// load's entry can move one: a provision at the sort itself makes a sort with a dictionary one
+/// with values of its own (`namespace Ticker provides Named[T = Ticker]`), and an operation, a
+/// `requires` or a conversion gives an operation-free sort a dictionary (`namespace Marker
+/// provides Show[T = T]`). Either is refused, naming both classes; one load of both reads the
+/// one class. Only the sealed sorts a clause stored since the seal is about are asked again —
+/// the provider of a provision, the sort of a `requires` or of a rewritten operation list —
+/// so a later load pays for the sorts it touches.
+pub(super) fn sorts_a_later_load_moves(
+    kb: &mut KnowledgeBase,
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
+    if kb.sealed.is_empty() {
+        return;
+    }
+    let mut touched: Vec<(Symbol, RuleId)> = Vec::new();
+    for (relation, key) in [
+        ("anthill.reflect.SortProvidesInfo", "sort_ref"),
+        ("anthill.reflect.SortRequiresInfo", "sort_ref"),
+        ("anthill.reflect.SortInfo", "name"),
+    ] {
+        let Some(functor) = kb.try_resolve_symbol(relation) else {
+            continue;
+        };
+        let mut rids = kb.rules_by_functor(functor);
+        rids.sort_by_key(|rid| rid.index());
+        for rid in rids {
+            if clause_is_of_the_sealed_kb(kb, rid) {
+                continue;
+            }
+            let Some(sort) = fact_sort_field(kb, rid, key) else {
+                continue;
+            };
+            let sort = kb.canonical_sort_sym(sort);
+            if kb.sealed.class_at_seal(sort).is_some() && !touched.iter().any(|(s, _)| *s == sort) {
+                touched.push((sort, rid));
+            }
+        }
+    }
+    for (sort, rid) in touched {
+        let Some(before) = kb.sealed.class_at_seal(sort) else {
+            continue;
+        };
+        let now = sort_class(kb, sort);
+        if now == before {
+            continue;
+        }
+        let name = kb.qualified_name_of(sort).to_owned();
+        let message = format!(
+            "this load moves '{name}', which a sealed load declared, from {} to {} (proposal \
+             074 §2, kernel-language §8.2): the sealed load's bodies were typed reading a value \
+             typed '{name}' by the class it had, and a later load may not change how an earlier \
+             body reads it. Put the declaration in the source that declares '{name}'",
+            class_phrase(before),
+            class_phrase(now),
+        );
+        let site = kb
+            .rule_head_span(rid)
+            .or_else(|| kb.functor_span(sort));
+        refuse(message, site, errors, sources);
+    }
+}
+
+/// The class, as a refusal names it.
+fn class_phrase(class: SortClass) -> &'static str {
+    match class {
+        SortClass::Data => "a data sort",
+        SortClass::OwnValues => "an abstract sort with values of its own",
+        SortClass::OperationFree => {
+            "an abstract sort with no operation, whose values are its providers'"
+        }
+        SortClass::Dictionary => "an abstract sort with a dictionary",
+    }
+}
+
+/// The sort a reflect fact's `key` field names (`SortRequiresInfo(sort_ref: Ref(S), …)`).
+fn fact_sort_field(kb: &KnowledgeBase, rid: RuleId, key: &str) -> Option<Symbol> {
+    let head = kb.fact_head_term(rid)?;
+    let Term::Fn { named_args, .. } = kb.get_term(head) else {
+        return None;
+    };
+    let (_, value) = named_args
+        .iter()
+        .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == key)?;
+    match kb.get_term(*value) {
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
+        _ => None,
+    }
+}
+
 /// Where a provision is written: the clause, else the view it wrote, else the provider —
 /// a derived row has neither of the first two, and still has someone to point at.
 fn provision_site(kb: &KnowledgeBase, row: &ProvidesRow) -> Option<crate::span::SourceSpan> {

@@ -30,12 +30,21 @@ fn refused_at(kb: &mut KnowledgeBase, value: &str) {
 }
 
 fn source(provision: bool, rule: &str) -> String {
+    source_with("", "", provision, rule)
+}
+
+/// `source`, with `Marker` declaring `operation` (and `Int64`'s provision `member`): a sort with
+/// operations is a spec over its parameter, where an operation-free one has values of its own,
+/// its providers' (proposal 074 §2, decided with the user 2026-11-14).
+fn source_with(operation: &str, member: &str, provision: bool, rule: &str) -> String {
     let provider = if provision {
-        "namespace anthill.prelude.Int64\n import test.dxvk.Marker\n provides Marker[T = Int64]\nend\n"
+        format!(
+            "namespace anthill.prelude.Int64\n import test.dxvk.Marker\n provides Marker[T = Int64]\n{member}end\n"
+        )
     } else {
-        ""
+        String::new()
     };
-    format!("namespace test.dxvk\n import anthill.prelude.{{Int64, Bool}}\n sort Marker\n  sort T = ?\n end\n fact src(1)\n fact src(true)\n {rule}\nend\n{provider}")
+    format!("namespace test.dxvk\n import anthill.prelude.{{Int64, Bool}}\n sort Marker\n  sort T = ?\n{operation} end\n fact src(1)\n fact src(true)\n {rule}\nend\n{provider}")
 }
 
 #[test]
@@ -73,7 +82,12 @@ fn query_domain_refuses_a_parameter_spec_instead_of_answering_by_provision() {
     use anthill_core::kb::resolve::ResolveConfig;
     use anthill_core::kb::term::{Literal, Term, Var};
     use smallvec::smallvec;
-    let mut kb = load_kb_with(&source(true, ""));
+    let mut kb = load_kb_with(&source_with(
+        "  operation tag(x: T) -> Int64\n",
+        " operation tag(x: Int64) -> Int64 = 1\n",
+        true,
+        "",
+    ));
     let domain = kb.try_resolve_symbol("anthill.kernel.domain").unwrap();
     let negation = kb.try_resolve_symbol("anthill.kernel.not").unwrap();
     let marker = kb.try_resolve_symbol("test.dxvk.Marker").unwrap();
@@ -291,5 +305,26 @@ fn invalid_guard_bindings_are_load_errors() {
             crate::common::try_load_kb_with(&src).is_err(),
             "{guard} must be refused"
         );
+    }
+}
+
+/// WI-20261113-2KSAA (proposal 074 §2, decided with the user 2026-11-14) — an operation-free
+/// abstract sort has values of its own, its providers': `domain(1, Marker)` answers by
+/// `Int64`'s provision, and a `Bool` is no `Marker`. FAILS with an operation-free sort read
+/// as a spec over its parameter, where the goal is refused as the one above is.
+#[test]
+fn query_domain_answers_an_operation_free_sort_by_provision() {
+    let mut kb = load_kb_with(&source(true, ""));
+    for (query, definite) in [
+        ("anthill.kernel.domain(1, test.dxvk.Marker)", true),
+        ("anthill.kernel.domain(true, test.dxvk.Marker)", false),
+    ] {
+        let goal = crate::common::query_pattern_term(&mut kb, query);
+        let (answers, stats) = kb.resolve_with_stats(
+            &[goal],
+            &anthill_core::kb::resolve::ResolveConfig::default(),
+        );
+        assert!(stats.errors.is_empty(), "{query}: {:?}", stats.errors);
+        assert_eq!(answers.iter().any(|a| a.is_definite()), definite, "{query}");
     }
 }

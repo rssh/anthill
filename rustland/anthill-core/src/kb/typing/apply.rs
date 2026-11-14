@@ -156,6 +156,21 @@ fn check_apply_call(
     // in a single diagnostic rather than the first.
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
+    // Proposal 074 §2 — `Dictionary.instance[S]()` is a built-in: its bracket is read by its
+    // own rule (the positional entry binds `S`, a key names a provider), and the dictionary is
+    // built here, at load. Above the bracket's ordinary reading, which would bind the key.
+    if is_dictionary_instance_op(kb, fn_sym) {
+        return dictionary_instance_call(
+            kb,
+            env,
+            occ,
+            pos_args,
+            named_args,
+            span,
+            expected.as_ref(),
+        );
+    }
+
     // WI-839: only an OPERATION has a type-parameter list a call-site bracket could
     // bind, and `seed_op_type_args` — the one place a bracket is honoured — runs on
     // that path alone. So refuse the bracket for every other callee class HERE, ABOVE

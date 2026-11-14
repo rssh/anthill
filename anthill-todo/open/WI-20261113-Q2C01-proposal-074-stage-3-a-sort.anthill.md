@@ -23,3 +23,7 @@ PROPOSAL 074 STAGE 3 — A SORT WITH OPERATIONS AND NO PARAMETER HAS A DICTIONAR
 
 ROW ADDED AFTER THE THIRD REVIEW (proposal 074 §5, with the user 2026-11-13): two dictionaries at one type, the idiom. stamps(a: Ticker, b: Ticker) = (Ticker.now(), …) is refused, two handed dictionaries answering the call; a helper handed one reads it: nowOf(c: Ticker) -> String = Ticker.now(), and stamps(a: Ticker, b: Ticker) = (nowOf(a), nowOf(b)) answers each one's now(). Also from that review: the supply channel for a requirement with no carrier is new to build, as is the two-answer refusal; the class change of use(sc()) is measured by the census first.
 
+### 2026-11-14T05:57:56Z — feedback — user
+
+ROW MOVED FROM STAGE 1 (WI-20261113-2KSAA, decided with the user 2026-11-14): a sort with a dictionary and a PARAMETER that nothing provides has the dictionary of its own bodies, built by the same mechanism as a module's here. Row: Dictionary.instance[ProjAdditive[X = Int64, Y = Meters]]() is ProjAdditive's own dictionary, Dictionary(<Additive at Int64>, <Iso at Int64, Meters>, impl: ProjAdditive) — the sort as its own impl, its requires resolved as sub-dictionaries (no ResolvedRequiresNode builds that today; check the run-time layout where spec and provider are one sort, and the sub-goal Additive[T = Int64] meeting ProjAdditive again at Y = Int64, stage 4's cycle). Stage 1 refuses it naming this stage (wi_2ksaa_dictionary_instance_test::a_sort_nothing_provides_waits_for_stage_3), and that row is rewritten here.
+

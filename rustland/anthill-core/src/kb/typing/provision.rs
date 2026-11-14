@@ -217,38 +217,153 @@ pub(crate) fn spec_carrier_param_or_sole(kb: &KnowledgeBase, spec_sort: Symbol) 
 /// and is still a `Set`'s); otherwise a parameter some operation takes a value of is the
 /// carrier parameter ([`spec_carrier_param`]).
 ///
-/// AND OFF THE PROVISIONS where no operation says. A sort that declares no such operation
-/// has a carrier parameter where a provision binds one to the PROVIDING SORT ITSELF:
-/// `Int64 provides Eq[T = Int64]` makes an `Int64` the `T` of an `Eq`, while `Leaf provides
-/// Shape[E = Int64]` binds `E` to another sort, an element, and makes a `Leaf` a `Shape`.
-/// A sort nothing provides answers `false`: nothing says a provider would be a parameter's
-/// value.
+/// NEVER OFF THE PROVISIONS (proposal 074 §2, "Which sorts have a dictionary"). Where no
+/// operation receives on a parameter, the sort is still over one if it has a parameter and
+/// operations in its chain, none receiving on it ([`SortClass::Dictionary`]):
+/// `sort Default { sort T = ?  operation default() -> T }` is over `T` whoever provides it.
+/// Read off the provisions, as it was until 074 stage 1, a `Default` provided only by a
+/// witness at another sort (`Seven provides Default[T = Int64]`) took a `Seven` where a
+/// `Default` was written, and the same program with `Int64 provides Default[T = Int64]`
+/// took a dictionary.
 pub(super) fn spec_has_carrier_param(kb: &KnowledgeBase, spec: Symbol) -> bool {
     spec_over_parameter(kb, spec).is_some()
 }
 
 /// The parameter `spec` is a spec OVER, where it is one — [`spec_has_carrier_param`]'s
-/// answer with the parameter a diagnostic names: the one an operation receives on, else
-/// the first a provision binds to its own provider. `None` for a sort that is its own
-/// carrier, and for a sort with constructors, which nothing provides.
+/// answer, an abstract sort with a dictionary that has a parameter, with the parameter
+/// a diagnostic names: the one an operation receives on, else the sort's first. The sort's
+/// dictionary is at all its parameters; the one answered is for a message, and for the rule
+/// head's member spelling (`?x: Spec.C`), which names the carrier. `None` for a data sort, an
+/// abstract sort with values of its own, and one with no parameter (`Ticker`, whose dictionary
+/// 074's stage 3 builds; `Main`).
 ///
 /// ONE LADDER, read by the verdict and by the message alike: they were two
 /// (`carrier_param_of` added a sole-parameter rung of its own), and where they disagreed
 /// a refusal printed an empty parameter name.
 pub(crate) fn spec_over_parameter(kb: &KnowledgeBase, spec: Symbol) -> Option<Symbol> {
     let canon = kb.canonical_sort_sym(spec);
-    if sort_is_data(kb, canon) || spec_is_self_representing(kb, canon) {
+    if sort_class(kb, canon) != SortClass::Dictionary {
         return None;
     }
     spec_carrier_param(kb, canon).or_else(|| {
-        provides_rows_of_spec(kb, canon).find_map(|row| {
-            row.bindings(kb).iter().find_map(|(key, bound)| {
-                composed_self_reference(kb, row.provider, bound)
-                    .then(|| kb.type_param_sym_of(canon, kb.local_name_of(*key)))
-                    .flatten()
-            })
-        })
+        sort_type_params_as_pairs(kb, canon)
+            .first()
+            .map(|(p, _)| *p)
     })
+}
+
+/// Proposal 074 §2, "Which sorts have a dictionary" — the classes of sort, read off the
+/// declaration alone (never off who provides the sort), its secondary entries included
+/// (kernel-language §8.2). An ABSTRACT sort is one with no constructors; it has a dictionary
+/// where its chain declares an operation and none receives on the sort, and values of its
+/// own otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SortClass {
+    /// A data sort: constructors — an entity, an enum, with or without operations. Its values
+    /// are its own; it has no dictionary of its operations, only the dictionary of its own
+    /// `requires` and those of the specs it provides.
+    Data,
+    /// An abstract sort with values of its own by what its declaration says of them
+    /// ([`has_values_by_declaration`]): declared opaque (`sort Handle = ?`), or one an
+    /// operation receives on — its own, or through a `provides` that binds a spec's parameter
+    /// to the sort itself (`Stream`, `Symbol provides PartialEq[T = Symbol]`).
+    OwnValues,
+    /// An abstract sort nothing in whose chain declares an operation (`sort KVStore { sort K
+    /// = ?  sort V = ? }`, `Main`): it has values of its own, its providers', and a
+    /// requirement of it passes nothing at run time — with no operation, nothing could make it
+    /// a dictionary (decided with the user 2026-11-14: the existential returns of WI-391…488
+    /// type a provider's value so).
+    OperationFree,
+    /// An abstract sort with a dictionary: its chain declares operations — its own, those its
+    /// `requires` and its conversions reach — and none receives on the sort itself
+    /// (`Additive`, `Default`, `Ord`, `Ticker`). A value typed at it is its dictionary.
+    Dictionary,
+}
+
+/// The class of `sort` ([`SortClass`]).
+///
+/// Memoized on `kb.sort_class_cache`, against the count of clauses the KB has stored: a class
+/// reads the sort's provisions, its `requires` and its operations, each a stored fact, so a
+/// clause stored since — a provision a later load writes, a secondary entry's operation —
+/// starts the memo again, and a class asked early in a load is not kept past the clauses the
+/// load stores after it. A layer snapshots the memo with the rules it discards.
+pub(crate) fn sort_class(kb: &KnowledgeBase, sort: Symbol) -> SortClass {
+    let canon = kb.canonical_sort_sym(sort);
+    let stored = kb.rules.len();
+    {
+        let mut memo = kb.sort_class_cache.borrow_mut();
+        if memo.0 != stored {
+            memo.1.clear();
+            memo.0 = stored;
+        }
+        if let Some(class) = memo.1.get(&canon) {
+            return *class;
+        }
+    }
+    let class = if sort_is_data(kb, canon) {
+        SortClass::Data
+    } else if has_values_by_declaration(kb, canon) {
+        SortClass::OwnValues
+    } else if !chain_declares_an_operation(kb, canon) {
+        SortClass::OperationFree
+    } else {
+        SortClass::Dictionary
+    };
+    kb.sort_class_cache.borrow_mut().1.insert(canon, class);
+    class
+}
+
+/// Is the abstract sort `sort` one with values of its own by what its declaration says of
+/// them — declared opaque, or received on (its own operation, or a `provides` at itself) —
+/// rather than for declaring no operation? A TYPE PARAMETER (`Monad[M[T]]`'s `M`, whose own
+/// parameter would make it a spec over one) declares no operation, and is
+/// [`SortClass::OperationFree`]: a value typed at it is a value of the type it stands for.
+pub(super) fn has_values_by_declaration(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    let canon = kb.canonical_sort_sym(sort);
+    kb.opaque_sorts.contains(&canon)
+        || spec_is_self_representing(kb, canon)
+        || provides_at_itself(kb, canon)
+}
+
+/// Does `sort` provide a spec with one of the spec's parameters bound to `sort` itself
+/// (`Symbol provides PartialEq[T = Symbol]`) — which makes it that spec's carrier, a sort with
+/// values of its own? A binding to the sort's own PARAMETER (`Ord provides WeakOrd[T = T]`)
+/// is a conversion, and is no such provision. Nor is a provision of a sort whose chain
+/// declares no operation: `Error provides Effect[T = Error[?]]` registers an effect kind and
+/// `Cell provides Modifiable[T = Self]` admits a `Modify`, and neither says that an operation
+/// receives a value of the sort.
+fn provides_at_itself(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    provides_rows_of_provider(kb, sort).any(|row| row_provides_at_itself(kb, sort, &row))
+}
+
+/// Is `row`, a provision `sort` makes, one [`provides_at_itself`] counts?
+pub(super) fn row_provides_at_itself(kb: &KnowledgeBase, sort: Symbol, row: &ProvidesRow) -> bool {
+    !same_sort_canonical(kb, row.spec_base, sort)
+        && !is_derived_only_spec(kb, row.spec_base)
+        && chain_declares_an_operation(kb, kb.canonical_sort_sym(row.spec_base))
+        && row
+            .bindings(kb)
+            .iter()
+            .any(|(_, bound)| composed_self_reference(kb, sort, bound))
+}
+
+/// Is `spec` one whose every instance the loader derives, and none an author writes —
+/// `TypeValue` (proposal 065 §2) and `TypePattern` (071 §1.2)? Every sort has a
+/// `TypeValue[T = Self]` row, which says the TYPE may be read as a value, and makes no sort
+/// the carrier of values of its own.
+fn is_derived_only_spec(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    matches!(
+        kb.qualified_name_of(kb.canonical_sort_sym(spec)),
+        "anthill.reflect.TypeValue" | "anthill.reflect.TypePattern"
+    )
+}
+
+/// Does `sort`'s chain declare an operation: its own, or one of a sort its `requires` and
+/// its conversions reach, transitively ([`transitive_required_sorts`])? `Ord` declares none
+/// and reaches `WeakOrd.compare` through `provides WeakOrd[T = T]`.
+pub(super) fn chain_declares_an_operation(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    let has_ops = |s: Symbol| !crate::kb::op_requirements::operations_of_sort(kb, s).is_empty();
+    has_ops(sort) || transitive_required_sorts(kb, sort).into_iter().any(has_ops)
 }
 
 /// Has `sort` constructors of its own? Read off the sort → constructors index, which is
@@ -688,8 +803,22 @@ pub(crate) fn check_rule_sort_uses(
             }
             RuleSortSite::HeadMember(member) => {
                 let member = short_name_of(kb.local_name_of(member)).to_owned();
-                let carrier = spec_over_parameter(kb, sort)
-                    .map(|p| short_name_of(kb.local_name_of(p)).to_owned());
+                // The CARRIER the member must name: the parameter an operation receives on,
+                // or a sole parameter. A sort with a dictionary and several parameters none
+                // of which an operation receives on says no carrier, its dictionary being at
+                // all of them, and any member names a provider's parameter (074 §2; the
+                // provision rung that picked one off who provides the sort is gone).
+                let over = spec_over_parameter(kb, sort);
+                let carrier = over.and_then(|_| {
+                    spec_carrier_param(kb, sort).or_else(|| {
+                        let params = sort_type_params_as_pairs(kb, sort);
+                        (params.len() == 1).then(|| params[0].0)
+                    })
+                });
+                if over.is_some() && carrier.is_none() {
+                    continue;
+                }
+                let carrier = carrier.map(|p| short_name_of(kb.local_name_of(p)).to_owned());
                 if carrier.as_deref() == Some(member.as_str()) {
                     continue;
                 }

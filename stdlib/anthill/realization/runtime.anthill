@@ -37,8 +37,28 @@ namespace anthill.realization.runtime
   -- and the impl is a multi-spec carrier, so the witnessed
   -- spec is not recoverable from the value — it lives in the type). Bare
   -- `Dictionary` (S unknown) is the existential form.
+  --
+  -- A program writes a dictionary `Dictionary.instance[Additive[T = Int64]]()` and types
+  -- a parameter that takes one at the spec, `x: Additive` (proposal 074 §2): `instance`'s
+  -- result is typed `S`, so user code names `Dictionary` only as the operation's sort. It
+  -- prints `Dictionary(impl: Int64)`, its sub-dictionaries positional before `impl`. The
+  -- readers below take a `Dictionary[S = …]` and are the reflection layer, reached from
+  -- the host and from rules.
   sort Dictionary
     sort S = ?
+
+    -- The dictionary of the spec application `S` (proposal 074 §2). A built-in with no
+    -- definition in the language, as `TypeValue.type_value` is: the typer builds the
+    -- dictionary at load and the call delivers it. `S` is fixed by the bracket's one
+    -- positional entry or by the type the call is expected at, to an application with every
+    -- parameter written, or rigid under a clause (the clause's own dictionary then); a key
+    -- of the bracket names a provider by the spec's short name,
+    -- `Dictionary.instance[Additive[T = Meters], Additive = MetersAdd]()`, and without one
+    -- the provider is the one kernel-language §8.7's order selects. Refused at load: a sort
+    -- with constructors or with values of its own (`Box`, `Stream`), a marker, a sort with
+    -- operations and no parameter (for now), an application leaving a parameter unwritten,
+    -- and one no provision answers.
+    operation instance() -> S
 
     -- The resolved impl identity (the `impl` named child).
     operation impl(d: Self) -> Symbol @[host_implemented]

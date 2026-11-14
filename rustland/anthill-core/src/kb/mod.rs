@@ -1944,6 +1944,16 @@ pub struct KnowledgeBase {
     /// (`wire_provides_scope_parent`'s gate), as the same clause written out may not.
     pub(crate) aliases_applying: HashSet<Symbol>,
 
+    /// Proposal 074 §2 — the sorts DECLARED OPAQUE, `sort Handle = ?` written where no sort
+    /// encloses it (a namespace's, not a sort's type parameter): their values are the
+    /// host's or a binding's, a class of "Which sorts have a dictionary" the declaration
+    /// says and nothing else does. Filled by the scan's pass 1.
+    pub(crate) opaque_sorts: HashSet<Symbol>,
+
+    /// Proposal 074 §2 — memoized `typing::sort_class`, against the count of clauses stored
+    /// when the memo was taken (`rules.len()`): see that function.
+    pub(crate) sort_class_cache: RefCell<(usize, HashMap<Symbol, typing::SortClass>)>,
+
     /// WI-20260924-SNJPR — the aliases THIS scan declared, with what the head resolution
     /// needs: the scope the target is written in, the file asking, and the written target
     /// name. Filled by pass 1, drained by `resolve_scan_alias_heads`; empty outside a scan.
@@ -3199,6 +3209,8 @@ impl KnowledgeBase {
             op_type_param_defaults: HashMap::new(),
             alias_heads: HashMap::new(),
             aliases_applying: HashSet::new(),
+            opaque_sorts: HashSet::new(),
+            sort_class_cache: RefCell::new((0, HashMap::new())),
             scan_alias_decls: HashMap::new(),
             provides_index: std::cell::RefCell::new(crate::kb::typing::ProvidesIndex::default()),
             sort_info_index: None,

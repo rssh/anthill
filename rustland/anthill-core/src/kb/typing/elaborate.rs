@@ -1741,9 +1741,9 @@ pub(super) fn surviving_dot_apply(
         if let Expr::DotApply { name, receiver, .. } = expr {
             return Some((*name, Some(node.span.span), Rc::clone(receiver)));
         }
-        // Proposal 073 §2 — a spec application read as an instance is its dictionary where it
-        // runs; its arguments (`x.T` in `Additive[T = x.T]`) are types, and nothing runs them.
-        if node.spec_application_dict().is_some() {
+        // Proposal 074 §2 — a `Dictionary.instance[…]()` call is its dictionary where it runs;
+        // its bracket (`x.T` in `[Additive[T = x.T]]`) is types, and nothing runs them.
+        if node.built_dictionary().is_some() {
             continue;
         }
         let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
@@ -2288,9 +2288,9 @@ pub(super) fn rigid_value_reads(
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(node) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
-        // A spec application read as the instance is no value read of its arguments: they
-        // are the types the instance is at (proposal 073 §2).
-        if node.spec_application_dict().is_some() {
+        // A `Dictionary.instance[…]()` call reads no value: its bracket is the types the
+        // dictionary is at (proposal 074 §2).
+        if node.built_dictionary().is_some() {
             continue;
         }
         // A parameter the signature writes inline is read as a variable, `?t`, where a

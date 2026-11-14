@@ -64,6 +64,7 @@ fn program(ns: &str, decls: &str) -> String {
         r#"
 namespace wi_dndzf3.{ns}
   import anthill.prelude.{{Int64, Float, String, Additive, Cell, Unit, Modify}}
+  import anthill.realization.runtime.Dictionary
   sort Box
     sort E = ?
     entity box(v: E)
@@ -211,7 +212,7 @@ fn a_cycle_among_an_arrows_parameters_is_refused() {
 /// + b`, waits on a lambda's parameter typed at a spec being an instance, WI-20261105-P0QGF.)
 #[test]
 fn sum_with_reads_its_callbacks_projection_at_the_instance_it_hands() {
-    let decls = "  operation sumWith[X](f: (x: Additive, a: x.T, b: x.T) -> x.T, a: X, b: X) -> X\n    requires Additive[T = X]\n  = f(Additive[T = X], a, b)\n  operation add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b\n  operation go() -> Int64 = sumWith(add2, 2, 3)\n  operation floats() -> Float = sumWith(add2, 1.5, 2.5)";
+    let decls = "  operation sumWith[X](f: (x: Additive, a: x.T, b: x.T) -> x.T, a: X, b: X) -> X\n    requires Additive[T = X]\n  = f(Dictionary.instance[Additive[T = X]](), a, b)\n  operation add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b\n  operation go() -> Int64 = sumWith(add2, 2, 3)\n  operation floats() -> Float = sumWith(add2, 1.5, 2.5)";
     assert_eq!(runs("sum_with", decls), Ok(5));
     let mut interp = interp_for(&program("sum_with_float", decls));
     let v: Value = interp

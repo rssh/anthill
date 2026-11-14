@@ -1189,6 +1189,19 @@ pub(super) fn check_bare_ref(
         let expected = expected.cloned();
         return check_constructor_iter(kb, env, flow, sym, &[], &[], &[], &[], span, expected, occ, None);
     }
+    // Proposal 074 §2 — `Dictionary.instance` is a built-in whose call the typer reads
+    // ([`dictionary_instance_call`]): it has no body to lift into a function value, nor to run
+    // as a zero-argument call written bare, and either would load and die where it ran.
+    if is_dictionary_instance_op(kb, sym) {
+        return Err(TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::DictionaryInstance,
+            expected: "a call, `Dictionary.instance[Spec[…]]()`".into(),
+            actual: "`Dictionary.instance` named bare: a built-in, which is no function value"
+                .into(),
+        });
+    }
     // WI-275: a bare operation reference used where a function type is expected
     // denotes the operation as a first-class function value (eta-expansion) —
     // its `Function[A, B, E]` arrow type, not its return type. Fires only in a
