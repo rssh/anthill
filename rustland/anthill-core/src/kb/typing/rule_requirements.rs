@@ -1284,7 +1284,8 @@ fn woven_goal_has_reader(
             .op_record(functor)
             .and_then(|r| r.signature.as_ref())
             .is_some_and(|sig| sig.params.len() == pos_args.len() + named_args.len());
-    relational || bool_view
+    // The resolver reads a woven equality through its dictionary, as its own goal.
+    relational || bool_view || is_semantic_equality(kb, functor)
 }
 
 /// Does the demand walk of [`infer_rule_body_requirements`] look inside this DATA-position
@@ -1382,7 +1383,8 @@ fn inferred_demand(
     // is a computation (proposal 068 §1) and a woven call is dispatched through its
     // dictionary (`reduce_op_value`).
     let reader = kb.functional_relation_arity(functor).is_some()
-        || kb.body_less_relation_arity(functor).is_some();
+        || kb.body_less_relation_arity(functor).is_some()
+        || is_semantic_equality(kb, functor);
     if !reader {
         return None;
     }
@@ -2300,30 +2302,12 @@ pub(super) fn check_one_spec_op_requirement(
 ) {
     // A spec op the HOST answers for every carrier never fails for a *missing spec
     // instance*, so it is not this pass's concern — skip it ([`host_implements`]):
-    //   * `PartialEq.eq` (SemEq) — structural equality IS the default
-    //     `PartialEq` instance (kernel-language.md §equality / proposal 051 / WI-616: "a
-    //     composite with no `eq` of its own keeps the structural compare", and a scalar
-    //     carrier supplies its own), so EVERY carrier already satisfies `PartialEq`; a carrier
-    //     wanting non-structural equality *overrides* it (`Set.eq`/`Map.eq`, `Float`'s
-    //     IEEE `eq`), and the explicitly structural test is `===`/`struct_eq`. Never a
-    //     missing requirement.
-    //
-    //     `PartialEq`, NOT `Eq`, AND THE DIFFERENCE IS NOT PEDANTRY. This sentence said
-    //     "EVERY carrier already satisfies `Eq`" until WI-879, and that is FALSE — the
-    //     tree ENFORCES that it is false. `Float` provides `PartialEq`, `PartialOrd` and
-    //     `NonEq` and deliberately not `Eq` (WI-644 / proposal 004), to the point that
-    //     WI-658 makes a user's `provides Eq[Float]` a LOAD ERROR; and WI-664 derives
-    //     `NonEq` for every COMPOSITE carrying a `Float` field, so a plain
-    //     `Point(x: Float, y: Float)` is one too. A class, not one carrier. The claim
-    //     this early return NEEDS is the one about the partial BASE, which is total and
-    //     which `PartialEq.eq` is the operation of — so the return was always safe and
-    //     only its reason was wrong. A WI-644 leftover: the citation is WI-616, which
-    //     predates the split that the registration site states two lines above ("eq/neq
-    //     live on PartialEq, gt/lt/gte/lte on PartialOrd (the partial bases); Eq/Ord are
-    //     the lawful/total markers").
     //   * `Additive.add`/`sub`, `Multiplicative.mul` and the rest of the arithmetic
     //     family — builtins that never consult an instance, so a `requires` could not fix
     //     them; a non-numeric carrier is a plain resolution failure.
+    //   * NOT the semantic equality, `PartialEq.eq` ([`is_semantic_equality`]): a call of it
+    //     is its carrier's member, so a carrier that provides no `PartialEq` is a missing
+    //     dictionary, as for the comparisons below.
     //   * NOT the comparisons, since WI-20260909-SM910. `PartialOrd.gt`/`gte`/`lt`/`lte`
     //     are no builtins: their primitive runs a carrier's member it realizes
     //     (`Int64.gt`), behind dispatch, so a carrier with no order is a missing
@@ -2468,7 +2452,8 @@ pub(super) fn spec_at_an_unknown_carrier(
     };
     let owed = !host_implements(kb, functor)
         && op_has_spec_carrier_param(kb, functor, spec)
-        && (!defaulted || defaulted_member_owes_an_instance(kb, spec));
+        && (!defaulted || defaulted_member_owes_an_instance(kb, spec))
+        && !equality_by_components(kb, functor, pos_args);
     (owed
         && matches!(
             spec_op_call_carrier_outcome(kb, functor, pos_args, named_args, spec).0,

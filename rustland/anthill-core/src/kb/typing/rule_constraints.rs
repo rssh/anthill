@@ -872,6 +872,7 @@ pub(super) fn collect_occurrence_type_constraints(
         // An arrow's components are data, walked below; the arrow itself is no call.
         None => clause_call_parts(expr).filter(|_| !rule_body_type_term(kb, expr)),
     };
+    let mut return_nested: Option<NestedPositions> = None;
     let nested = match parts {
         Some((functor, pos_args, named_args)) => {
             if goal {
@@ -975,6 +976,35 @@ pub(super) fn collect_occurrence_type_constraints(
                 Expr::Ref(name) => {
                     constrain_constant_constructor(kb, *name, position, &mut st.subst)
                 }
+                // A tuple is of the tuple of its components' types, as its reflect twin is
+                // ([`collection_literal_type`]): `?t <=> (1, 2)` makes `?t` an `(Int64, Int64)`.
+                Expr::TupleLit { positional, named } => {
+                    let mut nested = NestedPositions::new();
+                    let mut component = |kb: &mut KnowledgeBase, index: usize, arg: &Rc<NodeOccurrence>, st: &mut ClauseConstraints| {
+                        let name = kb.intern("element");
+                        let fresh = kb.fresh_var(name);
+                        let ty = Value::term(kb.alloc(Term::Var(Var::Global(fresh))));
+                        if !constrain_arg(kb, arg, &ty, true, None, st) {
+                            nested.push((index, ty.clone()));
+                        }
+                        ty
+                    };
+                    let pos: Vec<Value> =
+                        positional.iter().enumerate().map(|(i, a)| component(kb, i, a, st)).collect();
+                    let labelled: Vec<(Symbol, Value)> = named
+                        .iter()
+                        .enumerate()
+                        .map(|(j, (label, a))| (*label, component(kb, positional.len() + j, a, st)))
+                        .collect();
+                    let ty = tuple_value_type(kb, pos, labelled);
+                    if let Some(position) = position {
+                        let mut trial = st.subst.clone();
+                        if unify_types(kb, &mut trial, position, &ty) {
+                            st.subst = trial;
+                        }
+                    }
+                    return_nested = Some(nested);
+                }
                 Expr::DotApply { .. } => {
                     if let Some(position) = position.filter(|_| committed) {
                         st.late.push(LatePosition::DotResult {
@@ -985,7 +1015,7 @@ pub(super) fn collect_occurrence_type_constraints(
                 }
                 _ => {}
             }
-            NestedPositions::new()
+            return_nested.take().unwrap_or_default()
         }
     };
     // Every other form adds no constraint of its own and is reached through the child

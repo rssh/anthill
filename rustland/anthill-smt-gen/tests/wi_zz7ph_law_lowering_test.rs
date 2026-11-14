@@ -143,9 +143,11 @@ fn a_name_segment_spelled_like_a_variable_is_not_a_variable() {
     let kb = load_kb_with(
         r#"
 namespace test.zz7ph.var_7
+  import anthill.prelude.{PartialEq}
   import anthill.prelude.PartialEq.{neq}
   sort Scope
     sort T = ?
+    requires PartialEq[T = T]
     rule p(?a: T) :- neq(?a, ?a)
   end
 end

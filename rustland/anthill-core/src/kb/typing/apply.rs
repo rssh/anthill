@@ -4090,6 +4090,25 @@ fn check_apply_call(
         // the rustland binding emits a SortProvidesInfo whose binding
         // value resolves to the same Int sort as the per-call subst sees.
         if let Some(spec_sort) = lookup_spec_op_dispatch(kb, fn_sym) {
+            // A tuple has no sort to carry a provision, so its equality is its components'
+            // (kernel-language §8.3): no instance at the tuple, and one at each component.
+            if is_semantic_equality(kb, fn_sym) {
+                let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                if let Some(tuple) = goal_carrier_binding(kb, &goal)
+                    .filter(|t| equality_at_a_tuple(kb, fn_sym, t))
+                    .cloned()
+                {
+                    if let Some(refusal) = tuple_component_without_equality(kb, spec_sort, &tuple, fn_sym, span) {
+                        return Err(refusal);
+                    }
+                    return Ok(TypeResult {
+                        ty: resolved_ret.clone(),
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+            }
             // The op's short name (e.g. "add" for "anthill.prelude.Additive.add")
             // joins with the impl sort to find the impl operation symbol.
             let op_qn = kb.qualified_name_of(fn_sym).to_string();
@@ -7503,6 +7522,38 @@ fn refuse_no_finite_type(
 fn judged_at_the_call(kb: &KnowledgeBase, env: &TypingEnv, fn_sym: Symbol, spec_sort: Symbol) -> bool {
     env.in_evaluated_body()
         || (env.in_rule_body() && !op_has_spec_carrier_param(kb, fn_sym, spec_sort))
+}
+
+/// The refusal of `=` (`eq`, of `spec`) at the tuple type `tuple` where a component's type gives
+/// it nothing to compare by: one stated in full that provides no `PartialEq`, as a sort or a
+/// former is refused at a call of it, a tuple component asked again. `None` where every
+/// component's type provides it or leaves a part open, which the components' own reading meets.
+fn tuple_component_without_equality(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    tuple: &Value,
+    op: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    for (_, component) in schema_fields(kb, tuple)? {
+        if matches!(type_head(kb, &component), TypeHead::NamedTuple) {
+            if let Some(refusal) = tuple_component_without_equality(kb, spec, &component, op, span) {
+                return Some(refusal);
+            }
+            continue;
+        }
+        if !type_is_fixed(kb, &component)
+            || matches!(resolve_spec_at(kb, spec, &component), Some(ResolutionResult::Resolved(_)))
+        {
+            continue;
+        }
+        let goal = spec_goal_at(kb, spec, &component)?;
+        return match sort_functor_of_view(kb, &component) {
+            Some(carrier) => unprovided_spec_at_carrier(kb, &goal, carrier, op, span),
+            None => unprovided_spec_at_former(kb, &goal, op, span),
+        };
+    }
+    None
 }
 
 /// The refusal of a rule body's call of a member with no argument at the spec's carrier, at an

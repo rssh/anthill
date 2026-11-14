@@ -34,7 +34,6 @@
 //! never keyed the index at all, whatever route supplied its `eq`.
 
 use anthill_core::eval::Value;
-use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
@@ -56,44 +55,24 @@ const WITNESS_SRC: &str = r#"namespace test.wi837
     operation eq(a: Pebble, b: Pebble) -> Bool = true
   end
 
-  rule peq(?x, ?y) :- eq(?x, ?y)
-  rule pneq(?x, ?y) :- neq(?x, ?y)
+  rule peq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
+  rule pneq[A](?x: A, ?y: A) :- PartialEq[T = A], neq(?x, ?y)
 end
 "#;
 
-/// `ctor_qn(f1: v1, …)` as a term. Every carrier in this file is a one- or
-/// two-field entity, so the tests differ only in the qualified name and the values.
-pub(crate) fn entity_term(kb: &mut KnowledgeBase, ctor_qn: &str, fields: &[(&str, i64)]) -> TermId {
-    let functor = kb
-        .try_resolve_symbol(ctor_qn)
-        .unwrap_or_else(|| panic!("{ctor_qn}"));
-    let named = fields
-        .iter()
-        .map(|&(name, v)| {
-            let sym = kb.intern(name);
-            let val = kb.alloc(Term::Const(Literal::Int(v)));
-            (sym, val)
-        })
-        .collect::<Vec<_>>();
-    kb.alloc(Term::Fn {
-        functor,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&named),
-    })
+/// `ctor_qn(f1: v1, …)` as query text. Every carrier in this file is a one- or two-field
+/// entity, so the tests differ only in the qualified name and the values.
+pub(crate) fn entity_text(ctor_qn: &str, fields: &[(&str, i64)]) -> String {
+    let fields: Vec<String> = fields.iter().map(|(name, v)| format!("{name}: {v}")).collect();
+    format!("{ctor_qn}({})", fields.join(", "))
 }
 
-/// Solutions of `pred_qn(x, y)` — each carrier's `eq` answers true for ANY pair, so
-/// ONE solution means the index dispatched and NONE means it answered structurally.
-pub(crate) fn solutions(kb: &mut KnowledgeBase, pred_qn: &str, x: TermId, y: TermId) -> usize {
-    let functor = kb
-        .try_resolve_symbol(pred_qn)
-        .unwrap_or_else(|| panic!("{pred_qn}"));
-    let goal = kb.alloc(Term::Fn {
-        functor,
-        pos_args: SmallVec::from_slice(&[x, y]),
-        named_args: SmallVec::new(),
-    });
-    kb.resolve(&[goal], &ResolveConfig::default()).len()
+/// Solutions of the query `pred_qn(x, y)` — each carrier's `eq` answers true for ANY pair,
+/// so ONE solution means the carrier's member decided and NONE means it answered
+/// structurally. A query is typed where it is read, so the relation's `PartialEq` guard is
+/// passed the instance at the values' type (kernel-language §5.3).
+pub(crate) fn solutions(kb: &mut KnowledgeBase, pred_qn: &str, x: &str, y: &str) -> usize {
+    crate::common::pattern_answer_counts(kb, &format!("{pred_qn}({x}, {y})")).1
 }
 
 /// Load `src` and count solutions of `pred_qn` over two distinct `ctor_qn` values.
@@ -105,10 +84,10 @@ fn eq_solutions(src: &str, pred_qn: &str, ctor_qn: &str, fields: &[&str]) -> usi
             .enumerate()
             .map(|(i, &f)| (f, base + i as i64))
             .collect();
-        entity_term(kb, ctor_qn, &vals)
+        entity_text(ctor_qn, &vals)
     };
     let (x, y) = (mk(&mut kb, 1), mk(&mut kb, 100));
-    solutions(&mut kb, pred_qn, x, y)
+    solutions(&mut kb, pred_qn, &x, &y)
 }
 
 /// Assert `src` fails to load with a diagnostic containing every needle. Asserting
@@ -137,15 +116,23 @@ pub(crate) fn assert_loads_clean(src: &str, why: &str) {
     }
 }
 
+/// `pebble(n: n)` as a term, what a host hands the interpreter.
 fn pebble_term(kb: &mut KnowledgeBase, n: i64) -> TermId {
-    entity_term(kb, "test.wi837.Pebble.pebble", &[("n", n)])
+    let functor = kb.try_resolve_symbol("test.wi837.Pebble.pebble").expect("pebble");
+    let field = kb.intern("n");
+    let val = kb.alloc(Term::Const(Literal::Int(n)));
+    kb.alloc(Term::Fn {
+        functor,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(field, val)]),
+    })
 }
 
 /// Solutions of `test.wi837.<pred>(pebble(a), pebble(b))` — the RESOLVER's
 /// `eq`/`neq` builtin as a rule-body goal.
 fn resolver_solutions(kb: &mut KnowledgeBase, pred: &str, a: i64, b: i64) -> usize {
-    let (x, y) = (pebble_term(kb, a), pebble_term(kb, b));
-    solutions(kb, &format!("test.wi837.{pred}"), x, y)
+    let pebble = |n: i64| entity_text("test.wi837.Pebble.pebble", &[("n", n)]);
+    solutions(kb, &format!("test.wi837.{pred}"), &pebble(a), &pebble(b))
 }
 
 // ── The witness's `eq` reaches BOTH backends ─────────────────────────────────
@@ -218,7 +205,7 @@ fn an_unprovided_carrier_keeps_structural_equality() {
     operation eq(a: Pebble, b: Pebble) -> Bool = true
   end
 
-  rule seq(?x, ?y) :- eq(?x, ?y)
+  rule seq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
     assert_eq!(
@@ -360,7 +347,7 @@ fn a_type_only_provision_does_not_hide_a_later_eq_binding() {
     provides PartialEq[T = Pebble, eq = pebbleEq]
   end
 
-  rule peq(?x, ?y) :- eq(?x, ?y)
+  rule peq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
     assert_eq!(
@@ -404,7 +391,7 @@ fn a_carrier_own_eq_still_dispatches() {
     operation eq(a: Pebble, b: Pebble) -> Bool = true
   end
 
-  rule peq(?x, ?y) :- eq(?x, ?y)
+  rule peq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
     assert_eq!(
@@ -443,7 +430,7 @@ fn a_witness_that_binds_eq_supplies_it_too() {
     provides PartialEq[T = Pebble, eq = pebbleEq]
   end
 
-  rule peq(?x, ?y) :- eq(?x, ?y)
+  rule peq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
     assert_eq!(
@@ -485,7 +472,7 @@ const NS_ENTITY_SRC: &str = r#"namespace test.wi837.nsent
     provides PartialEq[T = binding, eq = bindEq]
   end
 
-  rule beq(?x, ?y) :- eq(?x, ?y)
+  rule beq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
 
@@ -504,7 +491,7 @@ const SORT_ENTITY_SRC: &str = r#"namespace test.wi837.sortent
     provides PartialEq[T = Binding, eq = bindEq]
   end
 
-  rule beq(?x, ?y) :- eq(?x, ?y)
+  rule beq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
 
@@ -561,7 +548,7 @@ fn a_witness_supplies_eq_for_a_namespace_level_entity_carrier() {
     operation eq(a: binding, b: binding) -> Bool = true
   end
 
-  rule beq(?x, ?y) :- eq(?x, ?y)
+  rule beq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
     assert_eq!(
@@ -599,7 +586,7 @@ fn a_variant_named_as_a_carrier_is_not_a_witness_carrier() {
     operation eq(a: Pebble, b: Pebble) -> Bool = true
   end
 
-  rule peq(?x, ?y) :- eq(?x, ?y)
+  rule peq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
     assert_eq!(

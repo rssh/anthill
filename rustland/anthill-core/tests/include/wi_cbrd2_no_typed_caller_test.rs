@@ -828,11 +828,10 @@ fn a_querys_spec_op_call_is_typed_where_it_is_read() {
 /// …and at a type nothing provides, or a type nothing fixes, it is refused where the query is
 /// read, a query having no caller to pass the instance and nothing reading it from a value when
 /// the goal runs: `Marker.tag(1.5, ?t)` (`Float` provides no `Marker`); `Marker.tag(?x, ?t)`
-/// beside two providers, which the call selects none of, and so with an anonymous `?` beside
-/// another one a goal types; and beside one, `Tag.tg(?x, ?r)`, `?r
-/// <=> Tag.tg(?x)` and `not(Tag.tg(?x, 3))`, which the one provider does not answer for an `?x`
-/// nothing types; and over a member that names its spec in its result alone, `Z.zz(?t)`. Each
-/// answered conditionally.
+/// beside two providers, and beside one `Tag.tg(?x, ?r)`, `?r <=> Tag.tg(?x)` and
+/// `not(Tag.tg(?x, 3))`, and an anonymous `?` beside another one a goal types — a variable
+/// nothing types is at a type of its own, open, as a clause's variable is; and over a member that
+/// names its spec in its result alone, `Z.zz(?t)`. Each answered conditionally.
 #[test]
 fn a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused() {
     let mut kb = crate::common::load_kb_with(&marker(""));
@@ -843,7 +842,7 @@ fn a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused() {
     );
     // An anonymous `?` is no other's: the one `src` types does not type the call's.
     for open in ["p.q2.Marker.tag(?x, ?t)", "anthill.kernel.and(p.q2.src(?), p.q2.Marker.tag(?, ?t))"] {
-        refused(&mut kb, open, &["ambiguous dispatch of `p.q2.Marker.tag`", "the call selects none"]);
+        refused(&mut kb, open, &["p.q2.Marker.tag", "a query has no caller"]);
     }
     let mut kb = crate::common::load_kb_with(&zz(""));
     for open in [
@@ -856,10 +855,10 @@ fn a_querys_spec_op_call_at_a_type_nothing_provides_or_fixes_is_refused() {
     refused(&mut kb, "p.zz.Z.zz(?t)", &["p.zz.Z.zz", "`Z[T = …].zz(…)`"]);
 }
 
-/// CONTROL, passing either way by design: a query's equality is not typed by this pass (the
-/// equality index's row of this ticket), and a structural browse is not typed at all
-/// (`wi1044_query_supplier_tie_test::a_two_supplier_browse_is_not_refused`). `?t = 1` beside a
-/// call whose type the query fixes answers.
+/// CONTROL, passing either way by design: `?t = 1` beside a call whose type the query fixes
+/// answers — the equality at the `Int64` its `1` fixes, as the call's result is — and a
+/// structural browse is not typed at all
+/// (`wi1044_query_supplier_tie_test::a_two_supplier_browse_is_not_refused`).
 #[test]
 fn an_equality_beside_a_typed_call_is_not_typed_as_a_call() {
     let mut kb = crate::common::load_kb_with(&marker(""));

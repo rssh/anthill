@@ -63,7 +63,7 @@ pub(super) fn relation_schema_type(
 /// The MESSAGE is still each caller's own, because what the author should do next differs
 /// per operation (merge / drop / select) and a shared sentence would have to be vague about
 /// all three.
-pub(super) fn schema_fields(kb: &KnowledgeBase, t: &Value) -> Option<Vec<(Symbol, Value)>> {
+pub(crate) fn schema_fields(kb: &KnowledgeBase, t: &Value) -> Option<Vec<(Symbol, Value)>> {
     match extract_type(kb, t) {
         TypeExtractor::NamedTuple(fields) => Some(fields),
         _ => None,

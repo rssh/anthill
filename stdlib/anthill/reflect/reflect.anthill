@@ -59,12 +59,17 @@ namespace anthill.reflect
   -- A symbol's equality is its identity (`symbolEq`), which is lawful, so a symbol is a
   -- `Map` key.
   -- Written in a secondary entry because `sort Symbol = ?` has no body to write it in.
-  -- `Term` provides no `Eq`: `=` on a term holding a `Float` is IEEE, so a term holding
-  -- `nan` is not equal to itself.
   operation symbolEq(a: Symbol, b: Symbol) -> Bool = a === b
   namespace Symbol
     provides anthill.prelude.PartialEq[T = Symbol, eq = symbolEq]
     provides anthill.prelude.Eq[T = Symbol]
+  end
+
+  -- Two terms are equal when they are the same structure, and two that are `Float`s compare
+  -- as `Float.eq` does: `as_term(nan)` is not equal to itself, so `Term` provides no `Eq`.
+  operation termEq(a: Term, b: Term) -> Bool @[host_implemented]
+  namespace Term
+    provides anthill.prelude.PartialEq[T = Term, eq = termEq]
   end
 
   -- ================================================================

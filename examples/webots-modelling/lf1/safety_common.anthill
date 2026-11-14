@@ -296,7 +296,7 @@ namespace anthill.examples.lf1.safety.common
   -- differences and then constrains `?d` to be the non-negative
   -- square root of `?d_sq`.
 
-  rule position_distance_sq(?d_sq, ?p1, ?p2)
+  rule position_distance_sq(?d_sq: Float, ?p1, ?p2)
     :- ?dx = ?p1.position.x - ?p2.position.x,
        ?dy = ?p1.position.y - ?p2.position.y,
        ?dz = ?p1.position.z - ?p2.position.z,

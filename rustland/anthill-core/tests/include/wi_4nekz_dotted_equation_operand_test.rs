@@ -127,7 +127,7 @@ fn rule_body_with(inner_extra: &str, two_extra: &str, body: &str) -> Vec<String>
          namespace zz4n.two\n  fact base4n2(1)\n  rule rel2(1) :- base4n2(1)\n{two_extra}  \
          rule r(1) :- {body}\nend\n"
     );
-    crate::common::try_load_kb_with(&src).err().unwrap_or_default()
+    crate::common::without_relation_equality(crate::common::try_load_kb_with(&src).err().unwrap_or_default())
 }
 
 /// The same `body` written in an OPERATION body instead — the position that already had
@@ -138,7 +138,7 @@ fn op_body(body: &str) -> Vec<String> {
          namespace zz4n.op\n  import anthill.prelude.Bool\n  \
          operation viaOp() -> Bool = {body}\nend\n"
     );
-    crate::common::try_load_kb_with(&src).err().unwrap_or_default()
+    crate::common::without_relation_equality(crate::common::try_load_kb_with(&src).err().unwrap_or_default())
 }
 
 /// **A — THE HEADLINE, AND IT IS A LOAD.** Two WELL-TYPED programs that did not load.
@@ -251,7 +251,9 @@ fn every_citation_form_reaches_the_same_reading() {
         ),
     ] {
         let src = format!("{decl}  rule r(1) :- {body}\nend\n");
-        let errs = crate::common::try_load_kb_with(&src).err().unwrap_or_default();
+        let errs = crate::common::without_relation_equality(
+            crate::common::try_load_kb_with(&src).err().unwrap_or_default(),
+        );
         assert_eq!(
             errs.len(),
             1,

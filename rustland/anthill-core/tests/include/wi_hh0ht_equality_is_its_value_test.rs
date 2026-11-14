@@ -24,6 +24,7 @@ namespace test.eqvalue
 
   sort Pq
     entity pq(v: Int64)
+    provides PartialEq[T = Pq]
     operation eq(x: Pq, y: Pq) -> Bool = false
   end
   fact flag(true)

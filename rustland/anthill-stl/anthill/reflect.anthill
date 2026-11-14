@@ -40,6 +40,7 @@ namespace anthill.reflect
       term_as_int: "term_as_int",
       term_as_entity: "term_as_entity",
       term_to_string: "term_to_string",
+      termEq: "term_eq",
       term_list_items: "term_list_items",
       field_access: "reflect_field_access",
       -- A `Type`'s structure, reified on demand (WI-361): the operation library

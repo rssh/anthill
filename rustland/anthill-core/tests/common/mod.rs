@@ -1169,17 +1169,34 @@ pub fn parses_clean(src: &str) {
 #[track_caller]
 #[allow(dead_code)]
 /// Is `e` one of the refusals the standard library gets loaded without its host binding
-/// layer: a `@[host_implemented]` claim no binding block supplies, or a comparison at a
-/// carrier whose order is a provision of that layer (`Int64`, `String`). Since
-/// WI-20260909-SM910 a comparison is its carrier's member, so the library's own
-/// `PartialOrd.gt` at `Int64` reads the `PartialOrd[T = Int64]` the layer provides.
+/// layer: a `@[host_implemented]` claim no binding block supplies, or a comparison or an
+/// equality at a carrier whose order and equality are provisions of that layer (`Int64`,
+/// `String`). Since WI-20260909-SM910 a comparison is its carrier's member, and since
+/// WI-20261105-CBRD2 an equality is, so the library's own `PartialOrd.gt` and `=` at `Int64`
+/// read the `PartialOrd[T = Int64]` and `PartialEq[T = Int64]` the layer provides.
 #[allow(dead_code)]
 pub fn a_binding_less_stdlib_refusal(e: &str) -> bool {
-    e.contains("is declared `@[host_implemented]`, but no binding block")
-        || (e.contains("cannot be supplied for call to `anthill.prelude.PartialOrd.")
-            && ["anthill.prelude.Int64]", "anthill.prelude.String]"]
-                .iter()
-                .any(|carrier| e.contains(&format!("[T = {carrier}`"))))
+    let at_a_host_carrier = ["anthill.prelude.Int64", "anthill.prelude.String"]
+        .iter()
+        .any(|carrier| e.contains(&format!("[T = {carrier}]`")) || e.contains(&format!("carrier `{carrier}`")));
+    let of_a_comparison = ["anthill.prelude.PartialOrd.", "anthill.prelude.PartialEq."]
+        .iter()
+        .any(|spec| e.contains(&format!("cannot be supplied for call to `{spec}")) || e.contains(&format!("type mismatch in {spec}")));
+    e.contains("is declared `@[host_implemented]`, but no binding block") || (at_a_host_carrier && of_a_comparison)
+}
+
+/// `errs` without the refusals of an `=` at a relation: a `Relation` provides no `PartialEq`,
+/// so comparing one is refused for that as well as for whatever else the comparison holds
+/// (WI-20261105-CBRD2). For the rows whose subject is how a relation's NAME is read, written as
+/// an operand of `=`.
+#[allow(dead_code)]
+pub fn without_relation_equality(errs: Vec<String>) -> Vec<String> {
+    errs.into_iter()
+        .filter(|e| {
+            !(e.contains("`anthill.prelude.Relation` provides no `anthill.prelude.PartialEq`")
+                || e.contains("anthill.prelude.PartialEq[T = anthill.prelude.Relation"))
+        })
+        .collect()
 }
 
 pub fn assert_refused_naming(errs: &[String], tokens: &[&str], why: &str) {

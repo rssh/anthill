@@ -63,8 +63,9 @@ namespace test.wi737
   -- (pinned by wi739_guard_generator_delay_test), so it is no longer floundered
   -- and no longer exercises this raise. The property SYMPTOM 1 pins is unchanged;
   -- only the fixture had to become one that genuinely flounders. Dropping the
-  -- generators is what makes it genuine: nothing can ever bind ?x or ?y.
-  rule unbound_pair(?x, ?y) :- neq(?x, ?y)
+  -- generators is what makes it genuine: nothing can ever bind ?x or ?y. Its columns are
+  -- typed: an equality at a type the clause leaves open is refused at load (WI-20261105-CBRD2).
+  rule unbound_pair(?x: Int64, ?y: Int64) :- neq(?x, ?y)
   operation pairCount() -> Int64 effects Error = length(unbound_pair.takeN(10))
 
   -- SYMPTOM 2: `?y` is body-local and NO goal ever binds it, so `neq(?y, ?x)`

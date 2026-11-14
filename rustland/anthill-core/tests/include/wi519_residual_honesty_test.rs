@@ -51,8 +51,9 @@ fn floundered_goal_is_residual_not_definite() {
     // residualizes.
     let src = r#"
         namespace wi519.flounder
+          import anthill.prelude.{Int64}
           import anthill.prelude.PartialEq.{eq}
-          rule maybe(?a, ?b) :- eq(?a, ?b)
+          rule maybe(?a: Int64, ?b: Int64) :- eq(?a, ?b)
         end
     "#;
     let mut kb = load_with(src);
@@ -139,7 +140,7 @@ fn naf_three_way_over_ground_inner() {
           end
           fact thing(id: 1)
           rule p_def(?x) :- thing(id: ?x)
-          rule p_flounder(?x) :- eq(?a, ?b)
+          rule p_flounder(?x: Int64) :- eq(?x, ?b)
           rule nf_holds(?z) :- not(p_def(1))
           rule nf_fails(?z) :- not(p_def(999))
           rule nf_flounder(?z) :- not(p_flounder(1))

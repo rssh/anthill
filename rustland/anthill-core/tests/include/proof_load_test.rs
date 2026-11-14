@@ -77,8 +77,9 @@ fn proof_with_no_strategy_is_open_obligation() {
 fn proof_with_query_keeps_text() {
     let src = r#"
         namespace test.proof_load_query
+          import anthill.prelude.{Int64}
           import anthill.prelude.PartialEq.{eq}
-          rule add_comm(?a, ?b) :- eq(?a, ?b)
+          rule add_comm(?a: Int64, ?b: Int64) :- eq(?a, ?b)
           proof add_comm
             by z3
             query "(assert true)"

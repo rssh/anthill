@@ -184,7 +184,7 @@ fn a_fact_completing_a_type_only_self_provision_still_answers() {
     provides PartialEq[T = Pebble, eq = pebbleEq]
   end
 
-  rule peq(?x, ?y) :- eq(?x, ?y)
+  rule peq[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 end
 "#;
     crate::wi837_witness_eq_dispatch_test::assert_loads_clean(
@@ -211,15 +211,15 @@ end
     );
     let ctor = "test.wi859.completion.Pebble.pebble";
     let (x, y) = (
-        crate::wi837_witness_eq_dispatch_test::entity_term(&mut kb, ctor, &[("n", 1)]),
-        crate::wi837_witness_eq_dispatch_test::entity_term(&mut kb, ctor, &[("n", 2)]),
+        crate::wi837_witness_eq_dispatch_test::entity_text(ctor, &[("n", 1)]),
+        crate::wi837_witness_eq_dispatch_test::entity_text(ctor, &[("n", 2)]),
     );
     assert_eq!(
         crate::wi837_witness_eq_dispatch_test::solutions(
             &mut kb,
             "test.wi859.completion.peq",
-            x,
-            y
+            &x,
+            &y
         ),
         1,
         "the retroactive fact's `eq` must still ANSWER — 0 solutions is the structural \

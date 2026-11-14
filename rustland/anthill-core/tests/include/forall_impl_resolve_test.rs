@@ -9,6 +9,9 @@
 //!   universal whose consequent unifies a skolem with a concrete value
 //!   must fail.
 //!
+//! A binder no annotation types is compared with `===`: `eq` is its carrier's member, and
+//! at a type the clause leaves open it is refused at load (WI-20261105-CBRD2).
+//!
 //! Tier 4 — hypothetical reasoning. Antecedents are scoped assumptions,
 //!   discharged on success / popped on backtrack. Lets auto-generated
 //!   `<Sort>.induction` rules actually prove their universal from a
@@ -56,7 +59,7 @@ fn t1_resolver_does_not_crash_on_forall_impl() {
           end
 
           rule t1_witness(?P)
-            :- (forall(?x), eq(?x, ?x) -: eq(?x, ?x))
+            :- (forall(?x), ?x === ?x -: ?x === ?x)
         end
     "#;
     let mut kb = load_with(src);
@@ -72,7 +75,7 @@ fn t1_resolver_does_not_crash_on_forall_impl() {
 
 #[test]
 fn t3_skolem_reflexivity_succeeds() {
-    // (forall(?x), eq(1, 1) -: eq(?x, ?x)) — antecedent trivially holds;
+    // (forall(?x), eq(1, 1) -: ?x === ?x) — antecedent trivially holds;
     // consequent is reflexivity which holds for any skolem.
     let src = r#"
         namespace test.forall_impl.t3a
@@ -82,7 +85,7 @@ fn t3_skolem_reflexivity_succeeds() {
           end
 
           rule t3a_witness(?dummy)
-            :- (forall(?x), eq(1, 1) -: eq(?x, ?x))
+            :- (forall(?x), eq(1, 1) -: ?x === ?x)
         end
     "#;
     let mut kb = load_with(src);
@@ -404,7 +407,7 @@ fn gap_skolem_does_not_leak_into_caller_solution() {
           end
 
           rule witness_rule(?w)
-            :- (forall(?x), eq(1, 1) -: eq(?x, ?x))
+            :- (forall(?x), eq(1, 1) -: ?x === ?x)
         end
     "#;
     let mut kb = load_with(src);
@@ -461,7 +464,7 @@ fn gap_duplicate_binders_in_forall_impl() {
           end
 
           rule dup_binder_rule(?dummy)
-            :- (forall(?x, ?x), eq(1, 1) -: eq(?x, ?x))
+            :- (forall(?x, ?x), eq(1, 1) -: ?x === ?x)
         end
     "#;
     let mut kb = load_with(src);
@@ -497,7 +500,7 @@ fn gap_nested_forall_impl_in_consequent() {
                   eq(1, 1)
                   -: (forall(?y),
                         eq(2, 2)
-                        -: eq(?x, ?x)))
+                        -: ?x === ?x))
         end
     "#;
     let mut kb = load_with(src);

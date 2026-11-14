@@ -624,14 +624,27 @@ fn write_member(
 /// conditions over the carrier's own `params`: `Some(vec![])` for a field whose equality
 /// holds outright, `None` for one nothing decides. `derived` is the fixpoint's current
 /// verdict for the candidates (canonical carrier → its conditions).
-fn field_conditions<V: TermView>(
+fn field_conditions(
     kb: &KnowledgeBase,
-    ty: &V,
+    ty: &crate::eval::value::Value,
     spec: Symbol,
     params: &[Symbol],
     derived: &std::collections::HashMap<Symbol, Vec<Condition>>,
     unbacked_eq: &HashSet<Symbol>,
 ) -> Option<Vec<Condition>> {
+    // A field typed by a tuple: a tuple has no sort to carry a provision, so its equality is its
+    // components' (§8.3), and the unit's holds outright.
+    if let Some(components) = super::typing::schema_fields(kb, ty) {
+        let mut out: Vec<Condition> = Vec::new();
+        for (_, component) in components {
+            for x in field_conditions(kb, &component, spec, params, derived, unbacked_eq)? {
+                if !out.contains(&x) {
+                    out.push(x);
+                }
+            }
+        }
+        return Some(out);
+    }
     // A field typed by one of the carrier's own parameters (`value: T`) is that
     // parameter's CANONICAL variable (`KnowledgeBase::canonical_type_param_var`) — or,
     // in a type the extractor produced, a `TypeVar` naming it.
@@ -653,6 +666,11 @@ fn field_conditions<V: TermView>(
     }
     let head = super::typing::sort_functor_of_view(kb, ty)?;
     if params.contains(&head) {
+        // A higher-kinded parameter applied (`xs: F[T = A]`): a condition over `F` says
+        // nothing of `F[T = A]`'s equality, which the member compares the field at.
+        if !ty.named_keys(kb).is_empty() {
+            return None;
+        }
         return Some(vec![(spec, head)]);
     }
     if super::typing::is_sort_param_symbol(kb, head) {
@@ -735,6 +753,11 @@ fn field_conditions<V: TermView>(
             .find(|k| kb.local_name_of(*k) == q_name)
             .and_then(|k| ty.named_arg(kb, k))
             .map(|it| it.to_value())?;
+        // A tuple as a type argument: its equality is its components', and the condition is
+        // a dictionary at the tuple, which nothing provides.
+        if super::typing::schema_fields(kb, &arg).is_some() {
+            return None;
+        }
         let needs = field_conditions(kb, &arg, cspec, params, derived, unbacked_eq)?;
         if !may_rest_on_a_parameter && !needs.is_empty() {
             return None;

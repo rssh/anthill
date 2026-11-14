@@ -49,7 +49,7 @@ const COMMON_NS: &str = r#"
         :- real_pose_at(?k, Leader, ?leader_real),
            real_pose_at(?k, Follower, ?follower_real)
 
-      rule position_distance_sq(?d_sq, ?p1, ?p2)
+      rule position_distance_sq(?d_sq: Float, ?p1, ?p2)
         :- ?dx = ?p1.position.x - ?p2.position.x,
            ?dy = ?p1.position.y - ?p2.position.y,
            ?dz = ?p1.position.z - ?p2.position.z,

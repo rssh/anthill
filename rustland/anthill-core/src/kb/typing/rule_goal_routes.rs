@@ -168,7 +168,7 @@ pub(crate) fn route_query_goals(
     for goal in query {
         nested_goals(kb, goal, &mut sites);
     }
-    stamp_query_variable_types(kb, &sites);
+    stamp_query_variable_types(kb, query, &sites);
     // A bracket nothing reads — on a goal of a relation that declares nothing for it, or on a
     // relation that is no goal — is refused, as in a rule body (060.1 §2), never dropped.
     let mut refused = Vec::new();
@@ -199,6 +199,21 @@ pub(crate) fn route_query_goals(
             })
         })
         .collect())
+}
+
+/// Does `arg` hold, at any depth, an application of an operation — a call, not a construction?
+fn holds_an_operation_call(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(arg)];
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        if matches!(expr, Expr::Apply { functor, .. }
+            if kb.entity_field_types(*functor).is_none() && kb.op_record(*functor).is_some())
+        {
+            return true;
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
 }
 
 /// Proposal 073 §6.2 — each goal of a query (`sites`, its goals and the goals in their proved
@@ -245,10 +260,15 @@ fn typed_spec_op_calls(
     }
     let mut env = TypingEnv::empty();
     env.mark_rule_body_dispatch();
+    // A variable no goal types is at a type of its own, open, which the call it is an argument
+    // of may fix from its other arguments, as a clause variable's type is: `?x = 3` compares at
+    // `Int64`, and `?a = ?b` is at a type nothing fixes. A name several variables share is at an
+    // open type, never at another's.
     for (name, (_, ty, shared)) in by_name {
-        if let (Some(ty), false) = (ty, shared) {
-            env.bind_var(name, ty);
-        }
+        let ty = ty
+            .filter(|_| !shared)
+            .unwrap_or_else(|| Value::Var(Var::Global(kb.fresh_var(name))));
+        env.bind_var(name, ty);
     }
     let simp = simp_gate(kb);
     let fd = find_dictionary_symbol(kb);
@@ -287,7 +307,7 @@ fn typed_spec_op_calls(
 /// (`PartialOrd.gt`) is one: at a type the query leaves open it is refused, as in a clause.
 fn owes_an_instance(kb: &KnowledgeBase, functor: Symbol) -> bool {
     (lookup_spec_op_dispatch(kb, functor).is_some() || defaulted_spec_op_parent(kb, functor).is_some())
-        && !kb.is_builtin(functor)
+        && (!kb.is_builtin(functor) || is_semantic_equality(kb, functor))
         && !host_implements(kb, functor)
 }
 
@@ -359,8 +379,14 @@ fn calls_left_to_a_clause(kb: &KnowledgeBase, typed: &Rc<NodeOccurrence>) -> Vec
 /// variable of the same goals in a rule body. Two columns, one at a sort with abstract values and
 /// one at a type that provides it, meet at the provider (`carSrc(?s), dflted(?s, ?r)`: a `Car`).
 /// A variable two columns put at other different types, or one only an open column reaches,
-/// stays untyped.
-fn stamp_query_variable_types(kb: &mut KnowledgeBase, sites: &[Rc<NodeOccurrence>]) {
+/// stays untyped. One no column types takes the type the query's goals `query` give it as a
+/// clause's typing reads them ([`query_goal_var_types`]), where that is fixed: `?x` of `?x = 3`
+/// is an `Int64`.
+fn stamp_query_variable_types(
+    kb: &mut KnowledgeBase,
+    query: &[Rc<NodeOccurrence>],
+    sites: &[Rc<NodeOccurrence>],
+) {
     let mut types: HashMap<VarId, Option<Value>> = HashMap::new();
     for site in sites {
         let Some(Expr::Apply {
@@ -402,17 +428,48 @@ fn stamp_query_variable_types(kb: &mut KnowledgeBase, sites: &[Rc<NodeOccurrence
             }
         }
     }
+    let walked = query_goal_var_types(kb, query);
     for site in sites {
         for_each_var_leaf(site, &mut |var, leaf| {
             if let Var::Global(vid) = var {
-                if let Some(Some(ty)) = types.get(&vid) {
-                    if leaf.inferred_type().is_none() {
-                        leaf.set_inferred_type(ty.clone());
-                    }
+                let ty = match types.get(&vid) {
+                    Some(Some(ty)) => Some(ty),
+                    _ => walked.get(&vid.raw()),
+                };
+                if let Some(ty) = ty.filter(|_| leaf.inferred_type().is_none()) {
+                    leaf.set_inferred_type(ty.clone());
                 }
             }
         });
     }
+}
+
+/// The type of each variable of the query's goals `query` that the goals fix, read as a clause's
+/// typing reads a rule body's goals ([`collect_occurrence_type_constraints`]): what a call's
+/// declared parameters and its other arguments say of it. Keyed by the variable's raw id; none
+/// where the goals disagree.
+fn query_goal_var_types(kb: &mut KnowledgeBase, query: &[Rc<NodeOccurrence>]) -> HashMap<u32, Value> {
+    let mut st = ClauseConstraints::new();
+    for goal in query {
+        collect_occurrence_type_constraints(kb, goal, None, BodyPos::Goal(GoalCommit::Top), true, &mut st);
+    }
+    if st.subst.is_contradiction() {
+        return HashMap::new();
+    }
+    let subst = std::mem::take(&mut st.subst);
+    st.var_types
+        .into_iter()
+        .filter_map(|(var, mut ty)| {
+            loop {
+                let (resolved, changed) = crate::kb::node_occurrence::subst_value_type(kb, &ty, &subst);
+                ty = resolved;
+                if !changed {
+                    break;
+                }
+            }
+            type_is_fixed(kb, &ty).then_some((var, ty))
+        })
+        .collect()
 }
 
 /// The concrete type every clause of `relation` gives its column `slot`, as the load typed it:
@@ -1559,7 +1616,9 @@ fn goal_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Val
         Some(Expr::Apply { functor, .. }) => kb.entity_field_types(*functor).is_some(),
         _ => false,
     };
-    if construction {
+    // Not one holding a call: the value's type reads an unreduced call as its functor
+    // (`some(Set.insert(…))` at `Option[T = Set.insert]`).
+    if construction && !holds_an_operation_call(kb, arg) {
         let carried = value_type_term(kb, &Substitution::new(), &Value::Node(Rc::clone(arg)));
         // A collection literal is at its carried type even where that leaves the element open
         // (`[]` at `List[T = ?]`): the type a requirement at it is open at.

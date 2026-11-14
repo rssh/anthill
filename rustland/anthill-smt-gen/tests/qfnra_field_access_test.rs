@@ -47,7 +47,7 @@ fn build_kb() -> anthill_core::kb::KnowledgeBase {
           fact real_pose_at(0, Follower,
             Pose(position: Vec3(x: -4.0, y: 0.0, z: 12.0)))
 
-          rule distance_sq(?d_sq, ?p1, ?p2)
+          rule distance_sq(?d_sq: Float, ?p1, ?p2)
             :- ?dx = ?p1.position.x - ?p2.position.x,
                ?dy = ?p1.position.y - ?p2.position.y,
                ?dz = ?p1.position.z - ?p2.position.z,

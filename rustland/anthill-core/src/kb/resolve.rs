@@ -1376,6 +1376,16 @@ impl Wait {
 // while `try_occurrence_to_term` has real WI-559 arms for both — owned by
 // WI-1014, which is Open.
 
+/// A woven equality goal read through its dictionary ([`KnowledgeBase::woven_equality`]).
+enum WovenEquality {
+    /// The call, pinned to the member the dictionary names.
+    At(Value),
+    /// The dictionary is not bound yet.
+    Waiting,
+    /// The dictionary is bound and names no `eq`: a fault, said where the goal is.
+    NoMember,
+}
+
 /// Outcome of walking an `eq`/`neq` goal's two operands (WI-246): both
 /// resolved, a flex operand forcing `Delay`, or a missing arg slot.
 enum EqOperands {
@@ -2695,6 +2705,28 @@ impl SearchStream {
                 fr.state = FrameState::Init { delay_mode };
                 return Some(StepResult::Continue);
             }
+        }
+
+        // 3.9 A woven equality — `=` at a type parameter its clause declares `PartialEq` for —
+        // compares at the member the dictionary names, as a goal the typer pinned to it does.
+        match kb.woven_equality(&goal_val, &self.stack.last().unwrap().subst) {
+            Some(WovenEquality::At(pinned)) => {
+                let fr = self.stack.last_mut().unwrap();
+                fr.goals[0].goal = pinned;
+                fr.state = FrameState::Init { delay_mode };
+                return Some(StepResult::Continue);
+            }
+            Some(WovenEquality::Waiting) => {
+                return self.delay_goal(kb, goal_val, None, depth, delay_mode);
+            }
+            Some(WovenEquality::NoMember) => {
+                self.record_error(
+                    ResolveError::new("a woven equality's dictionary names no `eq` member".to_string())
+                        .located_at(&goal_val),
+                );
+                return self.schedule_unanswerable_goal(kb, &goal_val, depth, delay_mode, None);
+            }
+            None => {}
         }
 
         // 4. Builtin goal — classify by functor read through TermView. A goal headed by a type
@@ -9340,6 +9372,53 @@ impl KnowledgeBase {
             return BuiltinResult::Unknown { cause };
         }
         sem_verdict(true, true)
+    }
+
+    /// `goal` as an equality the weave gave its clause's dictionary — an `ApplyWithin` of
+    /// `PartialEq.eq` — read at the member that dictionary names: the same call, pinned to it.
+    /// `Waiting` while the dictionary is unbound, `NoMember` where it is bound and names none;
+    /// `None` for any other goal.
+    fn woven_equality(&mut self, goal: &Value, subst: &Substitution) -> Option<WovenEquality> {
+        let Value::Node(o) = goal else {
+            return None;
+        };
+        let Some(Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            requirements,
+            type_args,
+        }) = o.as_expr()
+        else {
+            return None;
+        };
+        if self.builtin_of(*functor) != Some(BuiltinTag::SemEq) {
+            return None;
+        }
+        let [dict] = requirements.as_slice() else {
+            return Some(WovenEquality::NoMember);
+        };
+        let bound = self
+            .walk_arg(Some(ViewItem::Node(Rc::clone(dict))), subst)
+            .is_some_and(|d| !matches!(d.head(self), ViewHead::Var(_)));
+        if !bound {
+            return Some(WovenEquality::Waiting);
+        }
+        let Some((member, _)) = self.dictionary_dispatch_target(*functor, requirements, subst) else {
+            return Some(WovenEquality::NoMember);
+        };
+        let call = o.rebuilt_expr(Expr::Apply {
+            recv_type: None,
+            functor: *functor,
+            pos_args: args.clone(),
+            named_args: named_args.clone(),
+            type_args: type_args.clone(),
+        });
+        call.set_classification(super::typing::CallClass::PinNow {
+            spec_op_sym: *functor,
+            impl_op_sym: member,
+        });
+        Some(WovenEquality::At(Value::node(call)))
     }
 
     /// WI-616 — the eq-dispatch index probe for one operand: its head functor's

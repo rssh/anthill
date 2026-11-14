@@ -42,10 +42,10 @@ namespace test.wi531_residual
   end
 
   -- An entity-headed rule deriving a "ghost" Person whose body FLOUNDERS:
-  -- `eq(?a, ?b)` over two unbound vars is undecidable, so resolving this rule
+  -- `eq(?n, ?b)` over two unbound vars is undecidable, so resolving this rule
   -- yields an UNDECIDED solution carrying the residual `eq` goal — not a
   -- definite answer (WI-519), and now with the residual as data (WI-531).
-  rule Person(name: ?n, role: "ghost") :- eq(?a, ?b)
+  rule Person(name: ?n, role: "ghost") :- eq(?n, ?b)
 
   -- Length of the streamed Solution's residual goal list. A value >= 1 proves
   -- `execute` delivered an `undecided` Solution whose pending goals survived as

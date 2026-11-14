@@ -611,8 +611,9 @@ end
 ///     would pass every assertion above.
 #[test]
 fn the_scalar_side_law_addresses_are_live_and_a_dead_one_is_still_loud() {
-    // `?r = N(?a, ?a)` for the binary ones, `?r = N()` for the identities — the arity the
-    // declaration gives, so an arity complaint cannot be mistaken for a naming one.
+    // `?r <=> N(?a, ?a)` for the binary ones, `?r <=> N()` for the identities — the arity the
+    // declaration gives, so an arity complaint cannot be mistaken for a naming one. `<=>`, not
+    // `=`: an `=` at the open `?a` owes an instance the rule declares none of.
     let goal = |name: &str, nullary: bool| {
         let call = if nullary {
             format!("{name}()")
@@ -624,7 +625,7 @@ fn the_scalar_side_law_addresses_are_live_and_a_dead_one_is_still_loud() {
 namespace test.wbzt.lawaddr
   import anthill.prelude.{{Int64, Additive, Multiplicative}}
   import anthill.prelude.algebra.{{Ring}}
-  rule g(?a, ?r) :- ?r = {call}
+  rule g(?a, ?r) :- ?r <=> {call}
 end
 "#
         )

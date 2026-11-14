@@ -207,7 +207,7 @@ pub use subtype::*;
 pub use synth::*;
 use tuples::*;
 use type_ctor::*;
-pub(crate) use type_ctor::type_mentions_unresolved_name;
+pub(crate) use type_ctor::{schema_fields, type_mentions_unresolved_name};
 pub(crate) use type_pattern::*;
 use type_receiver::*;
 pub(crate) use type_receiver::{

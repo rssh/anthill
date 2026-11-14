@@ -283,18 +283,33 @@ fn a_generic_caller_hands_neq_its_dictionary() {
 
 const NS_UNTYPED: &str = "test.jee0e.untyped";
 
-/// A `neq` goal no type reaches — at a variable the clause leaves open, with no dictionary
-/// of `PartialEq` declared — is read at the type its values carry when it runs (073 §6.2,
-/// no typed caller): `Pt`'s `eq`, IEEE for two floats, the literal compare; a delay while an
-/// operand is unbound.
+/// A `neq` goal at a type the clause leaves open, with no dictionary of `PartialEq` declared, is
+/// refused at load, as an `=` is (kernel-language §5.3): `rule differ(?a, ?b) :- neq(?a, ?b)`.
+/// Declared at the head's type parameter, each citation passes the instance at its arguments'
+/// type: `Pt`'s `eq`, IEEE for two floats, the literal compare; a delay while an operand is
+/// unbound.
 #[test]
-fn an_untyped_neq_goal_runs_at_the_type_its_values_carry() {
+fn an_untyped_neq_goal_is_refused_and_a_declared_one_answers() {
+    for (rule, at) in [
+        ("rule differ(?a, ?b) :- neq(?a, ?b)", "differ"),
+        ("rule bang(?a, ?b) :- ?a != ?b", "bang"),
+    ] {
+        let src = program(
+            NS_UNTYPED,
+            &format!("  import anthill.prelude.PartialEq.{{neq}}\n  {rule}\n"),
+        );
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src),
+            &[&format!("{at}.body"), "a rule takes no dictionary it does not declare", "PartialEq"],
+            "an untyped `neq`",
+        );
+    }
     let src = program(
         NS_UNTYPED,
         r#"
   import anthill.prelude.PartialEq.{neq}
-  rule differ(?a, ?b) :- neq(?a, ?b)
-  rule bang(?a, ?b) :- ?a != ?b
+  rule differ[A](?a: A, ?b: A) :- PartialEq[T = A], neq(?a, ?b)
+  rule bang[A](?a: A, ?b: A) :- PartialEq[T = A], ?a != ?b
   rule nans() :- differ(nan, nan)
   rule ints() :- differ(1, 5)
   rule intsSame() :- bang(5, 5)

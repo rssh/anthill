@@ -831,9 +831,10 @@ end
 
 const INLINED_DEFINITION: &str = r#"
 namespace test.cdhsq.dbl
+  import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte, lt}
 
-  rule dbl(?a, ?r) :- ?r = ?a + ?a
+  rule dbl(?a: Float, ?r: Float) :- ?r = ?a + ?a
 
   rule viol(?r) :- dbl(?x, ?r), lt(?x, 0.0)
   proof viol by z3 end

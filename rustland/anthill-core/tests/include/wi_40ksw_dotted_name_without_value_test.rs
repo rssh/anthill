@@ -94,13 +94,13 @@ end
 
 /// `body` compared with `7`, in a rule body and in an operation body.
 fn both_bodies(ns: &str, body: &str) -> [(&'static str, Vec<String>); 2] {
-    let rule = load_errors_of(&format!(
+    let rule = crate::common::without_relation_equality(load_errors_of(&format!(
         "{DECL}namespace {ns}r\n  import anthill.prelude.Int64\n  rule r(1) :- {body} = 7\nend\n"
-    ));
-    let op = load_errors_of(&format!(
+    )));
+    let op = crate::common::without_relation_equality(load_errors_of(&format!(
         "{DECL}namespace {ns}o\n  import anthill.prelude.{{Int64, Bool}}\n  \
          operation viaOp() -> Bool = {body} = 7\nend\n"
-    ));
+    )));
     [("rule body", rule), ("operation body", op)]
 }
 
@@ -303,13 +303,13 @@ fn holds(ns: &str, body: &str) -> usize {
 
 /// `body` compared with `7` in a rule body and in an operation body, over `MEMBERS`.
 fn both_bodies_over_members(ns: &str, body: &str) -> [(&'static str, Vec<String>); 2] {
-    let rule = load_errors_of(&format!(
+    let rule = crate::common::without_relation_equality(load_errors_of(&format!(
         "{MEMBERS}namespace {ns}r\n  import anthill.prelude.Int64\n  rule r(1) :- {body} = 7\nend\n"
-    ));
-    let op = load_errors_of(&format!(
+    )));
+    let op = crate::common::without_relation_equality(load_errors_of(&format!(
         "{MEMBERS}namespace {ns}o\n  import anthill.prelude.{{Int64, Bool}}\n  \
          operation viaOp() -> Bool = {body} = 7\nend\n"
-    ));
+    )));
     [("rule body", rule), ("operation body", op)]
 }
 

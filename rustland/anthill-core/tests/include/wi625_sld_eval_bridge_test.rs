@@ -514,7 +514,9 @@ const COMBINER_SRC: &str = r#"
             case box(c) -> combine(c, c)
       end
       import gap3b.combiner.Box.{combineBox}
-      rule combines_to(?b, ?r) :- eq(combineBox(?b), ?r)
+      -- `<=>`, not `=`: an `=` at the box's open element type owes an instance the rule
+      -- declares none of (WI-20261105-CBRD2); the subject here is the call's dictionary.
+      rule combines_to(?b, ?r) :- ?r <=> combineBox(?b)
     end
 "#;
 

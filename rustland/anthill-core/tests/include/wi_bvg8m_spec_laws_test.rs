@@ -58,9 +58,9 @@ namespace test.bvg8m.laws
     rule weight_bound: gte(?w, 0)
       :- eq(?w, weight(?a))
     rule weight_then: eq(?w, weight(?a)) -: gte(?w, 0)
-    rule two_heads: gte(weight(?a), 0), gte(weight(?a), -1) :- eq(?a, ?a)
+    rule two_heads: gte(weight(?a), 0), gte(weight(?a), -1) :- ?a === ?a
     fact gte(weight(?a), -5) <=> true
-    constraint weight_sane: gte(weight(?a), 0) :- eq(?a, ?a)
+    constraint weight_sane: gte(weight(?a), 0) :- ?a === ?a
     rule declared(?p)
   end
 

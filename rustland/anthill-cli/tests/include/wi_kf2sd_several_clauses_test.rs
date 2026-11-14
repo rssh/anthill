@@ -723,6 +723,7 @@ end
 
 const FRAMES: &str = r#"
 namespace test.kf2sd.frames
+  import anthill.prelude.{Float}
   import anthill.prelude.PartialOrd.{gte, lte}
   import anthill.prelude.Option.{some, none}
 
@@ -734,7 +735,7 @@ namespace test.kf2sd.frames
   proof claim0 by z3 end
 
   rule pick(some(none), ?r) :- ?r = -100.0
-  rule pick(some(some(?x)), ?r) :- ?r = ?x
+  rule pick(some(some(?x)), ?r: Float) :- ?r = ?x
   rule wrap(?o, ?r) :- ?z = some(1.0), pick(?o, ?r)
 
   rule claim_a: gte(?r, 0.0) :- wrap(some(?y), ?r)

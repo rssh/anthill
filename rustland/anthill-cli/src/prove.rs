@@ -3074,11 +3074,11 @@ mod s8cyd_implicit_cite_tests {
             operation weight(a: T) -> Int64
 
             rule weight_nonneg: gte(weight(?a), 0) <=> true
-            rule two_heads: gte(weight(?a), 0), gte(weight(?a), -1) :- eq(?a, ?a)
+            rule two_heads: gte(weight(?a), 0), gte(weight(?a), -1) :- ?a === ?a
             rule positive(?x) :- gt(?x, 0)
             rule weight(?a) <=> weight(?a)
             fact gte(weight(?a), -5) <=> true
-            constraint weight_sane: gte(weight(?a), 0) :- eq(?a, ?a)
+            constraint weight_sane: gte(weight(?a), 0) :- ?a === ?a
           end
         end
     "#;

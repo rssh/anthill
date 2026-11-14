@@ -113,6 +113,8 @@ const HOST_FNS: &[(
     // `Bool`, IEEE for `Float`.
     ("literal_eq", 2, literal_eq),
     ("float_eq", 2, float_eq),
+    // Equality of a `Term`: IEEE for two floats, the structure otherwise.
+    ("term_eq", 2, term_eq),
     // The TOTAL scalar order (`Ord`): `Int64`, `BigInt`, `String`.
     ("ordered_compare", 2, ordered_compare),
     ("ordered_gt", 2, ordered_gt),
@@ -1506,6 +1508,16 @@ fn float_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Float.eq", args)?;
     let (x, y) = float_operands(i, &a, &b)?;
     Ok(Value::Bool(x == y))
+}
+
+/// `termEq`, `Term`'s `eq`: two terms are equal when they are the same structure, and two
+/// that are `Float`s compare as `Float.eq` does (IEEE), so `as_term(nan)` is not equal to
+/// itself. The goal `termEq(a, b)` reduces through this function.
+fn term_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("termEq", args)?;
+    Ok(Value::Bool(float_ieee_eq(i, &a, &b).unwrap_or_else(|| {
+        crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)
+    })))
 }
 
 /// `PartialEq.eq` reached with no member: the operands compared by their values

@@ -170,7 +170,7 @@ fn rule_body_with(extra: &str, body: &str) -> Vec<String> {
          namespace zz4n.two\n  fact base4n2(1)\n  rule rel2(1) :- base4n2(1)\n{extra}  \
          rule r(1) :- {body}\nend\n"
     );
-    crate::common::try_load_kb_with(&src).err().unwrap_or_default()
+    crate::common::without_relation_equality(crate::common::try_load_kb_with(&src).err().unwrap_or_default())
 }
 
 /// **B — AND THE DOT-CHAIN BIT NO LONGER COMES FROM A TABLE.**

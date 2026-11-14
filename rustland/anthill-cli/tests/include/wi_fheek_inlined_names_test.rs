@@ -116,7 +116,7 @@ namespace test.fheek.back
   rule p(?x) :- start(?x)
   rule p2(?x, ?y) :- start(?x), ?y = 0.0
   rule mid(?y, ?z) :- p2(?y, ?z)
-  rule dbl(?a, ?r) :- ?r = ?a + ?a
+  rule dbl(?a: Float, ?r: Float) :- ?r = ?a + ?a
 
   rule ticket: gte(?e, 0.0) :- ?e = ?d + 1.0, p(?d)
   proof ticket by z3 end
@@ -290,7 +290,7 @@ namespace test.fheek.own
   proof one_arg by z3 end
 
   fact start(5.0)
-  rule q2(?x, ?w) :- start(?y), ?x = ?w
+  rule q2(?x: Float, ?w: Float) :- start(?y), ?x = ?w
   rule by_fact: gte(?a, 100.0) :- lte(?c, 3.0), q2(?a, ?a)
   proof by_fact by z3 end
   rule mode(0, ?r) :- ?r = 1.0
@@ -300,7 +300,7 @@ namespace test.fheek.own
   entity Lim(cap: Float)
   fact Lim(cap: 5.0)
   fact Lim(cap: 6.0)
-  rule via_lim(?x, ?w) :- Lim(cap: ?y), ?x = ?w
+  rule via_lim(?x: Float, ?w: Float) :- Lim(cap: ?y), ?x = ?w
   rule by_row: gte(?a, 100.0) :- lte(?c, 3.0), via_lim(?a, ?a)
   proof by_row by z3 end
 end
@@ -433,7 +433,7 @@ namespace test.fheek.ctor
   rule built: gte(?e, 0.0) :- mk(?d, ?p), start(?d), ?e = ?p.x
   proof built by z3 end
 
-  rule get(some(?x), ?r) :- ?r = ?x
+  rule get(some(?x), ?r: Float) :- ?r = ?x
   rule get(none, ?r) :- ?r = 0.0
   rule fwd(some(?x), ?r) :- get(some(?x), ?r)
   rule leaf: gte(?r, 1.0) :- lte(1.0, ?a), fwd(some(?a), ?r)

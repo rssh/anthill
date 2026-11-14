@@ -4530,7 +4530,7 @@ fn goal_carrier_sort(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
 
 /// What a goal binds its spec's carrier parameter to — a sort ([`goal_carrier_sort`]), or
 /// a type that names none ([`unprovided_spec_at_former`]).
-fn goal_carrier_binding<'g>(kb: &KnowledgeBase, goal: &'g SortGoal) -> Option<&'g Value> {
+pub(super) fn goal_carrier_binding<'g>(kb: &KnowledgeBase, goal: &'g SortGoal) -> Option<&'g Value> {
     // WHICH parameter the carrier goes in, on the two-rung ladder the established reader
     // cannot answer for the spec this ticket is about: [`spec_carrier_param`] finds the
     // param some declared OPERATION receives on, and `Eq` declares no operation at all
@@ -4819,7 +4819,7 @@ pub(super) fn carrier_is_an_instance(kb: &KnowledgeBase, carrier: Symbol, spec: 
 /// hand it, and inside a member of a sort it answered that sort, through the dictionary its
 /// own frame was entered with (MEASURED).
 pub(super) fn host_implements(kb: &KnowledgeBase, op: Symbol) -> bool {
-    if answered_by_its_dictionary(kb, op) {
+    if answered_by_its_dictionary(kb, op) || is_semantic_equality(kb, op) {
         return false;
     }
     kb.is_builtin(op)

@@ -329,7 +329,7 @@ namespace test.wi8rjk8naf
   fact thing(id: 1)
 
   rule p_def(?x) :- thing(id: ?x)
-  rule p_flounder(?x) :- eq(?b, ?c)
+  rule p_flounder(?x: Int64) :- eq(?x, ?c)
 
   sort Lib
     operation susp(x: Int64, y: Int64) -> Int64

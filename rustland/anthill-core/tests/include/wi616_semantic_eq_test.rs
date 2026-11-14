@@ -28,9 +28,14 @@ use smallvec::SmallVec;
 /// Rules driving `eq`/`neq` as rule-body goals over sets and maps built from
 /// the symbolic algebra. `se`/`sne` take two already-built values; the point
 /// is the body `eq`/`neq` goal dispatching (or not) by carrier.
+///
+/// SINCE WI-20261105-CBRD2 an equality is its carrier's member (kernel-language §5.3): `se` and
+/// `sne` declare `PartialEq` at their own type parameter, and each row asks a query, which
+/// passes the instance at its arguments' type to the body's `eq`. Written untyped, both rules
+/// are refused at load.
 const SRC: &str = r#"
     namespace test.wi616
-      import anthill.prelude.{Int64, Eq, Option}
+      import anthill.prelude.{Int64, Eq, Option, PartialEq}
       import anthill.prelude.PartialEq.{eq, neq}
       import anthill.prelude.Option.{some}
       sort Tag
@@ -40,8 +45,8 @@ const SRC: &str = r#"
       sort Box
         entity box(v: Int64)
       end
-      rule se(?x, ?y) :- eq(?x, ?y)
-      rule sne(?x, ?y) :- neq(?x, ?y)
+      rule se[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
+      rule sne[A](?x: A, ?y: A) :- PartialEq[T = A], neq(?x, ?y)
       rule sid(?x, ?y) :- ?x === ?y
       rule unbox0(box(v: ?v), ?v) :- true
       rule unbox1(box(v: ?v), ?v) :- eq(1, 1)
@@ -67,18 +72,21 @@ fn fn_term(kb: &mut KnowledgeBase, qualified: &str, args: &[TermId]) -> TermId {
     })
 }
 
-/// `insert(insert(… empty(), e1 …), en)` over `anthill.prelude.Set`.
-fn set_of(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
-    let mut s = fn_term(kb, "anthill.prelude.Set.empty", &[]);
-    for &e in elems {
-        s = fn_term(kb, "anthill.prelude.Set.insert", &[s, e]);
-    }
-    s
+/// The query `test.wi616.{pred}(a, b)`, its arguments written in full: the solutions it gets.
+fn solutions(kb: &mut KnowledgeBase, pred: &str, a: &str, b: &str) -> usize {
+    crate::common::pattern_answer_counts(kb, &format!("test.wi616.{pred}({a}, {b})")).1
 }
 
-fn solutions(kb: &mut KnowledgeBase, pred: &str, a: TermId, b: TermId) -> usize {
-    let goal = fn_term(kb, &format!("test.wi616.{pred}"), &[a, b]);
-    kb.resolve(&[goal], &ResolveConfig::default()).len()
+/// `insert(insert(… empty(), e1 …), en)` over `anthill.prelude.Set`, as query text.
+fn set_text(elems: &[String]) -> String {
+    elems.iter().fold("anthill.prelude.Set.empty()".to_string(), |s, e| {
+        format!("anthill.prelude.Set.insert({s}, {e})")
+    })
+}
+
+/// [`set_text`] of integers.
+fn int_set_text(elems: &[i64]) -> String {
+    set_text(&elems.iter().map(|n| n.to_string()).collect::<Vec<_>>())
 }
 
 /// Carrier-agnostic "reified to this int" check — a binding can come back as
@@ -90,41 +98,30 @@ fn reifies_to_int(kb: &KnowledgeBase, v: &anthill_core::eval::Value, n: i64) -> 
     matches!(v.head(kb), ViewHead::Const(Literal::Int(m)) if m == n)
 }
 
-fn int_set(kb: &mut KnowledgeBase, elems: &[i64]) -> TermId {
-    let elems: Vec<TermId> = elems.iter().map(|&n| int_term(kb, n)).collect();
-    set_of(kb, &elems)
-}
 
 // ── ground structural uses keep their answers ─────────────────────────────
 
 #[test]
 fn eq_on_ints_unchanged() {
     let mut kb = load_kb();
-    let (a, b) = (int_term(&mut kb, 7), int_term(&mut kb, 7));
-    assert_eq!(solutions(&mut kb, "se", a, b), 1, "eq(7,7) must hold");
-    let (a, b) = (int_term(&mut kb, 7), int_term(&mut kb, 8));
-    assert_eq!(solutions(&mut kb, "se", a, b), 0, "eq(7,8) must not hold");
+    assert_eq!(solutions(&mut kb, "se", "7", "7"), 1, "eq(7,7) must hold");
+    assert_eq!(solutions(&mut kb, "se", "7", "8"), 0, "eq(7,8) must not hold");
 }
 
 #[test]
 fn neq_on_ints_unchanged() {
     let mut kb = load_kb();
-    let (a, b) = (int_term(&mut kb, 7), int_term(&mut kb, 8));
-    assert_eq!(solutions(&mut kb, "sne", a, b), 1, "neq(7,8) must hold");
-    let (a, b) = (int_term(&mut kb, 7), int_term(&mut kb, 7));
-    assert_eq!(solutions(&mut kb, "sne", a, b), 0, "neq(7,7) must not hold");
+    assert_eq!(solutions(&mut kb, "sne", "7", "8"), 1, "neq(7,8) must hold");
+    assert_eq!(solutions(&mut kb, "sne", "7", "7"), 0, "neq(7,7) must not hold");
 }
 
 #[test]
 fn eq_on_entities_without_instance_stays_structural() {
     let mut kb = load_kb();
-    let red = kb.try_resolve_symbol("test.wi616.Tag.red").unwrap();
-    let blue = kb.try_resolve_symbol("test.wi616.Tag.blue").unwrap();
-    let (r1, r2) = (kb.alloc(Term::Ref(red)), kb.alloc(Term::Ref(red)));
-    assert_eq!(solutions(&mut kb, "se", r1, r2), 1, "eq(red,red) must hold");
-    let (r, b) = (kb.alloc(Term::Ref(red)), kb.alloc(Term::Ref(blue)));
+    let (red, blue) = ("test.wi616.Tag.red", "test.wi616.Tag.blue");
+    assert_eq!(solutions(&mut kb, "se", red, red), 1, "eq(red,red) must hold");
     assert_eq!(
-        solutions(&mut kb, "se", r, b),
+        solutions(&mut kb, "se", red, blue),
         0,
         "eq(red,blue) must not hold"
     );
@@ -152,17 +149,17 @@ const UNDECIDED: (usize, usize) = (0, 1);
 fn set_eq_over_the_symbolic_algebra_is_undecided() {
     let mut kb = load_kb();
     for (x, y) in [(&[1, 2][..], &[2, 1][..]), (&[1], &[1, 1]), (&[1, 2], &[1, 2])] {
-        let (a, b) = (int_set(&mut kb, x), int_set(&mut kb, y));
+        let (a, b) = (int_set_text(x), int_set_text(y));
         assert_eq!(
-            solution_split(&mut kb, "se", a, b),
+            split_at(&mut kb, "se", INT_SET, &a, &b),
             UNDECIDED,
             "eq({x:?}, {y:?}) over `insert` chains: undecided, not held",
         );
     }
     for (x, y) in [(&[1, 2][..], &[1, 3][..]), (&[1], &[1, 2])] {
-        let (a, b) = (int_set(&mut kb, x), int_set(&mut kb, y));
+        let (a, b) = (int_set_text(x), int_set_text(y));
         assert_eq!(
-            solution_split(&mut kb, "se", a, b),
+            split_at(&mut kb, "se", INT_SET, &a, &b),
             UNDECIDED,
             "eq({x:?}, {y:?}) over `insert` chains: undecided, not refuted",
         );
@@ -173,9 +170,9 @@ fn set_eq_over_the_symbolic_algebra_is_undecided() {
 fn set_neq_over_the_symbolic_algebra_is_undecided() {
     let mut kb = load_kb();
     for (x, y) in [(&[1, 2][..], &[1, 3][..]), (&[1, 2], &[2, 1])] {
-        let (a, b) = (int_set(&mut kb, x), int_set(&mut kb, y));
+        let (a, b) = (int_set_text(x), int_set_text(y));
         assert_eq!(
-            solution_split(&mut kb, "sne", a, b),
+            split_at(&mut kb, "sne", INT_SET, &a, &b),
             UNDECIDED,
             "neq({x:?}, {y:?}) over `insert` chains is undecided",
         );
@@ -185,12 +182,11 @@ fn set_neq_over_the_symbolic_algebra_is_undecided() {
 #[test]
 fn nested_set_eq_over_the_symbolic_algebra_is_undecided() {
     let mut kb = load_kb();
-    let i12 = int_set(&mut kb, &[1, 2]);
-    let i21 = int_set(&mut kb, &[2, 1]);
-    let i3 = int_set(&mut kb, &[3]);
-    let a = set_of(&mut kb, &[i12, i3]);
-    let b = set_of(&mut kb, &[i3, i21]);
-    assert_eq!(solution_split(&mut kb, "se", a, b), UNDECIDED);
+    let (i12, i21, i3) = (int_set_text(&[1, 2]), int_set_text(&[2, 1]), int_set_text(&[3]));
+    let a = set_text(&[i12, i3.clone()]);
+    let b = set_text(&[i3, i21]);
+    let nested = format!("anthill.prelude.Set[T = {INT_SET}]");
+    assert_eq!(split_at(&mut kb, "se", &nested, &a, &b), UNDECIDED);
 }
 
 #[test]
@@ -198,12 +194,9 @@ fn struct_eq_over_the_symbolic_algebra_is_undecided() {
     // `===` compares the VALUES of its operands (068 §5), and an unreduced call has none —
     // not even two identical spellings are `===` any more.
     let mut kb = load_kb();
-    let a = int_set(&mut kb, &[1, 2]);
-    let b = int_set(&mut kb, &[2, 1]);
-    assert_eq!(solution_split(&mut kb, "sid", a, b), UNDECIDED);
-    let c = int_set(&mut kb, &[1, 2]);
-    let d = int_set(&mut kb, &[1, 2]);
-    assert_eq!(solution_split(&mut kb, "sid", c, d), UNDECIDED);
+    let (a, b) = (int_set_text(&[1, 2]), int_set_text(&[2, 1]));
+    assert_eq!(solution_split(&mut kb, "sid", &a, &b), UNDECIDED);
+    assert_eq!(solution_split(&mut kb, "sid", &a, &a), UNDECIDED);
 }
 
 // ── Map: `Eq[Map]` declared-but-unimplemented is a LOUD type error (WI-650) ──
@@ -402,12 +395,20 @@ fn nonlinear_head_inverse_orientation_binds() {
 /// (definite, undecided-residual) solution counts — the first is what a
 /// `definite_only` consumer (constraint guards, prove) would see; the second
 /// distinguishes SUSPENDED from FAILED.
-fn solution_split(kb: &mut KnowledgeBase, pred: &str, a: TermId, b: TermId) -> (usize, usize) {
-    let goal = fn_term(kb, &format!("test.wi616.{pred}"), &[a, b]);
-    let sols = kb.resolve(&[goal], &ResolveConfig::default());
-    let definite = sols.iter().filter(|s| s.residual.is_empty()).count();
-    (definite, sols.len() - definite)
+fn solution_split(kb: &mut KnowledgeBase, pred: &str, a: &str, b: &str) -> (usize, usize) {
+    let (definite, total) =
+        crate::common::pattern_answer_counts(kb, &format!("test.wi616.{pred}({a}, {b})"));
+    (definite, total - definite)
 }
+
+/// [`solution_split`] with the relation's type parameter written at `at`: an `insert` chain is
+/// an unreduced call, whose type the query does not read off it, so the goal's bracket says it.
+fn split_at(kb: &mut KnowledgeBase, pred: &str, at: &str, a: &str, b: &str) -> (usize, usize) {
+    solution_split(kb, &format!("{pred}[A = {at}]"), a, b)
+}
+
+/// `Set[T = Int64]`, written in full.
+const INT_SET: &str = "anthill.prelude.Set[T = anthill.prelude.Int64]";
 
 #[test]
 fn dispatch_on_non_ground_operand_suspends_and_never_binds() {
@@ -418,13 +419,9 @@ fn dispatch_on_non_ground_operand_suspends_and_never_binds() {
     // for eq and for neq. (Re-vehicled from Map onto Set by WI-650, which dropped
     // Map's relational eq; Set keeps its backed membership eq.)
     let mut kb = load_kb();
-    let v2 = int_term(&mut kb, 2);
-    let xn = kb.intern("x");
-    let xv = kb.fresh_var(xn);
-    let x = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(xv)));
-    let s1 = set_of(&mut kb, &[x]);
-    let s2 = set_of(&mut kb, &[v2]);
-    let (def_eq, susp_eq) = solution_split(&mut kb, "se", s1, s2);
+    let (s1, s2) = (set_text(&["?x".to_string()]), int_set_text(&[2]));
+    let (s1, s2) = (s1.as_str(), s2.as_str());
+    let (def_eq, susp_eq) = split_at(&mut kb, "se", INT_SET, s1, s2);
     assert_eq!(
         def_eq, 0,
         "eq over a non-ground overriding carrier must not decide"
@@ -433,7 +430,7 @@ fn dispatch_on_non_ground_operand_suspends_and_never_binds() {
         susp_eq > 0,
         "eq over a non-ground overriding carrier must SUSPEND, not fail"
     );
-    let (def_ne, susp_ne) = solution_split(&mut kb, "sne", s1, s2);
+    let (def_ne, susp_ne) = split_at(&mut kb, "sne", INT_SET, s1, s2);
     assert_eq!(
         def_ne, 0,
         "neq over a non-ground overriding carrier must not decide"
@@ -443,15 +440,16 @@ fn dispatch_on_non_ground_operand_suspends_and_never_binds() {
         "neq over a non-ground overriding carrier must SUSPEND, not fail"
     );
     // `=` never binds: the suspended solutions must leave ?x unbound.
-    let goal = fn_term(&mut kb, "test.wi616.se", &[s1, s2]);
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    let goal = crate::common::query_pattern_term(&mut kb, &format!("test.wi616.se[A = {INT_SET}]({s1}, {s2})"));
+    let written = anthill_core::kb::load::query_goal_as_written(&mut kb, &goal);
+    let x = TermView::pos_arg(&written, &kb, 0)
+        .and_then(|set| TermView::pos_arg(&set, &kb, 1).map(|x| x.to_value()))
+        .expect("`?x` is the inner `insert`'s element");
     for sol in kb.resolve(&[goal], &ResolveConfig::default()) {
-        let bound = kb.reify(x, &sol.subst);
+        let bound = kb.reify_value(&x, &sol.subst);
         assert!(
-            matches!(
-                &bound,
-                anthill_core::eval::Value::Term { id, .. }
-                    if matches!(kb.get_term(*id), Term::Var(_))
-            ),
+            matches!(TermView::head(&bound, &kb), ViewHead::Var(_)),
             "eq must never bind an operand variable; ?x got {bound:?}"
         );
     }
@@ -464,11 +462,11 @@ fn buried_override_suspends_instead_of_structural_verdict() {
     // verdict would be wrong in both directions, so the compare suspends
     // (undecided), for eq and neq alike.
     let mut kb = load_kb();
-    let s12 = int_set(&mut kb, &[1, 2]);
-    let s21 = int_set(&mut kb, &[2, 1]);
-    let some1 = fn_term(&mut kb, "anthill.prelude.Option.some", &[s12]);
-    let some2 = fn_term(&mut kb, "anthill.prelude.Option.some", &[s21]);
-    let (def_eq, susp_eq) = solution_split(&mut kb, "se", some1, some2);
+    let some1 = format!("anthill.prelude.Option.some({})", int_set_text(&[1, 2]));
+    let some2 = format!("anthill.prelude.Option.some({})", int_set_text(&[2, 1]));
+    let (some1, some2) = (some1.as_str(), some2.as_str());
+    let some_set = format!("anthill.prelude.Option[T = {INT_SET}]");
+    let (def_eq, susp_eq) = split_at(&mut kb, "se", &some_set, some1, some2);
     assert_eq!(
         def_eq, 0,
         "eq(some({{1,2}}), some({{2,1}})) must not decide structurally"
@@ -477,7 +475,7 @@ fn buried_override_suspends_instead_of_structural_verdict() {
         susp_eq > 0,
         "eq over a buried override must SUSPEND, not fail"
     );
-    let (def_ne, susp_ne) = solution_split(&mut kb, "sne", some1, some2);
+    let (def_ne, susp_ne) = split_at(&mut kb, "sne", &some_set, some1, some2);
     assert_eq!(
         def_ne, 0,
         "neq(some({{1,2}}), some({{2,1}})) must not decide structurally"
@@ -488,18 +486,14 @@ fn buried_override_suspends_instead_of_structural_verdict() {
     );
     // Purely structural nesting still decides: some(1) vs some(2) has no
     // reachable override.
-    let (one, two) = (int_term(&mut kb, 1), int_term(&mut kb, 2));
-    let sa = fn_term(&mut kb, "anthill.prelude.Option.some", &[one]);
-    let sb = fn_term(&mut kb, "anthill.prelude.Option.some", &[two]);
+    let (sa, sb) = ("anthill.prelude.Option.some(1)", "anthill.prelude.Option.some(2)");
     assert_eq!(
         solutions(&mut kb, "sne", sa, sb),
         1,
         "neq(some(1), some(2)) must hold"
     );
-    let sc = fn_term(&mut kb, "anthill.prelude.Option.some", &[one]);
-    let sd = fn_term(&mut kb, "anthill.prelude.Option.some", &[two]);
     assert_eq!(
-        solutions(&mut kb, "se", sc, sd),
+        solutions(&mut kb, "se", sa, sb),
         0,
         "eq(some(1), some(2)) must not hold"
     );
@@ -515,10 +509,7 @@ fn larger_set_eq_over_the_symbolic_algebra_is_undecided() {
     let mut kb = load_kb();
     let fwd: Vec<i64> = (1..=12).collect();
     let rev: Vec<i64> = (1..=12).rev().collect();
-    let a = int_set(&mut kb, &fwd);
-    let b = int_set(&mut kb, &rev);
-    assert_eq!(solution_split(&mut kb, "se", a, b), UNDECIDED);
-    let a2 = int_set(&mut kb, &fwd);
-    let b2 = int_set(&mut kb, &rev);
-    assert_eq!(solution_split(&mut kb, "sne", a2, b2), UNDECIDED);
+    let (a, b) = (int_set_text(&fwd), int_set_text(&rev));
+    assert_eq!(split_at(&mut kb, "se", INT_SET, &a, &b), UNDECIDED);
+    assert_eq!(split_at(&mut kb, "sne", INT_SET, &a, &b), UNDECIDED);
 }

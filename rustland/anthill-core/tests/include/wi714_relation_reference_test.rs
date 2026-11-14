@@ -987,8 +987,9 @@ end
 /// Binding an UNCONSTRAINED column (a polymorphic head param the body pins to no
 /// concrete type) is ACCEPTED, not spuriously rejected — a raw column type var accepts
 /// any argument (it is not the reflect `TypeVar` wildcard `types_compatible` alone
-/// recognizes). Binding it also NARROWS the shared column: `rel(?x, ?y) :- eq(?x, ?y)`
-/// types both columns at one var, so `rel(5)` pins that var to `Int64` — the surviving
+/// recognizes). Binding it also NARROWS the shared column: `rel[A](?x: A, ?y: A) :-
+/// PartialEq[T = A], eq(?x, ?y)` types both columns at one var, so `rel(5)` pins that var to
+/// `Int64` (an untyped `rel(?x, ?y) :- eq(?x, ?y)` is refused, WI-20261105-CBRD2) — the surviving
 /// `y` column is `Int64`, proven by a `List[(y: String)]` consumer being rejected while the
 /// matching `List[(y: Int64)]` one loads.
 #[test]
@@ -996,10 +997,10 @@ fn wi714_applied_unconstrained_column_accepts_and_narrows() {
     // The matching consumer loads: binding is accepted AND the surviving column is Int64.
     let ok_src = r#"
 namespace test.wi714poly
-  import anthill.prelude.{String, Int64, List, Bool}
+  import anthill.prelude.{String, Int64, List, Bool, PartialEq}
   import anthill.prelude.PartialEq.{eq}
 
-  rule rel(?x, ?y) :- eq(?x, ?y)
+  rule rel[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 
   operation relFiveInt() -> List[(y: Int64)] effects Error =
     let r = rel(5)
@@ -1017,10 +1018,10 @@ end
     // wrongly unify with String and load).
     let bad_src = r#"
 namespace test.wi714poly2
-  import anthill.prelude.{String, Int64, List, Bool}
+  import anthill.prelude.{String, Int64, List, Bool, PartialEq}
   import anthill.prelude.PartialEq.{eq}
 
-  rule rel(?x, ?y) :- eq(?x, ?y)
+  rule rel[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
 
   operation relFiveStr() -> List[(y: String)] effects Error =
     let r = rel(5)
@@ -1029,9 +1030,9 @@ end
 "#;
     let errs = try_load_kb_with(bad_src).err().unwrap_or_default();
     assert!(
-        !errs.is_empty(),
+        errs.iter().any(|e| e.contains("relFiveStr") && e.contains("String") && e.contains("Int64")),
         "binding x = 5 narrows the shared column to Int64, so a List[(y: String)] result \
-         must be rejected — the column did not stay an open var"
+         must be rejected — the column did not stay an open var; got {errs:?}"
     );
 }
 

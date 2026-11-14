@@ -559,8 +559,8 @@ fn an_unground_body_less_goal_binds_no_residual() {
     let mut kb = crate::common::load_kb_with(&body_less(ns, NO_SUPPLIER_LEAF, "", ""));
     crate::common::assert_refused_naming(
         &crate::common::query_pattern_refusals(&mut kb, &format!("{ns}.Desc.describe(?x, ?r)")),
-        &["test.wi1043.unground.Desc.describe", "a query has no caller"],
-        "the call asked as a query, typed where it is read",
+        &["test.wi1043.unground.Desc.describe", "nothing provides `test.wi1043.unground.Desc`"],
+        "the call asked as a query, typed where it is read and refused as its clause spelling is",
     );
     let goal = crate::common::run_time_goal(&mut kb, &format!("{ns}.Desc.describe(?x, ?r)"));
     let r = match TermView::head(&goal, &kb) {

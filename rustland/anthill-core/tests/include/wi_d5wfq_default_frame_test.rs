@@ -398,7 +398,7 @@ namespace d5wfq.cite
   sort GSat[C, E]
     requires Pc2[C = C, Element = E]
     rule model(vs: C) :- vs <=> Pc2.both()
-    rule plain(vs: C) :- vs = vs
+    rule plain(vs: C) :- vs === vs
     operation count() -> Int64 effects {Error} = model.takeN(5).length()
   end
   sort DSat[C, E = Bit]

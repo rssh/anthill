@@ -138,16 +138,18 @@ end
 
 const TYPED_HEADS: &str = r#"
 namespace test.zz7ph.bounds
-  import anthill.prelude.PartialEq.{eq, neq}
+  import anthill.prelude.PartialEq.{eq}
   import anthill.prelude.{Int64}
 
+  -- `===` and `!==` where the type is the scope's own parameter or open: `=` there owes an
+  -- instance the scope declares none of (WI-20261105-CBRD2).
   sort Scope
     sort T = ?
     sort U = ?
-    rule carrier(?a: T, ?b) :- neq(?a, ?b)
-    rule both(?a: T, ?u: U) :- eq(?a, ?a), eq(?u, ?u)
+    rule carrier(?a: T, ?b) :- ?a !== ?b
+    rule both(?a: T, ?u: U) :- ?a === ?a, ?u === ?u
     rule scalar(?n: Int64) :- eq(?n, 3)
-    rule plain(?a, ?b) :- neq(?a, ?b)
+    rule plain(?a, ?b) :- ?a !== ?b
   end
 end
 "#;
@@ -253,7 +255,7 @@ fn the_goals_generated_for_a_typed_head_are_told_from_the_written() {
     };
     let (made, written) = generated("carrier");
     assert!(made >= 1, "a bound has a generated type test");
-    assert_eq!(written, 1, "`neq(?a, ?b)`");
+    assert_eq!(written, 1, "`?a !== ?b`");
     let (made, written) = generated("both");
     assert!(made >= 2, "one for each bound");
     assert_eq!(written, 2);

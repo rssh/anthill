@@ -1756,15 +1756,41 @@ pub enum ClauseCondition {
     SortRequires { spec: Symbol },
 }
 
+/// Is `op` the semantic equality, `PartialEq.eq`? Its call is its carrier's member, and owes the
+/// carrier's instance as any member's does (kernel-language.md §5.3): a resolver builtin answers
+/// its goal ([`crate::kb::resolve::BuiltinTag::SemEq`]), but at the member the typer pinned or the one the
+/// dictionary its clause hands it names, never at every carrier.
+pub(super) fn is_semantic_equality(kb: &KnowledgeBase, op: Symbol) -> bool {
+    matches!(kb.builtin_of(op), Some(crate::kb::resolve::BuiltinTag::SemEq))
+}
+
+/// Is a call of `functor` at the type `ty` `=` at a tuple, whose equality is its components'
+/// (kernel-language §8.3)? It owes no instance at the tuple, which carries no provision.
+pub(super) fn equality_at_a_tuple(kb: &KnowledgeBase, functor: Symbol, ty: &Value) -> bool {
+    is_semantic_equality(kb, functor) && matches!(type_head(kb, ty), TypeHead::NamedTuple)
+}
+
+/// [`equality_at_a_tuple`] read off a typed call's arguments: one of them typed by a tuple.
+pub(super) fn equality_by_components(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+) -> bool {
+    pos_args
+        .iter()
+        .any(|a| a.inferred_type().is_some_and(|t| equality_at_a_tuple(kb, functor, &t)))
+}
+
 /// Record that the typer left `occ`'s requirement to its clause — unless the callee compares
-/// values itself (a resolver builtin, a host implementation), reading no dictionary.
+/// values itself (a resolver builtin other than the semantic equality, a host implementation),
+/// reading no dictionary.
 pub(super) fn leave_to_the_clause(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     callee: Symbol,
     condition: ClauseCondition,
 ) {
-    if kb.is_builtin(callee) || host_implements(kb, callee) {
+    if (kb.is_builtin(callee) && !is_semantic_equality(kb, callee)) || host_implements(kb, callee) {
         return;
     }
     occ.set_clause_condition(condition);
@@ -1786,7 +1812,7 @@ pub(super) fn dispatch_to_the_clause(
     spec: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
-    if kb.is_builtin(callee) || host_implements(kb, callee) {
+    if (kb.is_builtin(callee) && !is_semantic_equality(kb, callee)) || host_implements(kb, callee) {
         return Ok(());
     }
     let sort_requires = env.rule_domain().is_some_and(|d| {

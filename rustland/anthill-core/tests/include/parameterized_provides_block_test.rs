@@ -148,7 +148,7 @@ namespace test.pbody
   import anthill.prelude.PartialEq.{{eq}}
   sort Stack
     sort T = ?
-    rule is_full(?s) :- eq(?s, ?s)
+    rule is_full(?s) :- ?s === ?s
   end
 
   provides {spec} language anthill
