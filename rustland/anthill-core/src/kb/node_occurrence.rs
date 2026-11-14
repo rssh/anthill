@@ -6412,13 +6412,14 @@ pub fn value_to_term(
 /// — directly.
 ///
 /// WHERE THE TWO COULD DISAGREE IS NAMED, NOT ARGUED AWAY: `visit_fn` keys on the
-/// functor's LAST DOTTED SEGMENT, so a functor naming a reflect FORM
+/// functor's [`ReflectForm`], so a functor that is a reflect FORM's declaration
 /// (`if_expr`/`lambda_expr`/`apply`/`ListLiteral`/…) materializes as that form and
 /// NOT as an `Apply`. [`visit_fn_keys_functor`] is the predicate for exactly that
 /// question, so such an `Entity` takes the `value_to_term` route and the two
-/// carriers stay one reading. It is the rare arm — every caller has already gated
-/// the functor to a declared bodied OPERATION — and paying a store write there is
-/// what keeps the common arm free of one.
+/// carriers stay one reading. It is the rare arm — a form is an entity, so it is
+/// reached by data beneath a goal and never by the call every caller has gated
+/// the functor to — and paying a store write there is what keeps the common arm
+/// free of one.
 ///
 /// It is `visit_fn_keys_functor` and NOT [`is_reflect_form_functor`] because that
 /// one omits `Dictionary` on purpose, and asking it here would have left exactly one
@@ -6471,13 +6472,8 @@ pub fn value_as_occurrence(kb: &mut KnowledgeBase, v: &Value) -> Rc<NodeOccurren
         // can read it as a call, which is the same no-answer outcome the `Term`
         // carrier has for it.
         //
-        // NO PROGRAM REACHES THIS WITH A CALL (WI-20261030-BXMPK, measured). Every
-        // caller has gated the functor to an operation, so a keyed functor is a call
-        // only when an operation is NAMED like a form — `constructor`, `apply` — and
-        // that program is lost before it gets here: the loader reads its rule-body call
-        // as the form too (`?r <=> constructor(lambda () -> "x")` answered
-        // `?r = constructor`; `?r <=> apply(?f)` was refused "expected 1 argument … got
-        // 0"), because a form is keyed by a name's last segment (`expr_form_key`).
+        // No call reaches this: a form is keyed by its declaration, an entity, so an
+        // operation named like one (`constructor`, `apply`) takes the generic arm below.
         return match value_to_term(kb, v) {
             Ok(t) => materialize_from_handle(kb, t),
             Err(_) => NodeOccurrence::new_expr(Expr::Spliced(v.clone()), empty_span(), None),
@@ -7989,10 +7985,14 @@ pub(crate) fn build_expr_leaf(
             named_args,
             ..
         } => {
-            let qn = kb.qualified_name_of(functor);
-            let short = kb.local_name_of(functor);
-            match expr_form_key(qn, short) {
-                "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit" => {
+            match ReflectForm::of(kb, functor) {
+                Some(
+                    ReflectForm::IntLit
+                    | ReflectForm::FloatLit
+                    | ReflectForm::BigIntLit
+                    | ReflectForm::StringLit
+                    | ReflectForm::BoolLit,
+                ) => {
                     match get_named_arg(kb, &named_args, "value").map(|v| kb.get_term(v)) {
                         Some(Term::Const(lit)) => Expr::Const(lit.clone()),
                         other => {
@@ -8000,12 +8000,13 @@ pub(crate) fn build_expr_leaf(
                         }
                     }
                 }
-                "var_ref" => match named_ref(kb, &named_args, "name") {
+                Some(ReflectForm::VarRef) => match named_ref(kb, &named_args, "name") {
                     Some(name) => Expr::VarRef { name },
                     None => panic!("build_expr_leaf: var_ref with non-Ref name"),
                 },
-                key => panic!(
-                    "build_expr_leaf: non-leaf Term::Fn reached the leaf builder (key={key})",
+                form => panic!(
+                    "build_expr_leaf: non-leaf Term::Fn `{}` reached the leaf builder ({form:?})",
+                    kb.qualified_name_of(functor),
                 ),
             }
         }
@@ -8399,14 +8400,12 @@ fn visit_term(
         Term::Ident(s) => results.push(NodeOccurrence::new_expr(Expr::Ident(s), span, None)),
         Term::Bottom => results.push(NodeOccurrence::new_expr(Expr::Bottom, span, None)),
         Term::Fn { functor, .. } => {
-            let qn = kb.qualified_name_of(functor);
-            let short = kb.local_name_of(functor);
-            let key = expr_form_key(qn, short);
+            let form = ReflectForm::of(kb, functor);
             // A materialized term is never a citation the author wrote: every written
             // node is built by the loader, which stamps `dot_chain` of its own parse node
             // (WI-753 retired the per-atom table that stamped it here).
             let dot_chain = false;
-            visit_fn(kb, &Src::Term(t), span, functor, key, dot_chain, work, results);
+            visit_fn(kb, &Src::Term(t), span, functor, form, dot_chain, work, results);
         }
         Term::ParseAux(_) => unreachable!(
             "parse-only Term::ParseAux variant reached node_occurrence materialization",
@@ -8415,7 +8414,7 @@ fn visit_term(
 }
 
 /// Visit handler for `Term::Fn` cases — dispatches on the
-/// last-segment functor key. Children to materialize get pushed as
+/// functor's [`ReflectForm`]. Children to materialize get pushed as
 /// `Visit` ops in REVERSE order (so the first child pops first), with
 /// the matching `Build` frame pushed first (so it pops last).
 #[allow(clippy::too_many_arguments)]
@@ -8424,7 +8423,7 @@ fn visit_fn(
     src: &Src,
     span: SourceSpan,
     functor: Symbol,
-    key: &str,
+    form: Option<ReflectForm>,
     dot_chain: bool,
     work: &mut Vec<WorkOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
@@ -8432,19 +8431,24 @@ fn visit_fn(
     // WI-20260902-4NEKZ follow-up — THE BIT IS ONLY READ ON THE `_` ARM, and nothing
     // structural guarantees a citation lands there. Of `build_frame`'s 15 arms exactly one
     // (`UnknownFn`) calls `new_expr_dot_chain`; the other 14 call `new_expr`, which
-    // hardcodes `false`. That is safe today only because `anthill.reflect.field_access` is
-    // deliberately absent from every keyed form below AND from `is_reflect_form_functor` —
-    // and `expr_form_key` keys on the LAST DOTTED SEGMENT, so the safety is one name
-    // collision away. A keyed form that carried a citation would drop the bit with no
-    // compile error and no diagnostic, and the per-leaf cascade this ticket removed would
-    // come back GREEN. Per the repo's "prefer a loud error over a silent skip", say so.
+    // hardcodes `false`. That is safe because a citation's functor is
+    // `anthill.reflect.field_access`, which is no [`ReflectForm`]. A keyed form that carried
+    // a citation would drop the bit with no compile error and no diagnostic, and the
+    // per-leaf cascade this ticket removed would come back GREEN. Per the repo's "prefer a
+    // loud error over a silent skip", say so.
     debug_assert!(
-        !dot_chain || key == "field_access",
-        "dot_chain is set on a node keyed `{key}`, but only the `_` arm forwards the bit \
+        !dot_chain || form.is_none(),
+        "dot_chain is set on a node keyed {form:?}, but only the `_` arm forwards the bit \
          to `push_unknown_fn` — this arm builds with `new_expr` and would drop it silently"
     );
-    match key {
-        "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit" => {
+    match form {
+        Some(
+            ReflectForm::IntLit
+            | ReflectForm::FloatLit
+            | ReflectForm::BigIntLit
+            | ReflectForm::StringLit
+            | ReflectForm::BoolLit,
+        ) => {
             match src.field(kb, "value").and_then(|v| v.literal(kb)) {
                 // Concrete op-body literal → the internal literal leaf.
                 Some(lit) => {
@@ -8456,7 +8460,7 @@ fn visit_fn(
                 None => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
             }
         }
-        "var_ref" => {
+        Some(ReflectForm::VarRef) => {
             match src.field(kb, "name").and_then(|v| v.symbol(kb)) {
                 Some(sym) => {
                     results.push(NodeOccurrence::new_expr(
@@ -8470,7 +8474,7 @@ fn visit_fn(
                 None => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
             }
         }
-        "if_expr" => {
+        Some(ReflectForm::IfExpr) => {
             let cond = src.field(kb, "cond");
             let then_b = src.field(kb, "then_branch");
             let else_b = src.field(kb, "else_branch");
@@ -8479,7 +8483,7 @@ fn visit_fn(
             push_visit_or_bottom(work, then_b);
             push_visit_or_bottom(work, cond);
         }
-        "let_expr" => {
+        Some(ReflectForm::LetExpr) => {
             let pattern = src.field(kb, "pattern").unwrap_or_else(|| src.clone());
             // WI-814: NO `type_name` read. WI-342 T8 deleted the WRITE side (the
             // `k_type_name` slot on the reflect `let_expr` term) because it was
@@ -8503,13 +8507,13 @@ fn visit_fn(
             push_visit_or_bottom(work, body);
             push_visit_or_bottom(work, value);
         }
-        "lambda_expr" => {
+        Some(ReflectForm::LambdaExpr) => {
             let param = src.field(kb, "param").unwrap_or_else(|| src.clone());
             let body = src.field(kb, "body");
             work.push(WorkOp::Build(BuildFrame::Lambda { span, param, syntax: false }));
             push_visit_or_bottom(work, body);
         }
-        "proof_stmt" => {
+        Some(ReflectForm::ProofStmt) => {
             // WI-538: rebuild Expr::Proof from a stored `proof_stmt`
             // term (the inverse of the loader's BuildFrame::Proof). The
             // target/strategy/using clauses are leaf metadata; body and
@@ -8566,7 +8570,7 @@ fn visit_fn(
                 None => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
             }
         }
-        "match_expr" => {
+        Some(ReflectForm::MatchExpr) => {
             let scrutinee = src.field(kb, "scrutinee");
             let branches_src = src.field(kb, "branches");
             // Collect branch metadata + Visits in source order, then
@@ -8605,7 +8609,7 @@ fn visit_fn(
             }
             push_visit_or_bottom(work, scrutinee);
         }
-        "apply" => {
+        Some(ReflectForm::Apply) => {
             let fn_sym = src.field(kb, "fn").and_then(|v| v.symbol(kb)).unwrap_or(functor);
             let args_tid = src.field(kb, "args");
             let type_args = collect_type_args_src(kb, src.field(kb, "type_args"));
@@ -8632,7 +8636,7 @@ fn visit_fn(
                 work,
             );
         }
-        "constructor" => {
+        Some(ReflectForm::Constructor) => {
             let name = src.field(kb, "name").and_then(|v| v.symbol(kb)).unwrap_or(functor);
             let args_tid = src.field(kb, "args");
             push_apply_like_args(
@@ -8657,7 +8661,7 @@ fn visit_fn(
                 work,
             );
         }
-        "dot_apply" => {
+        Some(ReflectForm::DotApply) => {
             let name = src.field(kb, "name").and_then(|v| v.symbol(kb)).unwrap_or(functor);
             let receiver = src.field(kb, "receiver");
             let args_tid = src.field(kb, "args");
@@ -8677,7 +8681,7 @@ fn visit_fn(
             }
             push_visit_or_bottom(work, receiver);
         }
-        "apply_within" => {
+        Some(ReflectForm::ApplyWithin) => {
             let fn_sym = src.field(kb, "fn").and_then(|v| v.symbol(kb)).unwrap_or(functor);
             let args_tid = src.field(kb, "args");
             let reqs_tid = src.field(kb, "requirements");
@@ -8702,7 +8706,7 @@ fn visit_fn(
                 work.push(v);
             }
         }
-        "requirement_at_sort" => {
+        Some(ReflectForm::RequirementAtSort) => {
             let chain = src.field(kb, "chain");
             let slot = src
                 .field(kb, "slot")
@@ -8732,7 +8736,7 @@ fn visit_fn(
         // dropped — a dictionary over a non-provider where a type was written. The
         // shape test refuses it, and it falls through to the generic application
         // below, which is the right answer for a type application.
-        "Dictionary" if is_dictionary_src(kb, functor, src) => {
+        None if is_dictionary_src(kb, functor, src) => {
             let impl_sort = src
                 .field(kb, "impl")
                 .and_then(|v| v.symbol(kb))
@@ -8747,7 +8751,7 @@ fn visit_fn(
                 work.push(v);
             }
         }
-        "ListLiteral" => {
+        Some(ReflectForm::ListLiteral) => {
             // A `ListLiteral` term stores its elements as `pos_args` (see the
             // converter's `CollectionLiteral` build), NOT as a `cons`/`nil` spine
             // — so read them directly. `collect_list_visits` (a cons/nil walker)
@@ -8762,7 +8766,7 @@ fn visit_fn(
                 work.push(v);
             }
         }
-        "SetLiteral" => {
+        Some(ReflectForm::SetLiteral) => {
             // WI-559: a `SetLiteral` stores its elements as `pos_args` (the
             // converter's `SetLiteral` build uses `alloc_fn_term`, positional
             // only), exactly like `ListLiteral` — so read them directly.
@@ -8776,7 +8780,7 @@ fn visit_fn(
                 work.push(v);
             }
         }
-        "TupleLiteral" => {
+        Some(ReflectForm::TupleLiteral) => {
             // WI-559: a `TupleLiteral` stores its elements as `named_args` —
             // positional surface `(a, b)` becomes `_1`/`_2` labels, declared
             // names stay (see convert.rs `TupleLiteral` build) — NOT a cons/nil
@@ -8799,7 +8803,7 @@ fn visit_fn(
                 work.push(WorkOp::Visit(v));
             }
         }
-        _ => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
+        None => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
     }
 }
 
@@ -8817,13 +8821,14 @@ fn visit_node(
         functor, type_args, ..
     }) = n.as_expr()
     {
-        if type_args.is_empty() && is_reflect_form_functor(kb, *functor) {
-            let functor = *functor;
-            let key = expr_form_key(kb.qualified_name_of(functor), kb.local_name_of(functor));
-            let span = n.span;
-            let dot_chain = n.is_dot_chain();
-            visit_fn(kb, &Src::Node(n), span, functor, key, dot_chain, work, results);
-            return;
+        if type_args.is_empty() {
+            if let form @ Some(_) = ReflectForm::of(kb, *functor) {
+                let functor = *functor;
+                let span = n.span;
+                let dot_chain = n.is_dot_chain();
+                visit_fn(kb, &Src::Node(n), span, functor, form, dot_chain, work, results);
+                return;
+            }
         }
     }
     results.push(n);
@@ -9336,56 +9341,108 @@ pub(crate) fn bottom_node() -> Rc<NodeOccurrence> {
     NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None)
 }
 
-/// Normalize an Expr-form functor name to its last segment, so the
-/// dispatch works whether the loader emitted a qualified name like
-/// `anthill.reflect.Expr.apply` or a hand-built test produced the
-/// bare short name `apply`. We prefer the qualified name as the
-/// source of truth; if its last segment is empty (unlikely), fall
-/// back to the short name.
-pub(crate) fn expr_form_key<'a>(qn: &'a str, short: &'a str) -> &'a str {
-    let last = qn.rsplit('.').next().unwrap_or(qn);
-    if last.is_empty() {
-        short
-    } else {
-        last
+/// A reflect form [`visit_fn`] reads as something other than the generic application: a
+/// literal leaf, a variable reference, a control-flow or proof form, a reflect call form,
+/// or a collection literal.
+///
+/// A functor is a form when it IS the form's declaration — its qualified name is the
+/// form's [`Self::address`] — and never by its last segment: a user's `operation apply` or
+/// `entity TupleLiteral` in any other scope is an ordinary call or constructor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReflectForm {
+    IntLit,
+    FloatLit,
+    BigIntLit,
+    StringLit,
+    BoolLit,
+    VarRef,
+    IfExpr,
+    LetExpr,
+    LambdaExpr,
+    MatchExpr,
+    ProofStmt,
+    Apply,
+    Constructor,
+    DotApply,
+    ApplyWithin,
+    RequirementAtSort,
+    ListLiteral,
+    SetLiteral,
+    TupleLiteral,
+}
+
+impl ReflectForm {
+    pub const ALL: [ReflectForm; 19] = [
+        Self::IntLit,
+        Self::FloatLit,
+        Self::BigIntLit,
+        Self::StringLit,
+        Self::BoolLit,
+        Self::VarRef,
+        Self::IfExpr,
+        Self::LetExpr,
+        Self::LambdaExpr,
+        Self::MatchExpr,
+        Self::ProofStmt,
+        Self::Apply,
+        Self::Constructor,
+        Self::DotApply,
+        Self::ApplyWithin,
+        Self::RequirementAtSort,
+        Self::ListLiteral,
+        Self::SetLiteral,
+        Self::TupleLiteral,
+    ];
+
+    /// The qualified name of the form's declaration. The forms the converter desugars
+    /// into read their address from `desugar_target`; the others are built only by the
+    /// loader and the reflect builders, which resolve the same names.
+    pub fn address(self) -> &'static str {
+        match self {
+            Self::IntLit => "anthill.reflect.Expr.int_lit",
+            Self::FloatLit => "anthill.reflect.Expr.float_lit",
+            Self::BigIntLit => "anthill.reflect.Expr.bigint_lit",
+            Self::StringLit => "anthill.reflect.Expr.string_lit",
+            Self::BoolLit => "anthill.reflect.Expr.bool_lit",
+            Self::VarRef => "anthill.reflect.Expr.var_ref",
+            Self::IfExpr => dt::qualified(dt::IF_EXPR),
+            Self::LetExpr => dt::qualified(dt::LET_EXPR),
+            Self::LambdaExpr => dt::qualified(dt::LAMBDA_EXPR),
+            Self::MatchExpr => dt::qualified(dt::MATCH_EXPR),
+            Self::ProofStmt => "anthill.reflect.Expr.proof_stmt",
+            Self::Apply => "anthill.reflect.Expr.apply",
+            Self::Constructor => "anthill.reflect.Expr.constructor",
+            Self::DotApply => dt::qualified(dt::DOT_APPLY),
+            Self::ApplyWithin => "anthill.reflect.Expr.apply_within",
+            Self::RequirementAtSort => "anthill.reflect.Expr.requirement_at_sort",
+            Self::ListLiteral => dt::qualified(dt::LIST_LITERAL),
+            Self::SetLiteral => dt::qualified(dt::SET_LITERAL),
+            Self::TupleLiteral => dt::qualified(dt::TUPLE_LITERAL),
+        }
+    }
+
+    /// The namespace every form is declared in, which rejects a functor declared anywhere
+    /// else before the forms are compared. An address outside it makes [`Self::of`] answer
+    /// `None` for its own declaration, which the standard load's test of the table
+    /// (`every_reflect_form_names_its_declaration`) reports by form.
+    const NAMESPACE: &'static str = "anthill.reflect.";
+
+    /// The form `functor` declares, if it is one.
+    pub fn of(kb: &KnowledgeBase, functor: Symbol) -> Option<Self> {
+        let qn = kb.qualified_name_of(functor);
+        if !qn.starts_with(Self::NAMESPACE) {
+            return None;
+        }
+        Self::ALL.into_iter().find(|form| form.address() == qn)
     }
 }
 
-/// WI-246: whether `materialize_from_handle` special-cases a `Term::Fn` with
-/// this functor — i.e. would build something OTHER than the generic
-/// `push_unknown_fn → Expr::Apply` (a literal `Const` leaf, a `var_ref`, a
-/// control-flow `If`/`Let`/`Lambda`/`Match`, a reflect `apply`/`constructor`/
-/// `dot_apply`/`*_within`/requirement form, or a `ListLit`/`SetLit`/`TupleLit`).
-/// The loader's native rule-body-atom builder routes these to the materialize
-/// fallback — their occurrence shape isn't a plain `Apply`, and the `*_lit`
-/// keys collapse a concrete `value` to a `Const` leaf — and builds only the
-/// generic-application + leaf cases natively. Mirrors `visit_fn`'s match arms;
-/// keep the two in sync.
+/// WI-246: whether `materialize_from_handle` special-cases a `Term::Fn` with this functor —
+/// whether it is a [`ReflectForm`]. The loader's rule-body-atom builder re-reads these
+/// through `visit_fn` (`rebuild_reflect_node`): their occurrence shape is not a plain
+/// `Apply`, and the literal forms collapse a concrete `value` to a `Const` leaf.
 pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
-    let qn = kb.qualified_name_of(functor);
-    let short = kb.local_name_of(functor);
-    matches!(
-        expr_form_key(qn, short),
-        "int_lit"
-            | "float_lit"
-            | "bigint_lit"
-            | "string_lit"
-            | "bool_lit"
-            | "var_ref"
-            | "if_expr"
-            | "let_expr"
-            | "lambda_expr"
-            | "match_expr"
-            | "proof_stmt"
-            | "apply"
-            | "constructor"
-            | "dot_apply"
-            | "apply_within"
-            | "requirement_at_sort"
-            | "ListLiteral"
-            | "SetLiteral"
-            | "TupleLiteral"
-    )
+    ReflectForm::of(kb, functor).is_some()
 }
 
 /// WI-20260906-7YPGM — could [`visit_fn`] key this functor to anything OTHER than its
@@ -9426,13 +9483,13 @@ fn visit_fn_keys_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 /// so `Dictionary[S = …]` is a legal TYPE spelled under the same functor; see the
 /// `"Dictionary"` arm of [`visit_fn`].
 ///
-/// [`is_reflect_form_functor`] deliberately does NOT list `Dictionary`, breaking
-/// its "mirrors `visit_fn`'s match arms" rule on this one entry, and the reason is
-/// this predicate's second half: that function is keyed on a functor alone and
-/// cannot see the named args, so it could only mirror the symbol test — which is
-/// the over-admission above. Nothing is lost AT THAT CALLER: it gates the loader's
-/// RULE-BODY-atom builder, and a dictionary node is emitted into OP BODIES, which
-/// reach [`materialize_from_handle`] directly.
+/// [`ReflectForm`] deliberately has no `Dictionary` form, though `visit_fn` has an arm
+/// for it, and the reason is this predicate's second half: a form is keyed on a
+/// functor alone and cannot see the named args, so it could only mirror the symbol
+/// test — which is the over-admission above. Nothing is lost at
+/// [`is_reflect_form_functor`]'s caller: it gates the loader's RULE-BODY-atom builder,
+/// and a dictionary node is emitted into OP BODIES, which reach
+/// [`materialize_from_handle`] directly.
 ///
 /// WI-20260906-7YPGM ADDED A SECOND CALLER FOR WHICH THE TRADE INVERTS, so the
 /// sentence above is now about ONE of two and says so. [`value_as_occurrence`] asks
@@ -9442,7 +9499,10 @@ fn visit_fn_keys_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 /// back on top. A recorded reason not to widen is scoped to the caller it was
 /// recorded for.
 fn is_dictionary_src(kb: &KnowledgeBase, functor: Symbol, src: &Src) -> bool {
-    super::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, _)| ctor == functor)
+    // The name first: `visit_fn` asks this of every application that is no form, and the
+    // symbol lookups below are two hash probes.
+    kb.qualified_name_of(functor) == super::term_view::DICT_QNAME
+        && super::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, _)| ctor == functor)
         && src.named_keys(kb).len() == 1
         && src.field(kb, "impl").and_then(|v| v.symbol(kb)).is_some()
 }
@@ -9469,52 +9529,6 @@ mod tests {
 
     fn make_span() -> SourceSpan {
         SourceSpan::new(SourceId::from_raw(0), 0, 10)
-    }
-
-    /// S66VH RESIDUE, MADE LOUD RATHER THAN LEFT SILENT.
-    ///
-    /// Eight desugar-target addresses are still hand-written in this file, and one
-    /// more in `resolve::bounded_list_elements`, because they are `match` PATTERNS
-    /// (`materialize_from_handle`'s dispatch, `is_reflect_form_functor`'s membership
-    /// list, `Some("ListLiteral")` in the spine walk) and a pattern cannot call
-    /// `dt::short`. `short` is not a `const fn` — it is `rsplit`, and making it one
-    /// would need `unsafe` slicing for no gain — so those arms cannot source the
-    /// address the way every other site in the tree now does.
-    ///
-    /// This row is what stops that residue from drifting SILENTLY. It DRIVES
-    /// `expr_form_key` — the very function whose output those arms match on — with
-    /// each canonical address, and asserts the arm string. Rename a target in
-    /// `desugar_target`, or move one out of its namespace, without editing the arms
-    /// and this FAILS naming the address; today the arm would simply go dead and
-    /// materialization would fall through to the generic `Expr::Apply` with nothing
-    /// said anywhere. The eight arms and the `resolve.rs` one share one currency
-    /// (`local_name_of` / last-segment), so this covers both files.
-    ///
-    /// NOT A CONTROL FOR THE SWEEP: it passes with S66VH wholly backed out, because
-    /// it measures the short-name arms and not the qualified-address migration. The
-    /// sweep's control is `wi040_reserved_vocab_test`'s declaration assertion.
-    #[test]
-    fn the_hand_written_dispatch_arms_still_key_off_their_addresses() {
-        for (target, arm) in [
-            (dt::IF_EXPR, "if_expr"),
-            (dt::LET_EXPR, "let_expr"),
-            (dt::LAMBDA_EXPR, "lambda_expr"),
-            (dt::MATCH_EXPR, "match_expr"),
-            (dt::DOT_APPLY, "dot_apply"),
-            (dt::LIST_LITERAL, "ListLiteral"),
-            (dt::SET_LITERAL, "SetLiteral"),
-            (dt::TUPLE_LITERAL, "TupleLiteral"),
-        ] {
-            let qn = dt::qualified(target);
-            assert_eq!(
-                expr_form_key(qn, dt::short(target)),
-                arm,
-                "`{qn}` no longer keys the `{arm}` arm; that arm is a hand-written \
-                 match pattern in materialize_from_handle / is_reflect_form_functor \
-                 (and, for ListLiteral, resolve::bounded_list_elements) and must be \
-                 edited together with the address",
-            );
-        }
     }
 
     #[test]
@@ -9669,7 +9683,13 @@ mod tests {
         // empty arg list and the receiver materialized as a child.
         use smallvec::SmallVec;
         let mut kb = KnowledgeBase::new();
-        let dot = kb.intern(dt::short(dt::DOT_APPLY));
+        let global = kb.global_scope();
+        let dot = kb.define_symbol(
+            dt::short(dt::DOT_APPLY),
+            dt::qualified(dt::DOT_APPLY),
+            crate::intern::SymbolKind::Entity,
+            global,
+        );
         let name = kb.intern("size");
         let receiver_key = kb.intern("receiver");
         let name_key = kb.intern("name");
@@ -9710,7 +9730,13 @@ mod tests {
         // method call `recv.name(arg)` — round-trips with its positional arg.
         use smallvec::SmallVec;
         let mut kb = KnowledgeBase::new();
-        let dot = kb.intern(dt::short(dt::DOT_APPLY));
+        let global = kb.global_scope();
+        let dot = kb.define_symbol(
+            dt::short(dt::DOT_APPLY),
+            dt::qualified(dt::DOT_APPLY),
+            crate::intern::SymbolKind::Entity,
+            global,
+        );
         let name = kb.intern("map");
         let receiver_key = kb.intern("receiver");
         let name_key = kb.intern("name");

@@ -60,16 +60,10 @@
 //! address here. The two dual-spelling field-access recognizers named by S66VH use
 //! [`is`] instead.
 //!
-//! ONE RESIDUE, AND IT IS NOT A MISS — it is a language limit, stated here so the next
-//! reader does not conclude the sweep is total and walk past the drift. Nine short
-//! spellings are still hand-written as `match` PATTERNS: eight in
-//! `kb::node_occurrence` (`materialize_from_handle`'s dispatch and
-//! `is_reflect_form_functor`'s membership list) and `Some("ListLiteral")` in
-//! `kb::resolve::bounded_list_elements`. A pattern cannot call [`short`], and [`short`]
-//! cannot be a `const fn` without `unsafe` slicing. They are held to the addresses by
-//! `node_occurrence::tests::the_hand_written_dispatch_arms_still_key_off_their_addresses`,
-//! which drives the real dispatch-key function so a rename fails LOUDLY there rather
-//! than quietly disabling an arm. Raised by `/code-review`.
+//! The reflect forms `materialize_from_handle` dispatches on are matched as
+//! `kb::node_occurrence::ReflectForm` variants, keyed by qualified name: the eight that are
+//! targets here read their address from this module, and `ReflectForm::address` holds the
+//! others. No dispatch arm spells a short name.
 //!
 //! ONE THING THE HIGHER RUNG ADDS: A VISIBILITY GATE. The absolute rung runs
 //! `resolve_dotted_in_kb`, which filters on `internal_visible_from`; the implicit tier it
@@ -460,8 +454,7 @@ mod tests {
     }
 
     /// Every target's short spelling is its last segment and carries no marker — the
-    /// property `node_occurrence`'s hand-written `match` arms depend on, and the one
-    /// `is`'s third arm must not collide with.
+    /// property `is`'s third arm reads.
     #[test]
     fn every_target_short_name_is_its_last_segment() {
         for target in ALL {

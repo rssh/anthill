@@ -628,9 +628,9 @@ end
 /// DIRECTLY for an `Entity` rather than routing through `value_to_term` +
 /// `materialize_from_handle`, because that pair ALLOCATES and the arity+1 view's own
 /// `?r` column is an unbound fresh var — interning it is the leak this ticket closed.
-/// The cost of building directly is that `visit_fn` keys on the functor's LAST DOTTED
-/// SEGMENT, so a functor naming a reflect FORM materializes as that FORM from a `Term`
-/// and would have become a plain `Expr::Apply` from an `Entity`. The function asks
+/// The cost of building directly is that `visit_fn` keys on the functor's reflect form,
+/// so a functor that is a reflect FORM materializes as that FORM from a `Term` and would
+/// have become a plain `Expr::Apply` from an `Entity`. The function asks
 /// `is_reflect_form_functor` and sends those through the one materializer.
 ///
 /// `int_lit(value: 7)` is the smallest such form: `build_frame` collapses it to an

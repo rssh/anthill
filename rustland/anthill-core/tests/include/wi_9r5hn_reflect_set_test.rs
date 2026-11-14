@@ -27,6 +27,7 @@
 //!   term_as_sort(as_term(Color)) / (as_term(7)) <=> some 0 / 0         1 / 0
 //!   can_be_sort(sort_as_term(Color))                     0             1
 //!   lookup(compose(?s, ?s), "x") → 7 / none              0 / 0         1 / 0
+//!   Substitution.apply(?s, as_term(5)) → 5 / 6 / not(5)  load error    1 / 0 / 0
 //!
 //! "before" is the pre-ticket CLI (`anthill query`) over this file's fixtures; every
 //! `before` row answered with total 0 (decided) except the `Substitution` rows, which
@@ -51,11 +52,10 @@
 //! name, so a namespace never matched — a WRONG answer on every carrier, in an operation
 //! body too (`eval::reflect_builtins`'s `kb_sorts_filters_by_namespace`).
 //!
-//! NOT DRIVEN, and said here: `Substitution.apply(…)` cannot be WRITTEN in a rule body —
-//! it is a load error ("apply.arity … got 0 arguments"), MEASURED identical before and
-//! after this ticket. The `apply` segment is read as the reflect `apply` FORM — the
-//! last-segment keying WI-20260904-FSNZ5 owns.
-//! Its eval face is driven from an operation body (`eval::reflect_builtins`' tests).
+//! `Substitution.apply(…)` was a load error at a rule body before and after this ticket
+//! ("apply.arity … got 0 arguments"): the loader read the call as the reflect `apply`
+//! FORM by its name's last segment. WI-20260904-FSNZ5 keys a form by its declaration, and
+//! its rows are in `the_rest_of_the_reflect_set_reduces_at_a_rule_body_operand`.
 //!
 //! AND ONE ARENA, which is the ticket's prerequisite: `mk()` runs in one scratch bridge
 //! interpreter and `Substitution.lookup` in another, so the handle crosses arenas. With the
@@ -201,6 +201,9 @@ namespace wi9r5hn.more
   operation mk() -> Option[T = Substitution] = unify(fresh_var("x"), as_term(7), KB.kb())
   rule comp(1)     :- mk() <=> some(?s), Substitution.lookup(Substitution.compose(?s, ?s, KB.kb()), "x") <=> some(?v), term_as_int(?v) = some(7)
   rule comp_no(1)  :- mk() <=> some(?s), Substitution.lookup(Substitution.compose(?s, ?s, KB.kb()), "x") <=> none()
+  rule sapp(1)     :- mk() <=> some(?s), term_as_int(Substitution.apply(?s, as_term(5), KB.kb())) = some(5)
+  rule sapp_no(1)  :- mk() <=> some(?s), term_as_int(Substitution.apply(?s, as_term(5), KB.kb())) = some(6)
+  rule sapp_neg(1) :- mk() <=> some(?s), not(term_as_int(Substitution.apply(?s, as_term(5), KB.kb())) = some(5))
 end
 "#;
 
@@ -208,6 +211,11 @@ end
 /// `TermRepr` bridge both ways, the namespace-filtered `KB.sorts`, the sort <-> term pair,
 /// and a `compose` whose two operands are one handle (so the two reads nest). Before this
 /// ticket every row answered 0 — `comp` / `comp_no` suspended, the rest decided false.
+///
+/// The `sapp` rows are WI-20260904-FSNZ5's: `Substitution.apply` is a call and not the
+/// reflect `apply` form. With the form keyed by its name's last segment again
+/// (`ReflectForm::of` comparing `qn.rsplit('.')` to the address's) the fixture does not
+/// load ("apply.arity … got 0 arguments") and this test fails — measured.
 #[test]
 fn the_rest_of_the_reflect_set_reduces_at_a_rule_body_operand() {
     let mut kb = crate::common::load_kb_with(FIXTURE_MORE);
@@ -223,6 +231,9 @@ fn the_rest_of_the_reflect_set_reduces_at_a_rule_body_operand() {
         ("sat", 1),
         ("comp", 1),
         ("comp_no", 0),
+        ("sapp", 1),
+        ("sapp_no", 0),
+        ("sapp_neg", 0),
     ] {
         let goal = format!("wi9r5hn.more.{row}(1)");
         assert_eq!(

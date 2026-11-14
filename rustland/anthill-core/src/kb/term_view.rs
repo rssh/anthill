@@ -2698,7 +2698,7 @@ impl TermView for TermId {
 // identity — [`Value::opaque_carrier_eq`], proposal 005.
 
 const OPREF_QNAME: &str = "anthill.realization.runtime.OpRef";
-const DICT_QNAME: &str = "anthill.realization.runtime.Dictionary";
+pub(crate) const DICT_QNAME: &str = "anthill.realization.runtime.Dictionary";
 
 /// Field keys come from the DECLARED ACCESSOR names, not from bare short names.
 ///

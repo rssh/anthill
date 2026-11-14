@@ -48,7 +48,9 @@ fn stream_head_option_on_concrete_stream_yields_option_with_concrete_t() {
     let name_arg = kb.intern("name");
     let value_arg = kb.intern("value");
     let s_sym = kb.intern("s");
-    let apply_sym = kb.intern("apply");
+    let apply_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply")
+        .expect("apply registered");
     let fn_arg = kb.intern("fn");
     let args_arg = kb.intern("args");
 

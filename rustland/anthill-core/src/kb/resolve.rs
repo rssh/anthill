@@ -3909,9 +3909,9 @@ impl SearchStream {
     /// themselves need not be ground — only the SPINE. Returns `None` when the
     /// spine is not ground (an unbound `cons` tail, or a non-list head): the
     /// caller then DELAYs rather than silently deciding the quantifier.
-    /// Constructors match by SHORT NAME via `local_name_of` (`functor_sym` reads
-    /// the `Fn{c}` / `Ref(c)` spellings alike), since a value list and the
-    /// resolver can carry distinct `Symbol`s sharing the name `cons` / `nil`.
+    /// A cell is read by the QUALIFIED name of its constructor (`functor_sym` reads
+    /// the `Fn{c}` / `Ref(c)` spellings alike), so two `Symbol`s of one declaration
+    /// read alike and a `cons` / `nil` another sort declares is no list cell.
     ///
     /// WI-683: carrier-neutral — reads the whole spine (including a
     /// `ListLiteral`, now a structural `TermView` case) through [`TermView`], so
@@ -3933,12 +3933,12 @@ impl SearchStream {
         let mut seen: HashSet<VarId> = HashSet::new();
         let mut cur = Self::walk_value_chain(kb, list.clone(), subst, &mut seen)?;
         loop {
-            let name = cur.head(kb).functor_sym().map(|f| kb.local_name_of(f));
-            match name.as_deref() {
+            let qn = cur.head(kb).functor_sym().map(|f| kb.qualified_name_of(f));
+            match qn {
                 // The nullary terminator (a bare `Ref(nil)` or an empty `Fn{nil}`
                 // / `Entity{nil}` — `functor_sym` unifies the spellings).
-                Some("nil") => return Some(elems),
-                Some("cons") => {
+                Some("anthill.prelude.List.nil") => return Some(elems),
+                Some("anthill.prelude.List.cons") => {
                     // `cons(head:, tail:)` — named (canonical); tolerate a
                     // positional `cons(h, t)` too, like `list_to_vec`. The tail is
                     // chased through σ before the next iteration inspects it.
@@ -3955,7 +3955,7 @@ impl SearchStream {
                         _ => return None,
                     }
                 }
-                Some("ListLiteral") => {
+                Some(qn) if qn == node_occurrence::ReflectForm::ListLiteral.address() => {
                     // A `ListLiteral` carries all its elements as positional
                     // children and never a tail (the `[h | t]` surface was
                     // removed, WI-560), so the spine ends here.
@@ -8991,12 +8991,9 @@ impl KnowledgeBase {
         }
         // The reflect `Expr` / `Pattern` meta-ctors (`ho_apply`, `match_expr`, …)
         // carry a positional shape that IS the reflect encoding, not user
-        // named-field application — mirrors the loader's exclusion.
-        if node_occurrence::is_reflect_form_functor(self, functor)
-            || self
-                .qualified_name_of(functor)
-                .starts_with("anthill.reflect.")
-        {
+        // named-field application — mirrors the loader's exclusion. Every reflect
+        // form (`node_occurrence::ReflectForm`) is declared in this namespace.
+        if self.qualified_name_of(functor).starts_with("anthill.reflect.") {
             return PositionalPlan::Skip;
         }
         let Some(all_fields) = self.entity_field_names(functor) else {

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use smallvec::SmallVec;
 
 use super::entity_slots::{self, expr_node};
-use super::node_occurrence::{self, Expr, NodeOccurrence};
+use super::node_occurrence::{self, Expr, NodeOccurrence, ReflectForm};
 use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{TermIdView, TermView, ViewHead};
@@ -16757,14 +16757,14 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         expr_scope,
     );
     kb.symbols.define(
-        "proof_stmt",
-        "anthill.reflect.Expr.proof_stmt",
+        dt::short(ReflectForm::ProofStmt.address()),
+        ReflectForm::ProofStmt.address(),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "apply",
-        "anthill.reflect.Expr.apply",
+        dt::short(ReflectForm::Apply.address()),
+        ReflectForm::Apply.address(),
         SymbolKind::Entity,
         expr_scope,
     );
@@ -16775,8 +16775,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         expr_scope,
     );
     kb.symbols.define(
-        "constructor",
-        "anthill.reflect.Expr.constructor",
+        dt::short(ReflectForm::Constructor.address()),
+        ReflectForm::Constructor.address(),
         SymbolKind::Entity,
         expr_scope,
     );
@@ -16787,38 +16787,38 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         expr_scope,
     );
     kb.symbols.define(
-        "var_ref",
-        "anthill.reflect.Expr.var_ref",
+        dt::short(ReflectForm::VarRef.address()),
+        ReflectForm::VarRef.address(),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "int_lit",
-        "anthill.reflect.Expr.int_lit",
+        dt::short(ReflectForm::IntLit.address()),
+        ReflectForm::IntLit.address(),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "bigint_lit",
-        "anthill.reflect.Expr.bigint_lit",
+        dt::short(ReflectForm::BigIntLit.address()),
+        ReflectForm::BigIntLit.address(),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "float_lit",
-        "anthill.reflect.Expr.float_lit",
+        dt::short(ReflectForm::FloatLit.address()),
+        ReflectForm::FloatLit.address(),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "string_lit",
-        "anthill.reflect.Expr.string_lit",
+        dt::short(ReflectForm::StringLit.address()),
+        ReflectForm::StringLit.address(),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "bool_lit",
-        "anthill.reflect.Expr.bool_lit",
+        dt::short(ReflectForm::BoolLit.address()),
+        ReflectForm::BoolLit.address(),
         SymbolKind::Entity,
         expr_scope,
     );
@@ -30277,11 +30277,11 @@ impl ExprBuilderSyms {
             if_expr: kb.resolve_symbol(dt::qualified(dt::IF_EXPR)),
             let_expr: kb.resolve_symbol(dt::qualified(dt::LET_EXPR)),
             lambda: kb.resolve_symbol(dt::qualified(dt::LAMBDA_EXPR)),
-            proof_stmt: kb.resolve_symbol("anthill.reflect.Expr.proof_stmt"),
+            proof_stmt: kb.resolve_symbol(ReflectForm::ProofStmt.address()),
             constructor_pattern: kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern"),
             tuple_pattern: kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern"),
-            constructor: kb.resolve_symbol("anthill.reflect.Expr.constructor"),
-            apply: kb.resolve_symbol("anthill.reflect.Expr.apply"),
+            constructor: kb.resolve_symbol(ReflectForm::Constructor.address()),
+            apply: kb.resolve_symbol(ReflectForm::Apply.address()),
             dot_apply: kb.resolve_symbol(dt::qualified(dt::DOT_APPLY)),
             apply_arg: kb.resolve_symbol("anthill.reflect.ApplyArg"),
             k_scrutinee: kb.intern("scrutinee"),
@@ -38802,21 +38802,13 @@ impl<'a> Loader<'a> {
     /// claim to understand, and guessing at one would be a wrong term rather than a worse
     /// diagnostic.
     fn collection_literal_expr(&mut self, parse_id: ParseTermId, functor: Symbol) -> Option<Expr> {
-        // TESTED ON THE BORROWED SLICE, OWNED ONLY ON A HIT. This function is the `else`
-        // of the entity gate, so it runs for EVERY non-entity `Term::Fn` in every rule
-        // body — 127 097 nodes over one workspace load — and all but a couple of hundred
-        // of them fail this test. Allocating the key first threw a `String` away on each.
-        // Owned after the test because `expr_form_key` borrows the symbol table and
-        // everything below needs `&mut self`. Found by `/code-review`.
-        let key = {
-            let k = node_occurrence::expr_form_key(
-                self.kb.qualified_name_of(functor),
-                self.kb.local_name_of(functor),
-            );
-            if !matches!(k, "ListLiteral" | "SetLiteral" | "TupleLiteral") {
-                return None;
-            }
-            k.to_string()
+        let key = match ReflectForm::of(self.kb, functor) {
+            Some(
+                key @ (ReflectForm::ListLiteral
+                | ReflectForm::SetLiteral
+                | ReflectForm::TupleLiteral),
+            ) => key,
+            _ => return None,
         };
         let kb_term = self.convert_term(parse_id); // memoized hit
         let (parse_pos, parse_named) = match self.parsed.terms.get(parse_id).clone() {
@@ -38838,11 +38830,7 @@ impl<'a> Loader<'a> {
             Term::Ref(s) => return Some(Expr::Ref(s)),
             _ => return None,
         };
-        let lowered_key = node_occurrence::expr_form_key(
-            self.kb.qualified_name_of(kb_functor),
-            self.kb.local_name_of(kb_functor),
-        )
-        .to_string();
+        let lowered_key = ReflectForm::of(self.kb, kb_functor);
 
         // The `convert_term` above walked this whole subtree and emitted its inline
         // descriptions; the child walks below must not emit them a second time. The
@@ -38856,8 +38844,8 @@ impl<'a> Loader<'a> {
         let saved_descs = self.descs_emitted_by_convert;
         self.descs_emitted_by_convert = true;
         let out = self.collection_literal_children(
-            key.as_str(),
-            lowered_key.as_str(),
+            key,
+            lowered_key,
             kb_term,
             kb_pos,
             kb_named,
@@ -38874,8 +38862,8 @@ impl<'a> Loader<'a> {
     #[allow(clippy::too_many_arguments)]
     fn collection_literal_children(
         &mut self,
-        key: &str,
-        lowered_key: &str,
+        key: ReflectForm,
+        lowered_key: Option<ReflectForm>,
         kb_term: TermId,
         kb_pos: smallvec::SmallVec<[TermId; 4]>,
         kb_named: smallvec::SmallVec<[(Symbol, TermId); 2]>,
@@ -38883,14 +38871,14 @@ impl<'a> Loader<'a> {
         parse_named: smallvec::SmallVec<[(Symbol, ParseTermId); 2]>,
     ) -> Option<Expr> {
         // ── A LOWERED LIST: the `cons`/`nil` spine (WI-1096) ────────────────────
-        if key == "ListLiteral" && lowered_key != "ListLiteral" {
+        if key == ReflectForm::ListLiteral && lowered_key != Some(ReflectForm::ListLiteral) {
             return self.cons_spine_expr(kb_term, &parse_pos);
         }
 
         // ── OTHERWISE the lowered node keeps the surface's own shape ────────────
         // The functor is unchanged and so are the slots, so the pairing is the
         // surface's own: by INDEX for the positional ones, by LABEL for the named.
-        if lowered_key != key {
+        if lowered_key != Some(key) {
             return None;
         }
         if kb_pos.len() != parse_pos.len() {
@@ -38935,8 +38923,8 @@ impl<'a> Loader<'a> {
             named.push((field, occ));
         }
         Some(match key {
-            "ListLiteral" => Expr::ListLit(positional),
-            "SetLiteral" => Expr::SetLit(positional),
+            ReflectForm::ListLiteral => Expr::ListLit(positional),
+            ReflectForm::SetLiteral => Expr::SetLit(positional),
             _ => Expr::TupleLit { positional, named },
         })
     }

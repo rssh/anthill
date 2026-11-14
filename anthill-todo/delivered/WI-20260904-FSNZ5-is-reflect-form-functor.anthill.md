@@ -3,9 +3,9 @@
 - id: WI-20260904-FSNZ5-is-reflect-form-functor
 - created: 2026-09-04T21:19:28Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-04T21:19:28Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-14T10:34:41Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -22,4 +22,20 @@ MEASURED 2026-09-24 (under WI-20260923-9R5HN): site (d) is not only a lossy roun
 ### 2026-10-30T17:28:53Z — feedback — claude
 
 MEASURED 2026-10-30 on f9e2eeac (found delivering WI-20261030-BXMPK): besides the load errors above, the same misreading LOADS AND ANSWERS WRONG. Over `operation constructor(f: () -> String) -> String = f()` and its renamed twin `operation construct(…)` (same body), `rule k1(?r) :- ?r <=> constructor(lambda () -> "x")` answers `?r = constructor`, definite, and so does the fully qualified `?r <=> probe.rf.constructor(lambda () -> "x")`; the twin answers `?r = "x"`. By the spec `<=>` evaluates every operation application in its operands first (kernel-language.md, the `<=>` bullet of 'Equality: test vs. bind'), so the loader handed it no operation application at all. With `operation apply(f: () -> String)`, `?r <=> apply(?f)` is refused 'expected 1 argument … got 0', as above. A FIFTH READER of the same key: `node_occurrence::value_as_occurrence` asks `visit_fn_keys_functor` (`is_reflect_form_functor` plus the `Dictionary` symbol) whether an entity is a reflect form, and `materialize_from_handle`'s `visit_fn` keys its arms by `expr_form_key` too, so a call to such an operation reaching the resolver as an entity or a term would be read as the form there as well; BXMPK left `value_as_occurrence`'s reflect arm lowering through `value_to_term` and states at the site that no program reaches it with a call, because the loader loses that program first. The acceptance gains: `k1` answers "x" (the bare and the qualified spelling), and `value_as_occurrence` and `visit_fn` decide by identity as `is_reflect_form_functor` does.
+
+### 2026-11-14T10:34:33Z — feedback — claude
+
+DELIVERED 2026-11-14: a reflect form is keyed by its declaration. `node_occurrence::ReflectForm` (19 variants, one per form `visit_fn` reads as something other than a generic application) carries each form's address — the eight converter targets read it from `desugar_target`, the eleven others are written once in `ReflectForm::address` — and `ReflectForm::of` compares the functor's qualified name with it. `expr_form_key` is deleted; `is_reflect_form_functor`, `visit_fn` (now an exhaustive match over the enum), `visit_node`, `build_expr_leaf`, `value_as_occurrence` (through `visit_fn_keys_functor`), the loader's collection-literal builder, `resolve::bounded_list_elements` and `persistence::document::list_elements` all ask it. No hand-written dispatch arm spells a short name any more, so `the_hand_written_dispatch_arms_still_key_off_their_addresses` is replaced by `every_reflect_form_names_its_declaration` (each address names the declaration the standard load makes, and `of` answers that form).
+
+Measured before / after (`anthill query`): `Box.apply(box(0), 1) = 1` / `= 2` and the `constructor` twin: load error / 1, 0. `?r <=> constructor(lambda () -> "x")`, bare and qualified: `?r = constructor` / "x". `?r <=> apply(lambda () -> "y")`: load error / "y". A user `operation int_lit(value)` = value + 1: `?x <=> int_lit(value: 3)` answered 3, now 4. `anthill.reflect.Substitution.apply` at a rule body: load error / answers (rows added to `wi_9r5hn_reflect_set_test`). A user `entity TupleLiteral` / `ListLiteral` / `if_expr`: the module did not load / reads as its renamed twin.
+
+One behaviour change beyond the ticket's rows: a form's name with only the enum imported (`import anthill.reflect.Expr`, then `if_expr(…)` in a rule body) used to be read as the form by its last segment and load a rule that matched nothing; it names nothing and is now refused "rule-body term `if_expr` names nothing", as `int_lit(value: ?)` in the same spelling already was. `wi753_native_rule_body_occurrence_test` drops that spelling from REFLECT_PATTERNS. Its bracket row moved to a real form (`Expr[T = Int64].proof_stmt(…)`, still "not read here"; the reread `recv_type` gate measured load-bearing), and a new row shows a user `apply` with a bracket reads as its twin `applz`.
+
+FOUND ON THE WAY, same reader, fixed here: `bounded_list_elements` read `cons` / `nil` by their local names, so `(some ?x in ?l: ?x = 2)` over a user's own `sort MyL { entity nil; entity cons(head, tail) }` answered true while the renamed twin `kons` / `nill` suspended. Cells are read by the qualified name of their constructor now, as `eval::builtins::list_cell_kind` reads them.
+
+Hand-built fixtures that minted the form as a bare `kb.intern("apply")` / `intern("dot_apply")` (`wi210_dispatch_test` x3, `wi211_typing_test`, two `node_occurrence` unit tests — the case `expr_form_key`'s doc was written for) now name the declaration. `register_stdlib_scopes` and `ExprBuilderSyms` read the eleven non-`desugar_target` addresses from `ReflectForm::address`.
+
+Tests: `wi_fsnz5_reflect_form_identity_test` (8 rows). Back-outs (temporary switches, one build): last-segment keying in `ReflectForm::of` fails 6 of them plus `wi_9r5hn`'s `the_rest_of_the_reflect_set…` and `wi753`'s twin row; `every_reflect_form_names_its_declaration` passes by design; the quantifier row fails alone under local-name cells. Full gate 12 055 passed, 0 failed (previous full run 12 047; +8 rows here, +1 `wi753` row, −1 removed unit test); families unmoved; /code-review's seven findings fixed (a `Dictionary` probe and a 19-address scan on the materializer's hot path, both now behind a name check). scaland: `sbt testFull` 800 passed; no mirror (no rule-body occurrence builder; its one `ListLiteral` check reads a stdlib realization fact).
+
+Not done: `persistence::print`'s list spine (`short_name(sym) == "cons"`) still prints a user's `cons(…)` as `[…]` — reported to the user, not changed: the printer serves the parse view too and the retract key depends on both views printing alike.
 

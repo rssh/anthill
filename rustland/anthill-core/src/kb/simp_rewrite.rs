@@ -1932,10 +1932,8 @@ pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symb
 /// one (WI-903, `load::load_rule`) cannot drift apart on what a dot rule IS. S66VH
 /// routes this and the declarative reflect tables (`ExprBuilderSyms`, `term_view`'s
 /// field map, `eval`'s `ReflectSymbols`) through [`dt`], the address owner — so this
-/// no longer owns a string anyone else spells. NOT EVERY consumer: the short-name
-/// `match` ARMS in `node_occurrence` and `resolve::bounded_list_elements` cannot call
-/// a function in a pattern and stay hand-written, guarded instead by
-/// `node_occurrence::tests::the_hand_written_dispatch_arms_still_key_off_their_addresses`.
+/// no longer owns a string anyone else spells; `node_occurrence::ReflectForm` reads
+/// the same address.
 ///
 /// `None` only if the reflect vocabulary is absent. `register_prelude` →
 /// `register_stdlib_scopes` DEFINES this symbol (it does not wait for

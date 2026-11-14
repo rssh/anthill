@@ -1545,7 +1545,10 @@ fn list_elements(kb: &KnowledgeBase, term: TermId) -> Option<Vec<TermId>> {
         named_args,
     } = kb.get_term(term)
     {
-        if kb.local_name_of(*functor) == "ListLiteral" && named_args.is_empty() {
+        if kb.qualified_name_of(*functor)
+            == crate::kb::node_occurrence::ReflectForm::ListLiteral.address()
+            && named_args.is_empty()
+        {
             return Some(pos_args.to_vec());
         }
     }

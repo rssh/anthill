@@ -576,7 +576,9 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
     let name_arg = kb.intern("name");
     let value_arg = kb.intern("value");
     let s_sym = kb.intern("s");
-    let apply_sym = kb.intern("apply");
+    let apply_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply")
+        .expect("apply registered");
     let fn_arg = kb.intern("fn");
     let args_arg = kb.intern("args");
 
@@ -739,7 +741,9 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     let value_arg = kb.intern("value");
     let s_sym = kb.intern("s");
     let w_sym = kb.intern("w");
-    let apply_sym = kb.intern("apply");
+    let apply_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply")
+        .expect("apply registered");
     let fn_arg = kb.intern("fn");
     let args_arg = kb.intern("args");
 
@@ -817,7 +821,9 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
     let x_sym = kb.intern("x");
     let a_sym = kb.intern("a");
     let b_sym = kb.intern("b");
-    let apply_sym = kb.intern("apply");
+    let apply_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply")
+        .expect("apply registered");
     let fn_arg = kb.intern("fn");
     let args_arg = kb.intern("args");
 

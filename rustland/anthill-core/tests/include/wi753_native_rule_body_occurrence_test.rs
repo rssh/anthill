@@ -20,17 +20,15 @@
 //! table already located a node with no identical twin (WI-1039); it pins that the native
 //! build keeps that.
 //!
-//! Stage 2 — a REFLECT FORM written as data (`occurrence_term(?e, if_expr(…))`), in both
-//! spellings: UNRESOLVED (`import anthill.reflect.Expr` alone — the corpus spelling, built as
-//! the generic application) and RESOLVED (`import anthill.reflect.Expr.{if_expr, var_ref}`,
-//! built by `entity_ctor_expr`). Backed out by restoring the early return for reflect forms
-//! (`} else if written_entity || reflect_form {`, and the `None if written_entity` arm
-//! disabled): `identical_reflect_pattern_children_are_each_located_at_their_own_site` FAILS —
-//! the two `var_ref(name: a)` branches carry ONE span, the first's (`(166, 166)` for
-//! `(166, 197)`); with ONLY the `None if written_entity` arm disabled, it fails on the
-//! RESOLVED row alone (`(209, 209)` for `(209, 240)`). `a_reflect_pattern_still_reads_as_its_keyed_form` passes either way BY
-//! DESIGN — both carriers take `visit_fn`'s arms — and pins that the native build keeps the
-//! reading.
+//! Stage 2 — a REFLECT FORM written as data (`occurrence_term(?e, if_expr(…))`, the members
+//! imported: `import anthill.reflect.Expr.{if_expr, var_ref}`), built by `entity_ctor_expr`.
+//! Backed out by disabling the `None if written_entity` arm:
+//! `identical_reflect_pattern_children_are_each_located_at_their_own_site` FAILS — the two
+//! `var_ref(name: a)` branches carry ONE span, the first's (`(209, 209)` for `(209, 240)`).
+//! `a_reflect_pattern_still_reads_as_its_keyed_form` passes either way BY DESIGN — both
+//! carriers take `visit_fn`'s arms — and pins that the native build keeps the reading. (The
+//! form's name with only the enum imported, `import anthill.reflect.Expr`, names nothing and
+//! is refused as any unknown name is: a form is its declaration, WI-20260904-FSNZ5.)
 //!
 //! Stage 3 — the sites that still re-derived a node from a lowered term.
 //! * A TRANSFORMED child (`wrap_bare_option_value`'s `some(…)`). With
@@ -196,16 +194,9 @@ fn if_spans(src: &str, rule_qn: &str) -> Vec<[(u32, u32); 3]> {
     out
 }
 
-/// The pattern under each import spelling: the reflect form's functor UNRESOLVED (only the
-/// enum imported — how `typing_pass_spec.anthill` writes it) and RESOLVED (the members
-/// imported). The two take different builders; both must locate each child at its own site.
-const REFLECT_PATTERNS: [&str; 2] = [
-    r#"namespace test.wi753.reflect
-  import anthill.reflect.{NodeOccurrence, Expr, occurrence_term}
-
-  rule probe(?e) :- occurrence_term(?e, if_expr(cond: ?c, then_branch: var_ref(name: a), else_branch: var_ref(name: a)))
-end
-"#,
+/// The pattern, the reflect form's members imported; each child must be located at its own
+/// site.
+const REFLECT_PATTERNS: [&str; 1] = [
     r#"namespace test.wi753.reflect
   import anthill.reflect.{NodeOccurrence, occurrence_term}
   import anthill.reflect.Expr.{if_expr, var_ref}
@@ -250,31 +241,60 @@ fn a_reflect_pattern_still_reads_as_its_keyed_form() {
     }
 }
 
-/// A RECEIVER BRACKET ON A REFLECT-NAMED CALL IS STILL REFUSED, NOT DROPPED. A user operation
-/// whose name is a reflect form's (`apply`) takes the generic native build and is re-read at
-/// the tail into the keyed occurrence, which has no receiver-type slot — so that build must
-/// leave the bracket UNCONSUMED for `check_unconsumed_recv_types` to report, as it did when
-/// the node took the round trip. MEASURED: with the generic build's `recv_type` gate removed
-/// (always `build_recv_type`), this program loads CLEAN. Found by `/code-review`.
+/// A RECEIVER BRACKET ON A REFLECT FORM IS STILL REFUSED, NOT DROPPED. A form with no
+/// field schema (`proof_stmt`) takes the generic native build and is re-read at the tail
+/// into the keyed occurrence, which has no receiver-type slot — so that build must leave the
+/// bracket UNCONSUMED for `check_unconsumed_recv_types` to report, as it did when the node
+/// took the round trip. MEASURED: with the generic build's `recv_type` gate removed (always
+/// `build_recv_type`), the "not read here" refusal is gone. Found by `/code-review`.
 #[test]
-fn a_receiver_bracket_on_a_reflect_named_call_is_refused() {
+fn a_receiver_bracket_on_a_reflect_form_is_refused() {
     let src = r#"namespace test.wi753.bracket
-  import anthill.prelude.Int64
+  import anthill.prelude.{Int64, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
+  import anthill.reflect.{Expr}
+  import anthill.reflect.Expr.{proof_stmt}
 
-  sort Bx
-    import anthill.prelude.Int64
-    entity bx
-    operation apply(x: Bx) -> Int64 = 1
-  end
-
-  rule probe(?v) :- eq(?v, Bx[T = Int64].apply(bx()))
+  rule probe(?v) :- eq(?v, Expr[T = Int64].proof_stmt(target: ?x))
 end
 "#;
     let errs = crate::common::load_errors_of(src);
     assert!(
-        errs.iter().any(|e| e.contains("not read here")),
+        errs.iter()
+            .any(|e| e.contains("not read here") && e.contains("Expr.proof_stmt")),
         "the bracket must be refused, not dropped: {errs:#?}"
     );
+}
+
+/// A user operation NAMED like a form (`apply`) is an ordinary call (WI-20260904-FSNZ5): its
+/// bracket is read as its renamed twin's is, and both are refused for the parameter `Bx`
+/// does not declare. Before, `apply` alone was read as the reflect form, refused "not read
+/// here" and "got 0 arguments". MEASURED: with `ReflectForm::of` keying by last segment
+/// again, the `apply` row fails.
+#[test]
+fn a_receiver_bracket_on_a_call_named_like_a_form_reads_as_its_twins() {
+    for name in ["apply", "applz"] {
+        let src = r#"namespace test.wi753.bracket
+  import anthill.prelude.{Int64, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
+
+  sort Bx
+    import anthill.prelude.Int64
+    entity bx
+    operation @(x: Bx) -> Int64 = 1
+  end
+
+  rule probe(?v) :- eq(?v, Bx[T = Int64].@(bx()))
+end
+"#
+        .replace('@', name);
+        let errs = crate::common::load_errors_of(&src);
+        assert_eq!(errs.len(), 1, "{name}: {errs:#?}");
+        assert!(
+            errs[0].contains("has no type parameter named 'T'"),
+            "{name}: {errs:#?}"
+        );
+    }
 }
 
 /// Every node under rule `rule_qn`'s body whose `Expr::Apply` functor is locally `name`, as

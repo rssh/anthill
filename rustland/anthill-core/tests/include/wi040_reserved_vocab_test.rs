@@ -207,27 +207,19 @@ fn first_short_name_collision<'a>(targets: &[&'a str]) -> Option<(&'a str, &'a s
 /// lowest-precedence table lookup is gone. Readers that key on a last segment today:
 ///   * `dt::is`'s third arm (`name == short(target)`) — a collision makes one written
 ///     name answer `true` for two targets.
-///   * `kb::node_occurrence::expr_form_key`, the dispatch key of the hand-written
-///     `match` arms in `visit_fn` / `is_reflect_form_functor`. It covers EIGHT of
-///     `dt::ALL`, not all twelve — `field_access`, `ho_apply`, `cut` and
-///     `find_dictionary` have no arm.
 ///   * `kb::load::register_stdlib_scopes`.
-///   * `kb::resolve`'s `ho_apply` gate (`local_name_of(f) == dt::short(dt::HO_APPLY)`)
-///     and `Some("ListLiteral")` in `bounded_list_elements`.
+///   * `kb::resolve`'s `ho_apply` gate (`local_name_of(f) == dt::short(dt::HO_APPLY)`).
 ///   * `kb::load`'s `ho_apply` intern fallback and `type_expr_base_name`, which names a
 ///     `TypeExpr::Tuple` by `dt::short(dt::TUPLE_LITERAL)`.
-///   * `kb::node_occurrence`'s `debug_assert!(!dot_chain || key == "field_access", …)`,
-///     whose own comment says the safety is one name collision away.
+///
+/// `materialize_from_handle`'s dispatch is not among them: it matches
+/// `kb::node_occurrence::ReflectForm`, which compares the functor's QUALIFIED name to the
+/// form's address (WI-20260904-FSNZ5), so a short-name collision cannot reach it.
 ///
 /// WHAT THIS ROW DOES NOT COVER, said plainly so the census is not read as complete.
-/// The dispatch KEY SPACE is wider than this domain: `visit_fn` matches roughly twenty
-/// strings, and `register_stdlib_scopes` hand-writes `apply` / `constructor` / `var_ref`
-/// / the `*_lit` family into the same scopes the `dt::short` defines land in. A
-/// collision between a minted address and one of THOSE is the same hazard and is not
-/// measured here. `expr_form_key` is namespace-blind, so `is_reflect_form_functor`
-/// already answers `true` for `anthill.reflect.Substitution.apply` and
-/// `anthill.prelude.Function.apply` — a live, pre-existing defect, older than this
-/// ticket and not repaired by it.
+/// `register_stdlib_scopes` hand-writes `apply` / `constructor` / `var_ref` / the `*_lit`
+/// family into the same scopes the `dt::short` defines land in. A collision between a
+/// minted address and one of THOSE is the same hazard and is not measured here.
 ///
 /// THE SAME-SCOPE HALF IS ALREADY LOUD, which is why this row is about the rest.
 /// `SymbolTable::define` MERGES on a name already bound in the scope — it calls
@@ -237,11 +229,9 @@ fn first_short_name_collision<'a>(targets: &[&'a str]) -> Option<(&'a str, &'a s
 /// orphan. It is a collision ACROSS scopes, or one in a reader that never touches the
 /// symbol table, that says nothing.
 ///
-/// IT PASSES TODAY AND IS A ROT GUARD. `node_occurrence`'s
-/// `the_hand_written_dispatch_arms_still_key_off_their_addresses` already pins eight of
-/// these pairwise-distinct by driving `expr_form_key`; what is new here is the other
-/// twenty-two addresses and every cross-product, including the cross-table pairs
-/// WI-910's acceptance names ("within a list, or ACROSS the two").
+/// IT PASSES TODAY AND IS A ROT GUARD over every address and every cross-product,
+/// including the cross-table pairs WI-910's acceptance names ("within a list, or ACROSS
+/// the two").
 #[test]
 fn no_two_minted_addresses_share_a_short_name() {
     let domain = every_minted_address();
@@ -263,8 +253,8 @@ fn no_two_minted_addresses_share_a_short_name() {
         first_short_name_collision(&domain),
         None,
         "two distinct minted addresses share a short name. Which readers break depends \
-         on which pair: see this row's doc for the census — `dt::is`, `expr_form_key`'s \
-         eight arms, `register_stdlib_scopes`, the `ho_apply` gate. A pair reachable by \
+         on which pair: see this row's doc for the census — `dt::is`, \
+         `register_stdlib_scopes`, the `ho_apply` gate. A pair reachable by \
          none of them is still a defect: the short spelling no longer identifies one \
          address"
     );

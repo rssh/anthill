@@ -392,7 +392,7 @@ end
 /// BACKED OUT, each part alone (measured), this row fails — at the assertion the part is
 /// for — under every one of them:
 ///  * the canon making an entity's nullary application its bare name, or its reflect-form
-///    exemption read by last segment (`is_reflect_form_functor`): the store rows;
+///    exemption (`is_reflect_form_functor`): the store rows;
 ///  * the clause converter's data-slot reading (`Loader::bare_name_term`), or its bracket
 ///    gate: `heldAcct`, `fieldedBindingIsTheType` (and `wi_vnwaw`'s data-slot row);
 ///  * the rule-body walk's data-slot reading (`body_data_slot_name`): its instance arm —
