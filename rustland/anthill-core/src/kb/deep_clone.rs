@@ -1165,6 +1165,8 @@ impl KnowledgeBase {
             op_type_param_defaults: plain(&self.op_type_param_defaults),
             alias_heads: plain(&self.alias_heads),
             aliases_applying: plain(&self.aliases_applying),
+            opaque_sorts: plain(&self.opaque_sorts),
+            sort_class_cache: plain(&self.sort_class_cache),
             scan_alias_decls: plain(&self.scan_alias_decls),
             // WI-20261010-ANK4X — COPIED, not started empty and filed again: it is true of
             // this KB's clauses, the copy's clauses are these under the same `RuleId`s and

@@ -4535,6 +4535,21 @@ fn unlowerable_operation(
         });
     }
     let qn = kb.qualified_name_of(op).to_string();
+    // Proposal 074 §1.4 — a dictionary is no host expression a binding could name: the
+    // generator emits no dictionary until 074's stage 7 (WI-20261113-10SN8), and says so
+    // rather than advise an `operation_map` for `Dictionary`.
+    if qn == anthill_core::kb::typing::DICTIONARY_INSTANCE_QNAME {
+        let holder = ctx
+            .lowering_decl
+            .get()
+            .map_or_else(|| "a declaration".to_string(), |h| format!("`{}`", kb.qualified_name_of(h)));
+        return Some(CppCodegenError {
+            message: format!(
+                "{holder} builds a dictionary (`Dictionary.instance[…]()`), and cpp-gen emits \
+                 no dictionary yet (proposal 074 stage 7, WI-20261113-10SN8)"
+            ),
+        });
+    }
     let carrier = parent_qualified_name(kb, op).unwrap_or_else(|| "<unknown>".to_string());
     // "No cpp mappings at all" is a different fault from "this one is missing", and
     // by far the likelier one to hit a new project: the `provides … language cpp`

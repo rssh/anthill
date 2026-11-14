@@ -59,11 +59,12 @@ fn program(ns: &str, ops: &str) -> String {
         r#"
 namespace p0qgf3.{ns}
   import anthill.prelude.{{Int64, Float, Additive}}
+  import anthill.realization.runtime.Dictionary
   operation add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b
-  operation sum2[X](a: X, b: X) -> X requires Additive[T = X] = add2(Additive[T = X], a, b)
+  operation sum2[X](a: X, b: X) -> X requires Additive[T = X] = add2(Dictionary.instance[Additive[T = X]](), a, b)
   operation sumWith[X](f: (x: Additive, a: x.T, b: x.T) -> x.T, a: X, b: X) -> X
     requires Additive[T = X]
-  = f(Additive[T = X], a, b)
+  = f(Dictionary.instance[Additive[T = X]](), a, b)
 {ops}
 end
 "#
@@ -101,7 +102,7 @@ fn a_lambda_applied_to_an_application() {
         &format!(
             "  operation direct() -> Int64 =
     let f = {LAMBDA}
-    f(Additive[T = Int64], 2, 3)"
+    f(Dictionary.instance[Additive[T = Int64]](), 2, 3)"
         ),
     );
     assert_eq!(shown(&mut interp_for(&src), "p0qgf3.direct.direct"), "5");
@@ -115,8 +116,8 @@ fn a_member_that_takes_no_carrier_reads_the_lambdas_instance() {
         "  operation zeros() -> (Int64, Float) =
     let z = lambda (x: Additive) -> Additive.zero[T = x.T]()
     let za = lambda (x: Additive) -> Additive[T = x.T].zero()
-    let i = z(Additive[T = Int64])
-    (i, za(Additive[T = Float]))",
+    let i = z(Dictionary.instance[Additive[T = Int64]]())
+    (i, za(Dictionary.instance[Additive[T = Float]]()))",
     );
     assert_eq!(shown(&mut interp_for(&src), "p0qgf3.zero.zeros"), "(0, 0.0)");
 }
@@ -130,10 +131,10 @@ fn the_lambdas_instance_is_passed_on() {
         "  operation passed() -> (Int64, Int64, Float) =
     let asValue = lambda (x: Additive, a: x.T, b: x.T) -> add2(x, a, b)
     let toGeneric = lambda (x: Additive, a: x.T, b: x.T) -> sum2(a, b)
-    let asApplication = lambda (x: Additive, a: x.T, b: x.T) -> add2(Additive[T = x.T], a, b)
-    let v = asValue(Additive[T = Int64], 2, 3)
-    let g = toGeneric(Additive[T = Int64], 2, 3)
-    (v, g, asApplication(Additive[T = Float], 1.5, 2.5))",
+    let asApplication = lambda (x: Additive, a: x.T, b: x.T) -> add2(Dictionary.instance[Additive[T = x.T]](), a, b)
+    let v = asValue(Dictionary.instance[Additive[T = Int64]](), 2, 3)
+    let g = toGeneric(Dictionary.instance[Additive[T = Int64]](), 2, 3)
+    (v, g, asApplication(Dictionary.instance[Additive[T = Float]](), 1.5, 2.5))",
     );
     assert_eq!(shown(&mut interp_for(&src), "p0qgf3.pass.passed"), "(5, 5, 4.0)");
 }
@@ -147,9 +148,9 @@ fn the_lambdas_instance_is_passed_on() {
 fn an_operations_instance_handed_on_as_its_application() {
     let src = program(
         "op_app",
-        "  operation viaApp(x: Additive, a: x.T, b: x.T) -> x.T = add2(Additive[T = x.T], a, b)
-  operation viaAppInts() -> Int64 = viaApp(Additive[T = Int64], 2, 3)
-  operation viaAppFloats() -> Float = viaApp(Additive[T = Float], 1.5, 2.5)",
+        "  operation viaApp(x: Additive, a: x.T, b: x.T) -> x.T = add2(Dictionary.instance[Additive[T = x.T]](), a, b)
+  operation viaAppInts() -> Int64 = viaApp(Dictionary.instance[Additive[T = Int64]](), 2, 3)
+  operation viaAppFloats() -> Float = viaApp(Dictionary.instance[Additive[T = Float]](), 1.5, 2.5)",
     );
     let mut interp = interp_for(&src);
     assert_eq!(shown(&mut interp, "p0qgf3.op_app.viaAppInts"), "5");
@@ -163,12 +164,12 @@ fn two_instances_each_answer_their_own_carrier() {
         "two",
         "  operation oneLambda() -> Float =
     let f = lambda (x: Additive, y: Additive, a: x.T, b: y.T) -> b + b
-    f(Additive[T = Int64], Additive[T = Float], 1, 2.5)
+    f(Dictionary.instance[Additive[T = Int64]](), Dictionary.instance[Additive[T = Float]](), 1, 2.5)
   operation nested() -> (Int64, Float) =
     let f = lambda (x: Additive, a: x.T) ->
       let g = lambda (y: Additive, b: y.T) -> (a + a, b + b)
-      g(Additive[T = Float], 1.25)
-    f(Additive[T = Int64], 1)",
+      g(Dictionary.instance[Additive[T = Float]](), 1.25)
+    f(Dictionary.instance[Additive[T = Int64]](), 1)",
     );
     let mut interp = interp_for(&src);
     assert_eq!(shown(&mut interp, "p0qgf3.two.oneLambda"), "5.0");
@@ -184,9 +185,9 @@ fn a_lambda_parameter_named_as_the_operations_is_its_own_instance() {
         "  operation sh(x: Additive, a: x.T) -> (x.T, Float) =
     let f = lambda (x: Additive, b: x.T) -> b + b
     let own = a + a
-    let other = f(Additive[T = Float], 1.5)
+    let other = f(Dictionary.instance[Additive[T = Float]](), 1.5)
     (own, other)
-  operation shInts() -> (Int64, Float) = sh(Additive[T = Int64], 3)",
+  operation shInts() -> (Int64, Float) = sh(Dictionary.instance[Additive[T = Int64]](), 3)",
     );
     assert_eq!(shown(&mut interp_for(&src), "p0qgf3.shadow.shInts"), "(6, 3.0)");
 }
@@ -218,7 +219,7 @@ fn says(errors: &[String], text: &str) -> bool {
 fn an_instance_is_no_value_of_its_carrier() {
     let errors = refused(
         "bad_carrier",
-        "  operation bad() -> Int64 =\n    let f = lambda (x: Additive, a: x.T) -> x + a\n    f(Additive[T = Int64], 2)",
+        "  operation bad() -> Int64 =\n    let f = lambda (x: Additive, a: x.T) -> x + a\n    f(Dictionary.instance[Additive[T = Int64]](), 2)",
     );
     assert!(says(&errors, "got Additive[T = x.T]"), "{errors:?}");
 }
@@ -258,12 +259,12 @@ fn a_generalized_lambda_in_the_body_reads_each_use() {
       let g = lambda v -> v + v
       let i = g(1)
       g(a)
-    f(Additive[T = Float], 1.25)
+    f(Dictionary.instance[Additive[T = Float]](), 1.25)
   operation viaOp(x: Additive, a: x.T) -> x.T =
     let g = lambda v -> v + v
     let i = g(1)
     g(a)
-  operation go2() -> Float = viaOp(Additive[T = Float], 1.25)",
+  operation go2() -> Float = viaOp(Dictionary.instance[Additive[T = Float]](), 1.25)",
     );
     let mut interp = interp_for(&src);
     assert_eq!(shown(&mut interp, "p0qgf3.general.go"), "2.5");
@@ -277,9 +278,9 @@ fn a_bare_zero_reads_the_instance_in_both_spellings() {
         "bare_zero",
         "  operation go() -> Int64 =
     let z = lambda (x: Additive) -> Additive.zero()
-    z(Additive[T = Int64])
+    z(Dictionary.instance[Additive[T = Int64]]())
   operation zo(x: Additive) -> x.T = Additive.zero()
-  operation go2() -> Int64 = zo(Additive[T = Int64])",
+  operation go2() -> Int64 = zo(Dictionary.instance[Additive[T = Int64]]())",
     );
     let mut interp = interp_for(&src);
     assert_eq!(shown(&mut interp, "p0qgf3.bare_zero.go"), "0");

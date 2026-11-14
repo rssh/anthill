@@ -214,6 +214,7 @@ kb_scoped_fields!(
     op_type_param_defaults,
     alias_heads,
     aliases_applying,
+    opaque_sorts,
     scan_alias_decls,
     // WI-20261010-ANK4X — filed where a clause is stored, so while a layer lives it holds
     // the layer's rows. The discard puts back the index of the base's clauses WITH those
@@ -283,6 +284,7 @@ kb_scoped_fields!(
     spec_carrier_param_cache,
     spec_self_representing_cache,
     abstract_carrier_cache,
+    sort_class_cache,
     resolve_cache,
     empty_scope_resolve_cache,
     rule_goal_columns_memo,
@@ -513,6 +515,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         op_type_param_defaults: _,
         alias_heads: _,
         aliases_applying: _,
+        opaque_sorts: _,
         scan_alias_decls: _,
         provides_index: _,
         sort_info_index: _,
@@ -567,6 +570,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         spec_carrier_param_cache: _,
         spec_self_representing_cache: _,
         abstract_carrier_cache: _,
+        sort_class_cache: _,
         resolve_cache: _,
         empty_scope_resolve_cache: _,
         rule_goal_columns_memo: _,

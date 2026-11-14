@@ -582,19 +582,14 @@ pub(super) fn visit_type(
             named_args,
         } => {
             let head = *head;
-            // Proposal 073 §2 — where its spec over a parameter is expected, the application
-            // is the instance, and its arguments are types, not values to type.
-            if let Some(instance) =
-                spec_application_instance(kb, &env, &occ, head, expected.as_ref())
+            // Proposal 074 §1.1 — where a dictionary of its spec is expected, the application
+            // is refused: it is a type, and a dictionary is `Dictionary.instance[…]()`.
+            if let Some(refused) =
+                spec_application_where_a_dictionary_is_expected(kb, &occ, head, expected.as_ref())
             {
-                results.push(instance.map(|ty| {
-                    TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ))
-                }));
+                results.push(Err(refused));
                 return;
             }
-            // Typed again where it is no instance (a body typed by a later load, a rewrite
-            // that moved it), it is the type value it spells.
-            occ.clear_spec_application();
             let occ_clone = Rc::clone(&occ);
             work.push(TypeWorkOp::Build(TypeBuildFrame::TypeValue {
                 occ: occ_clone,
@@ -855,9 +850,9 @@ pub(super) fn visit_type(
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| !is_hof_shaped(kb, a) && arg_holds_function_value(kb, a));
-            // Proposal 073 §2: a spec application over a parameter may be an instance, which
-            // its parameter's type says ([`spec_instance_arg_hint`]); any other type value
-            // still opens nothing.
+            // Proposal 074 §1.1: a spec application at a parameter typed at its sort with a
+            // dictionary is hinted with that type ([`spec_instance_arg_hint`]), so that it is
+            // refused naming `Dictionary.instance[…]()`; any other type value opens nothing.
             let has_spec_application_arg = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))

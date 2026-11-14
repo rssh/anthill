@@ -144,8 +144,11 @@ namespace test.wi903guarded
   import anthill.prelude.{Int64}
   import anthill.prelude.Ord.{gt}
 
+  -- An operation: a sort with one is a spec over its parameter, so `Summable.T` names the
+  -- providing sort; an operation-free one has values of its own (proposal 074 §2).
   sort Summable
     sort T = ?
+    operation sumZero() -> T
   end
 
 
@@ -158,6 +161,7 @@ end
 namespace anthill.prelude.Int64
   import test.wi903guarded.Summable
   provides Summable[T = Int64]
+  operation sumZero() -> Int64 = 0
 end
 "#;
     // TAGGED: a conditional rewrite, so the bound is installed and enforced at the match.

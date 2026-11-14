@@ -529,10 +529,11 @@ impl Interpreter {
     fn reduce_node(&mut self, occ: &Rc<NodeOccurrence>) -> Result<StepOutcome, EvalError> {
         // Proposal 073 §2 — a node whose value is converted where it is used (paired with
         // the dictionary of the instance it is) is reduced in a frame of its own, with this
-        // one waiting to convert what it delivers.
+        // one waiting to convert what it delivers; a `Dictionary.instance` call (074 §2)
+        // delivers its dictionary in place of the call.
         if occ.has_instance_conversion() {
-            if let Some(dict) = occ.spec_application_dict() {
-                return Ok(StepOutcome::Deliver(self.spec_application_instance(dict)?));
+            if let Some(dict) = occ.built_dictionary() {
+                return Ok(StepOutcome::Deliver(self.built_dictionary_value(dict)?));
             }
             if !self.take_armed_conversion(occ) {
                 return self.suspend_for_conversion(occ);
@@ -4790,20 +4791,21 @@ impl Interpreter {
     }
 
     /// Proposal 073 §2 — the instance a parameter typed at a spec over a parameter holds: its
-    /// argument, a dictionary. A rule body hands its spec application over as the node it
-    /// wrote, read here as the instance the typer stamped on it, and `v` becomes that
-    /// dictionary. `what` names the parameter where the argument is no instance.
+    /// argument, a dictionary. An argument handed over as the node it was written as — a rule
+    /// body's, which writes no `Dictionary.instance[…]()` until WI-20261024-TC54R reads a
+    /// bracket there — is read as the dictionary the typer stamped on it, and `v` becomes
+    /// that dictionary. `what` names the parameter where the argument is no instance.
     fn instance_of_argument(
         &mut self,
         v: &mut Value,
         what: impl Fn(&KnowledgeBase) -> String,
     ) -> Result<super::value::Dictionary, EvalError> {
         let stamped = match &*v {
-            Value::Node(occ) => occ.spec_application_dict(),
+            Value::Node(occ) => occ.built_dictionary(),
             _ => None,
         };
         if let Some(dict) = stamped {
-            *v = self.spec_application_instance(dict)?;
+            *v = self.built_dictionary_value(dict)?;
         }
         super::value::Dictionary::from_view(&self.kb, v).ok_or_else(|| {
             EvalError::Internal(format!(
@@ -4837,8 +4839,8 @@ impl Interpreter {
             OP_PROF.with(|p| p.borrow_mut().entry(target).or_insert((0, 0)).0 += 1);
         }
         // Proposal 073 §2 — a parameter typed at a spec over a parameter is the instance its
-        // slot holds: the argument, whatever the call supplied there. A rule body hands its
-        // spec application over as the node it wrote, read as the instance the typer stamped.
+        // slot holds: the argument, whatever the call supplied there; one handed over as the
+        // node it was written as is read as the dictionary the typer stamped on it.
         let mut arg_values = arg_values;
         let mut requirements = requirements;
         for &(i, slot) in instance_slots {

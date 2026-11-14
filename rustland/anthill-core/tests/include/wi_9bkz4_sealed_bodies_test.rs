@@ -1596,3 +1596,137 @@ fn a_clause_at_a_sealed_relations_column_types_loads() {
     answers.sort();
     assert_eq!(answers, [1, 2]);
 }
+
+const LIB_TICKER: &str = r#"
+namespace test.lib074
+  import anthill.prelude.{Int64, String}
+
+  sort Named
+    sort T = ?
+    operation name() -> String
+  end
+
+  sort Ticker
+    operation now() -> Int64
+  end
+
+  sort Coll
+    sort E = ?
+    operation size() -> Int64
+  end
+
+  sort Mark
+    sort T = ?
+  end
+end
+"#;
+
+const TICKER_PROVIDES_AT_ITSELF: &str = r#"
+namespace test.lib074.Ticker
+  import anthill.prelude.{String}
+  import test.lib074.{Named}
+  provides Named[T = Ticker]
+  operation name() -> String = "ticker"
+end
+"#;
+
+const COLL_PROVIDES_AT_ITSELF: &str = r#"
+namespace test.lib074.Coll
+  import anthill.prelude.{String}
+  import test.lib074.{Named}
+  provides Named[T = Coll]
+  operation name() -> String = "coll"
+end
+"#;
+
+const MARK_GAINS_A_CONVERSION: &str = r#"
+namespace test.lib074.Mark
+  import test.lib074.{Named}
+  provides Named[T = T]
+end
+"#;
+
+/// WI-20261113-2KSAA (proposal 074 §2) — a later load's secondary entry that moves a sealed
+/// sort from one class to another is refused, in both directions; one call over both reads
+/// the one class, and loads. A provision at the sort itself makes a sort with a dictionary one
+/// with values of its own — `Ticker`, and `Coll`, whose dictionary is over `E`; a conversion
+/// gives the operation-free `Mark` a dictionary. FAILS with the refusal backed out
+/// (`sorts_a_later_load_moves`), where each second load is clean.
+#[test]
+fn a_provision_that_moves_a_sealed_sort_to_another_class_is_refused() {
+    for (program, sort, from, to) in [
+        (
+            TICKER_PROVIDES_AT_ITSELF,
+            "Ticker",
+            "an abstract sort with a dictionary",
+            "an abstract sort with values of its own",
+        ),
+        (
+            COLL_PROVIDES_AT_ITSELF,
+            "Coll",
+            "an abstract sort with a dictionary",
+            "an abstract sort with values of its own",
+        ),
+        (
+            MARK_GAINS_A_CONVERSION,
+            "Mark",
+            "an abstract sort with no operation, whose values are its providers'",
+            "an abstract sort with a dictionary",
+        ),
+    ] {
+        loaded(one_call(LIB_TICKER, program), "one call");
+        let two = refused(two_calls(LIB_TICKER, program), "two calls");
+        assert!(
+            two.iter().any(|e| e.contains(&format!(
+                "this load moves 'test.lib074.{sort}', which a sealed load declared, from {from} \
+                 to {to}"
+            ))),
+            "{sort}: got {two:?}"
+        );
+    }
+}
+
+const LIB_UNPROVIDED_SPEC: &str = r#"
+namespace test.lib074u
+  import anthill.prelude.{Int64}
+  import anthill.realization.runtime.Dictionary
+
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+
+  operation viaDict(d: Desc, x: d.T) -> Int64 = Desc.describe(x)
+  operation f[X](x: X) -> Int64 requires Desc[T = X] = viaDict(Dictionary.instance[Desc[T = X]](), x)
+end
+"#;
+
+const PROGRAM_PROVIDES_THE_SPEC: &str = r#"
+namespace test.lib074p
+  import anthill.prelude.{Int64}
+  import test.lib074u.{Desc, f}
+
+  sort Leaf
+    entity leaf(k: Int64)
+    provides Desc[T = Leaf]
+    operation describe(x: Leaf) -> Int64 = 7
+  end
+
+  operation go() -> Int64 = f(leaf(k: 0))
+end
+"#;
+
+/// WI-20261113-2KSAA (proposal 074 §2, found by /code-review) — `Dictionary.instance` under a
+/// clause is the clause's own dictionary though nothing provides the spec where it is written:
+/// a sealed library whose generic body hands its clause's dictionary on, and a later program
+/// providing the spec, answer 7 in both orders. FAILS with the "nothing provides" refusal asked
+/// before the clause, where the library is refused naming stage 3.
+#[test]
+fn a_clauses_dictionary_needs_no_provider_where_it_is_written() {
+    for (how, kb) in [
+        ("one call", one_call(LIB_UNPROVIDED_SPEC, PROGRAM_PROVIDES_THE_SPEC)),
+        ("two calls", two_calls(LIB_UNPROVIDED_SPEC, PROGRAM_PROVIDES_THE_SPEC)),
+    ] {
+        assert_eq!(values(loaded(kb, how), &["test.lib074p.go"]), [7], "{how}");
+    }
+}

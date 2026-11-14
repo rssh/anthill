@@ -42,12 +42,11 @@ pub enum InstanceConversion {
     /// A function whose result is converted: `Car.mk`'s `(xs: List) -> Carrier` used at the
     /// spec's `(xs: List) -> Base` answers a `Base` instance where it is applied.
     Function { result: Box<InstanceConversion> },
-    /// A spec application written where that spec over a parameter is expected
-    /// (`Additive[T = Int64]` at `x: Additive`) is the instance: the node is not reduced as
-    /// the type value it spells, and its value is the dictionary `dict` evaluates to — a
+    /// A `Dictionary.instance[S]()` call (proposal 074 §2) is the dictionary of `S`: the node
+    /// is not reduced as a call, and its value is the dictionary `dict` evaluates to — a
     /// construction built at load, or a forward of the frame's own slot
-    /// ([`spec_application_instance`]).
-    SpecApplication { dict: TermId },
+    /// ([`dictionary_instance_call`]).
+    BuiltDictionary { dict: TermId },
 }
 
 /// Is `sort` an abstract sort whose values are instances (073 §2): it receives on itself
@@ -1260,20 +1259,19 @@ fn is_list_literal_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
     kb.qualified_name_of(functor) == "anthill.reflect.ListLiteral"
 }
 
-/// Proposal 073 §2 — a spec application written where that spec over a parameter is expected
-/// (`add2(Additive[T = Int64], 2, 3)` over `x: Additive`) is the instance. Its type is the spec
-/// at the written arguments; its value is the dictionary built where it is written — by
-/// kernel-language §8.7's order at a known type, the clause's own under `requires Additive[T =
-/// X]`, the parameter's under `x: Additive` — stamped on the node
-/// ([`InstanceConversion::SpecApplication`]). `None` where the node is no such application:
-/// nothing or a `Type` expected, another sort written.
-pub(super) fn spec_application_instance(
+/// Proposal 074 §1.1, §2 — the refusal of a spec application written where a dictionary of
+/// that spec is expected (`add2(Additive[T = Int64], 2, 3)` over `x: Additive`): a spec
+/// application is a type wherever it is written, and a dictionary is written
+/// `Dictionary.instance[Additive[T = Int64]]()` ([`dictionary_instance_call`]). Proposal 073
+/// part 2 read it as the instance there, one written form with two meanings. `None` where the
+/// node is no such application — nothing or a `Type` expected, another sort written — and it
+/// is the type value it spells.
+pub(super) fn spec_application_where_a_dictionary_is_expected(
     kb: &mut KnowledgeBase,
-    env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
     head: Symbol,
     expected: Option<&Value>,
-) -> Option<Result<Value, TypeError>> {
+) -> Option<TypeError> {
     let spec = match extract_type(kb, expected?) {
         TypeExtractor::SortRef(s) => s,
         TypeExtractor::Parameterized { base, .. } => base,
@@ -1284,41 +1282,270 @@ pub(super) fn spec_application_instance(
         return None;
     }
     let written = crate::persistence::print::TermPrinter::new(kb).print_occurrence(occ);
-    let refuse = |why: String| TypeError::Other {
+    Some(TypeError::Other {
         site: TypeError::here(),
         span: Some(occ.span.span),
         context: TypeErrorContext::SpecInstance { spec },
-        expected: format!("the instance `{written}`"),
-        actual: why,
+        expected: format!(
+            "a dictionary of `{}`, written `Dictionary.instance[{written}]()`",
+            kb.local_name_of(spec)
+        ),
+        actual: format!(
+            "the type `{written}`: a spec application is a type wherever it is written \
+             (proposal 074 §1.1)"
+        ),
+    })
+}
+
+/// Proposal 074 §2 — `Dictionary.instance[S]()`, a built-in with no definition in the
+/// language, as `TypeValue.type_value` is: the dictionary of the spec application `S`, typed
+/// `S`. Its bracket is read by a rule of its own: its one positional entry binds `S`, and
+/// every key names a provider by the spec's short name (`[Additive[T = Meters], Additive =
+/// MetersAdd]`), as a call of the spec's operation names one (kernel-language §5.4); without
+/// a positional entry `S` is the type the call is expected at, a type parameter of the body at
+/// its rigid. The dictionary is built here, at load, and stamped on the call
+/// ([`InstanceConversion::BuiltDictionary`]), which eval delivers in place of a call: at a
+/// known type the provider §8.7's order selects (group one), at a type rigid under a clause
+/// the clause's own (group two).
+///
+/// Refused, each naming why: an argument; the receiver spelling `Dictionary[S = …].instance()`;
+/// `S` fixed by nothing; a data sort, an abstract sort with values of its own, one whose chain
+/// declares no operation (whose values are its providers'), and one with operations and no
+/// parameter (stage 3 of 074 builds its dictionary); an application leaving a slot of a
+/// parameter open, at any depth; a key naming no provider of the spec; an `S` no provision
+/// answers; and one nothing provides at all, whose own dictionary stage 3 builds.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dictionary_instance_call(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    span: Option<Span>,
+    expected: Option<&Value>,
+) -> Result<TypeResult, TypeError> {
+    let refuse = |expected: String, actual: String| TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::DictionaryInstance,
+        expected,
+        actual,
     };
-    let Some(denoted) = type_value_denoted_type(kb, env, occ) else {
-        return Some(Err(refuse("an argument that names no type".into())));
+    if !pos_args.is_empty() || !named_args.is_empty() {
+        return Err(refuse(
+            "no argument: `Dictionary.instance[S]()` takes its spec application in its \
+             bracket"
+                .into(),
+            format!("{} argument(s)", pos_args.len() + named_args.len()),
+        ));
+    }
+    if let Some(recv) = call_recv_type_of(occ) {
+        let recv = type_display_name_value(kb, recv);
+        return Err(refuse(
+            "the spec application in `instance`'s bracket, `Dictionary.instance[Spec[…]]()`"
+                .into(),
+            format!("the receiver `{recv}`, which binds no `S` of the built-in"),
+        ));
+    }
+    let entries: Vec<(Option<Symbol>, Value)> =
+        call_type_args_of(occ).map(<[_]>::to_vec).unwrap_or_default();
+    let mut positional = entries.iter().filter(|(k, _)| k.is_none()).map(|(_, v)| v);
+    let written = positional.next().cloned();
+    if positional.next().is_some() {
+        return Err(refuse(
+            "one positional entry, the spec application `S`".into(),
+            "two: every other entry of the bracket is a key naming a provider".into(),
+        ));
+    }
+    let s_type = match (&written, expected) {
+        // An alias in either is read through before it reaches here, on either carrier
+        // (`an_alias_in_the_bracket_or_the_expected_type_is_the_application`).
+        (Some(w), _) => written_type_at_body_rigids(kb, env, w),
+        (None, Some(e)) => e.clone(),
+        (None, None) => {
+            return Err(refuse(
+                "`S` fixed by the bracket or by the type the call is expected at".into(),
+                "nothing fixes it: write `Dictionary.instance[Spec[…]]()`".into(),
+            ));
+        }
     };
-    let denoted = Value::term(denoted);
-    let written_args: Vec<(Symbol, Value)> = match extract_type(kb, &denoted) {
-        TypeExtractor::Parameterized { bindings, .. } => bindings,
-        _ => Vec::new(),
+    let shown = type_display_name_value(kb, &s_type);
+    let (spec, bindings) = match extract_type(kb, &s_type) {
+        TypeExtractor::SortRef(s) => (s, Vec::new()),
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => {
+            return Err(refuse(
+                "a spec application".into(),
+                format!("`{shown}`, which names no sort{}", unfixed_tail(&written)),
+            ));
+        }
     };
-    // Every parameter of the spec is written: the instance is at the type it names, and no
+    let spec = kb.canonical_sort_sym(spec);
+    let name = kb.local_name_of(spec).to_owned();
+    let why_none = match sort_class(kb, spec) {
+        SortClass::Dictionary => None,
+        SortClass::Data => Some(format!(
+            "`{shown}`: `{name}` is a data sort, with constructors: its values are its own and it \
+             has no dictionary of its operations; the dictionary of a spec it provides is \
+             written at the spec (`Dictionary.instance[PartialEq[T = {name}]]()`)"
+        )),
+        SortClass::OwnValues => Some(format!(
+            "`{shown}`: `{name}` is an abstract sort with values of its own, and a value typed \
+             `{name}` is one of them, with its dictionary, not a dictionary"
+        )),
+        SortClass::OperationFree => Some(format!(
+            "`{shown}`: nothing in `{name}`'s chain declares an operation, so it has no \
+             dictionary: a value typed `{name}` is one of its providers', and a requirement of it \
+             passes nothing at run time"
+        )),
+    };
+    if let Some(why) = why_none {
+        return Err(refuse("a spec application".into(), why));
+    }
+    let params = kb.type_params_of_sort(spec);
+    if params.is_empty() {
+        return Err(refuse(
+            "an abstract sort with a parameter".into(),
+            format!(
+                "`{shown}`: `{name}` has operations and no parameter, and its dictionary is \
+                 not built yet (proposal 074 stage 3)"
+            ),
+        ));
+    }
+    // Every parameter of the spec is written, with no slot open at any depth (`Additive[T =
+    // List]` leaves `List`'s `T`): the dictionary is at the type its application names, and no
     // value chooses one (058 §3.9). Keyed as a written `requires` keys them, by short name.
-    let mut keyed: Vec<(Symbol, Value)> = Vec::with_capacity(written_args.len());
-    for short in kb.type_params_of_sort(spec) {
-        let Some((_, ty)) = written_args
+    let mut keyed: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
+    for short in params {
+        let bound = bindings
             .iter()
             .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)
-        else {
-            return Some(Err(refuse(format!(
-                "`{short}` left unwritten, and an instance is at the type its application names"
-            ))));
+            .map(|(_, ty)| ty.clone());
+        let open = match &bound {
+            None => Some("unwritten"),
+            Some(ty) => {
+                let expanded = expand_sorts_deep(kb, ty, SlotVar::Flexible);
+                (!type_is_determined(kb, &expanded)).then_some("with a slot open")
+            }
         };
-        let ty = ty.clone();
-        keyed.push((kb.intern(&short), ty));
+        if let Some(how) = open {
+            return Err(refuse(
+                format!("every parameter of `{name}` written"),
+                format!(
+                    "`{shown}` leaves `{short}` {how}, and a dictionary is at the type its \
+                     application names{}",
+                    unfixed_tail(&written)
+                ),
+            ));
+        }
+        keyed.push((kb.intern(&short), bound.expect("an unwritten parameter returned above")));
     }
+    let pin = match provider_key_pin(kb, spec, &entries) {
+        Ok(pin) => pin,
+        Err(why) => return Err(refuse(format!("a provider of `{name}`"), why)),
+    };
+    let dict = build_spec_dictionary(kb, env, spec, keyed, pin.as_ref()).map_err(|why| {
+        // A sort with a dictionary nothing provides has the dictionary of its own bodies,
+        // which proposal 074's stage 3 builds beside a module's (decided with the user
+        // 2026-11-14). Asked only where nothing in scope answered: a clause's own dictionary,
+        // `requires Desc[T = X]`, answers before any provider is looked for.
+        let why = if provides_rows_of_spec(kb, spec).next().is_none() {
+            format!(
+                "nothing provides `{name}`: a sort with a dictionary that nothing provides has \
+                 the dictionary of its own bodies, which is not built yet (proposal 074 stage \
+                 3, WI-20261113-Q2C01)"
+            )
+        } else {
+            why
+        };
+        refuse(format!("the dictionary of `{shown}`"), why)
+    })?;
+    occ.set_instance_conversion(InstanceConversion::BuiltDictionary { dict });
+    Ok(TypeResult::pure_value(s_type, env.clone(), Rc::clone(occ)))
+}
+
+/// Is `fn_sym` `anthill.realization.runtime.Dictionary.instance`, the built-in
+/// [`dictionary_instance_call`] types?
+pub(crate) fn is_dictionary_instance_op(kb: &KnowledgeBase, fn_sym: Symbol) -> bool {
+    kb.qualified_name_of(fn_sym) == DICTIONARY_INSTANCE_QNAME
+}
+
+/// The built-in's qualified name — the one spelling of it, read by the C++ generator too.
+pub const DICTIONARY_INSTANCE_QNAME: &str = "anthill.realization.runtime.Dictionary.instance";
+
+/// The tail a refusal adds where `S` was taken from the expected type rather than written.
+fn unfixed_tail(written: &Option<Value>) -> &'static str {
+    if written.is_some() {
+        ""
+    } else {
+        "; nothing fixes it here, and the bracket writes it: `Dictionary.instance[Spec[…]]()`"
+    }
+}
+
+/// The provider a key of `Dictionary.instance`'s bracket names (`Additive = MetersAdd`), keyed
+/// by the spec's short name, as a pin of `build_dep_projection`. `Ok(None)` where no key is
+/// written; `Err` for a key naming another spec, or a sort that does not provide the spec.
+fn provider_key_pin(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    entries: &[(Option<Symbol>, Value)],
+) -> Result<Option<InstanceSelection>, String> {
+    let spec_short = short_name_of(kb.local_name_of(spec)).to_owned();
+    let mut pin: Option<InstanceSelection> = None;
+    for (key, value) in entries {
+        let Some(key) = key else { continue };
+        let key_short = short_name_of(kb.local_name_of(*key)).to_owned();
+        if key_short != spec_short {
+            return Err(format!(
+                "the key `{key_short}`: a key of `Dictionary.instance`'s bracket names a \
+                 provider by the spec's short name, `{spec_short} = …`"
+            ));
+        }
+        if pin.is_some() {
+            return Err(format!("`{spec_short}` named twice"));
+        }
+        let provider = sort_functor_of_view(kb, value)
+            .map(|s| kb.canonical_sort_sym(s))
+            .filter(|&s| kb.has_kind(s, crate::kb::SymbolKind::Sort));
+        let Some(provider) = provider else {
+            return Err(format!(
+                "`{spec_short} = {}`, which names no sort",
+                type_display_name_value(kb, value)
+            ));
+        };
+        if !sort_provides(kb, provider, spec) {
+            return Err(format!(
+                "`{}`, which provides no `{spec_short}`",
+                kb.local_name_of(provider)
+            ));
+        }
+        pin = Some(InstanceSelection {
+            spec_sort: spec,
+            slot: SelectedSlot::Unnamed,
+            provider: SelectedProvider::Witness(provider),
+            slots: Vec::new(),
+        });
+    }
+    Ok(pin)
+}
+
+/// The dictionary of `spec` at `keyed` (every parameter written, keyed by short name), built
+/// where it is written: by kernel-language §8.7's order at a known type, the clause's own under
+/// `requires Additive[T = X]`, the parameter's under `x: Additive`; `pin` the provider a
+/// bracket names. `Err` says why none is built.
+fn build_spec_dictionary(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    spec: Symbol,
+    keyed: Vec<(Symbol, Value)>,
+    pin: Option<&InstanceSelection>,
+) -> Result<TermId, String> {
     let (Some(view), Some(syms)) = (sort_view_value(kb, spec, keyed), ProjectionSyms::resolve(kb))
     else {
-        return Some(Err(refuse(
-            "no dictionary can be built in this knowledge base: it holds no `anthill.reflect`".into(),
-        )));
+        return Err(
+            "no dictionary can be built in this knowledge base: it holds no `anthill.reflect`"
+                .into(),
+        );
     };
     let dep = RequiresEntry {
         required_sort: spec,
@@ -1347,17 +1574,14 @@ pub(super) fn spec_application_instance(
         Some(&sigma),
         Some(&mut failure),
         Some(&mut tie),
-        None,
+        pin,
         DefaultRung::Consult,
     ) {
-        Some(dict) if tie.is_none() => {
-            occ.set_instance_conversion(InstanceConversion::SpecApplication { dict });
-            Some(Ok(denoted))
-        }
-        _ => Some(Err(refuse(match &failure {
+        Some(dict) if tie.is_none() => Ok(dict),
+        _ => Err(match &failure {
             Some(f) => describe_resolution_failure(kb, f),
             None => "no dictionary this scope can build or hold".into(),
-        }))),
+        }),
     }
 }
 

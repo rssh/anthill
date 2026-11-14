@@ -362,3 +362,33 @@ fn a_todo_body_is_refused_naming_its_operation() {
     let mut kb = load_kb_with(&hole.replace("= todo()", "= x"));
     emit_traits_struct(&mut kb, "test.jrhz0.Calc").expect("the written sort emits");
 }
+
+#[test]
+fn a_dictionary_built_in_a_body_is_refused_until_stage_7() {
+    // WI-20261113-2KSAA (proposal 074 §1.4) — `Dictionary.instance[…]()` builds a dictionary
+    // at load; cpp-gen emits none until 074's stage 7, and refuses, naming the declaration and
+    // the stage — not the generic advice to map `Dictionary.instance` in an `operation_map`,
+    // which no binding could answer. BACKED OUT (the `Dictionary.instance` arm of
+    // `unlowerable_operation` removed) this reds on that generic message.
+    let mut kb = load_kb_with(
+        r#"
+        namespace test.p074
+          import anthill.prelude.{Int64, Additive}
+          import anthill.realization.runtime.Dictionary
+          sort Calc
+            operation ints() -> Int64 =
+              let d: Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()
+              2
+          end
+        end
+    "#,
+    );
+    let msg = emit_traits_struct(&mut kb, "test.p074.Calc")
+        .expect_err("a body building a dictionary must be refused")
+        .to_string();
+    assert!(
+        msg.contains("`test.p074.Calc.ints` builds a dictionary") && msg.contains("stage 7"),
+        "the refusal names the declaration and the stage: {msg}"
+    );
+    assert!(!msg.contains("operation_map"), "no binding answers a dictionary: {msg}");
+}

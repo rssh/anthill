@@ -10286,9 +10286,20 @@ pub struct SealedDeclarations {
     /// past that count came later. Not the slot count above: two clauses of one spec at
     /// one head write one row, and a later clause need assert none.
     provision_clauses: HashMap<(Symbol, Symbol), usize>,
+    /// Proposal 074 §2 — the CLASS of each sealed sort when its seal was taken
+    /// ([`super::typing::sort_class`]): a later load that moves one to another class changes
+    /// how the sealed bodies read a value typed at it, and is refused
+    /// (`typing::sealed::sorts_a_later_load_moves`).
+    classes: HashMap<Symbol, super::typing::SortClass>,
 }
 
 impl SealedDeclarations {
+    /// The class `sort`, canonical, had when the seal that holds it was taken; `None` for a
+    /// sort no seal holds.
+    pub(crate) fn class_at_seal(&self, sort: Symbol) -> Option<super::typing::SortClass> {
+        self.classes.get(&sort).copied()
+    }
+
     /// Nothing is sealed — a plain sequence of loads, `KB.loaded` over one, a KB built
     /// with no library — and what every reader checks first.
     pub(crate) fn is_empty(&self) -> bool {
@@ -10391,6 +10402,10 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
         .collect();
     let rule_slots = kb.rules.len();
     let provision_clauses = kb.provision_clause_counts();
+    let classes: Vec<(Symbol, super::typing::SortClass)> = sorts
+        .iter()
+        .map(|&sort| (sort, super::typing::sort_class(kb, sort)))
+        .collect();
     // WI-20261011-A3NND — and the load's provisions are checked once, if the seal is of
     // ALL of it and its check held. Whichever door asked: the test suites' shared base
     // is the standard library loaded alone and sealed as "the first files of the load".
@@ -10398,6 +10413,9 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
     let checked = kb.last_load.provisions_checked.filter(|_| whole_load);
     let sealed = std::sync::Arc::make_mut(&mut kb.sealed);
     sealed.sorts.extend(sorts);
+    for (sort, class) in classes {
+        sealed.classes.entry(sort).or_insert(class);
+    }
     sealed.rule_slots = rule_slots;
     sealed.provision_clauses = provision_clauses;
     if checked.is_some() {
@@ -11185,6 +11203,10 @@ impl ScopePass for DefinePass<'_> {
                 // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
                 if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope, &short, abstract_sym);
+                }
+                // …and where no sort encloses it, a sort declared OPAQUE (proposal 074 §2).
+                if matches!(s.definition, TypeExpr::Variable { .. }) && !is_sort_scope(kb, scope) {
+                    kb.opaque_sorts.insert(abstract_sym);
                 }
                 // WI-20260924-SNJPR — a TYPE ALIAS of a sort application: its target head
                 // is resolved once imports are wired (`resolve_scan_alias_heads`), in the
@@ -46954,9 +46976,12 @@ impl<'a> Loader<'a> {
                 ));
                 continue;
             }
-            // A spec with no parameter a provider receives on (`TypePattern[T = P]`) states its
-            // requirement at the type the variable is, as an operation's `requires` line does;
-            // there is no carrier to check the variable against.
+            // A spec that is no sort with a dictionary over a parameter (proposal 074 §2: one
+            // with values of its own, an operation-free one) states its requirement at the type
+            // the variable is, as an operation's `requires` line does; there is no carrier to
+            // check the variable against. `TypePattern[T = P]` is now one with a dictionary
+            // (`admits` is its operation, receiving on no parameter): its member spelling is
+            // held to the carrier `HeadMember` names, its sole parameter `T`.
             let over_a_parameter = super::typing::spec_over_parameter(self.kb, spec).is_some();
             if is_carrier && over_a_parameter && (!named_args.is_empty() || pos_args.len() > 1) {
                 let member = self.kb.intern(&key);

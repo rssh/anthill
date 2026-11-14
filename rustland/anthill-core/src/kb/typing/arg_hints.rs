@@ -22,11 +22,12 @@ pub(super) fn hof_arg_hint(
     }
 }
 
-/// Proposal 073 §2 — a spec application written at a parameter typed at that spec over a
-/// parameter (`Additive[T = Int64]` at `x: Additive`) is the instance, which the parameter type
-/// says: it is typed against it ([`spec_application_instance`]) rather than as a type value.
-/// A conditional, a `match` or a `let` whose value is such an application is hinted too, so
-/// each application in it is the instance.
+/// Proposal 074 §1.1 — a spec application written at a parameter typed at a sort with a
+/// dictionary (`Additive[T = Int64]` at `x: Additive`) is given the parameter's type as its
+/// hint, so that it is refused there, naming `Dictionary.instance[…]()`
+/// ([`spec_application_where_a_dictionary_is_expected`]), rather than typed as the type value
+/// it spells and refused as a `Type` where `Additive` is expected. A conditional, a `match` or a
+/// `let` whose value is such an application is hinted too.
 pub(super) fn spec_instance_arg_hint(
     kb: &KnowledgeBase,
     arg: &Rc<NodeOccurrence>,
@@ -38,8 +39,9 @@ pub(super) fn spec_instance_arg_hint(
         TypeExtractor::Parameterized { base, .. } => base,
         _ => return None,
     };
-    (spec_over_parameter(kb, spec).is_some()
-        && yields_spec_application(kb, arg, Some(kb.canonical_sort_sym(spec))))
+    // The cheap shape test first: nearly every argument is no spec application.
+    (yields_spec_application(kb, arg, Some(kb.canonical_sort_sym(spec)))
+        && spec_over_parameter(kb, spec).is_some())
     .then(|| pt.clone())
 }
 

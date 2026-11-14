@@ -404,7 +404,7 @@ fn a_value_of_the_callees_own_spec_does_not_say_it_either() {
 /// "no impl matches — unresolved: `Hold[C = h.C]`". At the `typed` spelling only: the `value`
 /// one's instance, `Hold[C = Buf[T = Int64, N = 3]]` written as a value, is refused
 /// "unresolved name '3'" on the parent commit too, a constant in a bracket read as a name
-/// (WI-20261012-6SAAP).
+/// (WI-20261012-6SAAP). The dictionary is written as proposal 074 §2 writes one (WI-20261113-2KSAA).
 #[test]
 fn the_advised_bracket_reads_the_instance_in_scope() {
     let sp = &SPELLINGS[0];
@@ -417,7 +417,7 @@ fn the_advised_bracket_reads_the_instance_in_scope() {
          operation peek(s: {at}) -> Int64 = s.v + 100\n    operation zero() -> Int64 = 100\n    \
          provides Hold[C = {at}]\n    operation touch(c: {at}) -> Int64 = c.v\n  end\n  \
          operation run(h: Hold[C = {at}]) -> Int64 = Hold.ask[C = h.C]()\n  \
-         operation go() -> Int64 = run(Hold[C = {at}])\n"
+         operation go() -> Int64 = run(anthill.realization.runtime.Dictionary.instance[Hold[C = {at}]]())\n"
     );
     assert_eq!(
         run_int64(&program(&ns, &body), &format!("{ns}.go")),
