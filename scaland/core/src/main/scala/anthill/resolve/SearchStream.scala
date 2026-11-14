@@ -23,9 +23,7 @@ private enum FrameState:
     delayMode: DelayMode,
     originalGoal: TermId,
     candidates: ArrayBuffer[(RuleId, Substitution)],
-    var next: Int,
-    var anyDelayed: Boolean,
-    var childSolutions: Int
+    var next: Int
   )
 
 // ── Frame ───────────────────────────────────────────────────────
@@ -129,12 +127,14 @@ class SearchStream private (
       stack.remove(stack.length - 1)
       return Some(StepResult.Continue)
 
-    // 2. Floundering: all goals delayed
+    // 2. Floundering: all goals delayed. Not with no goals left: a frame stays `Delayed`
+    // once anything in its derivation waited (`reset` keeps the mode, at 0), and a proof
+    // with no goals left is step 3's solution, not a floundered branch — rustland's gate
+    // reads the same (its answer dedup and `definite_only` tell the two apart).
     delayMode match
-      case DelayMode.Delayed(cd) if cd >= frame.goals.length =>
+      case DelayMode.Delayed(cd) if frame.goals.nonEmpty && cd >= frame.goals.length =>
         val sol = Solution(frame.subst.snapshot(), frame.goals.toIndexedSeq)
         stack.remove(stack.length - 1)
-        recordSolutionInAncestors()
         return Some(StepResult.YieldSolution(sol))
       case _ =>
 
@@ -142,7 +142,6 @@ class SearchStream private (
     if frame.goals.isEmpty then
       val sol = Solution(frame.subst.snapshot(), IndexedSeq.empty)
       stack.remove(stack.length - 1)
-      recordSolutionInAncestors()
       return Some(StepResult.YieldSolution(sol))
 
     // [WI-172] Lazy substitution. σ already carries every binding
@@ -217,7 +216,7 @@ class SearchStream private (
     candidates = candidates.filter((rid, _) => !kb.isEquation(rid))
 
     frame.state = FrameState.ChoicePoint(
-      delayMode, goal, candidates, next = 0, anyDelayed = false, childSolutions = 0
+      delayMode, goal, candidates, next = 0
     )
     Some(StepResult.Continue)
 
@@ -358,7 +357,6 @@ class SearchStream private (
         if frame.goals.length == 1 then
           val sol = Solution(frame.subst.snapshot(), IndexedSeq(goal))
           stack.remove(stack.length - 1)
-          recordSolutionInAncestors()
           Some(StepResult.YieldSolution(sol))
         else
           val rotated = ArrayBuffer.from(frame.goals.drop(1))
@@ -374,12 +372,6 @@ class SearchStream private (
         frame.depth = depth + 1
         frame.state = FrameState.Init(DelayMode.Delayed(cd + 1))
         Some(StepResult.Continue)
-
-  private def recordSolutionInAncestors(): Unit =
-    if stack.nonEmpty then
-      stack.last.state match
-        case cp: FrameState.ChoicePoint => cp.childSolutions += 1
-        case _ =>
 
 object SearchStream:
   def create(

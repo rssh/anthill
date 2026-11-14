@@ -931,6 +931,13 @@ enum Candidate {
     /// drain. Behaviorally identical to `Assumption`: zero body, just bindings
     /// to merge.
     ExtentRow(Substitution),
+    /// A clause of the goal that WAITED: its body asks a question of a caller variable
+    /// that only the caller can answer ([`KnowledgeBase::body_builtins_delay_on_caller_vars_nodes`]).
+    /// The choice point offers one of these per waiting clause once its other candidates
+    /// are exhausted, and taking it moves the goal behind the tail, to be asked again of
+    /// THAT clause alone ([`FrameGoal::clause`]) — so the other candidates, which have
+    /// answered already, are not asked twice.
+    Waiting(RuleId),
 }
 
 /// Result of a recursive groundness check.
@@ -1208,8 +1215,10 @@ enum FrameState {
         extent_rows: Vec<Value>,
         /// Cursor into `extent_rows` — the next row `pump_extent_row` will match.
         extent_next: usize,
-        any_delayed: bool,
-        child_solutions: usize,
+        /// The clauses that waited on a caller variable instead of opening, in clause
+        /// order. When the candidates are exhausted they become [`Candidate::Waiting`]
+        /// candidates of this same choice point, so a cut that prunes it prunes them.
+        waiting: Vec<RuleId>,
         /// Cut barrier (proposal 033.1 / WI-568). Set to `Some(B)` when this
         /// choice point selected a rule whose body contains a `!`: it is the
         /// frame the cut commits to. `cut(B)` (baked into that body) prunes this
@@ -1273,6 +1282,12 @@ struct ResolverFrame {
 struct FrameGoal {
     goal: Value,
     wait: Wait,
+    /// `Some(rid)`: the goal is asked of clause `rid` alone. Set where a clause waited
+    /// ([`Candidate::Waiting`]): the goal's other answer sources have answered, and only
+    /// this clause is left to ask once the caller has had its turn. When it is still
+    /// waiting at the residualization gate, the residual is this clause's body, not the
+    /// goal ([`SearchStream::waiting_clause_residual`]).
+    clause: Option<RuleId>,
 }
 
 impl FrameGoal {
@@ -1281,6 +1296,7 @@ impl FrameGoal {
         FrameGoal {
             goal,
             wait: Wait::Ready,
+            clause: None,
         }
     }
 }
@@ -2102,8 +2118,7 @@ impl SearchStream {
             next: 0,
             extent_rows: Vec::new(),
             extent_next: 0,
-            any_delayed: false,
-            child_solutions: 0,
+            waiting: Vec::new(),
             cut_barrier: None,
         };
         Some(StepResult::Continue)
@@ -2391,39 +2406,61 @@ impl SearchStream {
             return Some(StepResult::Continue);
         }
 
-        // 2. In delayed mode and consecutive_delays >= goals.len() → residualize
+        // 2. In delayed mode and consecutive_delays >= goals.len() → residualize.
+        // NOT WITH NO GOALS LEFT (WI-20260820-4KXPD): a `Delayed` frame stays `Delayed` once
+        // anything in its derivation waited (`reset` keeps the mode, at 0), so a proof that
+        // finished after a delay met `0 >= 0` here and left as a FLOUNDERED branch with an
+        // empty residual — past answer dedup (a second `?x = 5` from the same query) and,
+        // under `definite_only`, dropped: a `no` constraint over an answer found after a
+        // rotation held while the query answered it. A proof with no goals left is step 3's.
         if let DelayMode::Delayed { consecutive_delays } = &delay_mode {
-            if *consecutive_delays >= frame.goals.len() {
-                let subst = frame.subst.clone();
+            if !frame.goals.is_empty() && *consecutive_delays >= frame.goals.len() {
+                // WI-519: this is a FLOUNDERED branch (delay-and-rotate exhausted
+                // with goals still undischarged). In definite-only mode it is not
+                // a solution — skip it so it never counts toward `max_solutions`
+                // or masquerades as success.
+                if self.config.definite_only {
+                    self.stack.pop();
+                    return Some(StepResult::Continue);
+                }
+                // The frame stays on the stack until its residual is built: opening a
+                // waiting clause selects candidates under the frame's σ.
+                let mut subst = frame.subst.clone();
+                let goals = std::mem::take(&mut self.stack.last_mut().unwrap().goals);
                 // WI-348: residual carries the delayed goals as `Value` — no
                 // materialize-to-`TermId`, so a goal mentioning a `Value::Node`
-                // keeps its occurrence identity.
-                let residual: Vec<Value> = frame.goals.iter().map(|g| g.goal.clone()).collect();
+                // keeps its occurrence identity. A goal asked of one waiting clause is
+                // that clause's body: the goal's other answer sources have answered.
+                let mut residual: Vec<Value> = Vec::with_capacity(goals.len());
+                for g in &goals {
+                    match g.clause {
+                        None => residual.push(g.goal.clone()),
+                        Some(rid) => match self.waiting_clause_residual(kb, &g.goal, rid, &mut subst) {
+                            Some(body) => residual.extend(body),
+                            // The clause's head no longer matches: the goal has no answer.
+                            None => {
+                                self.stack.pop();
+                                return Some(StepResult::Continue);
+                            }
+                        },
+                    }
+                }
                 // WHICH of those goals had no answer as opposed to no BINDING — read off
                 // each goal's own wait state (WI-20260926-CYNPE), which recorded the
                 // cause when the goal was answered: the outcome is long gone by here, and
                 // without it every undecided answer would arrive indistinguishable from a
                 // floundered one. A goal a later pass DISCHARGED took its cause with it,
                 // so nothing stale can colour this residual.
-                let undecided: Vec<(Value, UnknownCause)> = frame
-                    .goals
+                let undecided: Vec<(Value, UnknownCause)> = goals
                     .iter()
                     .filter_map(|g| g.wait.cause().map(|c| (g.goal.clone(), c)))
                     .collect();
                 self.stack.pop();
-                // WI-519: this is a FLOUNDERED branch (delay-and-rotate exhausted
-                // with goals still undischarged). In definite-only mode it is not
-                // a solution — skip it so it never counts toward `max_solutions`
-                // or masquerades as success.
-                if self.config.definite_only {
-                    return Some(StepResult::Continue);
-                }
                 let sol = Solution {
                     subst,
                     residual,
                     undecided,
                 };
-                self.record_solution_in_nearest_choice_point();
                 return Some(StepResult::YieldSolution(sol));
             }
         }
@@ -2436,22 +2473,6 @@ impl SearchStream {
                 undecided: vec![],
             };
             self.stack.pop();
-
-            // COUNT THE PROOF BEFORE JUDGING THE ANSWER, and the order is
-            // load-bearing (WI-FFPGD). `child_solutions` asks "did this choice
-            // point produce a PROOF?", which a dropped duplicate still did — its
-            // one reader is `step_choice_point`'s `child_solutions == 0 &&
-            // any_delayed` delay fallback, and a choice point that proved
-            // something must not be told it proved nothing and residualize a
-            // FLOUNDERED answer over a branch that definitely succeeded.
-            //
-            // The old order was safe only BY CONSTRUCTION, and the construction
-            // is gone: dedup keyed the nearest ancestor ChoicePoint's OWN
-            // `seen_goals`, so a duplicate implied an earlier solution had passed
-            // through that very frame and already incremented it. `seen_answers`
-            // is stream-global, so a duplicate can now come from a different
-            // subtree entirely and leave the innermost live choice point at zero.
-            self.record_solution_in_nearest_choice_point();
 
             // Answer dedup: project the solution onto the QUERY's goals (WI-FFPGD).
             // If that projection was already yielded, this proof re-derives an
@@ -2541,6 +2562,31 @@ impl SearchStream {
         // each clause it opens ([`WITHIN_REQUIREMENTS`]).
         let within: Option<Value> =
             within_requirements_inner(kb, &goal_val).map(|inner| std::mem::replace(&mut goal_val, inner));
+
+        // A goal asked of ONE waiting clause ([`FrameGoal::clause`]) goes straight to that
+        // clause: its classification, its builtin, its other clauses, its hypotheses and its
+        // extent rows answered when it was first asked. The clause's head is matched again
+        // under σ, since the caller may have bound what the clause waited on.
+        if let Some(rid) = self.stack.last().unwrap().goals[0].clause {
+            let candidates: Vec<Candidate> = self
+                .rule_candidates(kb, &goal_val)
+                .into_iter()
+                .filter(|(r, _)| *r == rid)
+                .map(|(r, subst)| Candidate::Rule(r, subst))
+                .collect();
+            let f = self.stack.last_mut().unwrap();
+            f.state = FrameState::ChoicePoint {
+                delay_mode,
+                original_goal: within.unwrap_or(goal_val),
+                candidates,
+                next: 0,
+                extent_rows: Vec::new(),
+                extent_next: 0,
+                waiting: Vec::new(),
+                cut_barrier: None,
+            };
+            return Some(StepResult::Continue);
+        }
         let frame = self.stack.last().unwrap();
 
         // Scoping / hereditary-Harrop markers (`__pop_assumption`,
@@ -2697,8 +2743,7 @@ impl SearchStream {
                     next: 0,
                     extent_rows: Vec::new(),
                     extent_next: 0,
-                    any_delayed: false,
-                    child_solutions: 0,
+                    waiting: Vec::new(),
                     cut_barrier: None,
                 };
                 return Some(StepResult::Continue);
@@ -2863,8 +2908,7 @@ impl SearchStream {
                         // only the non-builtin path below does (WI-797).
                         extent_rows: Vec::new(),
                         extent_next: 0,
-                        any_delayed: false,
-                        child_solutions: 0,
+                        waiting: Vec::new(),
                         cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
@@ -2944,8 +2988,7 @@ impl SearchStream {
                         // Γ-overlay discharge gathers no mounted extent rows (WI-797).
                         extent_rows: Vec::new(),
                         extent_next: 0,
-                        any_delayed: false,
-                        child_solutions: 0,
+                        waiting: Vec::new(),
                         cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
@@ -3034,8 +3077,7 @@ impl SearchStream {
                         // only the non-builtin path below does (WI-797).
                         extent_rows: Vec::new(),
                         extent_next: 0,
-                        any_delayed: false,
-                        child_solutions: 0,
+                        waiting: Vec::new(),
                         cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
@@ -3576,67 +3618,8 @@ impl SearchStream {
         let mut candidates: Vec<Candidate> = Vec::new();
 
         // 6. Non-builtin goal → query discrimination tree via `TermView`
-        // (no lowering — a `Value::Node` goal matches Term-indexed heads).
-        // Cache the discrim query only for a goal whose `GoalKey` faithfully and
-        // completely identifies what `query_view` depends on, keyed by the
-        // carrier-agnostic `GoalKey`. The fingerprint is taken over `goal_val`
-        // exactly as `query_view` reads it — through `TermView` with NO σ
-        // resolution (an empty subst). `query_view(&goal_val)` (below) applies no
-        // σ, so the key must not either: a var kept in `goal_val` (a flex `Global`
-        // that σ bound to a non-`Term`, or a child of an unwalked
-        // `Value::Entity`/`Tuple` — the `other => other` walk arm) must stay a
-        // `Var` token → not cacheable, NOT be resolved to a structure `query_view`
-        // never saw. `is_cacheable` also excludes an `Opaque` leaf. Unlike the
-        // former hash-consed `TermId` key, a ground `Value::Node` occurrence goal
-        // caches too — no materialization.
-        let cache_key: Option<GoalKey> = {
-            let key = goal_fingerprint(kb, &goal_val, &Substitution::default());
-            key.is_cacheable().then_some(key)
-        };
-        let mut rule_candidates = match cache_key
-            .as_ref()
-            .and_then(|k| self.query_cache.get(k).cloned())
-        {
-            Some(cached) => cached,
-            None => {
-                let mut rc = kb.query_view(&goal_val);
-                // @[simp] resolution-phase rewrite — carrier-neutral, so a
-                // `Value::Node` occurrence goal (the typer phase and `anthill
-                // prove` feed these) simplifies too, not only a hash-consed term
-                // goal. Fires only when the goal has no non-equation candidate
-                // (it doesn't already resolve).
-                if self.config.simplify {
-                    let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
-                    if !has_non_eq {
-                        // WI-595: thread the frame's σ (its constraint store +
-                        // bindings) so a constraint-typed carrier var in the redex
-                        // is decidable by the type-directed `@[simp]` guard, rather
-                        // than reading headless under an empty subst (C1). O(1)
-                        // imbl clone.
-                        let eq_subst = self.stack.last().unwrap().subst.clone();
-                        let (rewritten, changes) = kb.apply_eq_rules(&goal_val, 100, &eq_subst);
-                        // WI-634: when the WHOLE goal is a var-projecting simp
-                        // redex (`pick(?q, 7)` under `@[simp] eq(pick(?a,?b),?a)`),
-                        // the rewrite is a bare caller var `?q`. Re-querying a bare
-                        // var wildcard-matches EVERY head (a `Global` query head
-                        // routes to all leaves) — spurious solutions against every
-                        // fact. A bare-var goal is not resolvable, so leave the
-                        // candidate set untouched (the goal fails) rather than
-                        // matching everything. The intended use — a redex nested in
-                        // a compound goal (`found(pick(?q,7))` → `found(?q)`) —
-                        // keeps the goal a compound and re-queries normally.
-                        if !changes.is_empty() && !matches!(rewritten.head(kb), ViewHead::Var(_)) {
-                            rc = kb.query_view(&rewritten);
-                        }
-                    }
-                }
-                rc.retain(|(rid, _)| !kb.is_equation(*rid));
-                if let Some(k) = cache_key {
-                    self.query_cache.insert(k, rc.clone());
-                }
-                rc
-            }
-        };
+        // ([`Self::rule_candidates`]).
+        let mut rule_candidates = self.rule_candidates(kb, &goal_val);
 
         // The clause-only child admits exactly the rows whose presence created
         // the combined choice point above.
@@ -3688,11 +3671,80 @@ impl SearchStream {
             next: 0,
             extent_rows,
             extent_next: 0,
-            any_delayed: false,
-            child_solutions: 0,
+            waiting: Vec::new(),
             cut_barrier: None,
         };
         Some(StepResult::Continue)
+    }
+
+    /// The clauses whose heads match `goal_val` — step 6 of [`Self::step_init`]: the
+    /// discrimination tree's candidates through the query cache, `@[simp]`'s
+    /// resolution-phase rewrite when the config asks for it, equations dropped. The one
+    /// selection, so a goal asked of a waiting clause alone ([`FrameGoal::clause`]) finds
+    /// that clause as its first ask did.
+    fn rule_candidates(&mut self, kb: &mut KnowledgeBase, goal_val: &Value) -> Vec<(RuleId, Substitution)> {
+        // Read through `TermView` (no lowering — a `Value::Node` goal matches
+        // Term-indexed heads).
+        // Cache the discrim query only for a goal whose `GoalKey` faithfully and
+        // completely identifies what `query_view` depends on, keyed by the
+        // carrier-agnostic `GoalKey`. The fingerprint is taken over `goal_val`
+        // exactly as `query_view` reads it — through `TermView` with NO σ
+        // resolution (an empty subst). `query_view(&goal_val)` (below) applies no
+        // σ, so the key must not either: a var kept in `goal_val` (a flex `Global`
+        // that σ bound to a non-`Term`, or a child of an unwalked
+        // `Value::Entity`/`Tuple` — the `other => other` walk arm) must stay a
+        // `Var` token → not cacheable, NOT be resolved to a structure `query_view`
+        // never saw. `is_cacheable` also excludes an `Opaque` leaf. Unlike the
+        // former hash-consed `TermId` key, a ground `Value::Node` occurrence goal
+        // caches too — no materialization.
+        let cache_key: Option<GoalKey> = {
+            let key = goal_fingerprint(kb, goal_val, &Substitution::default());
+            key.is_cacheable().then_some(key)
+        };
+        match cache_key
+            .as_ref()
+            .and_then(|k| self.query_cache.get(k).cloned())
+        {
+            Some(cached) => cached,
+            None => {
+                let mut rc = kb.query_view(goal_val);
+                // @[simp] resolution-phase rewrite — carrier-neutral, so a
+                // `Value::Node` occurrence goal (the typer phase and `anthill
+                // prove` feed these) simplifies too, not only a hash-consed term
+                // goal. Fires only when the goal has no non-equation candidate
+                // (it doesn't already resolve).
+                if self.config.simplify {
+                    let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
+                    if !has_non_eq {
+                        // WI-595: thread the frame's σ (its constraint store +
+                        // bindings) so a constraint-typed carrier var in the redex
+                        // is decidable by the type-directed `@[simp]` guard, rather
+                        // than reading headless under an empty subst (C1). O(1)
+                        // imbl clone.
+                        let eq_subst = self.stack.last().unwrap().subst.clone();
+                        let (rewritten, changes) = kb.apply_eq_rules(goal_val, 100, &eq_subst);
+                        // WI-634: when the WHOLE goal is a var-projecting simp
+                        // redex (`pick(?q, 7)` under `@[simp] eq(pick(?a,?b),?a)`),
+                        // the rewrite is a bare caller var `?q`. Re-querying a bare
+                        // var wildcard-matches EVERY head (a `Global` query head
+                        // routes to all leaves) — spurious solutions against every
+                        // fact. A bare-var goal is not resolvable, so leave the
+                        // candidate set untouched (the goal fails) rather than
+                        // matching everything. The intended use — a redex nested in
+                        // a compound goal (`found(pick(?q,7))` → `found(?q)`) —
+                        // keeps the goal a compound and re-queries normally.
+                        if !changes.is_empty() && !matches!(rewritten.head(kb), ViewHead::Var(_)) {
+                            rc = kb.query_view(&rewritten);
+                        }
+                    }
+                }
+                rc.retain(|(rid, _)| !kb.is_equation(*rid));
+                if let Some(k) = cache_key {
+                    self.query_cache.insert(k, rc.clone());
+                }
+                rc
+            }
+        }
     }
 
     /// Handle `not(Goal)` — negation-as-failure.
@@ -4080,8 +4132,7 @@ impl SearchStream {
                 // extent rows (WI-797).
                 extent_rows: Vec::new(),
                 extent_next: 0,
-                any_delayed: false,
-                child_solutions: 0,
+                waiting: Vec::new(),
                 cut_barrier: None,
             };
             Some(StepResult::Continue)
@@ -4107,7 +4158,7 @@ impl SearchStream {
             return self.yield_sole_goal(goal, cause);
         }
         let wait = self.suspended_on_blockers(kb, &goal, cause);
-        self.rotate_first(goal, wait, depth, next_consecutive(&delay_mode));
+        self.rotate_first(FrameGoal { goal, wait, clause: None }, depth, next_consecutive(&delay_mode));
         Some(StepResult::Continue)
     }
 
@@ -4120,7 +4171,6 @@ impl SearchStream {
         if self.config.definite_only {
             return Some(StepResult::Continue);
         }
-        self.record_solution_in_nearest_choice_point();
         Some(StepResult::YieldSolution(Solution {
             subst,
             undecided: cause.map(|c| vec![(goal.clone(), c)]).unwrap_or_default(),
@@ -4146,17 +4196,18 @@ impl SearchStream {
     }
 
     /// Rotate the current frame's `goals[0]` behind the tail as `goal` (the value it was
-    /// asked as) with `wait`, re-entering `Init` in `Delayed` mode at `new_consecutive`.
+    /// asked as, with its wait and the clause it is asked of), re-entering `Init` in
+    /// `Delayed` mode at `new_consecutive`.
     /// The ONE rotate primitive: every goal that waits — a delay, an undecided or faulted
     /// goal, a NAF goal, a rule goal whose every candidate delayed, a goal passed over on
     /// its turn — goes behind the tail here. Callers own the counter policy
     /// ([`next_consecutive`]), so the `consecutive_delays >= goals.len()` gate in
     /// [`Self::step_init`] advances and the rotation terminates; a hard-coded `1` would pin
     /// it and spin (WI-629).
-    fn rotate_first(&mut self, goal: Value, wait: Wait, depth: usize, new_consecutive: usize) {
+    fn rotate_first(&mut self, goal: FrameGoal, depth: usize, new_consecutive: usize) {
         let f = self.stack.last_mut().unwrap();
         f.goals.remove(0);
-        f.goals.push(FrameGoal { goal, wait });
+        f.goals.push(goal);
         f.depth = depth + 1;
         f.state = FrameState::Init {
             delay_mode: DelayMode::Delayed {
@@ -4218,7 +4269,7 @@ impl SearchStream {
             let cause = head.wait.cause();
             return Some(self.yield_sole_goal(head.goal, cause));
         }
-        self.rotate_first(head.goal, head.wait, depth, next_consecutive(delay_mode));
+        self.rotate_first(head, depth, next_consecutive(delay_mode));
         Some(Some(StepResult::Continue))
     }
 
@@ -4468,12 +4519,12 @@ impl SearchStream {
             if let FrameState::ChoicePoint {
                 next,
                 candidates,
-                any_delayed,
+                waiting,
                 ..
             } = &mut frame.state
             {
                 *next = candidates.len();
-                *any_delayed = false;
+                waiting.clear();
             }
         }
     }
@@ -4877,7 +4928,8 @@ impl SearchStream {
             }
             _ => self.suspended_on_blockers(kb, goal_val, cause),
         };
-        self.rotate_first(goal_val.clone(), wait, depth, next_consecutive(&delay_mode));
+        let goal = FrameGoal { goal: goal_val.clone(), wait, clause: None };
+        self.rotate_first(goal, depth, next_consecutive(&delay_mode));
         Some(StepResult::Continue)
     }
 
@@ -5132,7 +5184,8 @@ impl SearchStream {
                     // ever reaching the `consecutive_delays >= goals.len()` residual
                     // gate in `step_init` (it would burn to the depth limit and return
                     // NO solution — the exact verdict dishonesty WI-629 fixes).
-                    self.rotate_first(goal.clone(), wait, depth, next_consecutive(&delay_mode));
+                    let goal = FrameGoal { goal: goal.clone(), wait, clause: None };
+                    self.rotate_first(goal, depth, next_consecutive(&delay_mode));
                     return Some(StepResult::Continue);
                 }
             } else {
@@ -5314,21 +5367,14 @@ impl SearchStream {
 
     /// Handle a frame in `ChoicePoint` state — try the next candidate.
     fn step_choice_point(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
-        let (delay_mode, original_goal, any_delayed, child_solutions) = {
+        let (delay_mode, original_goal) = {
             let frame = self.stack.last().unwrap();
             match &frame.state {
                 FrameState::ChoicePoint {
                     delay_mode,
                     original_goal,
-                    any_delayed,
-                    child_solutions,
                     ..
-                } => (
-                    delay_mode.clone(),
-                    original_goal.clone(),
-                    *any_delayed,
-                    *child_solutions,
-                ),
+                } => (delay_mode.clone(), original_goal.clone()),
                 _ => unreachable!(),
             }
         };
@@ -5336,29 +5382,71 @@ impl SearchStream {
         // The next candidate on the ONE path: resident discrim candidates first,
         // then the mounted extent's rows matched lazily (WI-797) — the consumer
         // below never branches on which source a candidate came from. `None` =
-        // both are exhausted → delay fallback or backtrack.
+        // both are exhausted → the waiting clauses, or backtrack.
         let candidate = match self.next_candidate(kb) {
             Some(c) => c,
             None => {
-                if child_solutions == 0 && any_delayed {
-                    // Delay fallback: rotate the goal behind the tail, in place — the frame
-                    // leaves its choice point for `Init`, continuing the rotation. The goal
-                    // WAITS on its blockers (WI-20260926-CYNPE, 068 §2.2): its candidates
-                    // delayed on the caller's variables, so until one of the goal's own is
-                    // bound, asking again only re-opens the same clauses to delay again.
-                    // The tail's goals carry their own wait states — and with them any
-                    // cause recorded before this rotation, which the `cd >= goals.len()`
-                    // gate this rotation continues toward reads.
-                    let wait = self.suspended_on_blockers(kb, &original_goal, None);
-                    let depth = self.stack.last().unwrap().depth;
-                    self.rotate_first(original_goal, wait, depth, next_consecutive(&delay_mode));
-                    return Some(StepResult::Continue);
+                // A CLAUSE THAT WAITED IS ASKED AGAIN, WHATEVER ITS SIBLINGS ANSWERED, and it
+                // alone (WI-20260820-4KXPD). Each becomes a `Waiting` candidate of this choice
+                // point, so the clauses are re-asked in clause order and a cut that prunes
+                // this choice point prunes them too.
+                //
+                // This used to rotate the WHOLE goal, and only when the choice point had seen
+                // no solution — a count that reached it only when no other choice point stood
+                // between it and the solution, so a sibling with a body hid the credit. The
+                // whole goal re-ran the clauses that had answered (a second proof of each
+                // answer) and floundered as the whole goal (a residual covering answers
+                // already given). Counting every solution below the choice point instead —
+                // the resolver this was ported from did — was measured and rejected: over
+                // `inner(?y, ?x) :- ans(v: ?x)` and `inner(?y, ?x) :- nonvar(?x), other(v:
+                // ?x)`, called as `inner(1, ?x), pick(v: ?x)` with `pick` 5 and 7, the first
+                // clause's answer suppressed the second clause and `?x = 7` was lost.
+                if let FrameState::ChoicePoint {
+                    candidates,
+                    next,
+                    waiting,
+                    ..
+                } = &mut self.stack.last_mut().unwrap().state
+                {
+                    if !waiting.is_empty() {
+                        *candidates = waiting.drain(..).map(Candidate::Waiting).collect();
+                        *next = 0;
+                        return Some(StepResult::Continue);
+                    }
                 }
                 // Backtrack — pop this frame
                 self.stack.pop();
                 return Some(StepResult::Continue);
             }
         };
+
+        // A waiting clause's turn: the goal goes behind the tail in a branch of its own,
+        // asked of that clause alone. It WAITS on its blockers (WI-20260926-CYNPE, 068
+        // §2.2): the clause waited on the caller's variables, so until one of the goal's own
+        // is bound, asking again only re-opens the clause to wait again. The tail's goals
+        // carry their own wait states — and with them any cause recorded before this
+        // rotation, which the `cd >= goals.len()` gate this rotation continues toward reads.
+        if let Candidate::Waiting(rid) = candidate {
+            let wait = self.suspended_on_blockers(kb, &original_goal, None);
+            let frame = self.stack.last().unwrap();
+            let depth = frame.depth;
+            self.stack.push(ResolverFrame {
+                goals: frame.goals.clone(),
+                subst: frame.subst.clone(),
+                depth,
+                state: FrameState::Init {
+                    delay_mode: delay_mode.clone(),
+                },
+                assumed_facts: frame.assumed_facts.clone(),
+            });
+            let goal = FrameGoal {
+                goal: original_goal,
+                wait,
+                clause: Some(rid),
+            };
+            self.rotate_first(goal, depth, next_consecutive(&delay_mode));
+            return Some(StepResult::Continue);
+        }
 
         // WI-899: the two branch markers preserve the parent goal and substitution;
         // only their initialization mode differs.
@@ -5419,6 +5507,7 @@ impl SearchStream {
             Candidate::Builtin => unreachable!("handled above"),
             Candidate::Clauses => unreachable!("handled above"),
             Candidate::Continuation(_) => unreachable!("handled above"),
+            Candidate::Waiting(_) => unreachable!("handled above"),
         };
 
         // WI-512: a NON-LINEAR goal atom (a query var repeated within one atom,
@@ -5614,9 +5703,8 @@ impl SearchStream {
                 // unsatisfiable — those conjuncts never get to run once the rule
                 // is delayed, and on the default resolve path the still-delayed
                 // rule-goal residualizes into a SPURIOUS solution. A refuted
-                // candidate is simply dropped (no delay, `any_delayed` left as-is
-                // for sibling candidates); an honest, still-satisfiable rule keeps
-                // the old conservative delay.
+                // candidate is simply dropped (it does not wait); an honest,
+                // still-satisfiable rule keeps the old conservative delay.
                 let context_opaque = !frame.assumed_facts.is_empty()
                     || self.config.gamma.is_some()
                     || self.config.simplify;
@@ -5625,7 +5713,7 @@ impl SearchStream {
                 }
                 let f = self.stack.last_mut().unwrap();
                 match &mut f.state {
-                    FrameState::ChoicePoint { any_delayed, .. } => *any_delayed = true,
+                    FrameState::ChoicePoint { waiting, .. } => waiting.push(rid),
                     _ => unreachable!(),
                 }
                 return Some(StepResult::Continue);
@@ -5839,41 +5927,49 @@ impl SearchStream {
         key.iter().all(GoalKey::is_opaque_free) && !self.seen_answers.insert(key)
     }
 
-    /// When yielding a solution, walk the stack to find the nearest
-    /// `ChoicePoint` ancestor and increment its `child_solutions` counter.
+    /// The residual of a goal asked of one waiting clause ([`FrameGoal::clause`]) that is
+    /// still waiting at the residualization gate: the clause's body, opened against the
+    /// goal under `subst`, with the head match's links to the goal's variables bound into
+    /// `subst` — the clause as it would have run, had the caller bound what it waits on.
+    /// `None` when the clause's head no longer matches the goal: then the goal has no answer.
     ///
-    /// RENAMED FROM `record_solution_in_ancestors` (WI-FFPGD): it visits exactly
-    /// ONE frame, and the plural name was the same misreading that hid this
-    /// ticket's defect in [`Self::is_duplicate_answer`]'s twin — a `return` inside
-    /// a `rev()` walk reads as "all ancestors" until someone checks. Behaviour
-    /// unchanged; only the name now says what it does. Its one reader
-    /// (`step_choice_point`'s `child_solutions == 0 && any_delayed` delay
-    /// fallback) therefore asks about solutions produced by THIS choice point with
-    /// no inner choice point in between — NOT about the whole subtree.
-    ///
-    /// AND THAT IS A LIVE DEFECT, OWNED BY **WI-20260820-4KXPD**, not merely a
-    /// naming note. WI-FFPGD's description called this "only a counter"; it is not.
-    /// A choice point whose WINNING candidate opens a body containing any
-    /// non-builtin goal never sees the credit — that goal's own choice point takes
-    /// it — so if any sibling candidate delayed, the frame believes it proved
-    /// nothing and rotates, residualizing a FLOUNDERED answer over a branch that
-    /// definitely succeeded. MEASURED at 2 spurious residuals on a three-rule
-    /// fixture, with answer dedup ON and OFF alike, so it predates WI-FFPGD.
-    ///
-    /// It is NOT fixed by deleting the `return`, which is why it is a ticket. The
-    /// reader's contract is "produced something ⇒ do not rotate", and the rotation
-    /// is what re-asks a delayed candidate after the caller's tail binds its var —
-    /// suppressing it can lose a real solution. Read 4KXPD before touching this.
-    fn record_solution_in_nearest_choice_point(&mut self) {
-        for frame in self.stack.iter_mut().rev() {
-            if let FrameState::ChoicePoint {
-                child_solutions, ..
-            } = &mut frame.state
-            {
-                *child_solutions += 1;
-                return;
+    /// IN THE GOAL'S OWN VARIABLES: where the head links a goal variable to a variable of
+    /// the clause, the clause's variable is bound to the goal's, and the body is read
+    /// through `subst` — so over `rule inner(?x) :- nonvar(?x), ans(v: ?x)` the residual
+    /// of `inner(?x)` is `nonvar(?x), ans(v: ?x)` and `?x` stays the query's, unbound.
+    /// Linked the other way, the answer read `?x = ?_` beside a body over another `?_`.
+    fn waiting_clause_residual(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        goal: &Value,
+        rid: RuleId,
+        subst: &mut Substitution,
+    ) -> Option<Vec<Value>> {
+        let walked = kb.reify_value_transient(goal, subst);
+        let atom = within_requirements_inner(kb, &walked).unwrap_or(walked);
+        let (_, tree_subst) = self.rule_candidates(kb, &atom).into_iter().find(|(r, _)| *r == rid)?;
+        if tree_subst.is_contradiction() {
+            return None;
+        }
+        let (fresh_nodes, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
+        if answer_links.is_contradiction() {
+            return None;
+        }
+        for (goal_var, linked) in answer_links.bindings {
+            match kb.value_global_var(&linked) {
+                Some(clause_var) if clause_var != goal_var && subst.resolve_as_value(clause_var).is_none() => {
+                    subst.bind_compressed([(clause_var, Value::Var(Var::Global(goal_var)))], kb)
+                }
+                _ => subst.bind_compressed([(goal_var, linked)], kb),
             }
         }
+        let mut body = Vec::with_capacity(fresh_nodes.len());
+        for n in fresh_nodes {
+            if !is_routing_only_read(kb, &n) {
+                body.push(kb.reify_value_transient(&Value::Node(n), subst));
+            }
+        }
+        Some(body)
     }
 }
 

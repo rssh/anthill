@@ -13,13 +13,12 @@
 //! [`a_conjunctive_query_keeps_every_pairing`] is what a frame walk over ALL
 //! ancestors — the tempting wrong fix — would have BROKEN.
 //!
-//! The other two pin decisions the move FORCED rather than the move itself.
+//! The other pins a decision the move FORCED rather than the move itself:
 //! [`an_anonymous_query_var_is_still_part_of_the_answer`] says a `?` in the QUERY
-//! keeps distinguishing (the caller can read its binding), and
-//! [`a_dropped_duplicate_still_counts_as_this_choice_points_proof`] pins the
-//! ordering the stream-global seen-set made load-bearing — a dropped duplicate is
-//! still a proof, and the choice point that made it must be told so or it
-//! residualizes a floundered answer over a branch that succeeded.
+//! keeps distinguishing (the caller can read its binding). A fourth pinned the order
+//! of crediting a choice point with a proof and judging the answer; the credit is
+//! gone (WI-20260820-4KXPD: a clause that waits is asked again whatever its siblings
+//! answered), and that test's program is a row of `wi_4kxpd_waiting_clause_test`.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
@@ -196,88 +195,6 @@ fn an_anonymous_query_var_is_still_part_of_the_answer() {
         3,
         "a query var is part of the answer however it is spelled",
     );
-}
-
-/// A DROPPED DUPLICATE IS STILL A PROOF, and the choice point that produced it
-/// must be told so. Found by `/code-review` on this ticket's own diff.
-///
-/// `child_solutions` has one reader — `step_choice_point`'s
-/// `child_solutions == 0 && any_delayed` delay fallback — and it asks whether THIS
-/// choice point produced a proof. Checking `is_duplicate_answer` before
-/// `record_solution_in_nearest_choice_point` left it at zero for a branch that had
-/// definitely succeeded, so the choice point rotated and residualized a FLOUNDERED
-/// answer over a proof it already had.
-///
-/// The old order was safe BY CONSTRUCTION, and the construction is what this ticket
-/// removed: dedup keyed the nearest ancestor ChoicePoint's OWN `seen_goals`, so a
-/// duplicate implied an earlier solution had passed through that very frame and
-/// already incremented it. `seen_answers` is stream-global, so a duplicate can now
-/// arrive from a different subtree and leave the innermost live choice point at
-/// zero — which is exactly what the fixture below builds.
-///
-/// THE FIXTURE, and every part of it is load-bearing. `g` has TWO rows so `inner`
-/// is entered twice under two different `?y`; both entries answer `?x = 5`, so the
-/// SECOND is the cross-subtree duplicate. `inner`'s rule clause leads with
-/// `nonvar(?x)` on a caller var, which is one of the three NON-reorderable builtins
-/// (`builtin_is_reorderable`: `NonVar`/`Ground`/`HoApply`) — so the open-time
-/// pre-check delays that candidate and sets `any_delayed` on the `inner` choice
-/// point (it is `anthill.reflect.nonvar`, and the import is REQUIRED — a bare
-/// spelling is WI-1034's "rule-body goal names nothing" load error, not a silent
-/// no-op). Its `ans(v: ?x)` conjunct has a fact, so WI-670 does not refute it away
-/// first. `top` is what puts the `g` choice point ABOVE the `inner` one, so the
-/// nearest ancestor at the yield is `inner`'s and it is a FRESH frame per `?y`.
-///
-/// `inner`'s ANSWERING clauses ARE FACTS, and that is not cosmetic — it is what
-/// makes this fixture measure THIS ticket. `record_solution_in_nearest_choice_point`
-/// credits the NEAREST choice point only, so if the answering clause had a body
-/// (`rule inner(?y, ?x) :- ans(v: ?x)`) the goal `ans(v: ?x)` would open its own
-/// choice point, take the credit, and leave `inner`'s counter at zero in BOTH
-/// branches — spurious residuals with dedup on OR off. MEASURED on exactly that
-/// fixture: 4 solutions `[0,1,0,1]` in proof mode, 3 `[0,1,1]` in answer mode. That
-/// is a SEPARATE, pre-existing defect (the plural name over a `return`-at-the-first
-/// walk, which this ticket's own description called "only a counter" and which in
-/// fact manufactures a floundered answer); a bodyless clause pushes no intervening
-/// choice point, so here the counter reaches `inner` and the only variable left is
-/// the dedup ordering.
-///
-/// CONTROL, MEASURED by swapping the two statements back in `step_init`: 2
-/// solutions, residual lengths `[0, 1]` — a definite `?x = 5` plus a FLOUNDERED
-/// "conditional" answer to a question already definitely answered. The count and
-/// `is_definite` are asserted separately because they fail for different reasons: a
-/// fix that suppressed the residual without counting the proof would keep the count
-/// at 1 by accident. Nothing else in the workspace reddens under that back-out,
-/// which is why this test exists — the defect is latent, not caught by the suite.
-#[test]
-fn a_dropped_duplicate_still_counts_as_this_choice_points_proof() {
-    let mut kb = crate::common::load_kb_with(
-        "namespace test.ffpgd_child_count\n\
-         \x20 import anthill.reflect.{nonvar}\n\
-         \x20 sort N  entity g(v: Int64)    end\n\
-         \x20 sort A  entity ans(v: Int64)  end\n\
-         \x20 fact g(v: 1)\n\
-         \x20 fact g(v: 2)\n\
-         \x20 fact ans(v: 5)\n\
-         \x20 fact inner(1, 5)\n\
-         \x20 fact inner(2, 5)\n\
-         \x20 rule inner(?y, ?x) :- nonvar(?x), ans(v: ?x)\n\
-         \x20 rule top(?x) :- g(v: ?y), inner(?y, ?x)\n\
-         end\n",
-    );
-    let (goal, x) = unary_goal(&mut kb, "test.ffpgd_child_count.top", "x");
-    let sols = kb.resolve(&[goal], &ResolveConfig::default());
-    let residuals: Vec<usize> = sols.iter().map(|s| s.residual.len()).collect();
-    assert_eq!(
-        sols.len(),
-        1,
-        "one answer, once — got {} with residual lengths {residuals:?}",
-        sols.len(),
-    );
-    assert!(
-        sols[0].is_definite(),
-        "the answer is PROVED, not conditional — residual {:?}",
-        sols[0].residual.len(),
-    );
-    assert_eq!(int_answer(&mut kb, x, &sols[0]), 5, "and it is 5");
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

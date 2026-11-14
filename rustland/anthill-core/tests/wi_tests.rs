@@ -2486,3 +2486,5 @@ mod wi_zpetz_one_dispatch_test;
 
 #[path = "include/wi_cbrd2_no_typed_caller_test.rs"]
 mod wi_cbrd2_no_typed_caller_test;
+#[path = "include/wi_4kxpd_waiting_clause_test.rs"]
+mod wi_4kxpd_waiting_clause_test;

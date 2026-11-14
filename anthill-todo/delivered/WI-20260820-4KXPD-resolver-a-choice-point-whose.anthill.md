@@ -3,9 +3,9 @@
 - id: WI-20260820-4KXPD-resolver-a-choice-point-whose
 - created: 2026-08-20T21:27:20Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-20T21:27:20Z
+- status_at: 2026-11-14T09:51:59Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -46,4 +46,18 @@ Name at the chosen site which of the other two was rejected and on what measurem
 ACCEPTANCE -- DRIVE IT. (1) The fixture above returns exactly ONE solution, definite, `?x = 5`, in both proof and answer mode. (2) THE CONTROL THAT MATTERS: a case where the delayed candidate REALLY DOES need the rotation -- the caller's tail binds the var and the delayed clause then succeeds -- still yields that solution. Without this row, option (a) looks green and has silently traded two spurious residuals for a lost answer. (3) An honest flounder still flounders: `rule unbindable(?x) :- neq(?x, 1)` (the `wi739_guard_generator_delay_test` shape, where nothing can ever bind the var) keeps its residual. (4) Full workspace green, with any moved count named and its new value justified rather than re-baselined.
 
 REFERENCE: kb/resolve.rs `record_solution_in_nearest_choice_point` (renamed from `record_solution_in_ancestors` in WI-FFPGD, precisely because the plural name hid this) and `step_choice_point`'s `child_solutions == 0 && any_delayed` arm; WI-519; WI-628; WI-629; WI-670; WI-739; WI-20260820-FFPGD.
+
+## Changes
+
+### 2026-11-14T09:51:57Z — feedback — claude
+
+DELIVERED 2026-11-14, decided with the user: a clause that waits on the caller (its body asks `nonvar`, `ground` or a predicate variable's call of an unbound caller variable) is kept whatever its siblings answered, and narrowed to itself. Of the ticket's three options none was taken as written: (a) was measured and rejected — over `inner(?y, ?x) :- ans(v: ?x)`, `inner(?y, ?x) :- nonvar(?x), other(v: ?x)` called as `inner(1, ?x), pick(v: ?x)` with `pick` 5 and 7, the first clause's answer suppressed the second and `?x = 7` was lost; (c) would drop an honest conditional answer. The choice point now records its waiting clauses and, once its candidates are exhausted, offers each as a `Waiting` candidate of the same choice point (so a cut prunes it); taking one moves the goal behind the tail, asked of that clause alone (`FrameGoal::clause`). The credit counter (`child_solutions`, `record_solution_in_nearest_choice_point`) is deleted with its one reader. When a waiting clause is still waiting at the residualization gate, the residual is its body under the head match, in the goal's own variables (`waiting_clause_residual`).
+
+Acceptance (1) changed with the decision: the fixture answers `?x = 5` once definite (proved once per `?y` in proof mode) plus one conditional answer per `?y` whose residual is `nonvar(?_), ans(v: ?_)`, not `inner(1, ?_)`; the bodyless twin now answers the same. (2) the caller-binds control gives 5 and 7 once each in answer and proof mode. (3) `unbindable(?x) :- neq(?x, 1)` keeps its residual.
+
+FOUND ON THE WAY, same path, fixed here: the gate `consecutive_delays >= goals.len()` held at zero goals, and a frame stays `Delayed` once anything waited, so every proof finished after a delay left as a floundered branch with an empty residual — past answer dedup (`?x = 5` twice) and, under `definite_only`, DROPPED: `constraint no ?x -: top(?x), other(v: ?x)` loaded clean while `both(?x)` answered 7. The gate now requires a goal.
+
+Tests: `wi_4kxpd_waiting_clause_test` (11 rows), each with its back-out verdicts at its site (parent commit: 8 fail, 2 pass by design; three temporary switches). FFPGD's `a_dropped_duplicate_still_counts_as_this_choice_points_proof` is removed: its subject, the counter's ordering, is gone, and its program is a row here. Full gate: one test moved before the rewrite (that FFPGD row, to `[0, 2, 2]`), none else. scaland: the gate guard mirrored and the never-set `anyDelayed` / never-read `childSolutions` removed (scaland has no clause pre-check). Spec: kernel-language §8.3, "A clause that waits on the caller is asked again, alone."
+
+Not done: through an intermediate clause the conditional answer still prints the clause's fresh variable as `?_` (pre-existing printing).
 
