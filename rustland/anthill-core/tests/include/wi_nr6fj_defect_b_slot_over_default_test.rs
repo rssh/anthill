@@ -28,6 +28,14 @@
 //! caller cannot see the thing that decided it. That contradicts the rule the codebase
 //! states at [`spec_op_parent_sort`]: *"defaults fill gaps, they do not shadow"*.
 //!
+//! ## Since WI-20261105-CBRD2
+//!
+//! A static operation with a body is the spec's own, and no provider overrides it (decided with
+//! the user 2026-11-14): the `DEFAULTED` spelling beside `Rich`'s and `Other`'s own `tag` is
+//! refused at load, naming the override, and the two spellings no longer meet at one program.
+//! The rows run the `BODY_LESS` spelling, which each provider supplies, and keep its answers;
+//! defaults fill gaps as the spec's own body, which every provider then runs.
+//!
 //! ## Back-out
 //!
 //! MEASURED with the refusal of a call that names no instance off: the bare-call halves of
@@ -119,14 +127,26 @@ fn assert_names_no_instance(ns: &str, spec_op: &str, tail: &str, advice: &str) {
 #[test]
 fn a_defaulted_spec_op_reads_the_declared_slot() {
     assert_eq!(
-        answer("test.defb.acc", DEFAULTED, &via("requires Desc[T = Rich] ", "[T = Rich]")),
+        answer("test.defb.acc", BODY_LESS, &via("requires Desc[T = Rich] ", "[T = Rich]")),
         Some(7),
     );
     assert_names_no_instance(
         "test.defb.acc",
-        DEFAULTED,
+        BODY_LESS,
         &via("requires Desc[T = Rich] ", ""),
         "`test.defb.acc.Desc.tag[T = test.defb.acc.Rich]()`",
+    );
+    assert_static_override_refused("test.defb.acc", &via("requires Desc[T = Rich] ", "[T = Rich]"));
+}
+
+/// The `DEFAULTED` spelling beside the providers' own `tag` is refused at load: a static
+/// operation with a body is the spec's own (WI-20261105-CBRD2).
+#[track_caller]
+fn assert_static_override_refused(ns: &str, tail: &str) {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&fixture(ns, DEFAULTED, tail)),
+        &[&format!("`{ns}.Rich.tag` overrides `{ns}.Desc.tag`"), "a static operation with a body"],
+        "a provider's own `tag` beside the spec's body",
     );
 }
 
@@ -138,24 +158,44 @@ fn a_defaulted_spec_op_reads_the_declared_slot() {
 ///
 /// FAILS WITH THE CHANGE BACKED OUT on the `DEFAULTED` half only; the `BODY_LESS` half
 /// passed before and still does, which is what pins the disagreement as the defect.
+///
+/// SINCE WI-20261105-CBRD2 the `DEFAULTED` half is refused at load, its providers overriding a
+/// static operation with a body; the caller can no longer be handed either answer by it.
 #[test]
 fn both_spellings_of_the_spec_now_answer_the_same() {
-    let defaulted = answer("test.defb.d", DEFAULTED, &via("requires Desc[T = Rich] ", "[T = Rich]"));
+    assert_static_override_refused("test.defb.d", &via("requires Desc[T = Rich] ", "[T = Rich]"));
     let body_less = answer("test.defb.b", BODY_LESS, &via("requires Desc[T = Rich] ", "[T = Rich]"));
-    assert_eq!(
-        (defaulted, body_less),
-        (Some(7), Some(7)),
-        "whether the spec's op carries a default body must not change what the CALLER \
-         gets; it is not something the caller can see",
-    );
+    assert_eq!(body_less, Some(7));
 }
 
 /// NO SLOT AND NO BRACKET: the call names no instance, and `Rich` and `Other` both provide
 /// `Desc`, so it is refused. It ran the spec's own default (1) until 2026-10-17, which is a
 /// reading of `Desc.tag()` at no instance where two would answer.
+///
+/// SINCE WI-20261105-CBRD2: over the `BODY_LESS` spelling the call reaches `Desc.tag` itself,
+/// which runs nothing, and is refused advising the bracket; over the spec's body, which no
+/// provider overrides, it runs that body, at no instance, `1`.
 #[test]
 fn with_no_slot_declared_the_default_still_runs() {
-    assert_names_no_instance("test.defb.nos", DEFAULTED, &via("", ""), "`test.defb.nos.Desc.tag[T = …]()`");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&fixture("test.defb.nos", BODY_LESS, &via("", ""))),
+        &[
+            "a call of `test.defb.nos.Desc.tag` that nothing can run",
+            "`test.defb.nos.Desc.tag[T = …](…)`",
+        ],
+        "the call with no bracket",
+    );
+    let own = fixture("test.defb.nosd", DEFAULTED, &via("", ""))
+        .replace("    operation tag() -> Int64 = 7\n", "")
+        .replace("    operation tag() -> Int64 = 9\n", "");
+    let mut kb = crate::common::load_kb_with(&own);
+    assert!(
+        matches!(
+            crate::common::query_unary(&mut kb, "test.defb.nosd.answer").as_slice(),
+            [(Value::Int(1), true)]
+        ),
+        "the spec's own body, at no instance",
+    );
 }
 
 /// CONTROL — DEFAULTS FILL GAPS. A carrier that PROVIDES the spec but writes no `tag`
@@ -165,14 +205,21 @@ fn with_no_slot_declared_the_default_still_runs() {
 /// enforces: reading the slot means "use the carrier's implementation if it has one",
 /// not "never use the default". Without this row the acceptance would be satisfied by a
 /// change that refused or mis-dispatched every defaulted call with a slot.
+///
+/// SINCE WI-20261105-CBRD2 no provider writes its own `tag` beside the spec's body, so every
+/// provider takes it: `Rich` and `Other` here write none.
 #[test]
 fn a_providing_carrier_with_no_override_still_takes_the_default() {
-    let mut kb = crate::common::load_kb_with(&fixture_with(
-        "test.defb.bare",
-        DEFAULTED,
-        BARE,
-        &via("requires Desc[T = Bare] ", "[T = Bare]"),
-    ));
+    let mut kb = crate::common::load_kb_with(
+        &fixture_with(
+            "test.defb.bare",
+            DEFAULTED,
+            BARE,
+            &via("requires Desc[T = Bare] ", "[T = Bare]"),
+        )
+        .replace("    operation tag() -> Int64 = 7\n", "")
+        .replace("    operation tag() -> Int64 = 9\n", ""),
+    );
     assert!(
         matches!(
             crate::common::query_unary(&mut kb, "test.defb.bare.answer").as_slice(),
@@ -238,8 +285,8 @@ end
 #[test]
 fn two_slots_that_disagree_pin_nothing() {
     let two = "requires Desc[T = Rich], Desc[T = Other] ";
-    assert_names_no_instance("test.defb.two", DEFAULTED, &via(two, ""), "`test.defb.two.Desc.tag[T = …]()`");
-    assert_eq!(answer("test.defb.two", DEFAULTED, &via(two, "[T = Other]")), Some(9));
+    assert_names_no_instance("test.defb.two", BODY_LESS, &via(two, ""), "`test.defb.two.Desc.tag[T = …]()`");
+    assert_eq!(answer("test.defb.two", BODY_LESS, &via(two, "[T = Other]")), Some(9));
 }
 
 /// A PARAMETERIZED CARRIER IN THE SLOT dispatches to the carrier's own `tag`.
@@ -263,7 +310,7 @@ fn a_parameterized_carrier_in_the_slot_dispatches_to_its_own_member() {
 
   sort Desc
     sort T = ?
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
 
   sort Box
@@ -378,13 +425,7 @@ end
 fn a_type_variable_slot_now_reaches_the_provider_too() {
     let tv = "  operation viaop[U](x: U) -> Int64 requires Desc[T = U] = Desc.tag[T = U]()\n  \
               rule answer(?r) :- viaop(rich(), ?r)\n";
-    assert_eq!(
-        (
-            answer("test.defb.tvd", DEFAULTED, tv),
-            answer("test.defb.tvb", BODY_LESS, tv),
-        ),
-        (Some(7), Some(7)),
-        "a slot over a type parameter must reach the provider in BOTH spellings — \
-         WI-20260919-H20YY closed the residue this row was built to pin",
-    );
+    // The `DEFAULTED` spelling is refused at load since WI-20261105-CBRD2.
+    assert_static_override_refused("test.defb.tvd", tv);
+    assert_eq!(answer("test.defb.tvb", BODY_LESS, tv), Some(7));
 }

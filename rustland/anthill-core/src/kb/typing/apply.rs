@@ -3007,7 +3007,12 @@ fn check_apply_call(
         // was FIVE; collapsing the rest is a memo question (WI-1011), not a gate one.
         // The 51 µs O(|symbols|) figure that made those four matter is WI-954's — that
         // call is an owner-scope read now.
-        if let Some(spec_sort) = defaulted_spec_op_parent(kb, fn_sym) {
+        // A static operation that owes no instance ([`static_call_owes_no_instance`]) is the
+        // spec's own and reads nothing of one: it is applied as its body, at any type, and no
+        // route below is asked of it.
+        if let Some(spec_sort) = defaulted_spec_op_parent(kb, fn_sym)
+            .filter(|&spec| !static_call_owes_no_instance(kb, fn_sym, spec))
+        {
             // WI-20261013-50ZMN — A CALL THAT TWO NAMED REQUIREMENTS OF THE ENCLOSING
             // DECLARATION BOTH ANSWER IS REFUSED HERE, as a body-less operation's is
             // ([`read_requirement_by_name`]). Left to the routes below it loaded, the
@@ -3963,9 +3968,21 @@ fn check_apply_call(
             // sort provides (`Helper[X]`, `requires Coll[C = X]`) is called as an operation
             // whose requirements its caller passes.
             if carrier.is_none() && env.in_evaluated_body() && spec_has_any_providers(kb, spec_sort) {
-                // The parameter, and whether the call binds it to a projection rather than a
-                // type parameter.
-                let at_a_parameter = spec_carrier_param(kb, spec_sort).and_then(|param| {
+                // The first parameter of the spec the call binds to a type parameter or a
+                // projection, the carrier's first, and whether it is a projection. Every
+                // parameter is read, as a body-less member's call is: `Pair2[A = P, B =
+                // Int64].twice()` over `twice() -> Int64 = tag() * 2` is at `A`. A parameter the
+                // call leaves unbound is not one, and neither is one of a spec whose value is
+                // the instance (`Stream[T = T]`'s `T` at `headOption(fs)`).
+                let canon_spec = kb.canonical_sort_sym(spec_sort);
+                let others: Vec<Symbol> = if spec_is_self_representing(kb, canon_spec) {
+                    Vec::new()
+                } else {
+                    sort_type_params_as_pairs(kb, canon_spec).iter().map(|(s, _)| *s).collect()
+                };
+                let params: Vec<Symbol> =
+                    spec_carrier_param(kb, spec_sort).into_iter().chain(others).collect();
+                let at_a_parameter = params.into_iter().find_map(|param| {
                     let vid = declared_type_param_vid(kb, &Value::term(resolve_sort_alias(kb, param)?))?;
                     let bound = spec_param_binding(kb, &subst, vid)?;
                     let projection = matches!(
@@ -7158,13 +7175,15 @@ pub(crate) fn impl_parent_sort_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Opti
 /// itself ends `NoMatch` wherever a call leaves an element open (`isEmpty(nil)`), and every
 /// such program runs.
 ///
-/// A spec with no ABSTRACT member ([`spec_has_an_abstract_member`]) is exempt: it is a
-/// parameterized module, whose every operation runs by itself. A spec WITH one owes the
-/// instance at EVERY member, including a default that happens never to reach the abstract
-/// one (`label(s: T) -> Int64 = 0`): calling a spec's operation asserts the carrier is an
-/// instance (058 §3.9), and what one default body reads today is that body's business, not
-/// the call's — WI-20260921-3G1YT's reason for deleting the body walks, one question over.
-/// A decision, raised by /code-review, and kept.
+/// Which calls owe the instance is [`defaulted_call_owes_an_instance`]'s. A spec WITH an
+/// abstract member owes it at EVERY member, including a default that happens never to reach
+/// the abstract one (`label(s: T) -> Int64 = 0`): calling a spec's operation asserts the
+/// carrier is an instance (058 §3.9), and what one default body reads today is that body's
+/// business, not the call's — WI-20260921-3G1YT's reason for deleting the body walks, one
+/// question over. A decision, raised by /code-review, and kept. A spec whose every member has
+/// a body owes it at a member taking the carrier, where something provides the spec (decided
+/// with the user 2026-11-14); a spec nothing provides is a parameterized module, whose every
+/// operation runs by itself.
 #[allow(clippy::too_many_arguments)]
 fn defaulted_call_at_non_instance(
     kb: &mut KnowledgeBase,
@@ -7178,7 +7197,7 @@ fn defaulted_call_at_non_instance(
 ) -> Option<TypeError> {
     if !env.in_evaluated_body()
         || carrier_is_an_instance(kb, carrier, goal.spec_sort)
-        || !spec_has_an_abstract_member(kb, goal.spec_sort)
+        || !defaulted_call_owes_an_instance(kb, fn_sym, goal.spec_sort)
         || op_requires_covers_call(kb, env, subst, goal.spec_sort)
     {
         return None;
@@ -7551,10 +7570,13 @@ fn rule_sort_requires(kb: &KnowledgeBase, env: &TypingEnv, spec: Symbol) -> bool
 /// the spec's carrier, nothing of it in its result (`Desc.dflt()` over `dflt() -> Int64`) — of a
 /// spec whose call owes an instance ([`defaulted_member_owes_an_instance`]), where the clause
 /// supplies none: no guard of the spec and no `requires` of the sort the rule is written in. Its
-/// default ran where a provider supplies its own member (decided with the user 2026-11-14), and
-/// its body-less twin is refused in these words. `None` for any other call.
+/// body is the spec's own (no provider overrides a static operation with a body,
+/// [`is_static_with_a_body`]), but a sibling it calls, or a `requires` of the spec it reads, is
+/// the instance's, as an operation body's call is refused for in these words. A static operation
+/// that owes no instance does not reach here ([`static_call_owes_no_instance`]). `None` for any
+/// other call.
 fn open_defaulted_call(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     env: &TypingEnv,
     held: &[HeldSpecView],
     fn_sym: Symbol,

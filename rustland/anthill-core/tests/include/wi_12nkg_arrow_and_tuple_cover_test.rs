@@ -351,7 +351,7 @@ fn an_operations_own_requirement_at_another_arrow_is_no_cover() {
 #[test]
 fn a_requirement_reached_through_a_required_sort_is_no_cover() {
     let body = format!(
-        "{}\n  sort Mid\n    requires Apply[F = {X}]\n    operation mid() -> Int64 = 1\n  end\n  \
+        "{}\n  sort Mid\n    requires Apply[F = {X}]\n    operation mid() -> Int64\n  end\n  \
          sort MidImpl\n    provides Mid\n    operation mid() -> Int64 = 2\n  end\n  \
          sort User\n    requires Mid\n    operation via(f: {Y}) -> Int64 = Apply.run(f)\n  end\n",
         at_x_and_y()

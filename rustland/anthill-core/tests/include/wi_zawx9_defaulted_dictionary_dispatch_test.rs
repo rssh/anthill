@@ -70,12 +70,19 @@
 //! `build.rs`. M3 is driven by the RECEIVING variant of its row, which reads the member by
 //! the witness leg; the receiver-less variant reads it as route 1, under M2.
 //!
+//! SINCE WI-20261105-CBRD2 (decided with the user 2026-11-14) a static operation with a body —
+//! `name()`, which names no carrier — is the spec's own, and no provider supplies it: the
+//! receiver-less rows are written over a `name()` with no body, which each provider supplies,
+//! and keep their answers; the two whose subject was a default at one application and a binding
+//! at another (`a_witness_supplying_differently_at_two_sorts_…`, `two_applications_of_one_sort_…`)
+//! are the load refusal of that binding. The ledger above was measured before, and not again.
+//!
 //! PASS EITHER WAY BY DESIGN: `a_runnable_own_member_answers_on_both_routes`,
 //! `a_carrier_nothing_supplies_runs_the_default_on_both_routes` and
 //! `a_witness_supplying_alike_at_two_sorts_answers_through_the_dictionary` — route 1, the gap
 //! and a witness's one text for every sort, the answers the change must not move.
 
-use anthill_core::eval::{EvalError, Value};
+use anthill_core::eval::Value;
 
 /// `Desc` with a DEFAULT of 1, a `Leaf` that provides it, `supply` written beside them, and
 /// one call written twice: `byName` at `Leaf`, and `throughDictionary` via an operation
@@ -92,7 +99,9 @@ fn program(ns: &str, receiving: bool, leaf_body: &str, supply: &str, by_name: bo
         )
     } else {
         (
-            "operation name() -> Int64 = 1",
+            // No body: a static operation with a body is the spec's own, and no provider
+            // supplies it (WI-20261105-CBRD2).
+            "operation name() -> Int64",
             "operation viaDict[A]() -> Int64 requires Desc[T = A] = Desc.name[T = A]()",
             "operation byName() -> Int64 = Desc.name[T = Leaf]()",
             "operation throughDictionary() -> Int64 = viaDict[A = Leaf]()",
@@ -169,12 +178,26 @@ fn a_binding_answers_a_receiverless_call_through_the_dictionary() {
 }
 
 /// SHAPE (2). The own member is no supplier — the interpreter cannot run it — so the binding
-/// is the only one, on both routes. The dictionary entered the member and died.
+/// was the only one, on both routes, where the spec gave `name()` a default; the dictionary had
+/// entered the member and died. Since WI-20261105-CBRD2 that `name()` is the spec's own, and the
+/// binding is refused as its override; with no body, the member and the binding are two
+/// suppliers of it, refused as a tie. Shape (3) is the same program at an operation that receives
+/// the carrier, where the member still gives way.
 #[test]
 fn an_unrunnable_own_member_gives_way_to_the_binding_through_the_dictionary() {
     let ns = "test.zawx9.two";
     let src = program(ns, false, clause_defined_member(false), binding(false), true);
-    assert_eq!(both_routes(ns, &src), (Ok(7), Ok(7)));
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &[&format!("ambiguous dispatch of `{ns}.Desc.name` on carrier `{ns}.Leaf`")],
+        "two suppliers of a static operation with no body",
+    );
+    let with_body = src.replace("    operation name() -> Int64\n  end", "    operation name() -> Int64 = 1\n  end");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&with_body),
+        &[&format!("`{ns}.otherName` overrides `{ns}.Desc.name`"), "a static operation with a body"],
+        "a binding of a static operation with a body",
+    );
 }
 
 /// SHAPE (3): shape (2) on an operation that RECEIVES the carrier — WI-1010's
@@ -209,7 +232,8 @@ fn a_runnable_own_member_answers_on_both_routes() {
 fn a_carrier_nothing_supplies_runs_the_default_on_both_routes() {
     for receiving in [false, true] {
         let ns = format!("test.zawx9.gap{}", receiving as u8);
-        let src = program(&ns, receiving, "", "", true);
+        let src = program(&ns, receiving, "", "", true)
+            .replace("    operation name() -> Int64\n", "    operation name() -> Int64 = 1\n");
         assert_eq!(both_routes(&ns, &src), (Ok(1), Ok(1)), "receiving: {receiving}");
     }
 }
@@ -288,22 +312,23 @@ end
     assert_eq!(answers, vec![Ok(1), Ok(1), Ok(2), Ok(2)]);
 }
 
-/// THE TWO REFLECT FACES AGREE on shape (2): `Dictionary.resolveOp(d, Desc.name)` and the
-/// element of `Dictionary.ops(d)` for `name` both resolve to the binding. `ops` enumerates the
+/// THE TWO REFLECT FACES AGREE on shape (3) (shape (2)'s receiver-less operation is a static one,
+/// WI-20261105-CBRD2): `Dictionary.resolveOp(d, Desc.describe)` and the element of
+/// `Dictionary.ops(d)` for `describe` both resolve to the binding. `ops` enumerates the
 /// provider's table, whose row for `name` is the clause-defined member; asked by that row it
 /// handed the member back while `resolveOp` answered the binding.
 #[test]
 fn dictionary_ops_and_resolve_op_agree() {
     const DICT: &str = "anthill.realization.runtime.Dictionary";
     let ns = "test.zawx9.reflect";
-    let src = program(ns, false, clause_defined_member(false), binding(false), true);
+    let src = program(ns, true, clause_defined_member(true), binding(true), true);
     let mut interp = crate::common::interp_for(&src);
     let leaf = interp
         .kb()
         .try_resolve_symbol(&format!("{ns}.Leaf"))
         .expect("Leaf");
     let d = crate::common::dict(&interp, leaf, []).into_value();
-    let spec_op = crate::common::symbol_term(&mut interp, &format!("{ns}.Desc.name"));
+    let spec_op = crate::common::symbol_term(&mut interp, &format!("{ns}.Desc.describe"));
     let op_of = |interp: &anthill_core::eval::Interpreter, v: &Value| match v {
         Value::OpRef { op, .. } => interp.kb().qualified_name_of(*op).to_string(),
         other => panic!("expected an OpRef, got {other:?}"),
@@ -311,7 +336,7 @@ fn dictionary_ops_and_resolve_op_agree() {
     let resolved = interp
         .call(&format!("{DICT}.resolveOp"), &[d.clone(), spec_op])
         .expect("resolveOp");
-    assert_eq!(op_of(&interp, &resolved), format!("{ns}.otherName"));
+    assert_eq!(op_of(&interp, &resolved), format!("{ns}.otherDescribe"));
 
     let mut list = interp.call(&format!("{DICT}.ops"), &[d]).expect("ops");
     let mut ops: Vec<String> = Vec::new();
@@ -329,7 +354,7 @@ fn dictionary_ops_and_resolve_op_agree() {
         list = tail;
     }
     assert!(
-        ops.contains(&format!("{ns}.otherName")) && !ops.contains(&format!("{ns}.Leaf.name")),
+        ops.contains(&format!("{ns}.otherDescribe")) && !ops.contains(&format!("{ns}.Leaf.describe")),
         "`ops` answers what `resolveOp` answers for the operation its row backs: {ops:?}",
     );
 }
@@ -455,24 +480,16 @@ end
     );
 }
 
-/// A WITNESS PROVIDING ONE SPEC AT TWO SORTS, binding the operation at one of them only. The
-/// dictionary names the witness and not the sort, so no dispatch through it has an answer,
-/// and each is refused at the call. Each call by name knows its sort: at `A` it enters the
-/// binding, 7, and at `B` the default body, 1 — WITHOUT the witness's dictionary, through
-/// which eval would dispatch it again with no sort to read (`defaulted_call_target`). Before
-/// the provider's provisions were read by the sort they are about, the dictionary at `A` ran
-/// the binding written for `B` (found by /code-review); before this ticket every one of these
-/// ran the default, `A`'s binding meaning nothing.
+/// A WITNESS PROVIDING ONE SPEC AT TWO SORTS, binding a static operation with a body at one of
+/// them only, is refused at load: a static operation with a body is the spec's own, and no
+/// provider binds it (WI-20261105-CBRD2, decided with the user 2026-11-14). It loaded, the call
+/// by name answering the binding's 7 at `A` and the default's 1 at `B`, and the dictionary, which
+/// names neither sort, refused at the call (`UndeterminedDictionaryDispatch`).
 #[test]
 fn a_witness_supplying_differently_at_two_sorts_is_refused_through_the_dictionary() {
-    let program = |ns: &str, b_binding: &str, by_name: &str| {
-        let by = match by_name {
-            "A" => "  operation byName() -> Int64 = Desc.name[T = A]()\n",
-            "B" => "  operation byName() -> Int64 = Desc.name[T = B]()\n",
-            _ => "",
-        };
-        format!(
-            r#"namespace {ns}
+    let ns = "test.zawx9.perapp";
+    let src = format!(
+        r#"namespace {ns}
   import anthill.prelude.Int64
   sort Desc
     sort T = ?
@@ -485,48 +502,18 @@ fn a_witness_supplying_differently_at_two_sorts_is_refused_through_the_dictionar
     entity b
   end
   operation aName() -> Int64 = 7
-  operation bName() -> Int64 = 9
   sort W
     provides Desc[T = A, name = aName]
-    provides Desc[T = B{b_binding}]
+    provides Desc[T = B]
   end
-  operation viaDict[X]() -> Int64 requires Desc[T = X] = Desc.name[T = X]()
-  operation throughA() -> Int64 = viaDict[X = A]()
-  operation throughB() -> Int64 = viaDict[X = B]()
-{by}end
+end
 "#
-        )
-    };
-    let ns = "test.zawx9.perapp";
-    let mut interp = crate::common::interp_for(&program(ns, "", "A"));
-    assert_eq!(call(&mut interp, &format!("{ns}.byName")), Ok(7));
-    let mut interp = crate::common::interp_for(&program(ns, "", "B"));
-    assert_eq!(call(&mut interp, &format!("{ns}.byName")), Ok(1));
-    // Both sorts binding it, each its own way, is the LOADER's refusal: a spec no operation
-    // of which receives on its parameter files both provisions under the witness
-    // (`AmbiguousInstanceFact`), so that shape never reaches a dispatch.
-    let both = crate::common::load_errors_of(&program(ns, ", name = bName", ""));
-    assert!(
-        both.iter().any(|e| e.contains("ambiguous instance: 2 distinct instance facts")),
-        "{both:?}",
     );
-    for (entry, src) in [
-        ("throughA", program(ns, "", "")),
-        ("throughB", program(ns, "", "")),
-    ] {
-        let err = crate::common::interp_for(&src)
-            .call(&format!("{ns}.{entry}"), &[])
-            .expect_err("the dictionary does not say which sort it is for");
-        assert!(
-            matches!(err, EvalError::UndeterminedDictionaryDispatch { .. }),
-            "{entry}: expected UndeterminedDictionaryDispatch, got {err:?}",
-        );
-        let msg = err.to_string();
-        assert!(
-            msg.contains(&format!("`{ns}.W` provides `{ns}.Desc` at 2 sorts")),
-            "{entry}: {msg}",
-        );
-    }
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &[&format!("`{ns}.aName` overrides `{ns}.Desc.name`"), "a static operation with a body"],
+        "a binding of a static operation with a body",
+    );
 }
 
 /// CONTROL: a witness that supplies ALIKE at the two sorts — its own member — answers through
@@ -539,7 +526,7 @@ fn a_witness_supplying_alike_at_two_sorts_answers_through_the_dictionary() {
   import anthill.prelude.Int64
   sort Desc
     sort T = ?
-    operation name() -> Int64 = 1
+    operation name() -> Int64
   end
   sort A
     entity a
@@ -575,7 +562,9 @@ end
 /// the provision under `W` itself, and the member is route 1 of `W`'s own suppliers.
 #[test]
 fn a_witness_member_the_interpreter_cannot_run_gives_way_to_its_binding() {
-    for receiving in [false, true] {
+    // The receiver-less shape is a static operation (WI-20261105-CBRD2): with a body no provider
+    // supplies it, and with none the member and the binding are two suppliers — shape (2)'s row.
+    for receiving in [true] {
         let ns = format!("test.zawx9.witnesstwo{}", receiving as u8);
         let (decl, member, other, binding, via, by, through) = if receiving {
             (
@@ -589,7 +578,7 @@ fn a_witness_member_the_interpreter_cannot_run_gives_way_to_its_binding() {
             )
         } else {
             (
-                "operation name() -> Int64 = 1",
+                "operation name() -> Int64",
                 "operation name() -> Int64\n    rule name(3) :- true",
                 "operation otherName() -> Int64 = 7",
                 "name = otherName",
@@ -625,15 +614,14 @@ end
 }
 
 /// ONE SORT, TWO APPLICATIONS: a witness providing `Desc` at `Box[E = Int64]` and at
-/// `Box[E = String]`, binding the operation at the second only. Grouped by the base sort the
-/// two were one, and the binding written for `Box[E = String]` answered at `Box[E = Int64]`,
-/// by name and through the dictionary alike (found by the second /code-review). By name each
-/// answers its own; through the dictionary, which names neither, it is refused.
+/// `Box[E = String]`, binding a static operation with a body at the second only, is refused at
+/// load, as at two sorts (WI-20261105-CBRD2). It loaded, each call by name answering its own
+/// application and the dictionary, which names neither, refusing at the call.
 #[test]
 fn two_applications_of_one_sort_are_two() {
-    let program = |ns: &str, tail: &str| {
-        format!(
-            r#"namespace {ns}
+    let ns = "test.zawx9.onesort";
+    let src = format!(
+        r#"namespace {ns}
   import anthill.prelude.{{Int64, String}}
   sort Desc
     sort T = ?
@@ -648,28 +636,13 @@ fn two_applications_of_one_sort_are_two() {
     provides Desc[T = Box[E = Int64]]
     provides Desc[T = Box[E = String], name = sName]
   end
-{tail}end
+end
 "#
-        )
-    };
-    let ns = "test.zawx9.onesort";
-    let mut interp = crate::common::interp_for(&program(
-        ns,
-        "  operation atInt() -> Int64 = Desc.name[T = Box[E = Int64]]()\n  \
-         operation atString() -> Int64 = Desc.name[T = Box[E = String]]()\n",
-    ));
-    assert_eq!(call(&mut interp, &format!("{ns}.atInt")), Ok(1), "Box[E = Int64]: the default");
-    assert_eq!(call(&mut interp, &format!("{ns}.atString")), Ok(9), "Box[E = String]: its binding");
-    let err = crate::common::interp_for(&program(
-        ns,
-        "  operation viaDict[X]() -> Int64 requires Desc[T = X] = Desc.name[T = X]()\n  \
-         operation throughInt() -> Int64 = viaDict[X = Box[E = Int64]]()\n",
-    ))
-    .call(&format!("{ns}.throughInt"), &[])
-    .expect_err("the dictionary names neither application");
-    assert!(
-        matches!(err, EvalError::UndeterminedDictionaryDispatch { .. }),
-        "expected UndeterminedDictionaryDispatch, got {err:?}",
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &[&format!("`{ns}.sName` overrides `{ns}.Desc.name`"), "a static operation with a body"],
+        "a binding of a static operation with a body at one application",
     );
 }
 
@@ -695,7 +668,7 @@ fn a_witness_writing_its_member_and_a_binding_supplies_two() {
             )
         } else {
             (
-                "operation name() -> Int64 = 1",
+                "operation name() -> Int64",
                 "operation name() -> Int64 = 5",
                 "operation otherName() -> Int64 = 7",
                 "name = otherName",

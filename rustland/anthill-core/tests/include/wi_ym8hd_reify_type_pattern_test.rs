@@ -255,7 +255,25 @@ namespace test.ym8hd.standin
     operation catchIt(c: OwnCatcher[P = P], body: () -> Int64 @ {Error[P]}) -> Result[E = P, T = Int64] =
       Error.reify(body)
   end
-  -- The same again, providing `TypeValuePattern` — so it provides `TypePattern` through it.
+  operation mayFail() -> Int64 effects {Error[Boom]} =
+    if Host.tick() > 0 then Error.raise(boom("x")) else 0
+  operation mk() -> Catcher[P = Boom] = catcher[P = Boom](1)
+  operation mkOwn() -> OwnCatcher[P = Boom] = ownCatcher[P = Boom](1)
+  operation viaOp() -> Int64 =
+    match Catcher.catchIt(catcher[P = Boom](1), lambda () -> mayFail())
+      case ok(n) -> n
+      case err(_) -> 22
+end
+"#;
+
+/// A FORGED `admits` — a sort providing `TypeValuePattern` and writing its own — is refused at
+/// load: `TypeValuePattern.admits` is a static operation with a body, which no provider overrides
+/// (WI-20261105-CBRD2), and the answer stays the subtype test's fact, not a claim.
+#[test]
+fn a_forged_admits_beside_the_one_row_is_refused_at_load() {
+    let src = r#"namespace test.ym8hd.forged
+  import anthill.prelude.{Int64, Bool, Type}
+  import anthill.reflect.{TypePattern, TypeValuePattern}
   sort RowCatcher
     import anthill.reflect.{TypeValuePattern}
     sort P = ?
@@ -263,20 +281,18 @@ namespace test.ym8hd.standin
     provides TypeValuePattern[T = P]
     entity rowCatcher(n: Int64)
     operation admits(t: Type) -> Bool = true
-    operation catchIt(c: RowCatcher[P = P], body: () -> Int64 @ {Error[P]}) -> Result[E = P, T = Int64] =
-      Error.reify(body)
   end
-  operation mayFail() -> Int64 effects {Error[Boom]} =
-    if Host.tick() > 0 then Error.raise(boom("x")) else 0
-  operation mk() -> Catcher[P = Boom] = catcher[P = Boom](1)
-  operation mkOwn() -> OwnCatcher[P = Boom] = ownCatcher[P = Boom](1)
-  operation mkRow() -> RowCatcher[P = Boom] = rowCatcher[P = Boom](1)
-  operation viaOp() -> Int64 =
-    match Catcher.catchIt(catcher[P = Boom](1), lambda () -> mayFail())
-      case ok(n) -> n
-      case err(_) -> 22
 end
 "#;
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(src),
+        &[
+            "`test.ym8hd.forged.RowCatcher.admits` overrides `anthill.reflect.TypeValuePattern.admits`",
+            "a static operation with a body",
+        ],
+        "a forged `admits`",
+    );
+}
 
 /// A DICTIONARY THAT IS NO `TypePattern` INSTANCE IS REFUSED WHERE THE BOUNDARY WOULD BE
 /// INSTALLED, BEFORE THE THUNK RUNS. A host entry into an operation of a sort that declares
@@ -287,10 +303,13 @@ end
 /// MEASURED without the check: through `Catcher`, the thunk ran and the raise died
 /// `OperationBodyMissing: anthill.reflect.TypePattern.admits`; through `OwnCatcher`, whose own
 /// `admits` answers yes, the dispatch landed on it and the boundary caught every payload
-/// (found by /code-review). `RowCatcher` writes `provides TypeValuePattern[T = P]`, so it
-/// provides `TypePattern` through it: a check that the `impl` provides `TypePattern` passed it
-/// (found by the second /code-review). The check is that the `impl` is the one row's
-/// provider, `TypeValuePattern`.
+/// (found by /code-review). A third stand-in, `RowCatcher`, wrote `provides
+/// TypeValuePattern[T = P]` and its own `admits`, providing `TypePattern` through it, and a check
+/// that the `impl` provides `TypePattern` passed it (found by the second /code-review); the
+/// check is that the `impl` is the one row's provider, `TypeValuePattern`. That stand-in cannot
+/// be written since WI-20261105-CBRD2: its `admits` overrides the row's, a static operation with
+/// a body, which no provider overrides
+/// ([`a_forged_admits_beside_the_one_row_is_refused_at_load`]).
 ///
 /// THE CONTROL, `viaOp`, is the same call from an operation body, whose caller builds the
 /// evidence at `Boom`: `22`, the `err` arm, the counter ticked. FAILS with the install-time
@@ -325,7 +344,7 @@ fn a_dictionary_that_is_no_pattern_is_refused_before_the_thunk_runs() {
         spread_labels: None,
         op_reqs: None,
     };
-    for (mk, catcher) in [("mk", "Catcher"), ("mkOwn", "OwnCatcher"), ("mkRow", "RowCatcher")] {
+    for (mk, catcher) in [("mk", "Catcher"), ("mkOwn", "OwnCatcher")] {
         let c = interp
             .call(&format!("test.ym8hd.standin.{mk}"), &[])
             .unwrap_or_else(|e| panic!("`{mk}` builds a catcher: {e}"));

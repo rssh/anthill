@@ -1285,8 +1285,9 @@ pub(super) fn dot_member_dispatch_decision(
     //
     // It read "a provided sort need not be a spec": `sort Leaf provides Plain`, where
     // `Plain` declares no `sort X = ?`, missed here and took the member with no tie guard
-    // asked. `wi1042_defaulted_gate_test::a_non_parametric_provided_sort_takes_the_member`
-    // is that program. It goes on below now, and its answer is the same.
+    // asked. `wi1042_defaulted_gate_test::a_non_parametric_provided_sorts_member_is_refused`
+    // is that program, refused at load now: `Plain.describe` names no carrier, and a static
+    // operation with a body is the spec's own.
     let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else {
         return Ok(DotMember::Take);
     };

@@ -43,7 +43,7 @@ fn program(tail: &str) -> String {
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64 = 1
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
 
   sort Leaf
@@ -85,7 +85,7 @@ fn refining(tail: &str) -> String {
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64 = 1
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
 
   sort Leaf
@@ -117,7 +117,7 @@ fn conditional(tail: &str) -> String {
 
   sort Sh
     sort T = ?
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
 
   sort Good
@@ -157,7 +157,7 @@ fn rival_answer(tail: &str) -> i64 {
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64 = 1
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
 
   sort Leaf
@@ -192,7 +192,7 @@ fn boxed(tail: &str) -> String {
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64 = 1
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
 
   sort Leaf
@@ -240,7 +240,7 @@ fn mismatched(tail: &str) -> String {
     sort C = ?
     sort P = ?
     operation touch(x: P) -> Int64 = 1
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
 
   sort Leaf
@@ -542,7 +542,7 @@ fn a_self_representing_spec_whose_provider_pins_a_sibling_concretely_answers() {
   sort Cap
     sort P = ?
     operation touch(c: Self, x: P) -> Int64 = 1
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
   sort Box
     import anthill.prelude.Int64
@@ -623,7 +623,7 @@ namespace test.qmfc5.ns
   import anthill.prelude.Int64
   sort Desc
     sort T = ?
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
   sort Leaf
     import anthill.prelude.Int64

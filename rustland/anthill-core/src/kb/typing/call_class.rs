@@ -573,6 +573,11 @@ pub(super) fn receiver_less_call_names_no_instance(
         return None;
     }
     let spec = spec_op_parent_sort(kb, fn_sym)?;
+    // The spec's own static operation, which no provider overrides, in a spec no sibling of
+    // whose needs an instance: it runs at no instance ([`static_call_owes_no_instance`]).
+    if static_call_owes_no_instance(kb, fn_sym, spec) {
+        return None;
+    }
     if !signature_names_no_carrier(kb, fn_sym, spec) || !signature_is_ground(kb, fn_sym) {
         return None;
     }

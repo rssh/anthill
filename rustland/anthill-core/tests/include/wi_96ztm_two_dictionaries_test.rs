@@ -37,7 +37,7 @@ fn two_carriers(ns: &str, tail: &str) -> String {
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64 = 1
-    operation tag() -> Int64 = 1
+    operation tag() -> Int64
   end
 
   sort Leaf

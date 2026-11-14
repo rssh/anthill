@@ -25,11 +25,12 @@
 //! NOT PROGRAMS, and skipped ([`skips`]): the dot spelling of `name()`, which takes no
 //! receiver.
 //!
-//! SOUNDNESS (P3): the rule refuses two suppliers for one carrier, and a body-less
-//! operation nothing supplies ([`Program::refused`]). A refusal the rule does not make is
-//! no property's to see, and the verdict file holds it: the body-less `binding-both` was
-//! one until WI-20261025-7K84M, where §8.7 merges the two provisions and the backing check
-//! read one.
+//! SOUNDNESS (P3): the rule refuses two suppliers for one carrier, a body-less operation
+//! nothing supplies, and any supplier of `name()` with a body: a static operation with a body
+//! is the spec's own (§8.7, decided with the user 2026-11-14) ([`Program::refused`]). A
+//! refusal the rule does not make is no property's to see, and the verdict file holds it:
+//! the body-less `binding-both` was one until WI-20261025-7K84M, where §8.7 merges the two
+//! provisions and the backing check read one.
 //!
 //! A TIE IS REFUSED AT LOAD on every route: the carrier is static at each, and through a
 //! dictionary where the dictionary is built, `gen(leaf())` (the user, 2026-10-25). A tie that
@@ -136,9 +137,11 @@ fn render(picks: &Picks<'_>) -> Program {
 {in_leaf}  end
 {after_leaf}{routes}"#
     );
-    // Two suppliers are a tie, and a body-less operation nothing supplies backs nothing.
+    // Two suppliers are a tie, a body-less operation nothing supplies backs nothing, and a
+    // static operation with a body is supplied by no provider.
     let refused = picks.is("supplied", "own+binding")
-        || (picks.is("default", "body-less") && picks.is("supplied", "default-only"));
+        || (picks.is("default", "body-less") && picks.is("supplied", "default-only"))
+        || (nullary && picks.is("default", "defaulted") && !picks.is("supplied", "default-only"));
     Program {
         source: format!("{declarations}  operation go() -> Int64 = {call}\nend\n"),
         entry: Some("family.f.go"),

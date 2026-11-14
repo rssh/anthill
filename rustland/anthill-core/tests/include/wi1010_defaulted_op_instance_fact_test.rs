@@ -33,7 +33,7 @@
 //! So each half is separately load-bearing: only the typer's static pin can surface a
 //! bound impl's EFFECTS at the call. The row that read the eval half alone, a carrier the
 //! typer could not pin behind an abstract `Shape`, went with value-direction (proposal 073):
-//! `a_call_at_an_abstract_type_with_no_provision_runs_the_default`.
+//! `a_call_at_an_abstract_type_with_no_provision_is_refused`.
 //!
 //! The tie row moved (RE-MEASURED for WI-1012, all four runs, not carried over): it
 //! read `FAILS | FAILS | FAILS` while the refusal was eval's, because either half
@@ -211,12 +211,12 @@ fn a_carrier_with_no_supplier_still_runs_the_default() {
 /// THE EVAL HALF, GONE WITH VALUE-DIRECTION (proposal 073 §2, §3). `via_spec` takes a
 /// `Shape`, which `Leaf` provides; the value it is handed is a `Shape` instance and holds
 /// `Shape`'s operations only. `Desc.describe(s)` is a call at `T = Shape`, which nothing
-/// provides, so it runs `Desc`'s default as a call at any carrier without a provision does
-/// (`a_carrier_with_no_supplier_still_runs_the_default`): 1. It answered 7 while the run time
-/// chose `Leaf`'s fact-bound `leafDescribe` from the value. Typed at `Leaf`, the parameter
-/// reaches it at load (7), and with `describe` body-less the call at `Shape` is refused at load.
+/// provides. It is refused at load, with or without a default, as a call that takes the carrier
+/// at a type providing nothing is (WI-20261105-CBRD2); with the default it ran it, 1, and before
+/// that answered 7 while the run time chose `Leaf`'s fact-bound `leafDescribe` from the value.
+/// Typed at `Leaf`, the parameter reaches it at load (7).
 #[test]
-fn a_call_at_an_abstract_type_with_no_provision_runs_the_default() {
+fn a_call_at_an_abstract_type_with_no_provision_is_refused() {
     let ns = "test.wi1010.evalhalf";
     let src = format!(
         r#"namespace {ns}
@@ -249,11 +249,12 @@ fn a_call_at_an_abstract_type_with_no_provision_runs_the_default() {
 end
 "#
     );
-    assert_eq!(
-        probe(ns, &src),
-        1,
-        "a call at `Shape`, which provides no `Desc`, runs the default; the `Shape` \
-         instance holds no `Desc` operation of `Leaf`'s",
+    // Since WI-20261105-CBRD2 (decided with the user 2026-11-14) a call that takes the carrier,
+    // at a type that provides nothing, is refused as its body-less twin is: it ran the default, 1.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &["Desc.describe.requires", "`test.wi1010.evalhalf.Shape` provides no `"],
+        "a call at `Shape`, which provides no `Desc`",
     );
     let at_leaf = src
         .replace("operation via_spec(s: Shape)", "operation via_spec(s: Leaf)")

@@ -43,8 +43,11 @@ end
     );
 }
 
+/// A static operation is each provider's to supply (it has no body in the spec: a static
+/// operation with a body is the spec's own, and no provider overrides it), and the call names
+/// the requirement it reads, an unnamed guard not saying which instance a call naming none means.
 #[test]
-fn introduced_requirement_threads_dictionary_without_authored_require() {
+fn a_named_requirement_threads_its_dictionary_to_a_static_call() {
     let mut kb = common::load_kb_with(
         r#"
 namespace test.dxvkAutomatic
@@ -53,7 +56,7 @@ namespace test.dxvkAutomatic
   sort C = ?
   sort Out = ?
   operation tag(x: C) -> Out
-  operation code() -> Int64 = 1
+  operation code() -> Int64
  end
  sort Red
   entity red
@@ -62,7 +65,7 @@ namespace test.dxvkAutomatic
   operation code() -> Int64 = 7
  end
  fact src(red())
- rule keep[A](?x: A, ?r) :- src(?x), Tagger[C = A, Out = Int64], Tagger.code(?r)
+ rule keep[A](?x: A, ?r) :- src(?x), require t: Tagger[C = A, Out = Int64], t.code(?r)
  rule answer(?r) :- keep(?x, ?r)
 end
 "#,
@@ -82,7 +85,7 @@ namespace test.dxvkRigid
   sort C = ?
   sort Out = ?
   operation tag(x: C) -> Out
-  operation code() -> Int64 = 1
+  operation code() -> Int64
  end
  sort Red
   entity red
@@ -95,7 +98,7 @@ namespace test.dxvkRigid
   operation tag(x: Red) -> Int64 = 17
   operation code() -> Int64 = 17
  end
- rule keep[A](?x: A, ?r) :- Tagger[C = A, Out = Int64], Tagger.code(?r)
+ rule keep[A](?x: A, ?r) :- require t: Tagger[C = A, Out = Int64], t.code(?r)
  sort Driver
   operation generic[A](x: A) -> Int64 effects {Error, Error[EmptyStream]}
     requires Tagger[C = A, Out = Int64] = keep(x).head.r
@@ -106,8 +109,8 @@ end
     for variant in 0..3 {
         let src = if variant != 0 {
             src.replace(
-                "rule keep[A](?x: A, ?r) :- Tagger[C = A, Out = Int64]",
-                "rule keep[A](?x: A, ?r) :- Tagger[A]",
+                "rule keep[A](?x: A, ?r) :- require t: Tagger[C = A, Out = Int64]",
+                "rule keep[A](?x: A, ?r) :- require t: Tagger[A]",
             )
         } else {
             src.into()
@@ -143,7 +146,7 @@ namespace test.dxvkEquation
   sort C = ?
   sort Out = ?
   operation tag(x: C) -> Out
-  operation code() -> Int64 = 1
+  operation code() -> Int64
  end
  sort Red
   entity red

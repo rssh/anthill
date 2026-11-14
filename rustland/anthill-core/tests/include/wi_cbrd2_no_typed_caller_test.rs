@@ -117,9 +117,12 @@
 //!   WI-1044 that a decision of the user (2026-11-14) moved to the refusal (GP8JC's, whose
 //!   clauses now guard each column, pass either way);
 //! * a rule body's defaulted call that names no carrier left to run its default
-//!   (`open_defaulted_call` answering nothing): the `Desc.dflt()` half of
-//!   [`a_defaulted_member_at_an_open_carrier_is_refused`], QMFC5's two nullary rows, its
-//!   refining row's second refusal, and 96ZTM's two bare twins.
+//!   (`open_defaulted_call` answering nothing): measured, before the static rule, on the
+//!   `Desc.dflt()` half of [`a_defaulted_member_at_an_open_carrier_is_refused`], QMFC5's two
+//!   nullary rows, its refining row's second refusal, and 96ZTM's two bare twins. A static
+//!   operation with a body is the spec's own since (decided with the user 2026-11-14): those
+//!   rows now call a body-less member, or run the body, and what this part refuses is measured
+//!   in `wi_cbrd2_static_operation_test`, with the rest of that rule.
 //!
 //! [`a_querys_spec_op_call_is_typed_where_it_is_read`] passes with the query typing backed out,
 //! by design: the value its call reached at run time is the one its typing decides, and the row
@@ -883,10 +886,10 @@ end
 
 /// A defaulted member of a spec something provides, at a carrier nothing types, owes the
 /// instance there as its body-less twin does (decided with the user 2026-11-14): refused where the
-/// query is read, and in a rule body at a type no head column reaches, and so does one that
-/// names no carrier at all (`Desc.dflt()`), whose bracket names the instance; at a known carrier
-/// it answers the carrier's member. It answered conditionally, the rule body by value, and
-/// `Desc.dflt()` the default `2` where `Leaf` supplies `8`.
+/// query is read, and in a rule body at a type no head column reaches; at a known carrier it
+/// answers the carrier's member. It answered conditionally, and the rule body by value. A member
+/// that names no carrier at all (`Desc.dflt()`) is the spec's own, which no provider overrides
+/// (decided with the user 2026-11-14), and runs its body at no instance.
 #[test]
 fn a_defaulted_member_at_an_open_carrier_is_refused() {
     let src = |tail: &str| {
@@ -902,7 +905,6 @@ fn a_defaulted_member_at_an_open_carrier_is_refused() {
     entity leaf
     provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 7
-    operation dflt() -> Int64 = 8
   end
   sort Twig
     entity twig
@@ -920,16 +922,17 @@ fn a_defaulted_member_at_an_open_carrier_is_refused() {
         &["answer.body", "`Desc`", "no head column of the clause reaches"],
         "a rule body's call at a type no head column reaches",
     );
-    // A member that names no carrier at all, at no bracket, as a value and as the goal it is.
-    for rule in ["  rule nullary(?v) :- ?v <=> Desc.dflt()\n", "  rule nullary(?v) :- Desc.dflt(?v)\n"] {
-        crate::common::assert_refused_naming(
-            &crate::common::load_errors_of(&src(rule)),
-            &["p.dflt.Desc.dflt", "`Desc[T = …].dflt(…)`"],
-            rule,
-        );
-    }
-    let mut kb = crate::common::load_kb_with(&src("  rule bracketed(?v) :- ?v <=> Desc[T = Leaf].dflt()\n"));
+    // A member that names no carrier at all is the spec's own (no provider overrides a static
+    // operation with a body), and in a spec that requires nothing and has no abstract member it
+    // runs at no instance: `2`, unbracketed or at `Leaf`, as a value and as the goal it is.
+    let mut kb = crate::common::load_kb_with(&src(
+        "  rule nullary(?v) :- ?v <=> Desc.dflt()\n  \
+         rule nullaryGoal(?v) :- Desc.dflt(?v)\n  \
+         rule bracketed(?v) :- ?v <=> Desc[T = Leaf].dflt()\n",
+    ));
     refused(&mut kb, "p.dflt.Desc.describe(?x, ?r)", &["p.dflt.Desc.describe", "a query has no caller"]);
     assert_eq!(ints(&mut kb, "p.dflt.Desc.describe(p.dflt.Leaf.leaf(), ?r)"), [7]);
-    assert_eq!(ints(&mut kb, "p.dflt.bracketed(?v)"), [8]);
+    for rel in ["nullary", "nullaryGoal", "bracketed"] {
+        assert_eq!(ints(&mut kb, &format!("p.dflt.{rel}(?v)")), [2], "{rel}");
+    }
 }

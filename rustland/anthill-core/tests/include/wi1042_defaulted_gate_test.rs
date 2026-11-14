@@ -224,7 +224,7 @@ fn a_non_operation_functor_is_not_a_defaulted_spec_op() {
 /// then misses one line earlier and returns `Take` for a different reason. The test pins
 /// the ANSWER, not which path produced it.
 #[test]
-fn a_non_parametric_provided_sort_takes_the_member() {
+fn a_non_parametric_provided_sorts_member_is_refused() {
     let ns = "wi1042.nonparametric";
     let src = format!(
         r#"namespace {ns}
@@ -246,10 +246,12 @@ fn a_non_parametric_provided_sort_takes_the_member() {
 end
 "#
     );
-    assert_eq!(
-        crate::wi1026_rule_body_spec_op_dispatch_test::answer(ns, &src),
-        7,
-        "a member backing a provided sort with no type parameter is the one supplier, and \
-         is taken",
+    // SINCE WI-20261105-CBRD2 (decided with the user 2026-11-14): `Plain` declares no parameter,
+    // so `describe` names no carrier, and with a body it is the spec's own, which no provider
+    // overrides — `Leaf`'s is refused at load. It answered `Leaf`'s 7.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &[&format!("`{ns}.Leaf.describe` overrides `{ns}.Plain.describe`"), "a static operation with a body"],
+        "a member of a parameterless spec's operation with a body",
     );
 }

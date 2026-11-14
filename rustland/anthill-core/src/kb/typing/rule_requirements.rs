@@ -2391,15 +2391,17 @@ pub(super) fn check_one_spec_op_requirement(
     // exactly this — the carrier provides no such spec and the clause declares no
     // `requires(…)` — and its two repairs are the two that exist. The degenerate
     // `DontFire` (no operation record) names no carrier and keeps the old one.
-    // WI-883 — A DEFAULTED member is owed an instance only when its spec has an ABSTRACT
-    // one, and never at the REFLEXIVE carrier: a sort's own member on its own value
-    // (`Box.twice(box(1))`) reads the self-receiver `b: Box` as the carrier, and
-    // `sort_provides(Box, Box)` is false — so without this it was refused "`Box` provides no
-    // `Box`", a repair that is not one (measured). Asked HERE, on the failure path, because
-    // the abstract-member walk visits every operation of the spec (found by /code-review:
-    // every rule-body call to a defaulted `List` member paid it).
+    // WI-883 — A DEFAULTED member is owed an instance only where
+    // [`defaulted_call_owes_an_instance`] says (its spec has an ABSTRACT member, or something
+    // provides the spec and the member takes the carrier), and never at the REFLEXIVE
+    // carrier: a sort's own member on its own value (`Box.twice(box(1))`) reads the
+    // self-receiver `b: Box` as the carrier, and `sort_provides(Box, Box)` is false — so
+    // without this it was refused "`Box` provides no `Box`", a repair that is not one
+    // (measured). Asked HERE, on the failure path, because the abstract-member walk visits
+    // every operation of the spec (found by /code-review: every rule-body call to a defaulted
+    // `List` member paid it).
     if defaulted
-        && (!spec_has_an_abstract_member(kb, spec_sort)
+        && (!defaulted_call_owes_an_instance(kb, functor, spec_sort)
             || matches!(refusal, Some(GuardRefusal::Carrier(c)) if same_sort_canonical(kb, c, spec_sort)))
     {
         return;

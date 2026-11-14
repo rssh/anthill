@@ -234,16 +234,20 @@ fn a_tie_in_a_branch_that_never_runs_is_refused() {
 
 /// THE TIE BEHIND AN ABSTRACT TYPE IS NO TIE. `via_spec` takes a `Shape`; the `Leaf` it is
 /// handed is a `Shape` instance, holding `Shape`'s operations, and `Desc.describe(s)` is a
-/// call at `T = Shape`, which nothing provides: it runs `Desc`'s default (1), as a call at
-/// any carrier without a provision does. On the tree before, the run time chose `Leaf`'s
-/// two suppliers from the value and refused the call (`AmbiguousSpecOpDispatch`); typed at
-/// `Leaf`, the parameter is refused at load
-/// (`a_concrete_carrier_tie_is_refused_at_load`'s refusal).
+/// call at `T = Shape`, which nothing provides: it is refused at load naming that, as a call
+/// taking the carrier at a type that provides nothing is (WI-20261105-CBRD2), not as a tie. It
+/// ran `Desc`'s default (1); on the tree before, the run time chose `Leaf`'s two suppliers from
+/// the value and refused the call (`AmbiguousSpecOpDispatch`). Typed at `Leaf`, the parameter is
+/// refused at load as the tie (`a_concrete_carrier_tie_is_refused_at_load`'s refusal).
 #[test]
 fn a_tie_behind_an_abstract_type_is_no_tie() {
     let ns = "test.wi1012.abstract";
     let src = abstract_carrier_program(ns);
-    assert_eq!(crate::wi1010_defaulted_op_instance_fact_test::probe(ns, &src), 1);
+    let msg = refusal(&src);
+    assert!(
+        msg.contains("`test.wi1012.abstract.Shape` provides no `") && !msg.contains("ambiguous dispatch"),
+        "at `Shape`, the missing provision, not a tie: {msg}"
+    );
     let at_leaf = src
         .replace("operation via_spec(s: Shape)", "operation via_spec(s: Leaf)")
         .replace(&format!("namespace {ns}"), &format!("namespace {ns}.atleaf"));

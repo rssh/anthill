@@ -3997,6 +3997,24 @@ pub(super) fn defaulted_member_owes_an_instance(kb: &KnowledgeBase, spec: Symbol
                 .any(|op| kb.spec_op_primitive_of(*op).is_some()))
 }
 
+/// Does a call of the defaulted member `op` of `spec`, at a carrier that is no instance of
+/// `spec`, owe the instance it lacks, and so is refused rather than run? Any member of a spec
+/// with an abstract member ([`spec_has_an_abstract_member`]): calling a spec's operation asserts
+/// the carrier is an instance (058 §3.9). And a member of a spec something provides that takes the
+/// carrier as an argument: it is called on a value of the carrier, whose sort provides nothing.
+/// Not a member that takes no carrier argument: a static one runs its default at the type its
+/// bracket names, nothing of the carrier reaching it (`Desc[T = Van].dflt()`, decided with the
+/// user 2026-11-14), and one whose result is at the carrier is refused by the dispatch at its
+/// result.
+pub(super) fn defaulted_call_owes_an_instance(
+    kb: &KnowledgeBase,
+    op: Symbol,
+    spec: Symbol,
+) -> bool {
+    spec_has_an_abstract_member(kb, spec)
+        || (defaulted_member_owes_an_instance(kb, spec) && op_has_spec_carrier_param(kb, op, spec))
+}
+
 /// WI-1102 — a call site permitted to PARK an op-slot refusal, and the location it would
 /// carry. `None` means "do not park here", which is a decision about the SITE and not
 /// about the dep; each caller's `None` says why at its own site.

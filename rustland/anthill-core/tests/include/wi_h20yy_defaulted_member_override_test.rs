@@ -46,8 +46,16 @@
 //!   Recorded here because it is the gate this file's rows do NOT drive.
 //!
 //! PASS EITHER WAY BY DESIGN: both control rows below, stated at their sites.
+//!
+//! ## Since WI-20261105-CBRD2
+//!
+//! A static operation with a body is the spec's own, and no provider overrides it (decided with
+//! the user 2026-11-14): `Box`'s `valueOf` is refused at load. What the slot still carries is the
+//! instance the spec's body runs at, its `T` read through the sort's own `requires
+//! TypeValue[T = T]`: at `Box[V = Boom]` the body answers `Box[V = Boom]`, through either
+//! spelling of the slot and two generic levels. The three rows that reached the override assert
+//! that, and the ledger above was measured before.
 
-use anthill_core::eval::Value;
 use anthill_core::persistence::print::TermPrinter;
 
 use crate::common::interp_for;
@@ -73,7 +81,8 @@ namespace test.h20yy
     provides TypeTerm[T = Boom]
   end
 
-  -- A provider that DOES override the default.
+  -- A provider at an application of its own. It may not override `valueOf`, a static
+  -- operation with a body ([`a_providers_override_of_a_static_operation_is_refused`]).
   sort Box
     import anthill.prelude.{Option, Type}
     import anthill.reflect.{TypeValue}
@@ -81,7 +90,6 @@ namespace test.h20yy
     entity box(v: V)
     requires TypeValue[T = V]
     provides TypeTerm[T = Box[V = V]]
-    operation valueOf() -> Type = Option[T = V]
   end
 
   -- The OPERATION-level slot spelling.
@@ -116,23 +124,39 @@ fn eval_type(op: &str) -> String {
     TermPrinter::new(interp.kb()).print_value(&ty)
 }
 
-/// THE HEADLINE ROW: the provider's override, reached through an OPERATION-scoped slot.
-/// Before: `Box(V: Boom)`, the spec's default body, silently.
+/// A provider's override of `valueOf` is refused at load: a static operation with a body is the
+/// spec's own (WI-20261105-CBRD2). It was the override this file existed to reach.
 #[test]
-fn a_providers_override_is_reached_through_an_op_scoped_slot() {
-    assert_eq!(eval_type("h_override"), "Option[T = Boom]");
+fn a_providers_override_of_a_static_operation_is_refused() {
+    let src = SRC.replace(
+        "    provides TypeTerm[T = Box[V = V]]\n  end",
+        "    provides TypeTerm[T = Box[V = V]]\n    operation valueOf() -> Type = Option[T = V]\n  end",
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &["`test.h20yy.Box.valueOf` overrides `test.h20yy.TypeTerm.valueOf`", "a static operation with a body"],
+        "a provider's own `valueOf`",
+    );
+}
+
+/// THE HEADLINE ROW, after WI-20261105-CBRD2: the spec's body, reached through an
+/// OPERATION-scoped slot, runs at the slot's instance — `Box[V = Boom]`. It was the
+/// provider's override, `Option[T = Boom]`.
+#[test]
+fn the_specs_body_runs_at_an_op_scoped_slots_instance() {
+    assert_eq!(eval_type("h_override"), "Box[V = Boom]");
 }
 
 /// …through TWO generic levels.
 #[test]
-fn the_override_reaches_through_two_generic_levels() {
-    assert_eq!(eval_type("h_override_2lvl"), "Option[T = Boom]");
+fn the_slots_instance_reaches_through_two_generic_levels() {
+    assert_eq!(eval_type("h_override_2lvl"), "Box[V = Boom]");
 }
 
 /// …and through the SORT-level spelling of the same slot.
 #[test]
-fn a_providers_override_is_reached_through_a_sort_level_slot() {
-    assert_eq!(eval_type("h_sort_override"), "Option[T = Boom]");
+fn the_specs_body_runs_at_a_sort_level_slots_instance() {
+    assert_eq!(eval_type("h_sort_override"), "Box[V = Boom]");
 }
 
 /// THE CONTROL THAT MUST STAY GREEN — R541X's headline row

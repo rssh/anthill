@@ -2935,6 +2935,63 @@ fn params_standing_opposite(
     }
 }
 
+/// Is `spec_op`, an operation of `spec`, a STATIC operation with a body — its signature naming
+/// no carrier of `spec` ([`signature_names_no_carrier`]: no parameter, result or effect at
+/// `spec` or one of its parameters) and the spec giving it a body? Nothing at a call of it names
+/// a carrier, so it is the spec's own, and no provider overrides it. One with no body is each
+/// provider's to supply (`Tag.tag()`, chosen by the call's bracket).
+pub(super) fn is_static_with_a_body(kb: &KnowledgeBase, spec_op: Symbol, spec: Symbol) -> bool {
+    signature_names_no_carrier(kb, spec_op, spec)
+        && op_has_runnable_body(kb, spec_op)
+        && !kb.is_builtin(spec_op)
+        && !host_implements(kb, spec_op)
+}
+
+/// Does a call of `op`, an operation of `spec`, owe no instance of `spec`: a static operation
+/// with a body ([`is_static_with_a_body`]), the spec's own, in a spec with no abstract member
+/// ([`spec_has_an_abstract_member`]) and no `requires` of its own, so that nothing the body
+/// calls or reads is the instance's? It runs that body at any type, or none: `Desc.dflt()`,
+/// `Desc[T = Van].dflt()` beside no provision at `Van`. One whose spec requires something reads
+/// it at the instance the call names (`TypeTerm.valueOf() = T` under `requires TypeValue[T =
+/// T]`), and is not this.
+pub(super) fn static_call_owes_no_instance(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    spec: Symbol,
+) -> bool {
+    is_static_with_a_body(kb, op, spec)
+        && !spec_has_an_abstract_member(kb, spec)
+        && direct_requires_chain(kb, spec).is_empty()
+}
+
+/// The refusal of `member`, a provider's own operation or an instance fact's binding, written
+/// for `spec_op`, a static operation of `spec` with a body ([`is_static_with_a_body`]).
+fn static_override_refused(
+    kb: &KnowledgeBase,
+    member: Symbol,
+    spec_op: Symbol,
+    spec: Symbol,
+) -> crate::kb::load::LoadError {
+    let spec_op_qn = kb.qualified_name_of(spec_op);
+    // Where `member` is declared, when this load declared it.
+    let site = kb
+        .op_decl_sites
+        .get(&member)
+        .and_then(|sites| sites.first())
+        .map(|s| format!("{}: ", crate::kb::load::render_decl_site(kb, *s)))
+        .unwrap_or_default();
+    crate::kb::load::LoadError::Other {
+        message: format!(
+            "{site}`{}` overrides `{spec_op_qn}`, whose signature names no carrier of `{}` \
+             and which has a body: a static operation with a body is the spec's own, and no \
+             provider overrides it. To have each provider supply its own, declare \
+             `{spec_op_qn}` with no body",
+            kb.qualified_name_of(member),
+            kb.qualified_name_of(spec),
+        ),
+    }
+}
+
 /// WI-347 — operation-override refinement check. A carrier's own operation
 /// that implements/overrides a spec operation (own-op-beats-inherited, §8.7)
 /// must REFINE the spec op: effects no wider, precondition no stronger,
@@ -3051,6 +3108,14 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                         },
                     ),
                 });
+            }
+
+            // A STATIC OPERATION WITH A BODY IS THE SPEC'S OWN: nothing at a call names the
+            // carrier, so no provider's member is chosen for it, and one written is refused
+            // (decided with the user 2026-11-14).
+            if is_static_with_a_body(kb, spec_op, p.spec) {
+                errors.push(static_override_refused(kb, impl_op, spec_op, p.spec));
+                continue;
             }
 
             // WI-20260822-1MAGR — THE MEMBER'S SIGNATURE, before the legs below.
@@ -5740,6 +5805,10 @@ pub fn check_instance_fact_op_signatures(
             else {
                 continue;
             };
+            if is_static_with_a_body(kb, spec_op, p.spec) {
+                errors.push(static_override_refused(kb, *bound_op, spec_op, p.spec));
+                continue;
+            }
             let Some(spec_info) = crate::kb::op_info::lookup_operation_info(kb, spec_op) else {
                 continue;
             };

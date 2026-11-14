@@ -520,7 +520,9 @@ fn a_generic_caller_defers_to_its_requirement() {
 
 /// CONTROL. A requirement in scope answers what the bracket leaves open, as it did: the
 /// caller's selection of `Other` reaches `Other.code`, where the provisions alone, `Red`'s and
-/// `Other`'s at `C = Red`, would say `C = Red` and run `Red`'s own member.
+/// `Other`'s at `C = Red`, would say `C = Red` and run `Red`'s own member. `code` has no body in
+/// the spec: a static operation with one is the spec's own, which no provider overrides
+/// (WI-20261105-CBRD2).
 #[test]
 fn a_requirement_in_scope_answers_what_the_bracket_leaves_open() {
     let src = r#"
@@ -530,7 +532,7 @@ namespace me8wr.scope
     sort C = ?
     sort Out = ?
     operation tag(x: C) -> Out
-    operation code() -> Int64 = 1
+    operation code() -> Int64
   end
   sort Red
     entity red

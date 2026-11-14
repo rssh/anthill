@@ -690,7 +690,7 @@ fn a_carrier_less_defaulted_call_answers_through_the_clause_dictionary() {
         )
         .replace(
             "    operation describe(x: T) -> Int64 = 1\n",
-            "    operation describe(x: T) -> Int64 = 1\n    operation name() -> Int64 = 1\n",
+            "    operation describe(x: T) -> Int64 = 1\n    operation name() -> Int64\n",
         )
         .replace(
             "    operation describe(x: Leaf) -> Int64 = 7\n",
