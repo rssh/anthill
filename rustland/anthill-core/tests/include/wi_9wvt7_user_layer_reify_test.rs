@@ -22,6 +22,10 @@
 //! * The higher-kinded parameter found anywhere in a parameter's type, not at its head alone:
 //!   `a_value_inside_a_higher_kinded_application_still_directs_the_call`, refused.
 //!
+//! * A rule body's call of a member with no argument at the spec's carrier judged by the
+//!   rule-body check alone (WI-20261105-CBRD2, `judged_at_the_call`):
+//!   `the_bracketed_call_in_a_rule_body_is_refused_where_nothing_provides_it`, which loads.
+//!
 //! PASS EITHER WAY BY DESIGN: `the_bracket_reaches_the_providers_reify`, the repair the
 //! refusal advises, and `the_preludes_error_reify_still_runs`.
 
@@ -175,4 +179,30 @@ end
     );
     let v = interp.call("test.hknest.r", &[]).expect("runs");
     assert!(matches!(v, Value::Int(56)), "both calls reach Option's members; got {v:?}");
+}
+
+/// The instance written in the bracket, in a rule body, at a type nothing provides: refused at
+/// load naming it, as the same call in an operation body is. It loaded and answered two
+/// conditional rows, `ok(value: ?_)` and `err(error: ?_)`, each with the call left over
+/// (WI-20261105-CBRD2, 073 §6.2). Beside the provider it loads.
+#[test]
+fn the_bracketed_call_in_a_rule_body_is_refused_where_nothing_provides_it() {
+    const RULE: &str = "  rule q(?r) :- ?r <=> Err2[T = Boom].reify(lambda () -> mayFail(1))\n";
+    for body in ["rule", "operation"] {
+        let src = if body == "rule" {
+            program(RULE, "ok(value: n)")
+        } else {
+            program("", "Err2[T = Boom].reify(lambda () -> mayFail(n))")
+        };
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src),
+            &[
+                "test.userreify.Err2.reify",
+                "`test.userreify.Boom` provides no `test.userreify.Err2`",
+            ],
+            body,
+        );
+    }
+    let beside = crate::common::load_errors_of(&program(&format!("{PROVIDER}{RULE}"), "ok(value: n)"));
+    assert!(beside.is_empty(), "beside the provider it loads: {beside:#?}");
 }

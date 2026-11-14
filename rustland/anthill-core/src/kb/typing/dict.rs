@@ -3888,7 +3888,7 @@ fn sort_is_a_provided_spec(kb: &KnowledgeBase, s: Symbol) -> bool {
 /// What an instance's arguments compose to is compared with the demand's elements the call
 /// says ([`scope_contract_covers_dep`]): the clause's type variables, opened at the body's
 /// variables ([`rule_held_specs`]), meet the call's class of each.
-fn held_view_subst_map(kb: &KnowledgeBase, base: Symbol, ty: &Value) -> HashMap<Symbol, Value> {
+pub(super) fn held_view_subst_map(kb: &KnowledgeBase, base: Symbol, ty: &Value) -> HashMap<Symbol, Value> {
     let mut map = HashMap::new();
     let base_qn = kb.qualified_name_of(base).to_string();
     for (key, v) in view_named_children(kb, ty) {

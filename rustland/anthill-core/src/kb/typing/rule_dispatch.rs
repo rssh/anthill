@@ -137,8 +137,9 @@ pub(super) fn dispatch_calls_in_occ(
             let child_pos = child_body_positions(kb, expr, pos, children.len());
             // WI-20260904-50B2K part (b) — and WHAT TYPE each slot declares, over the same
             // order and the same length.
-            let (child_expected, child_declared) =
+            let (mut child_expected, child_declared) =
                 data_slot_arg_hints(kb, shape, expr, children.len());
+            unify_side_hint(kb, env, expr, pos, &mut child_expected);
             // WI-20260904-50B2K — AND WHAT EACH SLOT DECLARES, which is a WIDER list than
             // the hints and answers a different question. A hint is only supplied where a
             // top-down type is CORRECT to impose (a lambda in a callable slot, a call in a
@@ -1344,6 +1345,55 @@ fn applied_function_args(
         }
     }
     out
+}
+
+/// The type a `<=>` goal expects of the side opposite a rule variable: the type the clause
+/// gives the variable, where it is concrete or one of the clause's own type parameters. `rule
+/// r(?t: Int64) :- ?t <=> Z.zz()` calls `zz` at `Int64`, as `operation o() -> Int64 = Z.zz()`
+/// does, and `rule r[A](?t: A) :- Z[A], ?t <=> Z.zz()` at `A`, where its guard holds the
+/// instance; a member that names its spec only in its result has no argument to fix the
+/// instance at. Any other type with a variable or an unwritten slot in it says nothing the call
+/// does not.
+fn unify_side_hint(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    expr: &Expr,
+    pos: BodyPos,
+    expected: &mut [Option<Value>],
+) {
+    let (
+        Expr::Apply {
+            functor, pos_args, ..
+        },
+        BodyPos::Goal(_),
+    ) = (expr, pos)
+    else {
+        return;
+    };
+    if pos_args.len() != 2 || kb.builtin_of(*functor) != Some(crate::kb::resolve::BuiltinTag::Unify) {
+        return;
+    }
+    for (var, other) in [(0, 1), (1, 0)] {
+        let Some(Expr::Var(Var::DeBruijn(i))) = pos_args[var].as_expr() else {
+            continue;
+        };
+        if matches!(pos_args[other].as_expr(), Some(Expr::Var(_))) || expected[other].is_some() {
+            continue;
+        }
+        let Some(ty) = env.lookup_debruijn(*i) else {
+            continue;
+        };
+        let concrete = type_is_ground(kb, &ty) && !holds_a_type_var(kb, &ty) && !leaves_a_slot_open(kb, &ty);
+        if concrete || is_rule_type_variable(kb, env, &ty) {
+            expected[other] = Some(ty);
+        }
+    }
+}
+
+/// Is `ty` the variable a type parameter the clause's head introduces stands for (`A` of
+/// `rule r[A](?t: A) :- Z[A]`)?
+fn is_rule_type_variable(kb: &KnowledgeBase, env: &TypingEnv, ty: &Value) -> bool {
+    matches!(ty.head(kb), ViewHead::Var(Var::Global(g)) if env.rule_type_vars().contains(&g))
 }
 
 /// The type of a value written in a rule body: the clause's for a rule variable, else the

@@ -80,8 +80,24 @@
 //!   result handed to a rule opened to its carrier's value (`carried_for_host` in the bridge),
 //!   the read's witness taken from the first argument.
 //!
+//! * a `<=>` not handing the clause's type of its variable to the other side
+//!   (`unify_side_hint` off): [`a_result_only_call_at_the_type_the_clause_gives_is_decided_at_load`]
+//!   and the `?t: Float` spelling of [`a_result_only_call_at_a_type_nothing_provides_is_refused`];
+//! * a rule body's call of a member with no argument at the spec's carrier left to the rule-body
+//!   check, as before (`judged_at_the_call` reading an evaluated body alone):
+//!   [`a_result_only_call_at_a_type_nothing_provides_is_refused`] and 9WVT7's
+//!   `the_bracketed_call_in_a_rule_body_is_refused_where_nothing_provides_it`;
+//! * such a call at a type nothing fixes left to the clause (`open_result_only_call` answering
+//!   nothing): [`a_result_only_call_at_a_type_nothing_fixes_is_refused`];
+//! * a guard of the spec at any type taken as the call's (`at_the_guard` answering yes), and the
+//!   `<=>` not handing a clause type parameter's variable to the call (`is_rule_type_variable`
+//!   off), each alone: the `?t: B` beside `Z[A]` spelling of
+//!   [`a_result_only_call_at_a_type_nothing_fixes_is_refused`].
+//!
 //! [`a_concrete_goal_in_a_rule_body_passes_its_dictionary`] passes under each, by design: it is
-//! the route the rows above are measured against.
+//! the route the rows above are measured against. So does
+//! [`a_guard_the_sorts_requires_or_the_bracket_supplies_a_result_only_call`], what supplies a
+//! result-only call the three parts above leave alone.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::KnowledgeBase;
@@ -628,3 +644,126 @@ const BUNDLE: &str = r#"namespace bb
   operation opRival() -> Int64 = Holder[T = Leaf, D = Rival].show(leaf())
 end
 "#;
+
+/// A member that names its spec in its result alone: `Z.zz()` has no argument at `Z`'s
+/// carrier, so its instance is the one its bracket, or the type expected of its result, names.
+/// `Int64` provides `Z` at `0` and `Tag`; `Holder` requires `Z` at its `H`; `src` holds an
+/// `Int64`.
+/// `tail` is written at the end of the namespace.
+fn zz(tail: &str) -> String {
+    format!(
+        r#"namespace p.zz
+  import anthill.prelude.{{Int64, Float}}
+  sort Z
+    sort T = ?
+    operation zz() -> T
+  end
+  sort Tag
+    sort T = ?
+    operation tg(x: T) -> Int64
+  end
+  sort Holder
+    import p.zz.Z
+    sort H = ?
+    requires Z[T = H]
+    rule held(?t: H) :- ?t <=> Z.zz()
+  end
+  fact src(1)
+{tail}end
+namespace anthill.prelude.Int64
+  import p.zz.{{Z, Tag}}
+  provides Z[T = Int64]
+  operation zz() -> Int64 = 0
+  provides Tag[T = Int64]
+  operation tg(x: Int64) -> Int64 = 5
+end
+"#
+    )
+}
+
+/// How many answers `pattern` gets, and how many of them are definite.
+fn answers(kb: &mut KnowledgeBase, pattern: &str) -> (usize, usize) {
+    let goal = crate::common::query_pattern_term(kb, pattern);
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    (sols.iter().filter(|s| s.is_definite()).count(), sols.len())
+}
+
+/// A rule body's call of a member with no argument at the spec's carrier is judged as an
+/// operation body's is: at a type its bracket or the clause gives it, a type nothing provides is
+/// refused at load — `Z[T = Float].zz()` as a value and as the goal it is, `Z.zz()` at a head
+/// column typed `Float`, under `not(…)`. Each loaded and answered conditionally: the rule-body
+/// requirement check reads a carrier off the call's arguments, and this call has none.
+#[test]
+fn a_result_only_call_at_a_type_nothing_provides_is_refused() {
+    for rule in [
+        "rule r(?t) :- ?t <=> Z[T = Float].zz()",
+        "rule r(?t) :- Z[T = Float].zz(?t)",
+        "rule r(?t: Float) :- ?t <=> Z.zz()",
+        "rule r() :- src(?x), not(?x <=> Z[T = Float].zz())",
+    ] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&zz(&format!("  {rule}\n"))),
+            &["p.zz.Z.zz", "`anthill.prelude.Float` provides no `p.zz.Z`"],
+            rule,
+        );
+    }
+}
+
+/// At a type nothing fixes, where the clause supplies none — no guard of `Z` at the call's type,
+/// no `requires` of the sort it is written in — the call is refused naming the instance to
+/// write, as an operation body's `let x = Z.zz()` is: `?t <=> Z.zz()` with `?t` untyped, the call
+/// in a lambda's body, a comparison's operand, which the other operand types in neither body,
+/// and a call at `B` beside a guard of `Z` at `A`. Each loaded; the first answered
+/// conditionally, and the last `A`'s `0` at `B`.
+#[test]
+fn a_result_only_call_at_a_type_nothing_fixes_is_refused() {
+    for rule in [
+        "rule r(?t) :- ?t <=> Z.zz()",
+        "rule r(?r) :- ?f <=> lambda () -> Z.zz(), ?r <=> 1",
+        "rule r() :- src(?x), ?x = Z.zz()",
+        "rule r[A, B](?a: A, ?t: B) :- Z[A], Tag[B], ?t <=> Z.zz()",
+    ] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&zz(&format!("  {rule}\n"))),
+            &["p.zz.Z.zz", "the instance written at the call, `Z[T = …].zz(…)`"],
+            rule,
+        );
+    }
+}
+
+/// A `<=>` expects of the side opposite a rule variable the type the clause gives the variable,
+/// so the call there is decided at load, as `operation o() -> Int64 = Z.zz()` is: at a head
+/// column typed `Int64`, at `?t = 0` after it, beside a guard, at `src`'s `Int64` (whose `1` is
+/// no `0`), under `not(…)`. Each answered conditionally, `unify(?_, zz)` left over.
+#[test]
+fn a_result_only_call_at_the_type_the_clause_gives_is_decided_at_load() {
+    let mut kb = crate::common::load_kb_with(&zz(
+        "  rule head(?t: Int64) :- ?t <=> Z.zz()\n  \
+         rule later(?t) :- ?t <=> Z.zz(), ?t = 0\n  \
+         rule guarded(?t: Int64) :- Z[T = Int64], ?t <=> Z.zz()\n  \
+         rule fromSrc(?t) :- src(?t), ?t <=> Z.zz()\n  \
+         rule negated() :- src(?x), not(?x <=> Z.zz())\n",
+    ));
+    assert_eq!(ints(&mut kb, "p.zz.head(?t)"), [0]);
+    assert_eq!(ints(&mut kb, "p.zz.later(?t)"), [0]);
+    assert_eq!(ints(&mut kb, "p.zz.guarded(?t)"), [0]);
+    assert_eq!(answers(&mut kb, "p.zz.fromSrc(?t)"), (0, 0), "`1` is no `0`");
+    assert_eq!(answers(&mut kb, "p.zz.negated()"), (1, 1));
+}
+
+/// CONTROL, passing either way by design: what supplies the call where its type is open — the
+/// clause's guard of `Z` at its type parameter, cited at `A = Int64`; the `requires` of the sort
+/// the rule is written in, cited at `H = Int64`; the bracket.
+#[test]
+fn a_guard_the_sorts_requires_or_the_bracket_supplies_a_result_only_call() {
+    let mut kb = crate::common::load_kb_with(&zz(
+        "  rule viaGuard[A](?t: A) :- Z[A], ?t <=> Z.zz()\n  \
+         rule viaGuardGoal[A](?t: A) :- Z[A], Z.zz(?t)\n  \
+         rule viaHolder(?t) :- Holder[H = Int64].held(?t)\n  \
+         rule viaBracket(?t) :- ?t <=> Z[T = Int64].zz()\n",
+    ));
+    assert_eq!(ints(&mut kb, "p.zz.viaGuard[A = Int64](?t)"), [0]);
+    assert_eq!(ints(&mut kb, "p.zz.viaGuardGoal[A = Int64](?t)"), [0]);
+    assert_eq!(ints(&mut kb, "p.zz.viaHolder(?t)"), [0]);
+    assert_eq!(ints(&mut kb, "p.zz.viaBracket(?t)"), [0]);
+}

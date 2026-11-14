@@ -2337,9 +2337,10 @@ pub(super) fn check_one_spec_op_requirement(
         return;
     }
     // Only a spec op with a CARRIER parameter grounds its instance from its
-    // arguments; a nullary / all-content op (`Monoid.unit()`) never can, so its
-    // requirement is not decidable from a body call — the same op the WI-300
-    // witness scan skips ([`op_has_spec_carrier_param`]).
+    // arguments; a nullary / all-content op (`Monoid.unit()`) never can — the same op
+    // the WI-300 witness scan skips ([`op_has_spec_carrier_param`]). Its instance is
+    // the one its bracket or the type expected of its result names, which the typer
+    // reads at the call, as in an operation body (`judged_at_the_call`).
     if !op_has_spec_carrier_param(kb, functor, spec_sort) {
         return;
     }

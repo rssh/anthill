@@ -1790,8 +1790,8 @@ pub(super) fn dispatch_to_the_clause(
             .any(|s| same_sort_canonical(kb, *s, spec))
     });
     // A call with no argument at the spec's carrier has no witness for a read to take: where
-    // the clause's sort requires the spec, the citation fixes its instance; elsewhere it is
-    // refused where nothing fixes it (the carrier's own refusal), or left to the value.
+    // the clause's sort requires the spec, the citation fixes its instance; a guard of the spec
+    // supplies it; with neither it was refused before this (`open_result_only_call`).
     if !op_has_spec_carrier_param(kb, callee, spec) {
         if sort_requires {
             leave_to_the_clause(kb, occ, callee, ClauseCondition::SortRequires { spec });

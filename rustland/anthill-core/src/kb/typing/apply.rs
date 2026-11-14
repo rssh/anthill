@@ -5033,16 +5033,16 @@ fn check_apply_call(
                     // so is a host-implemented callee (see the helper). An abstract
                     // carrier names nothing and falls through to WI-325.
                     //
-                    // AN OPERATION BODY ONLY — or a constant's value, which the evaluator
-                    // runs as one (`TypingEnv::in_evaluated_body`). A rule-body spec-op
-                    // call has its own owner,
-                    // `check_rule_body_requirements`, which reads the clause's declared
-                    // `requires(…)` as the rule's own dictionary; answering here too gave
-                    // one call two diagnoses, and refused the declared clause
-                    // `wi642…::declared_in_body_requires_loads_clean` pins as legal.
-                    if env.in_evaluated_body()
-                        && !op_requires_covers_call(kb, env, &subst, spec_sort)
-                    {
+                    // AN OPERATION BODY — or a constant's value, which the evaluator runs
+                    // as one (`TypingEnv::in_evaluated_body`) — AND A RULE BODY'S CALL OF A
+                    // MEMBER WITH NO ARGUMENT AT THE SPEC'S CARRIER ([`judged_at_the_call`]).
+                    // Any other rule-body spec-op call has its own owner,
+                    // `check_rule_body_requirements`, which reads the carrier off the call's
+                    // arguments; answering here too gave one call two diagnoses, and refused
+                    // the declared clause `wi642…::declared_in_body_requires_loads_clean`
+                    // pins as legal.
+                    let judged_here = judged_at_the_call(kb, env, fn_sym, spec_sort);
+                    if judged_here && !op_requires_covers_call(kb, env, &subst, spec_sort) {
                         let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
                         let carrier =
                             pinned_carrier.or_else(|| unclassified_goal_carrier(kb, &goal));
@@ -5077,6 +5077,8 @@ fn check_apply_call(
                                     bindings,
                                     body: if env.enclosing_op().is_some() {
                                         CallBody::Operation
+                                    } else if env.in_rule_body() {
+                                        CallBody::Rule
                                     } else {
                                         CallBody::Constant
                                     },
@@ -5118,7 +5120,7 @@ fn check_apply_call(
                     // member returning a `String` where an `Int64` is expected), and a witness
                     // at the receiver but at other bindings `check_selection_bindings`'.
                     if let Some(witness) = pinned_witness_for(kb, &selections, spec_sort)
-                        .filter(|_| env.in_evaluated_body())
+                        .filter(|_| judged_here)
                         .filter(|_| !op_requires_covers_call(kb, env, &subst, spec_sort))
                     {
                         if let Some(carrier_param) = spec_carrier_param(kb, spec_sort) {
@@ -5158,7 +5160,7 @@ fn check_apply_call(
                     // what the call leaves open as open — or refused here. It was left as
                     // the spec op for the value to choose ("an instance by a route the goal
                     // did not match").
-                    if env.in_evaluated_body()
+                    if judged_here
                         && !pinned_spec
                         && !op_requires_covers_call(kb, env, &subst, spec_sort)
                         && spec_has_any_providers(kb, spec_sort)
@@ -5682,6 +5684,15 @@ fn check_apply_call(
                                     w.defer_binder_dispatch(occ, minted, origin, class, call)
                                 }
                                 _ => {
+                                    let sigma = SigmaCtx {
+                                        subst: &subst,
+                                        param_rigids: env.param_rigids(),
+                                    };
+                                    if let Some(refusal) =
+                                        open_result_only_call(kb, env, &held_views, &sigma, &class)
+                                    {
+                                        return Err(refusal);
+                                    }
                                     // An open carrier something grounds where the clause runs:
                                     // the call is dispatched through the dictionary a
                                     // condition of the clause reads.
@@ -7446,6 +7457,81 @@ fn refuse_no_finite_type(
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+/// Is a call of spec operation `fn_sym` judged where it is typed, a provision that does not
+/// answer it refused here, and not by the rule-body requirement check? An operation body's call
+/// and a constant value's are; so is a rule body's call of a member with no argument at the
+/// spec's carrier (`Z.zz()`, `Err2.reify(body)`), whose instance only its bracket or the type
+/// expected of its result names. That check reads the carrier off the call's arguments, and
+/// such a call has none for it to read ([`check_one_spec_op_requirement`]).
+fn judged_at_the_call(kb: &KnowledgeBase, env: &TypingEnv, fn_sym: Symbol, spec_sort: Symbol) -> bool {
+    env.in_evaluated_body()
+        || (env.in_rule_body() && !op_has_spec_carrier_param(kb, fn_sym, spec_sort))
+}
+
+/// The refusal of a rule body's call of a member with no argument at the spec's carrier, at an
+/// instance nothing fixes (no bracket, no type the clause expects of its result), where the
+/// clause supplies none: no guard of the spec at the call's own binding, and no `requires` of
+/// the sort the rule is written in. No caller can pass the requirement, and nothing reads it
+/// from a value when the call runs (proposal 073 §6.2), so it is refused as an operation body's
+/// call is: `rule r(?t) :- ?t <=> Z.zz()` names `Z.T`, and so does `?t <=> Z.zz()` at a `?t: B`
+/// beside a guard `Z[A]`, which holds `A`'s instance. `None` for any other call, and for a
+/// callee the host implements, which serves every carrier.
+fn open_result_only_call(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    held: &[HeldSpecView],
+    sigma: &SigmaCtx,
+    class: &CallClass,
+) -> Option<TypeError> {
+    let CallClass::UnresolvedSpecOp {
+        spec_op_sym,
+        spec_sort_sym,
+        abstract_params,
+        span,
+        ..
+    } = class
+    else {
+        return None;
+    };
+    let (op, spec) = (*spec_op_sym, *spec_sort_sym);
+    if env.in_evaluated_body()
+        || !judged_at_the_call(kb, env, op, spec)
+        || kb.is_builtin(op)
+        || host_implements(kb, op)
+    {
+        return None;
+    }
+    // Each parameter the call leaves abstract is where the guard is: the two meet in one σ class.
+    // One the call's typing ties to nothing (a result column, which the argument check does not
+    // bind at an open type) says nothing of which guard it is at, and any guard of the spec
+    // answers it, as before.
+    let at_the_guard = |h: &HeldSpecView| {
+        let map = held_view_subst_map(kb, h.spec_sort, &h.view);
+        abstract_params.iter().all(|p| {
+            let own = type_param_global_var(kb, *p);
+            let call = own.and_then(|v| sigma_class_terminal(kb, sigma, &Value::Var(Var::Global(v))));
+            let untied = call.is_none() || call.map(|(v, _)| v) == own;
+            untied || call == map.get(p).and_then(|g| sigma_class_terminal(kb, sigma, g))
+        })
+    };
+    let held_by_a_guard = held
+        .iter()
+        .any(|h| same_sort_canonical(kb, h.spec_sort, spec) && at_the_guard(h));
+    let required_by_the_sort = env.rule_domain().is_some_and(|d| {
+        same_sort_canonical(kb, d, spec)
+            || transitive_required_sorts(kb, d)
+                .iter()
+                .any(|s| same_sort_canonical(kb, *s, spec))
+    });
+    (!held_by_a_guard && !required_by_the_sort).then(|| TypeError::MissingRequiresForSpecOp {
+        span: *span,
+        spec_op_sym: op,
+        spec_sort_sym: spec,
+        abstract_params: abstract_params.clone(),
+        site: RequiresSite::Clause,
+    })
 }
 
 /// The call's σ with the spec's carrier parameter (`carrier_vid`) read as the instance the
