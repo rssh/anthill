@@ -1380,6 +1380,14 @@ impl Wait {
 // WI-1014, which is Open.
 
 /// A woven equality goal read through its dictionary ([`KnowledgeBase::woven_equality`]).
+/// The member an `=` goal is decided at, and the spec operation and dictionary the typer
+/// entered it through where it built one ([`KnowledgeBase::classified_entry`]).
+#[derive(Clone, Copy)]
+struct PinnedEq {
+    member: Symbol,
+    entry: Option<(Symbol, TermId)>,
+}
+
 enum WovenEquality {
     /// The call, pinned to the member the dictionary names.
     At(Value),
@@ -9244,10 +9252,24 @@ impl KnowledgeBase {
         let ViewHead::Functor { functor, .. } = goal.head(self) else {
             return BuiltinResult::Failure;
         };
-        let pinned = match goal {
-            Value::Node(o) => o
-                .classified_apply_target()
-                .filter(|t| *t != functor && self.builtin_of(*t).is_none()),
+        // The member the typer decided the call at, a plain pin or one entered through a
+        // dictionary (`NeedsDict`: `=` at `Option[T = Pt]` is `Option.eq`, whose sort reads
+        // `PartialEq[T]`), with the dictionary it built where it built one.
+        let pinned: Option<PinnedEq> = match goal {
+            Value::Node(o) => {
+                let (target, through) = match o.apply_dispatch() {
+                    node_occurrence::ApplyDispatch::Pin(t) => (Some(t), false),
+                    node_occurrence::ApplyDispatch::NeedsDict(t) => (Some(t), true),
+                    node_occurrence::ApplyDispatch::Unclassified => (None, false),
+                };
+                target
+                    .filter(|t| *t != functor && self.builtin_of(*t).is_none())
+                    .map(|member| PinnedEq {
+                        member,
+                        // Only a member entered through a dictionary has one to enter it by.
+                        entry: if through { self.classified_entry(o, member) } else { None },
+                    })
+            }
             _ => None,
         };
         let verdict = match self.eq_operands(goal, subst, faults) {
@@ -9268,7 +9290,7 @@ impl KnowledgeBase {
         a: Value,
         b: Value,
         subst: &Substitution,
-        pinned: Option<Symbol>,
+        pinned: Option<PinnedEq>,
     ) -> BuiltinResult {
         // (1) Float operand pair — IEEE `==` (nan != nan, -0.0 == +0.0), NOT the
         // structural reflexivity shortcut below (which reads nan == nan through
@@ -9306,9 +9328,11 @@ impl KnowledgeBase {
         }
         // (4) Head-carrier override over GROUND operands ⇒ dispatch: the typer's pin, else the
         // index.
-        let target = pinned
-            .or_else(|| self.sem_eq_dispatch_target(&a))
-            .or_else(|| self.sem_eq_dispatch_target(&b));
+        let target = pinned.or_else(|| {
+            self.sem_eq_dispatch_target(&a)
+                .or_else(|| self.sem_eq_dispatch_target(&b))
+                .map(|member| PinnedEq { member, entry: None })
+        });
         if let Some(target) = target {
             if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
                 return BuiltinResult::delay();
@@ -9465,11 +9489,12 @@ impl KnowledgeBase {
     ///   solutions yield `truncated: false`.
     fn sem_eq_dispatch(
         &mut self,
-        target: Symbol,
+        pinned: PinnedEq,
         a: Value,
         b: Value,
         subst: &Substitution,
     ) -> BuiltinResult {
+        let PinnedEq { member: target, entry } = pinned;
         // Close the operands under the caller's σ: groundness was checked
         // AGAINST σ, but the sub-resolution starts from an empty substitution —
         // a σ-bound variable inside an entity-carried operand would enter the
@@ -9495,7 +9520,7 @@ impl KnowledgeBase {
         // `prove_rule_predicate` below, where its goal runs the primitive the member
         // carries (`BuiltinTag::ScalarEq`), not a clause search.
         if super::typing::op_has_runnable_body(self, target) {
-            return match self.bridge_eq_op_to_eval(target, a, b) {
+            return match self.bridge_eq_op_to_eval(target, a, b, entry) {
                 Ok(BridgeEqOutcome::Decided(v)) => sem_verdict(v, true),
                 // WI-628: carry the incompleteness bit straight through — a re-entry
                 // cap OR a nested truncation surfaced via the eval bridge is
@@ -13405,6 +13430,9 @@ impl KnowledgeBase {
         target: Symbol,
         a: Value,
         b: Value,
+        // The spec operation and the dictionary the typer entered `target` through, where it
+        // built one ([`Self::classified_entry`]); the member's frame is then that dictionary's.
+        entry: Option<(Symbol, TermId)>,
     ) -> Result<BridgeEqOutcome, EvalError> {
         // `None` from the bridge core = the re-entry cap was hit ⇒ undecided. WI-628:
         // the cap is a RESOURCE CUT (the eval analog of a depth-truncated search),
@@ -13412,9 +13440,10 @@ impl KnowledgeBase {
         // clean bridge-mode suspend below.
         // Operands ride on the carrier they were proved on — see the identical note
         // in `bridge_op_to_eval` (WI-20260827-3ZNBC).
-        let Some(outcome) =
-            self.run_in_bridge_interp(|interp| interp.call_op_bridged(target, &[a, b], None, &[]))
-        else {
+        let Some(outcome) = self.run_in_bridge_interp(|interp| match entry {
+            Some((spec_op, dict)) => interp.call_op_bridged_through(target, &[a, b], spec_op, dict, &[]),
+            None => interp.call_op_bridged(target, &[a, b], None, &[]),
+        }) else {
             return Ok(BridgeEqOutcome::Undecided { truncated: true });
         };
         match outcome {
@@ -21940,3 +21969,4 @@ end
         assert_eq!(kb.nullary_op_component(&ty, "zero"), Some(zero), "the type reaches its component");
     }
 }
+
