@@ -2498,6 +2498,8 @@ mod wi_cbrd2_contract_comparison_test;
 mod wi_cbrd2_in_body_proof_test;
 #[path = "include/wi_cbrd2_list_literal_goal_test.rs"]
 mod wi_cbrd2_list_literal_goal_test;
+#[path = "include/wi_cbrd2_typed_neq_test.rs"]
+mod wi_cbrd2_typed_neq_test;
 #[path = "include/wi_cbrd2_typed_execute_test.rs"]
 mod wi_cbrd2_typed_execute_test;
 #[path = "include/wi_cbrd2_typed_query_variable_test.rs"]

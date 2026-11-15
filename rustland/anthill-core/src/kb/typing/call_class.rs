@@ -1764,6 +1764,21 @@ pub(super) fn is_semantic_equality(kb: &KnowledgeBase, op: Symbol) -> bool {
     matches!(kb.builtin_of(op), Some(crate::kb::resolve::BuiltinTag::SemEq))
 }
 
+/// Is `op` a comparison a goal reads at its carrier's `eq`: `eq` itself, or `neq`, whose goal is
+/// `not(eq(…))` at the `eq` its body calls ([`KnowledgeBase::neq_as_not_eq`])?
+pub(super) fn is_equality_comparison(kb: &KnowledgeBase, op: Symbol) -> bool {
+    is_semantic_equality(kb, op) || kb.is_neq_op(op)
+}
+
+/// Does a goal read `class`, the member the typer gave a comparison `op`, where the comparison is
+/// a goal's (a contract's, an in-body proof's): any of an `eq`'s, and a `neq`'s where it enters
+/// its body through a dictionary, which the goal reads its `eq` through
+/// ([`KnowledgeBase::neq_as_not_eq`]). A `neq` deferred to the operation's requirement would run
+/// its body where no frame holds that requirement, and is read through an untyped `eq` instead.
+pub(super) fn goal_reads_comparison_member(kb: &KnowledgeBase, op: Symbol, class: &CallClass) -> bool {
+    is_semantic_equality(kb, op) || (kb.is_neq_op(op) && class.enters_spec_body_through_dictionary())
+}
+
 /// Is a call of `functor` at the type `ty` `=` at a tuple, whose equality is its components'
 /// (kernel-language §8.3)? It owes no instance at the tuple, which carries no provision.
 pub(super) fn equality_at_a_tuple(kb: &KnowledgeBase, functor: Symbol, ty: &Value) -> bool {
@@ -2029,6 +2044,77 @@ pub enum CallClass {
         // `dict` above is `None`); what changed is that the evidence no longer depends
         // on this variant being the one that got written.
     },
+}
+
+/// The call of a spec's operation that a call entering the spec's own body through a dictionary
+/// reads it at ([`CallClass::sibling_through_dictionary`]).
+pub(crate) enum SiblingCall {
+    /// The dictionary's member, entered through it.
+    Member(CallClass),
+    /// The spec's own operation: the instance has no member of its own, and the typer leaves
+    /// such a call unclassified too.
+    SpecsOwn,
+    /// The provider names no member the call may enter (an absence marker): running the body
+    /// raises it.
+    Refused,
+}
+
+impl CallClass {
+    /// The provider of the dictionary this call enters its spec's own body through: a call of
+    /// `neq` typed at an instance, whose body is in `PartialEq`. `None` for a call that enters a
+    /// member, enters with no dictionary, or reads the dictionary from the caller's scope.
+    fn spec_body_provider(&self) -> Option<Symbol> {
+        match self {
+            CallClass::ConcreteApplyWithin {
+                fn_target_sym,
+                spec_op_sym,
+                resolved_tree: Some(tree),
+                frame: CalleeFrame::Dict(_),
+                ..
+            } if fn_target_sym == spec_op_sym => tree.impl_sort(),
+            _ => None,
+        }
+    }
+
+    /// Does this call enter its spec's own body through a dictionary of a provider
+    /// ([`Self::spec_body_provider`])?
+    pub(crate) fn enters_spec_body_through_dictionary(&self) -> bool {
+        self.spec_body_provider().is_some()
+    }
+
+    /// The call of `sibling`, another operation of the spec, that a call entering the spec's
+    /// body through a dictionary reads through it: `neq`'s body `Bool.not(eq(a, b))` calls `eq`
+    /// at the instance the `neq` was typed at, the dictionary's member. `None` for any other
+    /// call.
+    pub(crate) fn sibling_through_dictionary(&self, kb: &KnowledgeBase, sibling: Symbol) -> Option<SiblingCall> {
+        let provider = self.spec_body_provider()?;
+        let CallClass::ConcreteApplyWithin {
+            callee_spec_sort,
+            enclosing_sort,
+            resolved_tree,
+            frame,
+            enclosing_op,
+            ..
+        } = self
+        else {
+            unreachable!("a spec body's provider is read off a `ConcreteApplyWithin`");
+        };
+        let Ok(member) = resolve_op_target_checked(kb, provider, sibling) else {
+            return Some(SiblingCall::Refused);
+        };
+        if kb.canonical_sym(member) == kb.canonical_sym(sibling) {
+            return Some(SiblingCall::SpecsOwn);
+        }
+        Some(SiblingCall::Member(CallClass::ConcreteApplyWithin {
+            fn_target_sym: member,
+            callee_spec_sort: *callee_spec_sort,
+            spec_op_sym: sibling,
+            enclosing_sort: *enclosing_sort,
+            resolved_tree: resolved_tree.clone(),
+            frame: *frame,
+            enclosing_op: *enclosing_op,
+        }))
+    }
 }
 
 /// WI-210 — dispatch result for a spec-op call.

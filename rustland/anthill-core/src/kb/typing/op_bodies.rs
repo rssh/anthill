@@ -1178,7 +1178,7 @@ fn type_contract_comparisons(
             while let Some(node) = stack.pop() {
                 let Some(expr) = node.as_expr() else { continue };
                 if let Some((functor, _, _)) = expr_call_parts(expr) {
-                    if is_semantic_equality(kb, functor) || Some(functor) == kb.neq_sym {
+                    if is_equality_comparison(kb, functor) {
                         comparisons.push(Rc::clone(&node));
                         continue;
                     }
@@ -1195,15 +1195,16 @@ fn type_contract_comparisons(
                     }
                 };
                 match type_check_node(kb, &cenv, &copy, None) {
-                    // `neq`'s goal is read as `not(eq(…))` (its body in the spec), so only an
-                    // `eq` keeps the member it was typed at; a `neq` is typed for its refusal.
-                    Ok(_) if is_comparison_kept(kb, &cmp) => {
-                        if let Some(class) = copy.call_class() {
+                    Ok(_) => {
+                        let functor = copy.as_expr().and_then(expr_call_parts).map(|(f, _, _)| f);
+                        let class = copy
+                            .call_class()
+                            .filter(|class| functor.is_some_and(|f| goal_reads_comparison_member(kb, f, class)));
+                        if let Some(class) = class {
                             cmp.set_classification(class);
                             kept = true;
                         }
                     }
-                    Ok(_) => {}
                     Err(e) => errors.push(e),
                 }
             }
@@ -1215,14 +1216,6 @@ fn type_contract_comparisons(
             }
         }
     }
-}
-
-/// Does the contract comparison `cmp` keep the member it is typed at: an `eq`, and not a `neq`,
-/// whose goal the resolver reads through `eq`?
-fn is_comparison_kept(kb: &KnowledgeBase, cmp: &Rc<NodeOccurrence>) -> bool {
-    cmp.as_expr()
-        .and_then(expr_call_parts)
-        .is_some_and(|(functor, _, _)| is_semantic_equality(kb, functor))
 }
 
 /// A copy of the contract comparison `cmp` the typer reads as an operation body's: each field

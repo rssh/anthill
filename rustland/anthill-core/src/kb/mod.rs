@@ -2235,11 +2235,11 @@ pub struct KnowledgeBase {
     eq_connective_sym: Option<Symbol>,
     unify_connective_sym: Option<Symbol>,
     /// `anthill.prelude.PartialEq.neq`, cached with the connectives above for the goal step,
-    /// which asks of every goal whether it is a `neq` no type reached
-    /// ([`Self::untyped_neq_as_not_eq`]). `None` before the prelude loads.
+    /// which asks of every goal whether it is a `neq` ([`Self::neq_as_not_eq`]). `None` before
+    /// the prelude loads.
     neq_sym: Option<Symbol>,
-    /// `anthill.kernel.not`, negation as failure, which a `neq` no type reached is read
-    /// through. Cached with `neq_sym`.
+    /// `anthill.kernel.not`, negation as failure, which a `neq` goal is read through. Cached
+    /// with `neq_sym`.
     kernel_not_sym: Option<Symbol>,
 
     /// WI-20260826-XED22 — the two GOAL CONNECTIVES (`anthill.kernel.or` / `.and`),

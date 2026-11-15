@@ -424,8 +424,9 @@ fn list_literals_as_lists(kb: &mut KnowledgeBase, t: TermId) -> TermId {
 /// not even the reflexive `conclude eq(Red, Red)`, and `conclude eq(Green, Red)`
 /// over a carrier whose own `eq` holds stayed unproved.
 ///
-/// Each `eq` of a typed `conclude` keeps the member it was typed at, which the lowering
-/// drops: the resolver decides it by that member rather than by an operand's constructor.
+/// Each `eq` and `neq` of a typed `conclude` keeps the member it was typed at, which the
+/// lowering drops: the resolver decides it by that member rather than by an operand's
+/// constructor.
 pub fn in_body_proof_goal(
     kb: &mut KnowledgeBase,
     target: Symbol,
@@ -438,7 +439,7 @@ pub fn in_body_proof_goal(
         Some(c) => {
             let lowered = goal_form_carrier(kb, Value::Node(Rc::clone(c)));
             if let Value::Node(n) = &lowered {
-                carry_eq_members(kb, c, n);
+                carry_comparison_members(kb, c, n);
             }
             goal_form_proposition(kb, lowered)
         }

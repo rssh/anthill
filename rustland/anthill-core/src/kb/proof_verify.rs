@@ -527,26 +527,13 @@ fn contract_target(kb: &KnowledgeBase, rule_qn: &str) -> Option<(Symbol, Contrac
 /// requires in turn (`requires Ord[T = T]` reaches `Eq[T = T]`)? Then a value of `ty`, an
 /// abstract parameter included, is equal to itself by the law.
 fn eq_required_at(kb: &mut KnowledgeBase, op: Symbol, ty: &Value) -> bool {
-    use crate::kb::term_view::{views_structurally_equal, TermView};
-    let Some(eq) = kb.try_resolve_symbol("anthill.prelude.Eq") else {
+    let (Some(eq), Some(eq_t)) = (
+        kb.try_resolve_symbol("anthill.prelude.Eq"),
+        kb.try_resolve_symbol("anthill.prelude.Eq.T"),
+    ) else {
         return false;
     };
-    let eq = kb.canonical_sort_sym(eq);
-    let mut entries: Vec<crate::kb::typing::RequiresEntry> =
-        crate::kb::typing::op_requires_chain_rc(kb, op).to_vec();
-    if let Some(sort) = crate::kb::typing::impl_parent_sort_of_op(kb, op) {
-        entries.extend(crate::kb::typing::requires_chain(kb, sort));
-    }
-    entries.iter().any(|entry| {
-        kb.canonical_sort_sym(entry.required_sort) == eq
-            && entry.spec.named_keys(kb).into_iter().any(|key| {
-                kb.local_name_of(key) == "T"
-                    && entry
-                        .spec
-                        .named_arg(kb, key)
-                        .is_some_and(|bound| views_structurally_equal(kb, &bound.to_value(), ty))
-            })
-    })
+    crate::kb::typing::requires_reach_at(kb, op, eq, eq_t, ty)
 }
 
 /// Discharge an operation-contract proof and write the verdict back onto its

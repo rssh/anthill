@@ -1543,18 +1543,18 @@ pub(crate) fn clause_goal(
     match typed {
         Some(typed) => {
             let goal = crate::kb::node_occurrence::value_as_occurrence(kb, &substituted);
-            carry_eq_members(kb, &typed, &goal);
+            carry_comparison_members(kb, &typed, &goal);
             Value::Node(goal)
         }
         None => substituted,
     }
 }
 
-/// Each `eq` of `to` takes the member the typer decided at its twin in `from` — the same tree
-/// with some leaves replaced or lowered: walked pairwise while the two agree on a call's
-/// functor and arity, stopping where they part. Only `eq`'s: a `neq`'s classification runs
-/// its body, which reads a dictionary a goal does not pass.
-pub(super) fn carry_eq_members(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) {
+/// Each `eq` and `neq` of `to` takes the member the typer decided at its twin in `from`, where a
+/// goal reads it ([`goal_reads_comparison_member`]) — the same tree with some leaves replaced or
+/// lowered: walked pairwise while the two agree on a call's functor and arity, stopping where
+/// they part.
+pub(super) fn carry_comparison_members(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) {
     let (Some(from_expr), Some(to_expr)) = (from.as_expr(), to.as_expr()) else {
         return;
     };
@@ -1564,15 +1564,15 @@ pub(super) fn carry_eq_members(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to
     if kb.canonical_sym(f1) != kb.canonical_sym(f2) || p1.len() != p2.len() {
         return;
     }
-    if let Some(class) = from.call_class().filter(|_| is_semantic_equality(kb, f1)) {
+    if let Some(class) = from.call_class().filter(|class| goal_reads_comparison_member(kb, f1, class)) {
         to.set_classification(class);
     }
     for (a, b) in p1.iter().zip(p2.iter()) {
-        carry_eq_members(kb, a, b);
+        carry_comparison_members(kb, a, b);
     }
     for (k, a) in n1.iter() {
         if let Some((_, b)) = n2.iter().find(|(k2, _)| k2 == k) {
-            carry_eq_members(kb, a, b);
+            carry_comparison_members(kb, a, b);
         }
     }
 }
