@@ -4089,6 +4089,27 @@ impl KnowledgeBase {
         self.op_records.get(&op_sym)
     }
 
+    /// Record the typed occurrence of a conjunct of `op_sym`'s contract, keyed by the conjunct
+    /// as loaded (`OperationRecord::typed_contract`). A conjunct typed again replaces it.
+    pub(crate) fn record_typed_contract_conjunct(&mut self, op_sym: Symbol, loaded: TermId, typed: Rc<NodeOccurrence>) {
+        let record = self.op_records.entry(op_sym).or_default();
+        match record.typed_contract.iter_mut().find(|(t, _)| *t == loaded) {
+            Some(slot) => slot.1 = typed,
+            None => record.typed_contract.push((loaded, typed)),
+        }
+    }
+
+    /// The typed occurrence of the contract conjunct `loaded` of `op_sym`, where the typer
+    /// typed a comparison in it.
+    pub(crate) fn typed_contract_conjunct(&self, op_sym: Symbol, loaded: TermId) -> Option<Rc<NodeOccurrence>> {
+        self.op_records
+            .get(&op_sym)?
+            .typed_contract
+            .iter()
+            .find(|(t, _)| *t == loaded)
+            .map(|(_, typed)| Rc::clone(typed))
+    }
+
     /// WI-1049 — record WHERE one written `operation <name>` landed on `op_sym`.
     /// Appends, because a second declaration of one name in one scope reaches the
     /// SAME symbol (`SymbolTable::define` merges, WI-926) and the refusal must name

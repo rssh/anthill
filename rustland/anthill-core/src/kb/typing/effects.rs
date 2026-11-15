@@ -1503,6 +1503,9 @@ pub(super) fn precondition_proved(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     sigma: &HashMap<Symbol, TermId>,
+    // The operation the clause is a precondition of, whose typed contract holds the
+    // members of its comparisons.
+    op_sym: Symbol,
     clause: &Value,
 ) -> bool {
     // A multi-goal clause is `conjunction(g1, …)`; ALL conjuncts must prove
@@ -1514,12 +1517,63 @@ pub(super) fn precondition_proved(
     // functor-headed goal, so an unreadable carrier simply fails to prove (the same
     // conservative UNPROVED default as the dual `guarded_atom_refuted`'s `false`).
     for conj in clause_conjuncts(kb, clause) {
-        let conj = substitute_ref_terms(kb, &conj, sigma);
-        if !prove_from_gamma(kb, flow, &conj) {
+        let goal = clause_goal(kb, op_sym, &conj, sigma);
+        if !prove_from_gamma(kb, flow, &goal) {
             return false;
         }
     }
     true
+}
+
+/// A contract clause's conjunct `conj` with `sigma` substituted, as the goal a proof asks: an
+/// occurrence whose comparisons carry the members the typer gave the clause's own
+/// (`type_contract_comparisons`), the substitution leaving the clause's shape and replacing
+/// only what its parameters and `result` stood for.
+pub(crate) fn clause_goal(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    conj: &Value,
+    sigma: &HashMap<Symbol, TermId>,
+) -> Value {
+    let substituted = substitute_ref_terms(kb, conj, sigma);
+    let typed = match conj {
+        Value::Term { id, .. } => kb.typed_contract_conjunct(op_sym, *id),
+        _ => None,
+    };
+    match typed {
+        Some(typed) => {
+            let goal = crate::kb::node_occurrence::value_as_occurrence(kb, &substituted);
+            carry_call_classes(kb, &typed, &goal);
+            Value::Node(goal)
+        }
+        None => substituted,
+    }
+}
+
+/// Each call of `to` the typer classified at its twin in `from` — the same tree with some
+/// leaves replaced — takes that classification: walked pairwise while the two agree on a
+/// call's functor and arity, stopping where they part.
+fn carry_call_classes(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) {
+    let (Some(from_expr), Some(to_expr)) = (from.as_expr(), to.as_expr()) else {
+        return;
+    };
+    let (Some((f1, p1, n1)), Some((f2, p2, n2))) = (expr_call_parts(from_expr), expr_call_parts(to_expr)) else {
+        return;
+    };
+    if kb.canonical_sym(f1) != kb.canonical_sym(f2) || p1.len() != p2.len() {
+        return;
+    }
+    if let Some(class) = from.call_class() {
+        to.set_classification(class);
+    }
+    for (a, b) in p1.iter().zip(p2.iter()) {
+        carry_call_classes(kb, a, b);
+    }
+    for (k, a) in n1.iter() {
+        if let Some((_, b)) = n2.iter().find(|(k2, _)| k2 == k) {
+            carry_call_classes(kb, a, b);
+        }
+    }
 }
 
 /// WI-K88TN — Γ₀ for an operation body: the operation's OWN value preconditions,

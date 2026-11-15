@@ -373,11 +373,13 @@ end
         n += 1;
         verdict(&format!("test.jee0e.contract{n}"), ty, ensures)
     };
-    for ty in ["Int64", "Float"] {
-        let v = at(ty, "neq(x, 1)");
-        assert!(undecided(&v), "{ty}: `neq(x, 1)` rests on `x`; got {v:?}");
-        let v = at(ty, "x != 1");
-        assert!(undecided(&v), "{ty}: `x != 1`; got {v:?}");
+    // The literal is of the parameter's type: a contract's comparison is typed in the
+    // operation's signature, and `neq(x, 1)` over a `Float` is refused at load.
+    for (ty, one) in [("Int64", "1"), ("Float", "1.0")] {
+        let v = at(ty, &format!("neq(x, {one})"));
+        assert!(undecided(&v), "{ty}: `neq(x, {one})` rests on `x`; got {v:?}");
+        let v = at(ty, &format!("x != {one}"));
+        assert!(undecided(&v), "{ty}: `x != {one}`; got {v:?}");
     }
     let v = at("Int64", "neq(x, x)");
     assert!(refuted(&v), "`Eq`'s law: `x` is equal to itself; got {v:?}");

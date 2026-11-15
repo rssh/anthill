@@ -132,6 +132,12 @@ pub struct OperationRecord {
     /// where the call is (`typing::complete_defaulted_arguments`). Empty for an operation
     /// that declares none.
     pub param_defaults: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    /// Each conjunct of the contract (`requires`, `ensures`) holding a comparison, as loaded
+    /// (its term) and as typed in the operation's signature: the comparisons carry the member
+    /// the typer gave them (`typing::type_contract_comparisons`), and a proof over the
+    /// conjunct reads them there (`typing::clause_goal`). The clause in the signature stays
+    /// as loaded, which every other reader reads.
+    pub typed_contract: Vec<(crate::kb::term::TermId, Rc<NodeOccurrence>)>,
 }
 
 /// WI-398: every operation's `(symbol, params)` in ONE pass over the `OperationInfo`

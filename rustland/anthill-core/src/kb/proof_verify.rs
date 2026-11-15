@@ -41,7 +41,7 @@ use crate::kb::subst::Substitution;
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::typing::{
     clause_conjuncts, get_named_arg, is_value_precondition_clause, prove_from_gamma_verdict,
-    substitute_ref_terms, substitute_ref_terms_term, FlowEnv, GammaVerdict,
+    substitute_ref_terms_term, FlowEnv, GammaVerdict,
 };
 use crate::kb::{KnowledgeBase, RuleId};
 
@@ -676,7 +676,7 @@ fn discharge_contract_proof(
             continue;
         }
         for conj in clause_conjuncts(kb, c) {
-            let conj = contract_goal(kb, &conj, &sigma);
+            let conj = contract_goal(kb, op_sym, &conj, &sigma);
             flow = flow.assume(kb, conj);
         }
     }
@@ -698,7 +698,7 @@ fn discharge_contract_proof(
             );
         }
         for conj in conjuncts {
-            let goal = contract_goal(kb, &conj, &sigma);
+            let goal = contract_goal(kb, op_sym, &conj, &sigma);
             // THREE FAILURES, THREE MESSAGES. This was one bool and one sentence —
             // "not derivable from the body" — for all three, which told an author
             // whose body is FINE that it is not: an `ensures` over a parameter maps to
@@ -810,11 +810,11 @@ fn discharge_contract_proof(
 /// [`value_as_occurrence`]: super::node_occurrence::value_as_occurrence
 fn contract_goal(
     kb: &mut KnowledgeBase,
+    op_sym: Symbol,
     conj: &Value,
     sigma: &HashMap<Symbol, TermId>,
 ) -> Value {
-    let conj = substitute_ref_terms(kb, conj, sigma);
-    Value::Node(super::node_occurrence::value_as_occurrence(kb, &conj))
+    super::typing::clause_goal(kb, op_sym, conj, sigma)
 }
 
 /// Write a `Failed(Unknown(reason))` verdict onto a contract `ProofRecord` and

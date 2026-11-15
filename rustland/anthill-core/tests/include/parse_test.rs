@@ -776,7 +776,7 @@ fn parse_namespace_with_entity_and_operation() {
   entity Account(id: AccountId, balance: Money)
   operation deposit(a: Account, m: Money) -> Account
     requires gt(m, zero-val)
-    ensures eq(balance(result), add(balance(a), m))
+    ensures eq(result.balance, a.balance)
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -920,7 +920,7 @@ fn load_banking_namespace() {
 
   operation deposit(a: Account, m: Money) -> Account
     requires gt(m, zero-val)
-    ensures eq(balance(result), add(balance(a), m))
+    ensures eq(result.balance, a.balance)
     = a
 
   fact initial-balance(dollars(0)) @[trust: axiom]
@@ -1038,7 +1038,7 @@ fn load_sort_with_operation() {
 
   operation deposit(a: Self, m: Money) -> Self
     requires gt(m, zero-val)
-    ensures eq(balance(result), add(balance(a), m))
+    ensures eq(result.balance, a.balance)
     = a
 
   operation withdraw(a: Self, m: Money) -> Self

@@ -2610,7 +2610,7 @@ fn check_apply_call(
                 if value_carries_undecided_var(kb, &clause) {
                     continue;
                 }
-                if precondition_proved(kb, flow, &req_sigma, &clause) {
+                if precondition_proved(kb, flow, &req_sigma, fn_sym, &clause) {
                     continue;
                 }
                 // Unproved. In an op body that alone is the WI-539 violation. In a

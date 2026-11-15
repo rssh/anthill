@@ -540,6 +540,8 @@ pub(super) fn check_operation_bodies(
             op.return_type.clone()
         };
 
+        type_contract_comparisons(kb, &env, op.op_sym, &effective_return, op.site.0, errors);
+
         // WI-1059: the DECLARED EFFECTS get the same discharge as the return, against the
         // same param table, and for the same reason: `Stream.collect(s: Stream) effects
         // s.E` reads its row off the receiver, and once `s` carries its slot the BODY
@@ -1133,6 +1135,176 @@ pub(super) fn check_operation_bodies(
 /// `(expected, actual)` pair of its diagnostic. `rigidify` is the operation's type-parameter
 /// rigidify substitution, which both sides are walked through. Read for the body and for
 /// each parameter default, whose effects are the operation's (proposal 069 §3).
+/// The comparisons a contract clause makes are calls of their carrier's member, typed in the
+/// operation's signature: its parameters as the body binds them, `result` at the return type
+/// (proposal 073 §5). Each `=`, `eq` and `neq` in a `requires` or `ensures` clause is typed
+/// there, and one that does not type is refused (`ensures eq(result, "a")` over an `Int64`
+/// result). The clause is kept in the operation's record as the typed occurrence, so a proof
+/// over it reads each comparison's member (`proof_verify::contract_goal`).
+///
+/// A comparison is typed on a copy that writes each field projection the way an operation
+/// body's lowering does (`synthesize_field_access`; the clause holds the term form,
+/// `field_access(result, value)`), and the member it gets is put on the clause's own node: the
+/// stored clause keeps the shape the proofs read.
+fn type_contract_comparisons(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    op_sym: Symbol,
+    ret: &Value,
+    site: crate::span::SourceSpan,
+    errors: &mut Vec<TypeError>,
+) {
+    // A KB with no `PartialEq` spec loaded has no member to type a comparison at, as a rule
+    // body's `=` is not typed there either.
+    let eq_functor = kb.eq_functor();
+    if lookup_spec_op_dispatch(kb, eq_functor).is_none() {
+        return;
+    }
+    let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.clone()) else {
+        return;
+    };
+    let mut cenv = env.clone();
+    if let Some(result_sym) = crate::kb::region::resolve_op_result_sym(kb, op_sym) {
+        cenv.bind_var(result_sym, ret.clone());
+    }
+    for clause in sig.requires.iter().chain(sig.ensures.iter()) {
+        if !is_value_precondition_clause(kb, clause) {
+            continue;
+        }
+        for conj in clause_conjuncts(kb, clause) {
+            let occ = crate::kb::node_occurrence::value_as_occurrence(kb, &conj);
+            let mut comparisons = Vec::new();
+            let mut stack = vec![Rc::clone(&occ)];
+            while let Some(node) = stack.pop() {
+                let Some(expr) = node.as_expr() else { continue };
+                if let Some((functor, _, _)) = expr_call_parts(expr) {
+                    if is_semantic_equality(kb, functor) || Some(functor) == kb.neq_sym {
+                        comparisons.push(Rc::clone(&node));
+                        continue;
+                    }
+                }
+                crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+            }
+            let mut kept = false;
+            for cmp in comparisons {
+                let copy = match typable_comparison(kb, &cmp, site) {
+                    Ok(copy) => copy,
+                    Err(e) => {
+                        errors.push(e);
+                        continue;
+                    }
+                };
+                match type_check_node(kb, &cenv, &copy, None) {
+                    // `neq`'s goal is read as `not(eq(…))` (its body in the spec), so only an
+                    // `eq` keeps the member it was typed at; a `neq` is typed for its refusal.
+                    Ok(_) if is_comparison_kept(kb, &cmp) => {
+                        if let Some(class) = copy.call_class() {
+                            cmp.set_classification(class);
+                            kept = true;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => errors.push(e),
+                }
+            }
+            // The conjunct as loaded is a term, which carries no member: its typed twin is
+            // kept beside it, keyed by it. A conjunct carried on an occurrence (a denoted
+            // label) holds its members on its own nodes.
+            if let (true, Value::Term { id, .. }) = (kept, &conj) {
+                kb.record_typed_contract_conjunct(op_sym, *id, occ);
+            }
+        }
+    }
+}
+
+/// Does the contract comparison `cmp` keep the member it is typed at: an `eq`, and not a `neq`,
+/// whose goal the resolver reads through `eq`?
+fn is_comparison_kept(kb: &KnowledgeBase, cmp: &Rc<NodeOccurrence>) -> bool {
+    cmp.as_expr()
+        .and_then(expr_call_parts)
+        .is_some_and(|(functor, _, _)| is_semantic_equality(kb, functor))
+}
+
+/// A copy of the contract comparison `cmp` the typer reads as an operation body's: each field
+/// projection in the clause's term form, `field_access(receiver, name)`, written as the body
+/// lowering writes it, and every node at `site`, the operation's declaration, so a refusal
+/// points there.
+fn typable_comparison(
+    kb: &mut KnowledgeBase,
+    cmp: &Rc<NodeOccurrence>,
+    site: crate::span::SourceSpan,
+) -> Result<Rc<NodeOccurrence>, TypeError> {
+    let field_access = kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS));
+    fn copy(
+        kb: &mut KnowledgeBase,
+        node: &Rc<NodeOccurrence>,
+        site: crate::span::SourceSpan,
+        field_access: Option<Symbol>,
+    ) -> Result<Rc<NodeOccurrence>, TypeError> {
+        let Some(expr) = node.as_expr() else {
+            return Ok(Rc::clone(node));
+        };
+        let Some((functor, pos_args, named_args)) = expr_call_parts(expr) else {
+            return Ok(NodeOccurrence::new_expr(expr.clone(), site, node.owner));
+        };
+        let pos: Vec<Rc<NodeOccurrence>> = pos_args
+            .iter()
+            .map(|a| copy(kb, a, site, field_access))
+            .collect::<Result<_, _>>()?;
+        if Some(functor) == field_access && pos.len() == 2 && named_args.is_empty() {
+            let name = match pos[1].as_expr() {
+                Some(Expr::Ident(n) | Expr::Ref(n)) => Some(kb.local_name_of(*n).to_string()),
+                _ => None,
+            };
+            if let Some(name) = name {
+                return match synthesize_field_access(kb, &pos[0], &name, node) {
+                    Ok(fa) => Ok(fa),
+                    Err(Some(e)) => Err(e),
+                    Err(None) => Ok(Rc::clone(node)),
+                };
+            }
+        }
+        let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+            .iter()
+            .map(|(k, a)| copy(kb, a, site, field_access).map(|c| (*k, c)))
+            .collect::<Result<_, _>>()?;
+        Ok(NodeOccurrence::new_expr(
+            Expr::Apply {
+                recv_type: None,
+                functor,
+                pos_args: pos,
+                named_args: named,
+                type_args: Vec::new(),
+            },
+            site,
+            node.owner,
+        ))
+    }
+    // A comparison written with its result column (`neq(x, 1, true)`, the relational form a
+    // goal may take) is typed as the call of its two operands; the column is its `Bool`.
+    let Some(Expr::Apply {
+        functor, pos_args, named_args, ..
+    }) = cmp.as_expr()
+    else {
+        return copy(kb, cmp, site, field_access);
+    };
+    if pos_args.len() == 3 && named_args.is_empty() {
+        let operands = NodeOccurrence::new_expr(
+            Expr::Apply {
+                recv_type: None,
+                functor: *functor,
+                pos_args: pos_args[..2].to_vec(),
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            cmp.span,
+            cmp.owner,
+        );
+        return copy(kb, &operands, site, field_access);
+    }
+    copy(kb, cmp, site, field_access)
+}
+
 fn undeclared_effects(
     kb: &mut KnowledgeBase,
     rigidify: &Substitution,
