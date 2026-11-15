@@ -2492,6 +2492,8 @@ mod wi_cbrd2_equality_test;
 mod wi_cbrd2_no_typed_caller_test;
 #[path = "include/wi_cbrd2_static_operation_test.rs"]
 mod wi_cbrd2_static_operation_test;
+#[path = "include/wi_cbrd2_typed_execute_test.rs"]
+mod wi_cbrd2_typed_execute_test;
 #[path = "include/wi_4kxpd_waiting_clause_test.rs"]
 mod wi_4kxpd_waiting_clause_test;
 #[path = "include/wi_fsnz5_reflect_form_identity_test.rs"]

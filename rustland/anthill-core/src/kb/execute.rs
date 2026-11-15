@@ -64,6 +64,10 @@ pub enum LowerError {
         unfilled: usize,
         declared: String,
     },
+    /// Proposal 010.1 §3.2 — the typer refused the query `KB.execute` was handed: a goal it
+    /// types at a type nothing fixes, or at types that do not fit. Each refusal in the words a
+    /// written query's gets, joined.
+    QueryRefused(String),
 }
 
 impl std::fmt::Display for LowerError {
@@ -85,6 +89,7 @@ impl std::fmt::Display for LowerError {
                     "constructor '{}' given {} positional argument(s) but has {} unfilled field(s) (declares: {})",
                     functor, given, unfilled, declared,
                 ),
+            LowerError::QueryRefused(detail) => write!(f, "{}", detail),
         }
     }
 }
@@ -860,11 +865,50 @@ impl KnowledgeBase {
     /// (1, not 6 — a zero-column relation's multiplicity IS its proof count).
     pub fn execute_logical_query(&mut self, q: &Value) -> Result<SearchStream, LowerError> {
         let goals = self.lower_query(q)?;
-        let config = ResolveConfig {
-            dedup_answers: false,
-            ..ResolveConfig::default()
+        Ok(self.resolve_lazy(&goals, &execute_config()))
+    }
+
+    /// A query a program builds as a value, typed when `KB.execute` reads it (proposal 010.1
+    /// §3.2): its goals are routed as a written query's are (`load::convert_query_terms`), so a
+    /// call of a spec's member, `=` among them, is decided at the types the query fixes, and a
+    /// requirement it leaves open is refused before the search starts
+    /// ([`LowerError::QueryRefused`]). The reading is a load of the query, so nothing during the
+    /// search chooses a member. `Relation.splitFirst` runs a query its citation's load typed, and
+    /// goes through [`Self::execute_logical_query`].
+    pub fn execute_typed_logical_query(&mut self, q: &Value) -> Result<SearchStream, LowerError> {
+        let goals = self.lower_query(q)?;
+        let goals = self.type_query_goals(&goals)?;
+        Ok(self.resolve_lazy(&goals, &execute_config()))
+    }
+
+    /// `goals` routed as one query's, each as the occurrence the typer read. The typer marks
+    /// what it decided on the occurrence it reads (a call's member), so the goal that runs is
+    /// that occurrence, whatever carrier the goal came on.
+    fn type_query_goals(&mut self, goals: &[Value]) -> Result<Vec<Value>, LowerError> {
+        let occs: Vec<std::rc::Rc<super::node_occurrence::NodeOccurrence>> = goals
+            .iter()
+            .map(|g| super::node_occurrence::value_as_occurrence(self, g))
+            .collect();
+        let routed = match super::typing::route_query_goals(self, &occs) {
+            Ok(routed) => routed,
+            Err(refused) => {
+                let details: Vec<String> = refused
+                    .iter()
+                    .map(|e| super::load::query_refusal_detail(self, e))
+                    .collect();
+                return Err(LowerError::QueryRefused(details.join("; ")));
+            }
         };
-        Ok(self.resolve_lazy(&goals, &config))
+        Ok(routed.into_iter().map(Value::Node).collect())
+    }
+}
+
+/// The search a `LogicalQuery` runs: every proof is an answer, a relation's multiplicity being
+/// its proof count (`execute_logical_query`'s doc).
+fn execute_config() -> ResolveConfig {
+    ResolveConfig {
+        dedup_answers: false,
+        ..ResolveConfig::default()
     }
 }
 

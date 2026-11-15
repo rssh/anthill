@@ -788,6 +788,11 @@ namespace anthill.reflect
     -- could not evaluate (`ResolveStreamFailure` above). This keeps `execute` a
     -- faithful description of the core `Solution` (WI-531).
     --
+    -- The query is typed when `execute` reads it, as a written query is: its goals are
+    -- typed at the types the query fixes, a relation's goal is passed the dictionary
+    -- those types build, and a query the typer refuses raises `malformed_query` before
+    -- the search starts.
+    --
     -- A DECLARED payload, not a bare `Error` (WI-20260911-8Y5BE): this was the one
     -- type on the host face with no anthill declaration, so its Rust side had
     -- degenerated to `Error(String)`, a payload a handler can only substring-match.

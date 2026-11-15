@@ -4443,7 +4443,8 @@ fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     let layer = interp.layers.retain_innermost();
     // WI-20260911-8Y5BE — a query that does not lower is the declared
     // `Error[ResolveStreamFailure]`, not an internal fault, which a handler can catch.
-    let search = match interp.kb.execute_logical_query(&query) {
+    // Proposal 010.1 §3.2 — the query is typed when it is read, as a written one is.
+    let search = match interp.kb.execute_typed_logical_query(&query) {
         Ok(search) => search,
         Err(e) => return Err(interp.raise_query_lowering(e, crate::eval::effects::RaiseBy::Operation)),
     };

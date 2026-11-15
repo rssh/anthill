@@ -507,11 +507,14 @@ impl ResolveError {
     }
 
     /// Locate at `goal` unless already located, and only when `goal` carries a
-    /// position of its own.
+    /// position of its own: an occurrence built from a value (a goal `KB.execute` typed,
+    /// `node_occurrence::value_as_occurrence`) spans nothing, and is no position.
     fn located_at(mut self, goal: &Value) -> Self {
         if self.at.is_none() {
             if let Value::Node(occ) = goal {
-                self.at = Some(Rc::clone(occ));
+                if occ.span.end() > occ.span.start() {
+                    self.at = Some(Rc::clone(occ));
+                }
             }
         }
         self

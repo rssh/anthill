@@ -26107,17 +26107,11 @@ pub fn convert_query_terms(
     super::typing::route_query_goals(kb, &goals).map_err(|refused| {
         refused
             .iter()
-            .map(|e| match e {
-                super::typing::TypeError::Other {
-                    context: super::typing::TypeErrorContext::Rule { name, .. },
-                    expected,
-                    actual,
-                    span,
-                    ..
-                } => LoadError::QueryGoalRefused {
-                    goal: kb.qualified_name_of(*name).to_string(),
-                    expected: expected.clone(),
-                    actual: actual.clone(),
+            .map(|e| match query_goal_refusal(e) {
+                Some((name, expected, actual, span)) => LoadError::QueryGoalRefused {
+                    goal: kb.qualified_name_of(name).to_string(),
+                    expected: expected.to_string(),
+                    actual: actual.to_string(),
                     // The goal's own span where the converted node carries none (a query's
                     // nodes are built off the store), the first goal's otherwise.
                     span: span
@@ -26126,10 +26120,40 @@ pub fn convert_query_terms(
                         .expect("a query has a goal"),
                 }
                 .located_in(parsed),
-                other => other.to_load_error(kb),
+                None => e.to_load_error(kb),
             })
             .collect()
     })
+}
+
+/// The relation, the need and the reason of a query goal's refusal, where `e` is one: the
+/// typer reports it in the context of the relation the goal cites.
+fn query_goal_refusal(
+    e: &super::typing::TypeError,
+) -> Option<(Symbol, &str, &str, Option<Span>)> {
+    match e {
+        super::typing::TypeError::Other {
+            context: super::typing::TypeErrorContext::Rule { name, .. },
+            expected,
+            actual,
+            span,
+            ..
+        } => Some((*name, expected.as_str(), actual.as_str(), *span)),
+        _ => None,
+    }
+}
+
+/// A refusal of a query `KB.execute` typed (proposal 010.1 §3.2), in the words a written
+/// query's gets. A goal's refusal names no position, since a query built as a value has no
+/// source; any other refusal is rendered as the loader renders it, its position the empty one
+/// a built occurrence carries (`at 0..0`).
+pub(crate) fn query_refusal_detail(kb: &KnowledgeBase, e: &super::typing::TypeError) -> String {
+    match query_goal_refusal(e) {
+        Some((name, expected, actual, _)) => {
+            query_goal_refused_detail(&kb.qualified_name_of(name), expected, actual)
+        }
+        None => e.to_load_error(kb).to_string(),
+    }
 }
 
 /// Patterns converted as a query's goals are and not typed as a query is: the patterns of a
