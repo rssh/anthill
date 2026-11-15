@@ -9,8 +9,6 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260925-SHED7-inductive-relations-proposal
-
 - tags: typing
 
 ## Description
@@ -1064,4 +1062,8 @@ A SORT'S BRACKET ON A RULE-BODY GOAL IS REFUSED NOW (2026-10-21, with the user: 
 ### 2026-11-02T11:20:09Z — feedback — claude
 
 S7 AND DECISION B SPLIT OUT to WI-20261102-ATVC1 (user, 2026-11-02, dependency review). That ticket now holds S7 (060-implementation §7.3: rule → rule implicit arguments) and the notes it was carried by here — 2026-10-08 (S7's edge with an inferred condition), 2026-10-14 (the 068 set's S7 dependency), 2026-10-15 with its 2026-10-23 reading (the pattern evidence S7 threads) — and the 2026-10-21 bracket row (decision B: a sort's bracket on a rule-body goal read, the refusal lifted). DSEXA and 7D48J depend on it instead of on this ticket. The 2026-10-21 row from 0RRQP (a bound filled at the caller's own type parameter) stays here.
+
+### 2026-11-15T20:20:08Z — feedback — claude
+
+DEPENDENCY ON WI-20260925-SHED7 DROPPED (user, 2026-11-15: "review dependency and it is now not needed - drop it"). It was for SHED7's step 1 (proposal 067 §6: "5G28A's S3b and later steps depend on it"), delivered 2026-09-25 with S3b and S4. What is left here — S6, demo2 end to end, and the 2026-10-21 row from 0RRQP — needs S2, S3 and S5, all delivered; S3c is moot since step 1 retired domain_member. SHED7 stays open for 067 §5 q3 (the monoid's home) and §4 (MiniSat over a builder), neither of which this ticket needs.
 

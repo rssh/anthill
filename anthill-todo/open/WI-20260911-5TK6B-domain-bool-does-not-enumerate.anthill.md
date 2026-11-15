@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260925-SHED7-inductive-relations-proposal, WI-20261115-YR3N7-a-typed-column-s-domain-check
+- depends_on: WI-20261115-YR3N7-a-typed-column-s-domain-check
 
 ## Description
 
@@ -33,4 +33,8 @@ WHY IT IS ITS OWN TICKET: it changes what a `Bool` annotation MEANS in mode (out
 ### 2026-10-31T05:34:58Z — feedback — claude
 
 MOVES TO `SortDomain.fill` (user, 2026-10-31), so this waits on WI-20260925-SHED7. Since SHED7's step 1 every type has a `SortDomain` (proposal 060 §2.3) and a primitive's `fill` is the waiting type check, so `Bool` has a domain that does not enumerate: `rule anyBool(?x: Bool) :- true` answers one undecided row (`wi743_finite_domain_test::bool_has_a_primitive_domain_and_does_not_enumerate`). The fix is `Bool`'s `fill` enumerating `true`, `false`, not the clause `rule domain(?x, Bool) :- …` the Description proposes: SHED7's increment (e) retires `domain`.
+
+### 2026-11-15T20:20:35Z — feedback — claude
+
+DEPENDENCY ON WI-20260925-SHED7 DROPPED (user, 2026-11-15: "review dependency and it is now not needed - drop it"). It was for SHED7's step 1 (every type has a SortDomain), delivered 2026-09-25; SHED7's open steps (067 §5 q3, the monoid's home; §4, MiniSat over a builder) are not needed by Bool's derived literal clauses. It keeps WI-20261115-YR3N7, the shape those clauses are derived in.
 

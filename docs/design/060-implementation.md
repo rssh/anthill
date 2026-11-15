@@ -969,11 +969,14 @@ alike.
 deprecated or refused (decided at the work); `examples/classic-mini/map-colouring`'s `main` and
 the `wi_wt8wg_domain_value_face_test` rows moved to typed rules; item 2's provision built and the
 written `domain(?x)` migrated to it; kernel-language.md §5.3's value-face and written-domain
-paragraphs rewritten, beside SHED7's pending rewrite of its `domain_member` paragraphs. It depends
-on WI-20260925-SHED7 for item 2: an author-written implementation of `fill` is proposal 067's
-("one an author writes", §1), which SHED7 tracks and its step 1 did not build. Since 2026-11-15
-it also depends on WI-20261115-YR3N7 (below): the retirement keeps the per-sort relation (item 3),
-whose derivation that ticket changes, and item 2's provision is written in its shape.
+paragraphs rewritten, beside SHED7's pending rewrite of its `domain_member` paragraphs. It depended
+on WI-20260925-SHED7 for item 2, an author-written implementation of `fill` being proposal 067's
+("one an author writes", §1); the edge was DROPPED 2026-11-15 (user: "review dependency and it is
+now not needed - drop it"): SHED7's open steps — 067 §5 q3, the monoid's home, and §4, MiniSat
+over a builder through `fromList` — build no author-written provision, and item 2's provision is
+this work's own. It depends on WI-20261115-YR3N7 (below): the retirement keeps the per-sort
+relation (item 3), whose derivation that ticket changes, and item 2's provision is written in its
+shape, carrying its conditions to its member clauses.
 
 ### DECIDED 2026-11-15 — a domain is derived as one clause per constructor
 

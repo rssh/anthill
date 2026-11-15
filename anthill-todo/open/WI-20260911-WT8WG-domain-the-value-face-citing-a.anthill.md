@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket, WI-20260925-SHED7-inductive-relations-proposal, WI-20261115-YR3N7-a-typed-column-s-domain-check
+- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket, WI-20261115-YR3N7-a-typed-column-s-domain-check
 
 ## Description
 
@@ -661,4 +661,8 @@ DEPENDS ON WI-20260925-SHED7, for item 3: an author-written implementation of `f
 ### 2026-11-15T17:40:25Z — feedback — claude
 
 DEPENDS ON WI-20261115-YR3N7 (user, 2026-11-15: "We should build right architecture at first. If WT8WG builds inefficient code, it should be changed"). Retiring the surface does not retire the derived per-sort relation (060-implementation §7.3, 2026-11-02, item 3: it stays as the target a SortDomain dictionary lands on), and that relation is where a check generated instead of checking: YR3N7 derives it one clause per constructor, the constructor in the head (proposal 060 §2.3, "The head decides the mode"). Item 3's provision is written in the same shape: S provides SortDomain[T = S] with one rule fill(<case>) per case, its case in the head — a hand-written fill whose body is a disjunction proposes each case to a bound value in turn. The 060 §2.3 and 060-implementation §7.3 texts that print the provision say so since 2026-11-15.
+
+### 2026-11-15T20:20:21Z — feedback — claude
+
+DEPENDENCY ON WI-20260925-SHED7 DROPPED (user, 2026-11-15: "review dependency and it is now not needed - drop it"). It was recorded 2026-11-02 for item 3, an author-written implementation of fill, as one SHED7 tracks; SHED7's open steps — 067 §5 q3 (the monoid's home) and §4 (MiniSat over a collection builder, through fromList) — build no author-written provision, and this ticket's work list builds item 2's provision itself. It keeps WI-20261115-YR3N7 (the shape that provision is written in) and the delivered RS2G4. Item 2's provision must carry its conditions to its member clauses: fill_goal's Written arm routes the SortDomain read alone and hands every other read __unrouted (060-implementation §7.3, DECIDED 2026-11-15, to verify (b)).
 

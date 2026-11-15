@@ -4,7 +4,7 @@
 
 ## Relates to: [060](060-clause-level-requirements-and-typed-heads.md) §2.2–§2.3 (a sort's domain — an implementation of `Fillable`), [`060-typedomains-implementation.md`](../design/060-typedomains-implementation.md) (the requirement channel), [058](058-modular-instances.md) (dictionaries; §3.8 conditional provisions), [052](052-rules-as-stream-valued-operations.md) (`Relation`), [056](056-variadic-argument-capture.md) (the `...` spelling).
 
-## Tracked by: WI-20260925-SHED7. WI-20260911-5G28A depends on it.
+## Tracked by: WI-20260925-SHED7. WI-20260911-5G28A depended on it for §6 step 1, delivered; the edge was dropped 2026-11-15, as were WT8WG's, 5TK6B's and 09E6M's — none of them needs §5 q3 or §4.
 
 ## The problem
 
