@@ -2715,7 +2715,10 @@ passes `Int64`'s instance. A query is typed where it is read, as a rule body's g
 its bracket binds what the relation declares: `keep[A = Int64](?x, ?r)` passes `Int64`'s
 instance and answers the `Int64` row. A query a program builds as a value is typed when
 `KB.execute` reads it, before it runs, and one the typer refuses is reported as
-`malformed_query`. A member with a default body that takes a value of the
+`malformed_query`. A typed variable in a query reads as one in a rule head:
+`account(?id, ?o, ?b: Int64)` checks `?b`, `anyOf(?c: Colour)` over `rule anyOf(?c) :- true`,
+which binds nothing, lists `Colour`'s values, and `?o: Option`, whose type leaves a parameter
+unwritten, is refused. A member with a default body that takes a value of the
 carrier owes its spec's instance as a body-less one does, where anything provides the spec: over
 `sort Desc { sort T = ?  operation describe(x: T) -> Int64 = 1 }` and `Leaf` providing it at `7`,
 `rule via(?x, ?r) :- Desc.describe(?x, ?r)` is refused. A static member with a body (§8.7) owes

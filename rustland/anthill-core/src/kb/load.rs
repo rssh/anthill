@@ -22519,7 +22519,7 @@ fn head_is_equational(kb: &KnowledgeBase, head: TermId) -> bool {
 /// THE DERIVED `fill` IS NOT THIS, and stays with its own owner: a constructor FIELD that
 /// names a parameterised sort bare gets no variable — the sort declines
 /// ([`bare_parameterised_sort_in`]). This runs on a bound written in a rule head.
-fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+pub(crate) fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
     match kb.get_term(t).clone() {
         // A BARE reference to a parameterised sort: every parameter is unwritten.
         Term::Ref(s) => match kb.domain_params_of(kb.canonical_sort_sym(s)) {
@@ -26170,6 +26170,20 @@ pub fn convert_patterns_untyped(
     let mut patterns = Vec::with_capacity(parse_ids.len());
     let mut errors = Vec::new();
     for &parse_id in parse_ids {
+        // A typed variable declares goals a typed query reads (proposal 010.1 §3.1); a pattern
+        // no typer reads has nothing to read them with, so one written here is refused.
+        let mut typed = Vec::new();
+        query_typed_variables(parsed, parse_id, &mut typed);
+        if let Some((var, _)) = typed.first() {
+            errors.push(LoadError::Other {
+                message: format!(
+                    "the typed variable `?{}: …` is read only by a typed query; this pattern is \
+                     not typed (a structural browse, or a goal built at run time)",
+                    typed_variable_name(parsed, *var),
+                ),
+            });
+            continue;
+        }
         match convert_query_term_unrouted(kb, parsed, parse_id, scope, var_map) {
             Ok(pattern) => patterns.push(pattern),
             Err(e) => errors.extend(e),
@@ -26180,6 +26194,162 @@ pub fn convert_patterns_untyped(
     } else {
         Err(errors)
     }
+}
+
+/// Is `parse_id` the mark the parser mints for a typed variable `?x: T` written as an argument
+/// (`convert.rs`'s `typed_var_arg`): `typed_var(?x, type: <the written type>)`?
+fn is_typed_variable_mark(parsed: &ParsedFile, parse_id: ParseTermId) -> bool {
+    match parsed.terms.get(parse_id) {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
+            parsed.terms.is_minted(parse_id)
+                && parsed.symbols.local_name(*functor) == "typed_var"
+                && pos_args.len() == 1
+                && named_args
+                    .iter()
+                    .any(|(k, _)| parsed.symbols.local_name(*k) == "type")
+        }
+        _ => false,
+    }
+}
+
+/// The typed variables `?x: T` written in a query pattern, in the order written: each mark's
+/// variable and its written type.
+fn query_typed_variables(
+    parsed: &ParsedFile,
+    parse_id: ParseTermId,
+    out: &mut Vec<(ParseTermId, Option<TypeExpr>)>,
+) {
+    let Term::Fn {
+        pos_args,
+        named_args,
+        ..
+    } = parsed.terms.get(parse_id)
+    else {
+        return;
+    };
+    if is_typed_variable_mark(parsed, parse_id) {
+        let ty = named_args
+            .iter()
+            .filter(|(k, _)| parsed.symbols.local_name(*k) == "type")
+            .find_map(|&(_, id)| match parsed.terms.get(id) {
+                Term::ParseAux(aux) => match aux.as_ref() {
+                    crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
+                    _ => None,
+                },
+                _ => None,
+            });
+        out.push((pos_args[0], ty));
+        return;
+    }
+    for &arg in pos_args.iter() {
+        query_typed_variables(parsed, arg, out);
+    }
+    for &(_, arg) in named_args.iter() {
+        query_typed_variables(parsed, arg, out);
+    }
+}
+
+/// The written name of a typed variable's variable.
+fn typed_variable_name(parsed: &ParsedFile, var: ParseTermId) -> String {
+    match parsed.terms.get(var) {
+        Term::Var(Var::Global(vid)) => parsed.symbols.local_name(vid.name()).to_string(),
+        _ => "_".to_string(),
+    }
+}
+
+/// `occ` with the goals its pattern's typed variables declare (proposal 010.1 §3.1): for each
+/// `?x: T`, the goals a typed rule head's bound adds (`typing::typed_query_variable_goals`), the
+/// first in front of the pattern and the rest after it, joined into the one goal the pattern
+/// stands for.
+fn with_typed_variable_goals(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+    occ: Rc<NodeOccurrence>,
+    typed: Vec<(ParseTermId, Option<TypeExpr>)>,
+) -> Result<Rc<NodeOccurrence>, Vec<LoadError>> {
+    let mut errors = Vec::new();
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    // A variable's type is declared once, as a rule head's bound is: the same type written
+    // again adds nothing, another is refused.
+    let mut declared: Vec<(VarId, TermId)> = Vec::new();
+    for (var, ty) in typed {
+        let name = typed_variable_name(parsed, var);
+        let vid = match parsed.terms.get(var) {
+            Term::Var(Var::Global(v)) => var_map.get(&v.raw()).copied(),
+            _ => None,
+        };
+        let (Some(vid), Some(ty)) = (vid, ty) else {
+            errors.push(LoadError::Other {
+                message: format!(
+                    "a typed query variable is written `?x: T`, a variable and its type; \
+                     `?{name}: …` is not"
+                ),
+            });
+            continue;
+        };
+        let value = lend_to_loader(kb, parsed, scope, var_map, &mut errors, |loader| {
+            loader.annotation_type_to_value(&ty)
+        });
+        let bound = match node_occurrence::value_to_term(kb, &value) {
+            Ok(t) => t,
+            Err(e) => {
+                errors.push(LoadError::Other {
+                    message: format!("the type of the query variable `?{name}` has no term: {e:?}"),
+                });
+                continue;
+            }
+        };
+        match declared.iter().find(|(v, _)| *v == vid) {
+            Some(&(_, prev)) if prev == bound => continue,
+            Some(_) => {
+                errors.push(LoadError::Other {
+                    message: format!(
+                        "the query variable `?{name}` is given two types; a variable's type is \
+                         declared once"
+                    ),
+                });
+                continue;
+            }
+            None => declared.push((vid, bound)),
+        }
+        match super::typing::typed_query_variable_goals(kb, vid, bound, node_occurrence::empty_span()) {
+            Ok((first, rest)) => {
+                before.push(first);
+                after.extend(rest);
+            }
+            Err(message) => errors.push(LoadError::Other { message }),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let Some(push_and) = kb.try_resolve_symbol("anthill.kernel.push_and") else {
+        return Err(vec![LoadError::Other {
+            message: "a typed query variable needs the kernel's `push_and`, which this KB has \
+                      not loaded"
+                .to_string(),
+        }]);
+    };
+    let goals: Vec<Rc<NodeOccurrence>> =
+        before.into_iter().chain(std::iter::once(occ)).chain(after).collect();
+    let mut rest = goals.into_iter().rev();
+    let last = rest.next().expect("the pattern is a goal");
+    Ok(rest.fold(last, |conj, g| {
+        expr_node(Expr::Apply {
+            recv_type: None,
+            functor: push_and,
+            pos_args: vec![g, conj],
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        })
+    }))
 }
 
 /// [`convert_query_term`] before its goals are typed together ([`convert_query_terms`]).
@@ -26221,7 +26391,42 @@ fn convert_query_term_unrouted(
     // answer. AT THE ENTRY POINT: an ARGUMENT of the pattern is a data slot, which the
     // walk reads by its context where it converts it (`query_data_slot_name`,
     // WI-20260902-JB6RS), as the loader's own data-slot walk reads the fact's.
-    Ok(expand_bare_entity_query_name(kb, occ))
+    let occ = expand_bare_entity_query_name(kb, occ);
+    let mut typed = Vec::new();
+    query_typed_variables(parsed, parse_id, &mut typed);
+    if typed.is_empty() {
+        return Ok(occ);
+    }
+    // The goals a typed variable declares stand around the goal it is written in. Under a
+    // connective that goal is a negand or a branch, and goals added around the whole pattern
+    // would check the type outside it — `p(?b) | q(?b: Colour)` keeping only `Colour`s from
+    // `p` too — so a typed variable is read in a pattern that is no connective, and refused
+    // under one.
+    if is_goal_connective_pattern(kb, &occ) {
+        return Err(vec![LoadError::Other {
+            message: format!(
+                "the typed variable `?{}: …` is written under a connective (`not`, a branch of \
+                 `|`), where its type is not read; type it in a pattern of its own",
+                typed_variable_name(parsed, typed[0].0),
+            ),
+        }]);
+    }
+    with_typed_variable_goals(kb, parsed, scope, var_map, occ, typed)
+}
+
+/// Is the query pattern `occ` a connective — a goal with a slot the resolver proves, a `not`
+/// negand or an `or` branch — rather than a goal of its own?
+fn is_goal_connective_pattern(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
+    use super::term_view::{TermView, ViewHead};
+    match Value::Node(Rc::clone(occ)).head(kb) {
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } => kb
+            .goal_slot_readings(functor, pos_arity)
+            .iter()
+            .any(|slot| matches!(slot.reading, super::SlotReading::Proved)),
+        _ => false,
+    }
 }
 
 /// A dotted paren-less name written where a query proves a goal, read as the NAME it spells
@@ -27159,6 +27364,13 @@ fn convert_query_term_expecting(
             pos_args,
             named_args,
         } => {
+            // A typed variable `?x: T` (proposal 010.1 §3.1) is its variable here; the goals its
+            // type declares are added around the pattern by `convert_query_term_unrouted`.
+            if is_typed_variable_mark(parsed, parse_id) {
+                return convert_query_term_expecting(
+                    kb, parsed, pos_args[0], scope, var_map, expected, fold, errors,
+                );
+            }
             // WI-888 / WI-909: a QUERY pattern is the FOURTH functor producer, and it
             // used to need a minted-connective OVERRIDE here for the same reason the
             // three loader paths did — `anthill query -i anthill.reflect.{unify} …`
@@ -33784,13 +33996,7 @@ impl<'a> Loader<'a> {
                 // construction now (the mint and this exact layout are built together
                 // at `convert.rs`'s `typed_var_arg` arm), and stated rather than fused
                 // so a future marker shape cannot reach `pos_args[0]` by accident.
-                if self.parsed.terms.is_minted(parse_id)
-                    && self.parsed.symbols.local_name(functor) == "typed_var"
-                    && pos_args.len() == 1
-                    && named_args
-                        .iter()
-                        .any(|(s, _)| self.parsed.symbols.local_name(*s) == "type")
-                {
+                if is_typed_variable_mark(self.parsed, parse_id) {
                     let var_kb = self.convert_term(pos_args[0]);
                     let ty_expr_opt = self.read_parse_aux(parse_id, "type", |aux| match aux {
                         crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),

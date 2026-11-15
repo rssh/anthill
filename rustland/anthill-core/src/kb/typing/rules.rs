@@ -1079,16 +1079,7 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
                 implicit_domain_goals(kb, rid, db_index, bound_tid, &anchor, pass, owner)
                     .map(Vec::from)
             } else {
-                // A ground type with a domain: its `fill` by name where it reads no
-                // dictionary, else through the type.
-                let head = type_term_head_sym(kb, bound_tid).expect("a fillable bound has a head");
-                let entry = kb.sort_domain(head).cloned().expect("a fillable bound has a domain");
-                if entry.conditions.is_empty() {
-                    Some(vec![goal(entry.fill, vec![var()])])
-                } else {
-                    kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)
-                        .map(|apply| vec![goal(apply, vec![ty(), var()])])
-                }
+                ground_fill_goals(kb, bound_tid, &var, &ty, &goal)
             };
             // The fill APPENDED, and the guard in front of the body (see the doc above); a bound
             // with no fill keeps the waiting conformance check, which is all it has.
@@ -1103,6 +1094,83 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         kb.prepend_generated_body_goals(rid, prepended);
         kb.append_generated_body_goals(rid, appended);
     }
+}
+
+/// The `fill` of a variable typed at the ground type `bound`, which has a domain: the type's
+/// `fill` by name where it reads no dictionary, else through the type (`apply_domain`); `None`
+/// where the kernel has no `apply_domain` to call.
+fn ground_fill_goals(
+    kb: &mut KnowledgeBase,
+    bound: TermId,
+    var: &dyn Fn() -> Rc<NodeOccurrence>,
+    ty: &dyn Fn() -> Rc<NodeOccurrence>,
+    goal: &dyn Fn(Symbol, Vec<Rc<NodeOccurrence>>) -> Rc<NodeOccurrence>,
+) -> Option<Vec<Rc<NodeOccurrence>>> {
+    let head = type_term_head_sym(kb, bound).expect("a fillable bound has a head");
+    let entry = kb.sort_domain(head).cloned().expect("a fillable bound has a domain");
+    if entry.conditions.is_empty() {
+        Some(vec![goal(entry.fill, vec![var()])])
+    } else {
+        kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)
+            .map(|apply| vec![goal(apply, vec![ty(), var()])])
+    }
+}
+
+/// The goals a query's typed variable `?x: T` adds (proposal 010.1 §3.1): the ones a typed rule
+/// head's bound adds ([`install_typed_head_domain_goals`], 060 §2.3). The first goes in front
+/// of the query's goals: the conformance guard where `T` has a domain to fill, the waiting
+/// conformance check where it has none. The rest go after them: `T`'s `fill`. A type that
+/// leaves a parameter unwritten is refused, its domain being a requirement at an open type that
+/// a query has no caller to pass.
+pub(crate) fn typed_query_variable_goals(
+    kb: &mut KnowledgeBase,
+    var: VarId,
+    bound: TermId,
+    span: crate::span::SourceSpan,
+) -> Result<(Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>), String> {
+    let (Some(dom_sym), Some(guard_sym)) = (
+        kb.try_resolve_symbol(TYPE_DOMAIN_GOAL),
+        kb.try_resolve_symbol(TYPE_DOMAIN_GUARD),
+    ) else {
+        return Err("a typed query variable needs the kernel's domain goals, which this KB \
+                    has not loaded"
+            .to_string());
+    };
+    let bound = dealias_type(kb, bound);
+    let expanded = crate::kb::load::expand_unwritten_type_params(kb, bound);
+    if term_mentions_var(kb, expanded) {
+        return Err(format!(
+            "the query's typed variable `?{}: {}` leaves a type parameter unwritten: its domain \
+             is a requirement at an open type, and a query has no caller to pass it; write the \
+             type in full",
+            kb.local_name_of(var.name()),
+            crate::persistence::print::TermPrinter::new(kb).print_term(bound),
+        ));
+    }
+    let var_occ = || NodeOccurrence::new_expr(Expr::Var(Var::Global(var)), span, None);
+    let ty = || NodeOccurrence::new_expr(Expr::Spliced(Value::term(bound)), span, None);
+    let goal = |functor: Symbol, pos_args: Vec<Rc<NodeOccurrence>>| {
+        NodeOccurrence::new_expr(
+            Expr::Apply {
+                recv_type: None,
+                functor,
+                pos_args,
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        )
+    };
+    let fill = if bound_is_fillable(kb, bound) {
+        ground_fill_goals(kb, bound, &var_occ, &ty, &goal)
+    } else {
+        None
+    };
+    Ok(match fill {
+        Some(fill) => (goal(guard_sym, vec![var_occ(), ty()]), fill),
+        None => (goal(dom_sym, vec![var_occ(), ty()]), Vec::new()),
+    })
 }
 
 /// The kind of `fill` rule `rid` is, where its head is a sort's domain relation — the clauses

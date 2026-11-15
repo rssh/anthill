@@ -6534,6 +6534,16 @@ impl KnowledgeBase {
             for child in self.goal_arg_views(view) {
                 self.collect_undefined_goal_functors(&child, true, out);
             }
+        } else if self
+            .goal_head_sym_arity(view)
+            .is_some_and(|(f, arity)| self.is_goal_conjunction(f, arity))
+        {
+            // A conjunct is as committed as its conjunction ([`Self::is_goal_conjunction`]):
+            // a query pattern a typed variable wraps in its type's goals is still committed
+            // to the pattern's own head.
+            for child in self.goal_arg_views(view) {
+                self.collect_undefined_goal_functors(&child, under_not, out);
+            }
         }
     }
 
