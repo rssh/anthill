@@ -310,7 +310,7 @@ fn goal_form_proposition(kb: &mut KnowledgeBase, v: Value) -> Value {
 fn goal_form_carrier(kb: &mut KnowledgeBase, v: Value) -> Value {
     match v {
         Value::Node(occ) => {
-            let lowered = crate::kb::node_occurrence::try_occurrence_to_term(kb, &occ)
+            let lowered = code_goal_term(kb, &occ)
                 .filter(|t| !matches!(kb.get_term(*t), Term::Bottom))
                 .and_then(|t| kb.term_body_to_nodes(&[t]).into_iter().next());
             match lowered {
@@ -347,6 +347,64 @@ fn goal_form_carrier(kb: &mut KnowledgeBase, v: Value) -> Value {
     }
 }
 
+/// The term operation-body code `occ` stands for in a goal or a Γ fact, with each list
+/// literal written as the list it builds; `None` where the code has no term form.
+///
+/// A `[e…]` in an operation body is a `List` value, and its term twin
+/// (`try_occurrence_to_term`) is the reflect `ListLiteral(e…)`, which no `cons` pattern
+/// matches: `List`'s `eq` read `eq([Green], [Red])` as two constructors of no list and
+/// answered `false` over a `Color` whose `eq` holds of every pair. Written here as the
+/// `cons`/`nil` spine a rule body's list literal is lowered to, so a goal built from such
+/// code, the clause it is compared with and a Γ fact all hold one value. Every producer of
+/// a goal from body code reads it here: a call's argument substituted into its callee's
+/// contract or guard, a fact Γ learns, an in-body proof's conclusion, and `result` in a
+/// contract proof.
+pub(crate) fn code_goal_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
+    let t = crate::kb::node_occurrence::try_occurrence_to_term(kb, occ)?;
+    Some(list_literals_as_lists(kb, t))
+}
+
+fn list_literals_as_lists(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    let Some(list_literal) = kb.try_resolve_symbol(dt::qualified(dt::LIST_LITERAL)) else {
+        return t;
+    };
+    let list_literal = kb.canonical_sym(list_literal);
+    if kb.try_resolve_symbol("anthill.prelude.List.cons").is_none() {
+        return t;
+    }
+    fn rec(kb: &mut KnowledgeBase, t: TermId, list_literal: Symbol) -> TermId {
+        match kb.get_term(t).clone() {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                let pos: SmallVec<[TermId; 4]> =
+                    pos_args.iter().map(|a| rec(kb, *a, list_literal)).collect();
+                let named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                    .iter()
+                    .map(|(k, a)| (*k, rec(kb, *a, list_literal)))
+                    .collect();
+                if kb.canonical_sym(functor) == list_literal && named.is_empty() {
+                    return kb.build_list(&pos);
+                }
+                if pos == pos_args && named == named_args {
+                    return t;
+                }
+                kb.alloc(Term::Fn {
+                    functor,
+                    pos_args: pos,
+                    named_args: named,
+                })
+            }
+            // `[]`: a nullary `ListLiteral` is the bare `Ref` by the nullary canon.
+            Term::Ref(s) if kb.canonical_sym(s) == list_literal => kb.build_list(&[]),
+            _ => t,
+        }
+    }
+    rec(kb, t, list_literal)
+}
+
 /// WI-538 — the goal an in-body `proof <target> by <strategy> [conclude P]`
 /// discharges (typer, `Expr::Proof`). Named and `pub` so a test can DRIVE the
 /// site's own construction instead of re-spelling it: the Γ the site proves
@@ -365,13 +423,26 @@ fn goal_form_carrier(kb: &mut KnowledgeBase, v: Value) -> Value {
 /// force-delayed and NO in-body proof over a bare constructor could discharge —
 /// not even the reflexive `conclude eq(Red, Red)`, and `conclude eq(Green, Red)`
 /// over a carrier whose own `eq` holds stayed unproved.
+///
+/// Each `eq` and `neq` of a typed `conclude` keeps the member it was typed at, which the
+/// lowering drops: the resolver decides it by that member rather than by an operand's
+/// constructor.
 pub fn in_body_proof_goal(
     kb: &mut KnowledgeBase,
     target: Symbol,
     conclude: Option<&Rc<NodeOccurrence>>,
 ) -> Value {
     match conclude {
-        Some(c) => goal_form(kb, Value::Node(Rc::clone(c))),
+        // `goal_form`'s two halves apart, the members carried between them: the carrier half
+        // keeps the conclusion's shape, and the proposition half rebuilds a negation around
+        // the operand it lowered.
+        Some(c) => {
+            let lowered = goal_form_carrier(kb, Value::Node(Rc::clone(c)));
+            if let Value::Node(n) = &lowered {
+                carry_comparison_members(kb, c, n);
+            }
+            goal_form_proposition(kb, lowered)
+        }
         // Short form: the goal is the `target` rule as a 0-ary atom.
         // Incompleteness (sound, not unsound): an N-ary rule head is not
         // reconstructed with fresh vars, so the arity mismatch fails the
@@ -410,6 +481,40 @@ pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bo
     }
 }
 
+/// The term of a comparison conjunct's negation, `eq ⇄ neq` swapped as [`negate_goal`] swaps
+/// them: the goal a refutation of the conjunct proves. Typed in the operation's signature
+/// beside the conjunct (`type_contract_comparisons`), so the refutation reads the member of the
+/// comparison it proves. `None` for a conjunct on no term, written with labels, or headed by
+/// anything else.
+pub(super) fn negated_comparison_term(kb: &mut KnowledgeBase, conj: &Value) -> Option<TermId> {
+    let Value::Term { id, .. } = conj else {
+        return None;
+    };
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(*id).clone()
+    else {
+        return None;
+    };
+    if !named_args.is_empty() {
+        return None;
+    }
+    let (eq, neq) = eq_neq_functors(kb);
+    let (eq, neq) = (kb.canonical_sym(eq), kb.canonical_sym(neq?));
+    let swapped = match kb.canonical_sym(functor) {
+        f if f == eq => neq,
+        f if f == neq => eq,
+        _ => return None,
+    };
+    Some(kb.alloc(Term::Fn {
+        functor: swapped,
+        pos_args,
+        named_args,
+    }))
+}
+
 /// Negate a guard for refutation (proposal 050 open question C). `eq ⇄ neq`
 /// by **functor swap**, so a branch's positive `neq(b, 0)` fact discharges an
 /// `eq(b, 0)` guard by resolving the `neq(b, 0)` fact straight out of the Γ
@@ -419,6 +524,10 @@ pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bo
 /// floundering). `None` when the kernel's `not` is unavailable (a prelude-less
 /// KB) — the caller then keeps the effect rather than guess.
 pub(super) fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
+    // A goal on a term swaps as the typer's twin of its negation is built.
+    if let Some(negated) = negated_comparison_term(kb, goal) {
+        return Some(Value::term(negated));
+    }
     let (eq_sym, neq_sym) = eq_neq_functors(kb);
     if let ViewHead::Functor {
         functor: f,

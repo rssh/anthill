@@ -2610,12 +2610,12 @@ fn check_apply_call(
                 if value_carries_undecided_var(kb, &clause) {
                     continue;
                 }
-                if precondition_proved(kb, flow, &req_sigma, &clause) {
+                if precondition_proved(kb, flow, &req_sigma, fn_sym, &clause) {
                     continue;
                 }
                 // Unproved. In an op body that alone is the WI-539 violation. In a
                 // rule body only a ground REFUTATION is (a float is skipped — WI-602).
-                if !in_rule_body || precondition_refuted(kb, flow, &req_sigma, &clause) {
+                if !in_rule_body || precondition_refuted(kb, flow, fn_sym, &req_sigma, &clause) {
                     // REPORT THE CLAUSE AS JUDGED — both substitutions, in the order
                     // the check applied them — so the diagnostic names the bindings
                     // that refuted it rather than the declaration's variables:
@@ -2777,6 +2777,7 @@ fn check_apply_call(
                 kb,
                 flow,
                 &subst,
+                fn_sym,
                 &guard_sigma,
                 op_has_guarded,
                 walked,

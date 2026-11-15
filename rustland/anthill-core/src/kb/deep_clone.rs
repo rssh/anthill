@@ -992,6 +992,7 @@ impl Copier {
             signature,
             body,
             param_defaults,
+            typed_contract,
         } = record;
         OperationRecord {
             signature: signature.as_ref().map(|signature| {
@@ -1018,6 +1019,10 @@ impl Copier {
             param_defaults: param_defaults
                 .iter()
                 .map(|(param, default)| (plain(param), self.node(default)))
+                .collect(),
+            typed_contract: typed_contract
+                .iter()
+                .map(|(term, typed)| (plain(term), self.node(typed)))
                 .collect(),
         }
     }
@@ -1354,6 +1359,7 @@ mod tests {
         for (_, record) in ops {
             roots.extend(record.body.as_ref());
             roots.extend(record.param_defaults.iter().map(|(_, default)| default));
+            roots.extend(record.typed_contract.iter().map(|(_, typed)| typed));
         }
         for rule in &kb.rules {
             roots.extend(rule.body_nodes.iter());

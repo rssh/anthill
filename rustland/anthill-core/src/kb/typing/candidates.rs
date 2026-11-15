@@ -3092,6 +3092,30 @@ pub(super) fn op_requires_covers(
     false
 }
 
+/// Does what `op` requires, or the sort it is written in requires, reach `spec_sort` at the
+/// carrier `carrier` of the spec's parameter `param` — directly, or through what it requires in
+/// turn (`requires Ord[T = T]` reaches `Eq[T = T]`)? Read outside any call, so σ is empty: an
+/// operation's own type parameter is the same type written by its name (`Eq[T = T]`) or held
+/// as its variable (`x: T`).
+pub(crate) fn requires_reach_at(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    spec_sort: Symbol,
+    param: Symbol,
+    carrier: &Value,
+) -> bool {
+    let mut seeds = (*op_requires_chain_rc(kb, op)).clone();
+    if let Some(sort) = impl_parent_sort_of_op(kb, op) {
+        seeds.extend(direct_requires_chain(kb, sort));
+    }
+    let subst = Substitution::new();
+    let ctx = SigmaCtx {
+        subst: &subst,
+        param_rigids: &[],
+    };
+    op_requires_covers(kb, &ctx, &seeds, spec_sort, &[(param, carrier.clone())])
+}
+
 /// WI-653 — [`op_requires_covers`] at a body-call site: assemble the σ context and the
 /// deferred call's carriers from the per-call `subst`, then run carrier-aware coverage.
 /// Factors the identical wiring the `NoMatch` / `NoCandidates` arms of `check_apply_iter`

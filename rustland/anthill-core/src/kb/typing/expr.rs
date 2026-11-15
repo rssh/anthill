@@ -399,6 +399,19 @@ pub(super) enum TypeBuildFrame {
         env: Rc<TypingEnv>,
         has_conclude: bool,
     },
+    /// An in-body proof's conclusion, if written, is typed: for `by derivation`, prove the
+    /// goal from Γ, each `eq` in the conclusion at the member it was typed at, and visit
+    /// `body` under Γ with the goal assumed when it holds. The conclusion's result stays on
+    /// the stack for [`TypeBuildFrame::ProofStmt`].
+    ProofDischarge {
+        target: Symbol,
+        derivation: bool,
+        has_conclude: bool,
+        body: Rc<NodeOccurrence>,
+        env: Env,
+        expected: Option<Value>,
+        fuel: usize,
+    },
     /// WI-285: all list elements finished; drain `count` and build `List[T = elem]`
     /// (former `check_list_literal`). BOTH halves of "what is `elem`" moved to
     /// [`seq_literal_element_type`], and both changed: `element_hint` is the element type

@@ -1047,14 +1047,27 @@ pub(super) fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, Ter
 /// in, and an effect row inferred here is read by callers in other scopes — so
 /// WI-648 must say which instance a discharge is entitled to consult before this
 /// site can keep deciding.
+///
+/// `op` is the operation whose clause `conj` is: the goal is read as typed in its signature
+/// ([`clause_goal`]), and a comparison's refutation proves the swapped comparison typed there
+/// too ([`negated_comparison_term`]), so each `eq` and `neq` is decided at its member.
 fn conjunct_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     conj: &Value,
 ) -> bool {
-    let conj = substitute_ref_terms(kb, conj, sigma);
-    refute_guard(kb, flow, &conj)
+    match negated_comparison_term(kb, conj) {
+        Some(negated) => {
+            let goal = clause_goal(kb, op, &Value::term(negated), sigma);
+            prove_from_gamma(kb, flow, &goal)
+        }
+        None => {
+            let goal = clause_goal(kb, op, conj, sigma);
+            refute_guard(kb, flow, &goal)
+        }
+    }
 }
 
 /// Is a guarded atom's guard `G` REFUTED (so the effect drops)? `G` is a
@@ -1066,6 +1079,7 @@ fn conjunct_refuted(
 fn guarded_atom_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     guard_value: &Value,
 ) -> bool {
@@ -1078,7 +1092,7 @@ fn guarded_atom_refuted(
     // never NAF). The empty guard (`:- true`) has no conjunct — irrefutable, kept.
     // Each list element is a single conjunct goal `Value`; ground + refute it via
     // the shared per-conjunct core carrier-neutrally (WI-621 — no reification).
-    goals.iter().any(|g| conjunct_refuted(kb, flow, sigma, g))
+    goals.iter().any(|g| conjunct_refuted(kb, flow, op, sigma, g))
 }
 
 /// The conjunct goals of a guarded atom's `guard` — its `List[reflect.Term]` Horn body —
@@ -1120,7 +1134,7 @@ pub(super) fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>
 /// runs. Without an entry the parameter stays symbolic and the guard is undecided, as it
 /// is at an operation's own parameter.
 pub(super) fn guard_arg_term(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<TermId> {
-    crate::kb::node_occurrence::try_occurrence_to_term(kb, arg).filter(|t| !kb.mentions_debruijn(t))
+    code_goal_term(kb, arg).filter(|t| !kb.mentions_debruijn(t))
 }
 
 /// Build the call substitution σ: callee parameter ↦ the actual argument's
@@ -1158,18 +1172,19 @@ pub(super) fn build_call_guard_sigma(
 }
 
 /// Is a STANDALONE guarded atom's guard refuted under σ + Γ? Reads the atom's
-/// `guard` child and refutes its conjunction via [`guarded_atom_refuted`].
+/// `guard` child and refutes its conjunction via [`guarded_atom_refuted`]. `op` declares it.
 pub(super) fn guarded_atom_value_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     subst: &Substitution,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     atom: &Value,
 ) -> bool {
     let guard_key = kb.intern("guard");
     let walked = walk_value_to_resolved(kb, subst, atom.clone());
     match named_child_value(kb, &walked, guard_key) {
-        Some(guard) => guarded_atom_refuted(kb, flow, sigma, &guard),
+        Some(guard) => guarded_atom_refuted(kb, flow, op, sigma, &guard),
         None => false,
     }
 }
@@ -1178,11 +1193,12 @@ pub(super) fn guarded_atom_value_refuted(
 /// guarded atom inside that row whose σ(guard) is refuted from Γ. The flatten
 /// ([`effect_row_present_values`]) left a guarded atom's label conservatively
 /// present (WI-478); discharge removes only the proven-dropped ones, matching by
-/// the carrier-aware [`resolved_labels_equal`].
+/// the carrier-aware [`resolved_labels_equal`]. `op` declares the row.
 pub(super) fn drop_refuted_guarded_labels(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     subst: &Substitution,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     row: &Value,
     present: &mut Vec<Value>,
@@ -1190,7 +1206,7 @@ pub(super) fn drop_refuted_guarded_labels(
     let guarded = collect_guarded_atoms(kb, subst, row);
     let mut dropped: Vec<Value> = Vec::new();
     for (label, guard) in guarded {
-        if guarded_atom_refuted(kb, flow, sigma, &guard) {
+        if guarded_atom_refuted(kb, flow, op, sigma, &guard) {
             dropped.push(label);
         }
     }
@@ -1503,6 +1519,9 @@ pub(super) fn precondition_proved(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     sigma: &HashMap<Symbol, TermId>,
+    // The operation the clause is a precondition of, whose typed contract holds the
+    // members of its comparisons.
+    op_sym: Symbol,
     clause: &Value,
 ) -> bool {
     // A multi-goal clause is `conjunction(g1, …)`; ALL conjuncts must prove
@@ -1514,12 +1533,64 @@ pub(super) fn precondition_proved(
     // functor-headed goal, so an unreadable carrier simply fails to prove (the same
     // conservative UNPROVED default as the dual `guarded_atom_refuted`'s `false`).
     for conj in clause_conjuncts(kb, clause) {
-        let conj = substitute_ref_terms(kb, &conj, sigma);
-        if !prove_from_gamma(kb, flow, &conj) {
+        let goal = clause_goal(kb, op_sym, &conj, sigma);
+        if !prove_from_gamma(kb, flow, &goal) {
             return false;
         }
     }
     true
+}
+
+/// A contract clause's conjunct `conj` with `sigma` substituted, as the goal a proof asks: an
+/// occurrence whose comparisons carry the members the typer gave the clause's own
+/// (`type_contract_comparisons`), the substitution leaving the clause's shape and replacing
+/// only what its parameters and `result` stood for.
+pub(crate) fn clause_goal(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    conj: &Value,
+    sigma: &HashMap<Symbol, TermId>,
+) -> Value {
+    let substituted = substitute_ref_terms(kb, conj, sigma);
+    let typed = match conj {
+        Value::Term { id, .. } => kb.typed_contract_conjunct(op_sym, *id),
+        _ => None,
+    };
+    match typed {
+        Some(typed) => {
+            let goal = crate::kb::node_occurrence::value_as_occurrence(kb, &substituted);
+            carry_comparison_members(kb, &typed, &goal);
+            Value::Node(goal)
+        }
+        None => substituted,
+    }
+}
+
+/// Each `eq` and `neq` of `to` takes the member the typer decided at its twin in `from`, where a
+/// goal reads it ([`goal_reads_comparison_member`]) — the same tree with some leaves replaced or
+/// lowered: walked pairwise while the two agree on a call's functor and arity, stopping where
+/// they part.
+pub(super) fn carry_comparison_members(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) {
+    let (Some(from_expr), Some(to_expr)) = (from.as_expr(), to.as_expr()) else {
+        return;
+    };
+    let (Some((f1, p1, n1)), Some((f2, p2, n2))) = (expr_call_parts(from_expr), expr_call_parts(to_expr)) else {
+        return;
+    };
+    if kb.canonical_sym(f1) != kb.canonical_sym(f2) || p1.len() != p2.len() {
+        return;
+    }
+    if let Some(class) = from.call_class().filter(|class| goal_reads_comparison_member(kb, f1, class)) {
+        to.set_classification(class);
+    }
+    for (a, b) in p1.iter().zip(p2.iter()) {
+        carry_comparison_members(kb, a, b);
+    }
+    for (k, a) in n1.iter() {
+        if let Some((_, b)) = n2.iter().find(|(k2, _)| k2 == k) {
+            carry_comparison_members(kb, a, b);
+        }
+    }
 }
 
 /// WI-K88TN — Γ₀ for an operation body: the operation's OWN value preconditions,
@@ -1594,12 +1665,13 @@ pub(super) fn op_requires_gamma(
 pub(super) fn precondition_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     clause: &Value,
 ) -> bool {
     clause_conjuncts(kb, clause)
         .iter()
-        .any(|conj| conjunct_refuted(kb, flow, sigma, conj))
+        .any(|conj| conjunct_refuted(kb, flow, op, sigma, conj))
 }
 
 /// WI-539 (proposal 050 "operation call" modification rule, `ensures` half): if

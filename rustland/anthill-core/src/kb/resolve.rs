@@ -19,6 +19,7 @@ use smallvec::SmallVec;
 use super::discrim::SubstTree;
 use super::extent::{ArgKey, QueryPattern};
 use super::node_occurrence::{self, EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode};
+use super::typing::SiblingCall;
 use super::persist_subst::BindValue;
 use super::subst::{Constraint, Substitution};
 use super::term::{Literal, Term, TermId, Var, VarId};
@@ -113,6 +114,17 @@ thread_local! {
     /// it survives `bridge_op_to_eval`'s `mem::take` of the KB and is shared by
     /// every re-entrant bridge on the thread regardless of which KB instance runs.
     static BRIDGE_REENTRY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// [`eq_index_reads_by_this_thread`].
+    static EQ_INDEX_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many `eq` goals the resolver has decided ON THIS THREAD, ever, at the member the equality
+/// index names for an operand's constructor: goals whose `eq` no type reached. An instrument for
+/// what a verdict cannot show, as the index names the member the typer would: that a typed
+/// comparison was decided at the member the typer gave it. A test reads it before and after a
+/// load or a query and asserts on the difference; a libtest thread runs one test.
+pub fn eq_index_reads_by_this_thread() -> usize {
+    EQ_INDEX_READS.with(|c| c.get())
 }
 
 /// WI-500: how a constructor's POSITIONAL args map onto its declared field
@@ -1380,6 +1392,14 @@ impl Wait {
 // WI-1014, which is Open.
 
 /// A woven equality goal read through its dictionary ([`KnowledgeBase::woven_equality`]).
+/// The member an `=` goal is decided at, and the spec operation and dictionary the typer
+/// entered it through where it built one ([`KnowledgeBase::classified_entry`]).
+#[derive(Clone, Copy)]
+struct PinnedEq {
+    member: Symbol,
+    entry: Option<(Symbol, TermId)>,
+}
+
 enum WovenEquality {
     /// The call, pinned to the member the dictionary names.
     At(Value),
@@ -2691,10 +2711,10 @@ impl SearchStream {
             return Some(StepResult::Continue);
         }
 
-        // 3.8 `neq(a, b)` no type reached is `not(eq(a, b))` ([`KnowledgeBase::untyped_neq_as_not_eq`]).
+        // 3.8 `neq(a, b)` is `not(eq(a, b))`, at the `eq` its body calls ([`KnowledgeBase::neq_as_not_eq`]).
         // Not under a citation's marker: a marked goal carries its callee's dictionaries.
         if within.is_none() {
-            let not_eq = kb.untyped_neq_as_not_eq(&goal_val, &self.stack.last().unwrap().subst);
+            let not_eq = kb.neq_as_not_eq(&goal_val, &self.stack.last().unwrap().subst);
             if let Some(not_eq) = not_eq {
                 // In a proof from Γ, a hypothesis that is the goal as written answers it first —
                 // an earlier `match` arm's `neq(s, p)`, an assumed conclusion.
@@ -9244,10 +9264,24 @@ impl KnowledgeBase {
         let ViewHead::Functor { functor, .. } = goal.head(self) else {
             return BuiltinResult::Failure;
         };
-        let pinned = match goal {
-            Value::Node(o) => o
-                .classified_apply_target()
-                .filter(|t| *t != functor && self.builtin_of(*t).is_none()),
+        // The member the typer decided the call at, a plain pin or one entered through a
+        // dictionary (`NeedsDict`: `=` at `Option[T = Pt]` is `Option.eq`, whose sort reads
+        // `PartialEq[T]`), with the dictionary it built where it built one.
+        let pinned: Option<PinnedEq> = match goal {
+            Value::Node(o) => {
+                let (target, through) = match o.apply_dispatch() {
+                    node_occurrence::ApplyDispatch::Pin(t) => (Some(t), false),
+                    node_occurrence::ApplyDispatch::NeedsDict(t) => (Some(t), true),
+                    node_occurrence::ApplyDispatch::Unclassified => (None, false),
+                };
+                target
+                    .filter(|t| *t != functor && self.builtin_of(*t).is_none())
+                    .map(|member| PinnedEq {
+                        member,
+                        // Only a member entered through a dictionary has one to enter it by.
+                        entry: if through { self.classified_entry(o, member) } else { None },
+                    })
+            }
             _ => None,
         };
         let verdict = match self.eq_operands(goal, subst, faults) {
@@ -9268,7 +9302,7 @@ impl KnowledgeBase {
         a: Value,
         b: Value,
         subst: &Substitution,
-        pinned: Option<Symbol>,
+        pinned: Option<PinnedEq>,
     ) -> BuiltinResult {
         // (1) Float operand pair — IEEE `==` (nan != nan, -0.0 == +0.0), NOT the
         // structural reflexivity shortcut below (which reads nan == nan through
@@ -9306,9 +9340,16 @@ impl KnowledgeBase {
         }
         // (4) Head-carrier override over GROUND operands ⇒ dispatch: the typer's pin, else the
         // index.
-        let target = pinned
-            .or_else(|| self.sem_eq_dispatch_target(&a))
-            .or_else(|| self.sem_eq_dispatch_target(&b));
+        let target = pinned.or_else(|| {
+            let read = self
+                .sem_eq_dispatch_target(&a)
+                .or_else(|| self.sem_eq_dispatch_target(&b))
+                .map(|member| PinnedEq { member, entry: None });
+            if read.is_some() {
+                EQ_INDEX_READS.with(|c| c.set(c.get() + 1));
+            }
+            read
+        });
         if let Some(target) = target {
             if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
                 return BuiltinResult::delay();
@@ -9465,11 +9506,12 @@ impl KnowledgeBase {
     ///   solutions yield `truncated: false`.
     fn sem_eq_dispatch(
         &mut self,
-        target: Symbol,
+        pinned: PinnedEq,
         a: Value,
         b: Value,
         subst: &Substitution,
     ) -> BuiltinResult {
+        let PinnedEq { member: target, entry } = pinned;
         // Close the operands under the caller's σ: groundness was checked
         // AGAINST σ, but the sub-resolution starts from an empty substitution —
         // a σ-bound variable inside an entity-carried operand would enter the
@@ -9495,7 +9537,7 @@ impl KnowledgeBase {
         // `prove_rule_predicate` below, where its goal runs the primitive the member
         // carries (`BuiltinTag::ScalarEq`), not a clause search.
         if super::typing::op_has_runnable_body(self, target) {
-            return match self.bridge_eq_op_to_eval(target, a, b) {
+            return match self.bridge_eq_op_to_eval(target, a, b, entry) {
                 Ok(BridgeEqOutcome::Decided(v)) => sem_verdict(v, true),
                 // WI-628: carry the incompleteness bit straight through — a re-entry
                 // cap OR a nested truncation surfaced via the eval bridge is
@@ -13405,6 +13447,9 @@ impl KnowledgeBase {
         target: Symbol,
         a: Value,
         b: Value,
+        // The spec operation and the dictionary the typer entered `target` through, where it
+        // built one ([`Self::classified_entry`]); the member's frame is then that dictionary's.
+        entry: Option<(Symbol, TermId)>,
     ) -> Result<BridgeEqOutcome, EvalError> {
         // `None` from the bridge core = the re-entry cap was hit ⇒ undecided. WI-628:
         // the cap is a RESOURCE CUT (the eval analog of a depth-truncated search),
@@ -13412,9 +13457,10 @@ impl KnowledgeBase {
         // clean bridge-mode suspend below.
         // Operands ride on the carrier they were proved on — see the identical note
         // in `bridge_op_to_eval` (WI-20260827-3ZNBC).
-        let Some(outcome) =
-            self.run_in_bridge_interp(|interp| interp.call_op_bridged(target, &[a, b], None, &[]))
-        else {
+        let Some(outcome) = self.run_in_bridge_interp(|interp| match entry {
+            Some((spec_op, dict)) => interp.call_op_bridged_through(target, &[a, b], spec_op, dict, &[]),
+            None => interp.call_op_bridged(target, &[a, b], None, &[]),
+        }) else {
             return Ok(BridgeEqOutcome::Undecided { truncated: true });
         };
         match outcome {
@@ -14098,19 +14144,25 @@ impl KnowledgeBase {
     }
 
     /// `PartialEq.neq(a, b)` as the goal `not(eq(a, b))` — its body, `Bool.not(eq(a, b))`,
-    /// read in a goal position, where `Bool.not` is negation as failure — for a goal no type
-    /// reached; `None` for any other goal. A typed `neq` runs the body at its pin, with the
-    /// carrier's dictionary. One no type reached has no dictionary to run it with, and read
-    /// through `eq` it has `eq`'s verdicts: decided where `eq` decides, waiting where `eq`
-    /// waits, undecided where `eq` is over a proof's eigenvariable (`ensures neq(x, 1)`), and
-    /// refuted by `Eq`'s law over identical operands (`neq(x, x)`). `eq` the test never binds,
-    /// so the negation of its answer is the answer of `neq`.
+    /// read in a goal position, where `Bool.not` is negation as failure; `None` for any other
+    /// goal. Read through `eq`, a `neq` has `eq`'s verdicts: decided where `eq` decides, waiting
+    /// where `eq` waits, undecided where `eq` is over a proof's eigenvariable (`ensures
+    /// neq(x, 1)`), and refuted by `Eq`'s law over identical operands (`neq(x, x)`). `eq` the
+    /// test never binds, so the negation of its answer is the answer of `neq`. Its body run as a
+    /// function instead would read an eigenvariable as a value.
     ///
-    /// Untyped means: no classification on the occurrence, or a goal on no occurrence (a
-    /// contract clause substituted as a term, a goal built by hand). One written with labels
-    /// is read in its parameters' order; one written with a `Bool` result column is `eq` at
-    /// the negated column.
-    pub(crate) fn untyped_neq_as_not_eq(&mut self, goal: &Value, subst: &Substitution) -> Option<Value> {
+    /// The `eq` is the one the body calls. A call typed at an instance enters the body with that
+    /// instance's dictionary, and its `eq` is the dictionary's member
+    /// ([`super::typing::CallClass::sibling_through_dictionary`]), or an untyped one where the
+    /// instance has no `eq` of its own. A call no type reached — no classification on the
+    /// occurrence, or a goal on no occurrence (a goal built by hand) — has no dictionary, and
+    /// its `eq` is untyped. Any other typed call keeps the body: one deferred to a requirement
+    /// or a dictionary reads the instance at dispatch, and one whose provider names no `eq` it
+    /// may enter raises that where the body runs.
+    ///
+    /// One written with labels is read in its parameters' order; one written with a `Bool`
+    /// result column is `eq` at the negated column.
+    pub(crate) fn neq_as_not_eq(&mut self, goal: &Value, subst: &Substitution) -> Option<Value> {
         let ViewHead::Functor {
             functor,
             pos_arity,
@@ -14122,13 +14174,20 @@ impl KnowledgeBase {
         if !matches!(pos_arity + named_arity, 2 | 3) || !self.is_neq_op(functor) {
             return None;
         }
-        // No classification at all: a call deferred to a requirement or a dictionary reads
-        // the instance at dispatch, and is no call no type reached.
-        if let Value::Node(o) = goal {
-            if !o.classification_is_none() {
-                return None;
-            }
-        }
+        let eq = self.eq_functor();
+        let typed = match goal {
+            Value::Node(o) => match o.call_class() {
+                None => None,
+                Some(class) => match class.sibling_through_dictionary(self, eq) {
+                    Some(SiblingCall::Member(eq_class)) => Some((eq_class, Rc::clone(o))),
+                    Some(SiblingCall::SpecsOwn) => None,
+                    // The body raises the refusal; a call deferred to a requirement or a
+                    // dictionary reads the instance at dispatch.
+                    Some(SiblingCall::Refused) | None => return None,
+                },
+            },
+            _ => None,
+        };
         let call = match self.builtin_call_in_param_order(goal) {
             BuiltinCallOrder::AsWritten => goal.clone(),
             BuiltinCallOrder::InParamOrder(positional) => positional,
@@ -14136,7 +14195,25 @@ impl KnowledgeBase {
             BuiltinCallOrder::NotFilled(_) => return None,
         };
         let (a, b) = (call.pos_arg(self, 0)?.to_value(), call.pos_arg(self, 1)?.to_value());
-        let eq = self.eq_functor();
+        let eq_call = |kb: &mut Self, args: Vec<Value>| match &typed {
+            Some((class, o)) => {
+                let pos_args = args.iter().map(|v| node_occurrence::value_as_occurrence(kb, v)).collect();
+                let occ = NodeOccurrence::new_expr(
+                    Expr::Apply {
+                        recv_type: None,
+                        functor: eq,
+                        pos_args,
+                        named_args: Vec::new(),
+                        type_args: Vec::new(),
+                    },
+                    o.span,
+                    o.owner,
+                );
+                occ.set_classification(class.clone());
+                Value::Node(occ)
+            }
+            None => kb.make_goal_value(eq, args),
+        };
         // With its result column written as a Bool, `neq(a, b, true)` is `eq(a, b, false)`.
         // One holding a variable keeps the body: its value is computed, not tested.
         if pos_arity + named_arity == 3 {
@@ -14144,10 +14221,10 @@ impl KnowledgeBase {
             let ViewHead::Const(Literal::Bool(holds)) = column.head(self) else {
                 return None;
             };
-            return Some(self.make_goal_value(eq, vec![a, b, Value::Bool(!holds)]));
+            return Some(eq_call(self, vec![a, b, Value::Bool(!holds)]));
         }
         let not = self.kernel_not_sym?;
-        let eq_goal = self.make_goal_value(eq, vec![a, b]);
+        let eq_goal = eq_call(self, vec![a, b]);
         Some(self.make_goal_value(not, vec![eq_goal]))
     }
 
@@ -20193,7 +20270,7 @@ mod tests {
         assert_eq!(solutions.len(), 0, "eq(1, 2) should fail");
     }
 
-    /// A `neq` goal no type reached is `not(eq(a, b))` (`untyped_neq_as_not_eq`).
+    /// A `neq` goal no type reached is `not(eq(a, b))` (`neq_as_not_eq`).
     #[test]
     fn untyped_neq_succeeds_on_different() {
         let mut kb = kb_with_prelude();
@@ -21940,3 +22017,4 @@ end
         assert_eq!(kb.nullary_op_component(&ty, "zero"), Some(zero), "the type reaches its component");
     }
 }
+

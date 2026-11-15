@@ -3738,6 +3738,7 @@ pub(super) fn push_effect_with_guard_discharge(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     subst: &Substitution,
+    op: Symbol,
     guard_sigma: &HashMap<Symbol, TermId>,
     has_guarded: bool,
     walked: Value,
@@ -3751,7 +3752,7 @@ pub(super) fn push_effect_with_guard_discharge(
         // (WI-478); discharge removes only the proven-dropped ones.
         let mut present = effect_row_present_values(kb, &walked);
         if has_guarded {
-            drop_refuted_guarded_labels(kb, flow, subst, guard_sigma, &walked, &mut present);
+            drop_refuted_guarded_labels(kb, flow, subst, op, guard_sigma, &walked, &mut present);
         }
         let kept = !present.is_empty();
         out.extend(present);
@@ -3761,7 +3762,7 @@ pub(super) fn push_effect_with_guard_discharge(
         // `div … effects { Error[…] :- eq(b, 0) }`). Refute σ(guard) from Γ; drop the
         // atom on a positive proof of ¬guard, else keep it conservatively present
         // (unchanged from WI-478).
-        let kept = !guarded_atom_value_refuted(kb, flow, subst, guard_sigma, &walked);
+        let kept = !guarded_atom_value_refuted(kb, flow, subst, op, guard_sigma, &walked);
         if kept {
             out.push(walked);
         }
@@ -3975,6 +3976,7 @@ pub(super) fn dispatched_impl_effects_of(
                 kb,
                 flow,
                 subst,
+                impl_op_sym,
                 &guard_sigma,
                 impl_has_guarded,
                 walked,

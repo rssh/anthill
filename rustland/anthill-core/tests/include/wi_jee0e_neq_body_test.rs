@@ -15,7 +15,7 @@
 //! receiver-less sibling): traced on 2026-11-10 at `sem_eq_dispatch_target`, the carrier and
 //! generic rows read the equality index nowhere, where they read it 10 and 4 times with the
 //! member taken from the value. (2) A `neq` goal no type reached is read as `not(eq(a, b))`
-//! (`KnowledgeBase::untyped_neq_as_not_eq`), with `eq`'s verdicts. (3) A contract proof's
+//! (`KnowledgeBase::neq_as_not_eq`), with `eq`'s verdicts. (3) A contract proof's
 //! eigenvariable carries whether its parameter is equal to itself by `Eq`'s law — its declared
 //! type provides `Eq`, or the operation or its sort requires `Eq` at it
 //! (`OpaqueSkolems::not_self_equal`); an `eq` success resting on one that is not is undecided,
@@ -373,11 +373,13 @@ end
         n += 1;
         verdict(&format!("test.jee0e.contract{n}"), ty, ensures)
     };
-    for ty in ["Int64", "Float"] {
-        let v = at(ty, "neq(x, 1)");
-        assert!(undecided(&v), "{ty}: `neq(x, 1)` rests on `x`; got {v:?}");
-        let v = at(ty, "x != 1");
-        assert!(undecided(&v), "{ty}: `x != 1`; got {v:?}");
+    // The literal is of the parameter's type: a contract's comparison is typed in the
+    // operation's signature, and `neq(x, 1)` over a `Float` is refused at load.
+    for (ty, one) in [("Int64", "1"), ("Float", "1.0")] {
+        let v = at(ty, &format!("neq(x, {one})"));
+        assert!(undecided(&v), "{ty}: `neq(x, {one})` rests on `x`; got {v:?}");
+        let v = at(ty, &format!("x != {one}"));
+        assert!(undecided(&v), "{ty}: `x != {one}`; got {v:?}");
     }
     let v = at("Int64", "neq(x, x)");
     assert!(refuted(&v), "`Eq`'s law: `x` is equal to itself; got {v:?}");
@@ -463,8 +465,72 @@ end
     assert!(matches!(v, ProofVerdict::Discharged), "`Eq[T]` is required; got {v:?}");
     let v = verdict("test.jee0e.law2", partial, "T", "eq(result.value, x)");
     assert!(undecided(&v), "`PartialEq[T]` alone gives no law; got {v:?}");
+    // Through what the sort's requirement requires in turn (passes with the reader before
+    // `requires_reach_at` too, whose chain of the sort was transitive).
+    let ordered = "sort T = ?\n    requires anthill.prelude.Ord[T = T]";
+    let v = verdict("test.jee0e.law5", ordered, "T", "eq(result.value, x)");
+    assert!(matches!(v, ProofVerdict::Discharged), "`Ord[T]` requires `Eq[T]`; got {v:?}");
     for (n, ensures) in [(3, "neq(x, 1, true)"), (4, "eq(x, 1, false)")] {
         let v = verdict(&format!("test.jee0e.law{n}"), "", "Int64", ensures);
         assert!(undecided(&v), "`{ensures}` rests on `x`; got {v:?}");
     }
+}
+
+/// The law at an operation's own type parameter: under the operation's `requires Eq[T = T]` an
+/// abstract `x: T` is equal to itself, and so under `requires Ord[T = T]`, which requires `Eq` in
+/// turn; under `requires PartialEq[T = T]` it is not, nor is a parameter of another type than the
+/// one the requirement names. The requirement names `T`, the parameter's type is `T`'s variable:
+/// read as one type, as a sort's `requires Eq[T = T]` and `x: T` are.
+///
+/// Back-out (measured, then removed: `eq_required_at` comparing the requirement's binding with
+/// the parameter's type structurally, over the operation's direct `requires` and its sort's
+/// chain, as before): the `Eq` and `Ord` rows are undecided and `neq(result, x)` is undecided
+/// instead of refuted. The `PartialEq` and second-parameter rows pass either way, by design.
+#[test]
+fn an_operations_own_requirement_gives_the_law_at_its_type_parameter() {
+    use anthill_core::kb::proof_verify::{verify_proofs, ProofVerdict};
+    fn verdict(ns: &str, sig: &str, ensures: &str) -> ProofVerdict {
+        let src = format!(
+            r#"namespace {ns}
+  import anthill.prelude.{{Int64, Bool, Eq, Ord, PartialEq}}
+  import anthill.prelude.PartialEq.{{eq, neq}}
+  sort Box
+    operation {sig}
+      ensures {ensures}
+      = x
+    proof wrap.ensures by derivation end
+  end
+end
+"#
+        );
+        let mut kb = crate::common::load_kb_with(&src);
+        verify_proofs(&mut kb)
+            .into_iter()
+            .find(|r| r.rule_qn.ends_with("wrap.ensures"))
+            .expect("the proof is reported")
+            .verdict
+    }
+    let undecided = |v: &ProofVerdict| {
+        matches!(v, ProofVerdict::Failed { reason } if reason.contains("could not be DECIDED"))
+    };
+    let refuted = |v: &ProofVerdict| {
+        matches!(v, ProofVerdict::Failed { reason } if reason.contains("is not derivable"))
+    };
+    let eq = "wrap[T](x: T) -> T requires Eq[T = T]";
+    let v = verdict("test.jee0e.own1", eq, "eq(result, x)");
+    assert!(matches!(v, ProofVerdict::Discharged), "`Eq[T]` is required; got {v:?}");
+    let v = verdict("test.jee0e.own2", eq, "not(neq(result, x))");
+    assert!(matches!(v, ProofVerdict::Discharged), "`Eq[T]` is required; got {v:?}");
+    let v = verdict("test.jee0e.own3", eq, "neq(result, x)");
+    assert!(refuted(&v), "`x` is equal to itself; got {v:?}");
+    let v = verdict("test.jee0e.own4", "wrap[T](x: T) -> T requires Ord[T = T]", "eq(result, x)");
+    assert!(matches!(v, ProofVerdict::Discharged), "`Ord[T]` requires `Eq[T]`; got {v:?}");
+    let v = verdict("test.jee0e.own5", "wrap[T](x: T) -> T requires PartialEq[T = T]", "eq(result, x)");
+    assert!(undecided(&v), "`PartialEq[T]` alone gives no law; got {v:?}");
+    let v = verdict(
+        "test.jee0e.own6",
+        "wrap[A, B](a: A, x: B) -> B requires Eq[T = A]",
+        "eq(result, x)",
+    );
+    assert!(undecided(&v), "`Eq` is required at `A`, and `x` is a `B`; got {v:?}");
 }

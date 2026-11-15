@@ -2492,6 +2492,16 @@ mod wi_cbrd2_equality_test;
 mod wi_cbrd2_no_typed_caller_test;
 #[path = "include/wi_cbrd2_static_operation_test.rs"]
 mod wi_cbrd2_static_operation_test;
+#[path = "include/wi_cbrd2_contract_comparison_test.rs"]
+mod wi_cbrd2_contract_comparison_test;
+#[path = "include/wi_cbrd2_in_body_proof_test.rs"]
+mod wi_cbrd2_in_body_proof_test;
+#[path = "include/wi_cbrd2_list_literal_goal_test.rs"]
+mod wi_cbrd2_list_literal_goal_test;
+#[path = "include/wi_cbrd2_typed_neq_test.rs"]
+mod wi_cbrd2_typed_neq_test;
+#[path = "include/wi_cbrd2_effect_guard_comparison_test.rs"]
+mod wi_cbrd2_effect_guard_comparison_test;
 #[path = "include/wi_cbrd2_typed_execute_test.rs"]
 mod wi_cbrd2_typed_execute_test;
 #[path = "include/wi_cbrd2_typed_query_variable_test.rs"]

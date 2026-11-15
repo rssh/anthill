@@ -1230,6 +1230,17 @@ pub enum TypeError {
         /// suffix (the WI-1049 shape the declared-effects error already uses).
         kind: PreconditionFailure,
     },
+    /// A comparison of a contract or an effect guard (`=`, `eq`, `neq`) that does not type in
+    /// the operation's signature: a comparison is a call of its carrier's member, and `cause`
+    /// is why this one has none (`eq(c, 1)` over `c: Color`). Structural equality, which
+    /// compares any two values, is written `===`.
+    IllTypedComparison {
+        span: Option<Span>,
+        op: Symbol,
+        part: ContractPart,
+        comparison: Value,
+        cause: Box<TypeError>,
+    },
     /// Catchall for auxiliary typing-pass checks (effect declarations,
     /// match exhaustiveness, HO pattern fragment, rule var consistency).
     ///
@@ -1243,6 +1254,43 @@ pub enum TypeError {
         // WI-510: construction site — see `TypeMismatch::site`.
         site: &'static std::panic::Location<'static>,
     },
+}
+
+/// Where a contract comparison is written ([`TypeError::IllTypedComparison`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractPart {
+    Requires,
+    Ensures,
+    /// A guard of the operation's effects row (`effects { Boom :- eq(c, Red) }`).
+    EffectGuard,
+}
+
+impl ContractPart {
+    /// The clause's keyword, as the operation's declaration writes it.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            ContractPart::Requires => "requires",
+            ContractPart::Ensures => "ensures",
+            ContractPart::EffectGuard => "effects",
+        }
+    }
+}
+
+/// The repair [`TypeError::IllTypedComparison`] names: what `cause` refuses, then the
+/// structural spelling.
+fn ill_typed_comparison_text(kb: &KnowledgeBase, comparison: &Value, cause: &TypeError) -> (String, String) {
+    let why = match cause {
+        // The operand that set the comparison's type, then the one that does not fit it.
+        TypeError::TypeMismatch { expected, actual, .. } => {
+            let (expected, actual) = render_mismatch_pair(kb, expected, actual);
+            format!("{expected} compared with {actual}")
+        }
+        other => other.format(kb),
+    };
+    (
+        format!("`{}` to compare two values of one type", format_precondition_clause(kb, comparison)),
+        format!("{why}; `===` compares any two values structurally"),
+    )
 }
 
 /// WI-20260824-JM6ZW — what [`TypeError::UnknownApplyFunctor`] adds after its terse
@@ -2693,6 +2741,20 @@ impl TypeError {
                     kb.qualified_name_of(*op),
                 )
             }
+            TypeError::IllTypedComparison {
+                op,
+                part,
+                comparison,
+                cause,
+                ..
+            } => {
+                let (expected, actual) = ill_typed_comparison_text(kb, comparison, cause);
+                format!(
+                    "type mismatch in {}.{}: expected {expected}, got {actual}",
+                    kb.qualified_name_of(*op),
+                    part.keyword()
+                )
+            }
             TypeError::Other {
                 expected, actual, ..
             } => {
@@ -2767,6 +2829,7 @@ impl TypeError {
             | TypeError::ForbiddenInternalMember { span, .. }
             | TypeError::ForbiddenInternalPath { span, .. }
             | TypeError::UnsatisfiedPrecondition { span, .. }
+            | TypeError::IllTypedComparison { span, .. }
             | TypeError::MacroRejected { span, .. }
             | TypeError::BottomExpr { span }
             | TypeError::UnclassifiedTypeValue { span, .. } => *span,
@@ -3691,6 +3754,23 @@ impl TypeError {
                         actual_type: String::new(),
                         span: None,
                     }
+                }
+            }
+            TypeError::IllTypedComparison {
+                op,
+                part,
+                comparison,
+                cause,
+                ..
+            } => {
+                let (expected_type, actual_type) = ill_typed_comparison_text(kb, comparison, cause);
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*op).to_string(),
+                    field_name: part.keyword().to_string(),
+                    expected_type,
+                    actual_type,
+                    span: self.span(kb),
                 }
             }
             TypeError::UnsatisfiedPrecondition {

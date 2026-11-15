@@ -1636,7 +1636,7 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
             if crate::kb::typing::op_has_runnable_body(i.kb(), target) {
                 return match i
                     .kb_mut()
-                    .bridge_eq_op_to_eval(target, a.clone(), b.clone())
+                    .bridge_eq_op_to_eval(target, a.clone(), b.clone(), None)
                 {
                     Ok(crate::kb::resolve::BridgeEqOutcome::Decided(v)) => Ok(v),
                     // UNDECIDED (re-entry cap / a bridge-mode suspend inside the

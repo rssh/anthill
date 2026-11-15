@@ -41,7 +41,7 @@ use crate::kb::subst::Substitution;
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::typing::{
     clause_conjuncts, get_named_arg, is_value_precondition_clause, prove_from_gamma_verdict,
-    substitute_ref_terms, substitute_ref_terms_term, FlowEnv, GammaVerdict,
+    substitute_ref_terms_term, FlowEnv, GammaVerdict,
 };
 use crate::kb::{KnowledgeBase, RuleId};
 
@@ -527,26 +527,13 @@ fn contract_target(kb: &KnowledgeBase, rule_qn: &str) -> Option<(Symbol, Contrac
 /// requires in turn (`requires Ord[T = T]` reaches `Eq[T = T]`)? Then a value of `ty`, an
 /// abstract parameter included, is equal to itself by the law.
 fn eq_required_at(kb: &mut KnowledgeBase, op: Symbol, ty: &Value) -> bool {
-    use crate::kb::term_view::{views_structurally_equal, TermView};
-    let Some(eq) = kb.try_resolve_symbol("anthill.prelude.Eq") else {
+    let (Some(eq), Some(eq_t)) = (
+        kb.try_resolve_symbol("anthill.prelude.Eq"),
+        kb.try_resolve_symbol("anthill.prelude.Eq.T"),
+    ) else {
         return false;
     };
-    let eq = kb.canonical_sort_sym(eq);
-    let mut entries: Vec<crate::kb::typing::RequiresEntry> =
-        crate::kb::typing::op_requires_chain_rc(kb, op).to_vec();
-    if let Some(sort) = crate::kb::typing::impl_parent_sort_of_op(kb, op) {
-        entries.extend(crate::kb::typing::requires_chain(kb, sort));
-    }
-    entries.iter().any(|entry| {
-        kb.canonical_sort_sym(entry.required_sort) == eq
-            && entry.spec.named_keys(kb).into_iter().any(|key| {
-                kb.local_name_of(key) == "T"
-                    && entry
-                        .spec
-                        .named_arg(kb, key)
-                        .is_some_and(|bound| views_structurally_equal(kb, &bound.to_value(), ty))
-            })
-    })
+    crate::kb::typing::requires_reach_at(kb, op, eq, eq_t, ty)
 }
 
 /// Discharge an operation-contract proof and write the verdict back onto its
@@ -644,7 +631,7 @@ fn discharge_contract_proof(
     // verdict. MEASURED before this: `occurrence_to_term` asserted (a debug-build panic)
     // and in release read `result` as `⊥`, for `= if eq(x, 1) then 0 else 0` and
     // `= lambda () -> "x"` alike.
-    let Some(body_term) = super::node_occurrence::try_occurrence_to_term(kb, body_occ) else {
+    let Some(body_term) = super::typing::code_goal_term(kb, body_occ) else {
         return ProofVerdict::Deferred {
             reason: "the body has no term form (an `if`, a `match`, a `let` or a lambda), \
                      and this proof reads `result` as the body's term"
@@ -676,7 +663,7 @@ fn discharge_contract_proof(
             continue;
         }
         for conj in clause_conjuncts(kb, c) {
-            let conj = contract_goal(kb, &conj, &sigma);
+            let conj = contract_goal(kb, op_sym, &conj, &sigma);
             flow = flow.assume(kb, conj);
         }
     }
@@ -698,7 +685,7 @@ fn discharge_contract_proof(
             );
         }
         for conj in conjuncts {
-            let goal = contract_goal(kb, &conj, &sigma);
+            let goal = contract_goal(kb, op_sym, &conj, &sigma);
             // THREE FAILURES, THREE MESSAGES. This was one bool and one sentence —
             // "not derivable from the body" — for all three, which told an author
             // whose body is FINE that it is not: an `ensures` over a parameter maps to
@@ -810,11 +797,11 @@ fn discharge_contract_proof(
 /// [`value_as_occurrence`]: super::node_occurrence::value_as_occurrence
 fn contract_goal(
     kb: &mut KnowledgeBase,
+    op_sym: Symbol,
     conj: &Value,
     sigma: &HashMap<Symbol, TermId>,
 ) -> Value {
-    let conj = substitute_ref_terms(kb, conj, sigma);
-    Value::Node(super::node_occurrence::value_as_occurrence(kb, &conj))
+    super::typing::clause_goal(kb, op_sym, conj, sigma)
 }
 
 /// Write a `Failed(Unknown(reason))` verdict onto a contract `ProofRecord` and

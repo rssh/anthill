@@ -1395,31 +1395,14 @@ pub(super) fn visit_type(
             // proposition in the Γ vocabulary, or — the short form — the
             // `target` rule as a 0-ary atom ([`in_body_proof_goal`]).
             let target = *target;
-            let strategy = *strategy;
+            // Tier-A `by derivation` is proved inline over Γ ∪ KB under the resolver's
+            // floundering guard. Tier-B (external) and open obligations contribute nothing
+            // here: an external proof's conclusion may be assumed only once the Γ-snapshot +
+            // prove-pass gate verifies it (follow-on); until then it stays conservatively
+            // undischarged — never a silent drop.
+            let derivation = strategy.is_some_and(|s| kb.local_name_of(s) == "derivation");
             let conclude = conclude.clone();
             let body = Rc::clone(body);
-            // Built INSIDE the `derivation` arm: every other strategy
-            // discards the goal, and building it interns the conclusion's
-            // term twin into the hash-consed store for the KB's lifetime
-            // (CLAUDE.md — transient terms are deliberately not interned).
-            let discharged_goal: Option<Value> = match strategy {
-                // Tier-A `by derivation`: prove inline over Γ ∪ KB under
-                // the resolver's floundering guard.
-                Some(strat) if kb.local_name_of(strat) == "derivation" => {
-                    let goal = in_body_proof_goal(kb, target, conclude.as_ref());
-                    prove_from_gamma(kb, &env.flow, &goal).then_some(goal)
-                }
-                // Tier-B (external) and open obligations contribute
-                // nothing here: an external proof's conclusion may be
-                // assumed only once the Γ-snapshot + prove-pass gate
-                // verifies it (follow-on); until then it stays
-                // conservatively undischarged — never a silent drop.
-                _ => None,
-            };
-            let body_env = match discharged_goal {
-                Some(goal) => env.with_flow(env.flow.assume(kb, goal)),
-                None => env.clone(),
-            };
             // Children order [conclude?, body] (matches `for_each_child`
             // / `reassemble_group`). The proof's type is the
             // continuation's; the goal is type-checked (no hint, like an
@@ -1429,7 +1412,17 @@ pub(super) fn visit_type(
                 env: Rc::clone(&env.types),
                 has_conclude: conclude.is_some(),
             }));
-            push_visit(work, body, body_env, expected, fuel);
+            work.push(TypeWorkOp::Build(TypeBuildFrame::ProofDischarge {
+                target,
+                derivation,
+                has_conclude: conclude.is_some(),
+                body,
+                env: env.clone(),
+                expected,
+                fuel,
+            }));
+            // A conclusion is proved once it is typed, so that each `eq` in it is decided at
+            // the member it was typed at ([`TypeBuildFrame::ProofDischarge`]).
             if let Some(c) = conclude {
                 push_visit_no_hint(work, c, env, fuel);
             }
