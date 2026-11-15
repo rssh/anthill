@@ -26319,7 +26319,7 @@ fn with_typed_variable_goals(
             }
             None => declared.push((vid, bound)),
         }
-        match super::typing::typed_query_variable_goals(kb, vid, bound, node_occurrence::empty_span()) {
+        match super::typing::typed_query_variable_goals(kb, vid, bound, &occ) {
             Ok((first, rest)) => {
                 before.push(first);
                 after.extend(rest);

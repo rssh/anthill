@@ -2718,9 +2718,11 @@ instance and answers the `Int64` row. A query a program builds as a value is typ
 `malformed_query`. A typed variable in a query reads as one in a rule head:
 `account(?id, ?o, ?b: Int64)` checks `?b`, `anyOf(?c: Colour)` over `rule anyOf(?c) :- true`,
 which binds nothing, lists `Colour`'s values, and `?o: Option`, whose type leaves a parameter
-unwritten, is refused. Its type is checked in the goal it is written in, so under `not` or in a
-branch of `|` it types that negand or branch; a quantifier's binder, which ranges over its
-collection, is refused written with a type. A member with a default body that takes a value of the
+unwritten, is refused, as is `?b: String` over an `Int64` column. Its type is checked in the goal
+it is written in: at the top of a query it is held to the whole query, as a head's bound is to
+the body, and under `not` or in a branch of `|` it types that negand or branch and is held to its
+columns. A quantifier's binder, which ranges over its collection, is refused written with a
+type. A member with a default body that takes a value of the
 carrier owes its spec's instance as a body-less one does, where anything provides the spec: over
 `sort Desc { sort T = ?  operation describe(x: T) -> Int64 = 1 }` and `Leaf` providing it at `7`,
 `rule via(?x, ?r) :- Desc.describe(?x, ?r)` is refused. A static member with a body (§8.7) owes

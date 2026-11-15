@@ -173,6 +173,7 @@ pub(crate) fn route_query_goals(
     // relation that is no goal — is refused, as in a rule body (060.1 §2), never dropped.
     let mut refused = Vec::new();
     refuse_unread_brackets(kb, query, &sites, &mut refused);
+    refuse_misfitting_typed_variables(kb, query, &sites, &mut refused);
     let mut wraps: Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> = typed_spec_op_calls(kb, &sites, &mut refused);
     for site in sites {
         let Some(callee) = relation_goal_callee(kb, &site) else {
@@ -448,6 +449,88 @@ fn stamp_query_variable_types(
 /// typing reads a rule body's goals ([`collect_occurrence_type_constraints`]): what a call's
 /// declared parameters and its other arguments say of it. Keyed by the variable's raw id; none
 /// where the goals disagree.
+/// A query's typed variable (proposal 010.1 §3.1) is held to the type the query's columns give
+/// it, as a rule head's bound is held to the type its body gives (`settle_head_bounds`): one
+/// whose type does not fit is refused where the query is read, rather than answering nothing.
+/// Its goals stand around the goal it is written in, so one written at the query's top level is
+/// held to the whole query, as a head's bound is to the whole body, and one written in a negand
+/// or a branch to the goal it is written in.
+fn refuse_misfitting_typed_variables(
+    kb: &mut KnowledgeBase,
+    query: &[Rc<NodeOccurrence>],
+    sites: &[Rc<NodeOccurrence>],
+    refused: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
+) {
+    let typed: Vec<(Rc<NodeOccurrence>, VarId, Value, Rc<NodeOccurrence>)> = sites
+        .iter()
+        .filter_map(|site| {
+            typed_query_variable_of(kb, site)
+                .map(|(var, bound, written_in)| (Rc::clone(site), var, bound, written_in))
+        })
+        .collect();
+    if typed.is_empty() {
+        return;
+    }
+    let mut top_level = Vec::new();
+    for goal in query {
+        conjuncts(kb, goal, &mut top_level);
+    }
+    let whole = query_goal_var_types(kb, query);
+    for (check, var, bound, written_in) in typed {
+        let own;
+        let columns = if top_level.iter().any(|g| Rc::ptr_eq(g, &check)) {
+            &whole
+        } else {
+            own = query_goal_var_types(kb, std::slice::from_ref(&written_in));
+            &own
+        };
+        let Some(column) = columns.get(&var.raw()) else {
+            continue;
+        };
+        if unify_types(kb, &mut Substitution::new(), column, &bound) {
+            continue;
+        }
+        let Some(relation) = written_in
+            .as_expr()
+            .and_then(expr_call_parts)
+            .map(|(functor, _, _)| functor)
+        else {
+            continue;
+        };
+        let printer = crate::persistence::print::TermPrinter::new(kb);
+        let (column, bound) = (printer.print_value(column), printer.print_value(&bound));
+        refused.push((
+            TypeError::Other {
+                site: TypeError::here(),
+                span: Some(written_in.span.span),
+                context: TypeErrorContext::Rule {
+                    name: relation,
+                    field: RuleField::Whole,
+                },
+                expected: format!(
+                    "`?{}` at the type its column holds, `{column}`",
+                    kb.local_name_of(var.name())
+                ),
+                actual: format!("the query types it `{bound}`"),
+            },
+            Some(written_in.span.source),
+        ));
+    }
+}
+
+/// The goals `goal` holds together, through its conjunctions (`KnowledgeBase::is_goal_conjunction`),
+/// `goal` itself where it is no conjunction.
+fn conjuncts(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>, out: &mut Vec<Rc<NodeOccurrence>>) {
+    match goal.as_expr().and_then(expr_call_parts) {
+        Some((functor, pos_args, _)) if kb.is_goal_conjunction(functor, pos_args.len()) => {
+            for arg in pos_args {
+                conjuncts(kb, arg, out);
+            }
+        }
+        _ => out.push(Rc::clone(goal)),
+    }
+}
+
 fn query_goal_var_types(kb: &mut KnowledgeBase, query: &[Rc<NodeOccurrence>]) -> HashMap<u32, Value> {
     let mut st = ClauseConstraints::new();
     for goal in query {

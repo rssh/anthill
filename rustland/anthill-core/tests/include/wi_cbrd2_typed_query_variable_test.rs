@@ -3,7 +3,8 @@
 //! typed head's bound adds (060 §2.3): the conformance guard in front of the pattern and `T`'s
 //! `fill` after it, by name where it reads no dictionary and through the type where it does.
 //! A type that leaves a parameter unwritten is refused, its domain being a requirement at an
-//! open type that a query has no caller to pass; a variable given two types is refused, as a
+//! open type that a query has no caller to pass; a type that cannot fit its column is refused, as
+//! a rule head's bound that its body contradicts is; a variable given two types is refused, as a
 //! rule head's is; the goals stand around the goal the variable is written in, so under `not`
 //! or in a branch of `|` they type that negand or branch; and a pattern no typer reads (`--match`, a goal built at run time) refuses
 //! a typed variable, having nothing to read it with. Before this, `?bal: Int64` in a query
@@ -29,6 +30,9 @@
 //!   [`a_typed_pattern_naming_nothing_is_reported`] (the typed pattern reports nothing);
 //! * a quantifier's typed binder not refused (its goals then stand around the quantifier):
 //!   [`a_typed_variable_in_a_quantifier_body_types_the_body`] (the binder's pattern converts);
+//! * the column check not made (`refuse_misfitting_typed_variables`):
+//!   [`a_typed_variable_that_cannot_fit_its_column_is_refused`] (each converts; the first
+//!   answers nothing);
 //! * the untyped conversion not refusing a typed variable:
 //!   [`a_pattern_no_typer_reads_refuses_a_typed_variable`] (it converts, the type dropped).
 //!
@@ -78,11 +82,41 @@ fn refusals(pattern: &str) -> Vec<String> {
     query_pattern_refusals(&mut kb, pattern)
 }
 
-/// `?bal: Int64` holds of each account's balance; `?bal: String` of none.
+/// `?bal: Int64` holds of each account's balance, and so does `?bal: Count`, an alias of `Int64`.
 #[test]
 fn a_typed_query_variable_checks_its_column() {
     assert_eq!(definite("test.cbrd2.tqv.Account.account(?id, ?owner, ?bal: Int64)"), 2);
-    assert_eq!(definite("test.cbrd2.tqv.Account.account(?id, ?owner, ?bal: String)"), 0);
+    assert_eq!(
+        definite("test.cbrd2.tqv.Account.account(?id, ?owner, ?bal: test.cbrd2.tqv.Count)"),
+        2
+    );
+}
+
+/// A typed variable is held to the type its column gives it, as a rule head's bound is held to
+/// its body: `?bal: String` over the `Int64` balance is refused where the query is read, at the
+/// top level, under `not` and in a branch. One at the top level is held to the whole query, a
+/// goal before it included, as a head's bound is to the whole body.
+#[test]
+fn a_typed_variable_that_cannot_fit_its_column_is_refused() {
+    for pattern in [
+        "test.cbrd2.tqv.Account.account(?id, ?owner, ?bal: String)",
+        "not(test.cbrd2.tqv.Account.account(?id, ?owner, ?bal: String))",
+        "test.cbrd2.tqv.Account.account(?id, ?o, ?bal: String) | test.cbrd2.tqv.anyOf(?bal: test.cbrd2.tqv.Color)",
+    ] {
+        let errs = refusals(pattern);
+        assert!(
+            errs.iter().any(|e| e.contains("needs `?bal` at the type its column holds, `Int64`")),
+            "`{pattern}` is refused; got {errs:?}"
+        );
+    }
+    let errs = conjunction_refusals(&[
+        "test.cbrd2.tqv.Account.account(?id, ?owner, ?bal)",
+        "test.cbrd2.tqv.anyOf(?bal: String)",
+    ]);
+    assert!(
+        errs.iter().any(|e| e.contains("needs `?bal` at the type its column holds, `Int64`")),
+        "a goal before the typed one fixes its column; got {errs:?}"
+    );
 }
 
 /// `anyOf` binds nothing, so `?c: Color` is filled from `Color`'s domain: its three values.
@@ -92,7 +126,8 @@ fn a_typed_query_variable_lists_its_types_values() {
 }
 
 /// `Option`'s domain is conditional on its parameter, so its fill runs through the type:
-/// `some(3)` is an `Option[T = Int64]` and no `Option[T = String]`.
+/// `some(3)` is an `Option[T = Int64]` and no `Option[T = String]`. `held`'s column leaves its
+/// element open, so the second answers nothing rather than being refused.
 #[test]
 fn a_parameterised_type_is_checked_through_its_domain() {
     assert_eq!(
@@ -148,6 +183,29 @@ fn a_typed_pattern_naming_nothing_is_reported() {
     }
 }
 
+/// What converting the goals `patterns`, one query typed together, refuses, rendered.
+fn conjunction_refusals(patterns: &[&str]) -> Vec<String> {
+    let mut kb = load_kb_with(SRC);
+    let src: String = patterns.iter().map(|p| format!("fact {p}\n")).collect();
+    let parsed = parse::parse(&src).expect("parse query goals");
+    let errs = load::scan_query_definitions(&mut kb, &[&parsed]);
+    assert!(errs.is_empty(), "the goals scan clean: {errs:?}");
+    let ids: Vec<_> = parsed
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            anthill_core::parse::ir::Item::Fact(f) => Some(f.term),
+            _ => None,
+        })
+        .collect();
+    let scope = kb.global_scope();
+    let mut var_map = std::collections::HashMap::new();
+    match load::convert_query_terms(&mut kb, &parsed, &ids, scope, &mut var_map) {
+        Ok(_) => Vec::new(),
+        Err(errors) => errors.iter().map(|e| e.to_string()).collect(),
+    }
+}
+
 /// The definite and total answers of the goals `patterns`, one query typed together.
 fn conjunction(patterns: &[&str]) -> (usize, usize) {
     let mut kb = load_kb_with(SRC);
@@ -157,8 +215,8 @@ fn conjunction(patterns: &[&str]) -> (usize, usize) {
 }
 
 /// A typed variable's goals stand around the goal it is written in. In a branch of `|` they
-/// type that branch alone: `account(?id, ?o, ?b) | anyOf(?b: Color)` answers both accounts and
-/// `Color`'s three values, and with `?b: String` on the `account` branch, `Color`'s values alone.
+/// type that branch alone, and it is held to that branch's columns: `account(?id, ?o, ?b) |
+/// anyOf(?b: Color)` answers both accounts and `Color`'s three values.
 #[test]
 fn a_typed_variable_in_a_branch_types_that_branch() {
     assert_eq!(
@@ -166,12 +224,6 @@ fn a_typed_variable_in_a_branch_types_that_branch() {
             "test.cbrd2.tqv.Account.account(?id, ?o, ?b) | test.cbrd2.tqv.anyOf(?b: test.cbrd2.tqv.Color)"
         ),
         5
-    );
-    assert_eq!(
-        definite(
-            "test.cbrd2.tqv.Account.account(?id, ?o, ?b: String) | test.cbrd2.tqv.anyOf(?b: test.cbrd2.tqv.Color)"
-        ),
-        3
     );
 }
 

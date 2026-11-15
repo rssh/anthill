@@ -1126,8 +1126,12 @@ pub(crate) fn typed_query_variable_goals(
     kb: &mut KnowledgeBase,
     var: VarId,
     bound: TermId,
-    span: crate::span::SourceSpan,
+    // The goal the variable is written in: each goal added is synthesized from it, under
+    // [`typed_query_variable_pass`], so the query's typing finds the variable it types.
+    from: &Rc<NodeOccurrence>,
 ) -> Result<(Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>), String> {
+    let span = from.span;
+    let pass = typed_query_variable_pass(kb);
     let (Some(dom_sym), Some(guard_sym)) = (
         kb.try_resolve_symbol(TYPE_DOMAIN_GOAL),
         kb.try_resolve_symbol(TYPE_DOMAIN_GUARD),
@@ -1150,7 +1154,7 @@ pub(crate) fn typed_query_variable_goals(
     let var_occ = || NodeOccurrence::new_expr(Expr::Var(Var::Global(var)), span, None);
     let ty = || NodeOccurrence::new_expr(Expr::Spliced(Value::term(bound)), span, None);
     let goal = |functor: Symbol, pos_args: Vec<Rc<NodeOccurrence>>| {
-        NodeOccurrence::new_expr(
+        NodeOccurrence::synthesized_expr(
             Expr::Apply {
                 recv_type: None,
                 functor,
@@ -1158,7 +1162,8 @@ pub(crate) fn typed_query_variable_goals(
                 named_args: Vec::new(),
                 type_args: Vec::new(),
             },
-            span,
+            Rc::clone(from),
+            pass,
             None,
         )
     };
@@ -1171,6 +1176,36 @@ pub(crate) fn typed_query_variable_goals(
         Some(fill) => (goal(guard_sym, vec![var_occ(), ty()]), fill),
         None => (goal(dom_sym, vec![var_occ(), ty()]), Vec::new()),
     })
+}
+
+/// The provenance of the goals a query's typed variable adds ([`typed_query_variable_goals`]).
+pub(crate) fn typed_query_variable_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::PassId {
+    kb.register_pass("anthill.kernel.__typed_query_variable")
+}
+
+/// The typed variable a goal of [`typed_query_variable_goals`] checks, where `goal` is its
+/// conformance guard or check: the variable, the type, and the goal it is written in.
+pub(crate) fn typed_query_variable_of(
+    kb: &mut KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+) -> Option<(VarId, Value, Rc<NodeOccurrence>)> {
+    if goal.synthesized_by() != Some(typed_query_variable_pass(kb)) {
+        return None;
+    }
+    let (functor, pos_args, _) = goal.as_expr().and_then(expr_call_parts)?;
+    let checks = [TYPE_DOMAIN_GUARD, TYPE_DOMAIN_GOAL]
+        .iter()
+        .any(|qn| kb.try_resolve_symbol(qn) == Some(functor));
+    if !checks || pos_args.len() != 2 {
+        return None;
+    }
+    let Some(Expr::Var(Var::Global(var))) = pos_args[0].as_expr() else {
+        return None;
+    };
+    let Some(Expr::Spliced(bound)) = pos_args[1].as_expr() else {
+        return None;
+    };
+    Some((*var, bound.clone(), Rc::clone(goal.synthesized_from()?)))
 }
 
 /// The kind of `fill` rule `rid` is, where its head is a sort's domain relation — the clauses
