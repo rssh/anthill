@@ -1135,12 +1135,15 @@ pub(super) fn check_operation_bodies(
 /// `(expected, actual)` pair of its diagnostic. `rigidify` is the operation's type-parameter
 /// rigidify substitution, which both sides are walked through. Read for the body and for
 /// each parameter default, whose effects are the operation's (proposal 069 §3).
-/// The comparisons a contract clause makes are calls of their carrier's member, typed in the
-/// operation's signature: its parameters as the body binds them, `result` at the return type
-/// (proposal 073 §5). Each `=`, `eq` and `neq` in a `requires` or `ensures` clause is typed
-/// there, and one that does not type is refused (`ensures eq(result, "a")` over an `Int64`
-/// result). The clause is kept in the operation's record as the typed occurrence, so a proof
-/// over it reads each comparison's member (`proof_verify::contract_goal`).
+/// The comparisons a contract clause or an effect guard makes are calls of their carrier's
+/// member, typed in the operation's signature: its parameters as the body binds them, `result`
+/// at the return type (proposal 073 §5). Each `=`, `eq` and `neq` in a `requires` or `ensures`
+/// clause or in a guard of the effects row is typed there, and one that does not type is
+/// refused (`ensures eq(result, "a")` over an `Int64` result, `effects { Boom :- eq(c, 1) }`
+/// over `c: Color`), naming `===` for a structural comparison. The conjunct is kept in the
+/// operation's record as the typed occurrence, so a proof over it reads each comparison's
+/// member (`proof_verify::contract_goal`, `typing::clause_goal`), and so is the swapped
+/// comparison a refutation of it proves ([`negated_comparison_term`]).
 ///
 /// A comparison is typed on a copy that writes each field projection the way an operation
 /// body's lowering does (`synthesize_field_access`; the clause holds the term form,
@@ -1167,54 +1170,106 @@ fn type_contract_comparisons(
     if let Some(result_sym) = crate::kb::region::resolve_op_result_sym(kb, op_sym) {
         cenv.bind_var(result_sym, ret.clone());
     }
-    for clause in sig.requires.iter().chain(sig.ensures.iter()) {
-        if !is_value_precondition_clause(kb, clause) {
-            continue;
-        }
-        for conj in clause_conjuncts(kb, clause) {
-            let occ = crate::kb::node_occurrence::value_as_occurrence(kb, &conj);
-            let mut comparisons = Vec::new();
-            let mut stack = vec![Rc::clone(&occ)];
-            while let Some(node) = stack.pop() {
-                let Some(expr) = node.as_expr() else { continue };
-                if let Some((functor, _, _)) = expr_call_parts(expr) {
-                    if is_equality_comparison(kb, functor) {
-                        comparisons.push(Rc::clone(&node));
-                        continue;
-                    }
-                }
-                crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
-            }
-            let mut kept = false;
-            for cmp in comparisons {
-                let copy = match typable_comparison(kb, &cmp, site) {
-                    Ok(copy) => copy,
-                    Err(e) => {
-                        errors.push(e);
-                        continue;
-                    }
-                };
-                match type_check_node(kb, &cenv, &copy, None) {
-                    Ok(_) => {
-                        let functor = copy.as_expr().and_then(expr_call_parts).map(|(f, _, _)| f);
-                        let class = copy
-                            .call_class()
-                            .filter(|class| functor.is_some_and(|f| goal_reads_comparison_member(kb, f, class)));
-                        if let Some(class) = class {
-                            cmp.set_classification(class);
-                            kept = true;
-                        }
-                    }
-                    Err(e) => errors.push(e),
-                }
-            }
-            // The conjunct as loaded is a term, which carries no member: its typed twin is
-            // kept beside it, keyed by it. A conjunct carried on an occurrence (a denoted
-            // label) holds its members on its own nodes.
-            if let (true, Value::Term { id, .. }) = (kept, &conj) {
-                kb.record_typed_contract_conjunct(op_sym, *id, occ);
+    let mut conjuncts: Vec<(ContractPart, Value)> = Vec::new();
+    for (part, clauses) in [(ContractPart::Requires, &sig.requires), (ContractPart::Ensures, &sig.ensures)] {
+        for clause in clauses {
+            if is_value_precondition_clause(kb, clause) {
+                conjuncts.extend(clause_conjuncts(kb, clause).into_iter().map(|c| (part, c)));
             }
         }
+    }
+    for effect in &sig.effects {
+        for (_, guard) in collect_guarded_atoms(kb, &Substitution::new(), effect) {
+            let Some(guard) = guard_conjuncts(kb, &guard) else {
+                continue;
+            };
+            conjuncts.extend(guard.into_iter().map(|c| (ContractPart::EffectGuard, c)));
+        }
+    }
+    for (part, conj) in conjuncts {
+        let mut refused = Vec::new();
+        type_conjunct_comparisons(kb, &cenv, op_sym, &conj, site, &mut refused);
+        errors.extend(refused.into_iter().map(|(comparison, cause)| match cause {
+            // A field projection that names nothing is refused as its own error.
+            Refusal::Projection(e) => e,
+            Refusal::Comparison(e) => TypeError::IllTypedComparison {
+                span: e.span(kb),
+                op: op_sym,
+                part,
+                comparison,
+                cause: Box::new(e),
+            },
+        }));
+        // The negation a refutation proves types with the conjunct; refused, it is the
+        // conjunct's refusal, reported above. A `requires` is refuted at a rule-body call and
+        // a guard at every call; an `ensures` is only proved.
+        let refuted = matches!(part, ContractPart::Requires | ContractPart::EffectGuard);
+        if let Some(negated) = negated_comparison_term(kb, &conj).filter(|_| refuted) {
+            type_conjunct_comparisons(kb, &cenv, op_sym, &Value::term(negated), site, &mut Vec::new());
+        }
+    }
+}
+
+/// Why a contract comparison is refused ([`type_conjunct_comparisons`]).
+enum Refusal {
+    /// A field projection in it names nothing.
+    Projection(TypeError),
+    /// The comparison does not type.
+    Comparison(TypeError),
+}
+
+/// Type each comparison of the contract conjunct `conj` ([`type_contract_comparisons`]), put the
+/// member it gets on its node, and keep the typed conjunct beside the one loaded; each refused
+/// comparison, as written, and why, into `refused`.
+fn type_conjunct_comparisons(
+    kb: &mut KnowledgeBase,
+    cenv: &TypingEnv,
+    op_sym: Symbol,
+    conj: &Value,
+    site: crate::span::SourceSpan,
+    refused: &mut Vec<(Value, Refusal)>,
+) {
+    let occ = crate::kb::node_occurrence::value_as_occurrence(kb, conj);
+    let mut comparisons = Vec::new();
+    let mut stack = vec![Rc::clone(&occ)];
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        if let Some((functor, _, _)) = expr_call_parts(expr) {
+            if is_equality_comparison(kb, functor) {
+                comparisons.push(Rc::clone(&node));
+                continue;
+            }
+        }
+        crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    let mut kept = false;
+    for cmp in comparisons {
+        let copy = match typable_comparison(kb, &cmp, site) {
+            Ok(copy) => copy,
+            Err(e) => {
+                refused.push((Value::Node(Rc::clone(&cmp)), Refusal::Projection(e)));
+                continue;
+            }
+        };
+        match type_check_node(kb, cenv, &copy, None) {
+            Ok(_) => {
+                let functor = copy.as_expr().and_then(expr_call_parts).map(|(f, _, _)| f);
+                let class = copy
+                    .call_class()
+                    .filter(|class| functor.is_some_and(|f| goal_reads_comparison_member(kb, f, class)));
+                if let Some(class) = class {
+                    cmp.set_classification(class);
+                    kept = true;
+                }
+            }
+            Err(e) => refused.push((Value::Node(Rc::clone(&cmp)), Refusal::Comparison(e))),
+        }
+    }
+    // The conjunct as loaded is a term, which carries no member: its typed twin is kept
+    // beside it, keyed by it. A conjunct carried on an occurrence (a denoted label) holds its
+    // members on its own nodes.
+    if let (true, Value::Term { id, .. }) = (kept, conj) {
+        kb.record_typed_contract_conjunct(op_sym, *id, occ);
     }
 }
 

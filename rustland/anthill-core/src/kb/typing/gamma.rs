@@ -481,6 +481,40 @@ pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bo
     }
 }
 
+/// The term of a comparison conjunct's negation, `eq ⇄ neq` swapped as [`negate_goal`] swaps
+/// them: the goal a refutation of the conjunct proves. Typed in the operation's signature
+/// beside the conjunct (`type_contract_comparisons`), so the refutation reads the member of the
+/// comparison it proves. `None` for a conjunct on no term, written with labels, or headed by
+/// anything else.
+pub(super) fn negated_comparison_term(kb: &mut KnowledgeBase, conj: &Value) -> Option<TermId> {
+    let Value::Term { id, .. } = conj else {
+        return None;
+    };
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(*id).clone()
+    else {
+        return None;
+    };
+    if !named_args.is_empty() {
+        return None;
+    }
+    let (eq, neq) = eq_neq_functors(kb);
+    let (eq, neq) = (kb.canonical_sym(eq), kb.canonical_sym(neq?));
+    let swapped = match kb.canonical_sym(functor) {
+        f if f == eq => neq,
+        f if f == neq => eq,
+        _ => return None,
+    };
+    Some(kb.alloc(Term::Fn {
+        functor: swapped,
+        pos_args,
+        named_args,
+    }))
+}
+
 /// Negate a guard for refutation (proposal 050 open question C). `eq ⇄ neq`
 /// by **functor swap**, so a branch's positive `neq(b, 0)` fact discharges an
 /// `eq(b, 0)` guard by resolving the `neq(b, 0)` fact straight out of the Γ
@@ -490,6 +524,10 @@ pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bo
 /// floundering). `None` when the kernel's `not` is unavailable (a prelude-less
 /// KB) — the caller then keeps the effect rather than guess.
 pub(super) fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
+    // A goal on a term swaps as the typer's twin of its negation is built.
+    if let Some(negated) = negated_comparison_term(kb, goal) {
+        return Some(Value::term(negated));
+    }
     let (eq_sym, neq_sym) = eq_neq_functors(kb);
     if let ViewHead::Functor {
         functor: f,

@@ -44,17 +44,17 @@ fn an_ill_typed_contract_comparison_is_refused() {
     refused(
         "test.cbrd2.cc.r1",
         "operation f(x: Int64) -> Int64\n      ensures eq(result, \"a\")\n      = x",
-        "expected Int64, got String",
+        "Int64 compared with String",
     );
     refused(
         "test.cbrd2.cc.r2",
         "operation f(b: Int64) -> Int64\n      requires eq(b, \"x\")\n      = b",
-        "expected Int64, got String",
+        "Int64 compared with String",
     );
     refused(
         "test.cbrd2.cc.r3",
         "operation f(x: Int64) -> Int64\n      ensures neq(x, 1.5)\n      = x",
-        "expected Int64, got Float",
+        "Int64 compared with Float",
     );
 }
 
@@ -65,7 +65,7 @@ fn a_comparison_written_with_its_result_column_is_typed_on_its_operands() {
     refused(
         "test.cbrd2.cc.c1",
         "operation f(x: Int64) -> Int64\n      ensures neq(x, \"a\", true)\n      = x",
-        "expected Int64, got String",
+        "Int64 compared with String",
     );
 }
 

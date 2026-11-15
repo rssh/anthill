@@ -3481,9 +3481,11 @@ checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
   turns into a proof obligation.
 
   **A contract's comparisons are typed in the operation's signature.** Each `=`, `eq`
-  and `neq` in a `requires` or `ensures` clause is the call of its carrier's member, typed
-  at the parameters' declared types and `result` at the return type, and one that does
-  not type is refused at load: `ensures eq(result, "a")` over an `Int64` result.
+  and `neq` in a `requires` or `ensures` clause or in a guard of its effects row (§5.5) is
+  the call of its carrier's member, typed at the parameters' declared types and `result` at
+  the return type, and one that does not type is refused at load: `ensures eq(result, "a")`
+  over an `Int64` result, `effects { Boom :- eq(c, 1) }` over `c: Color`. A comparison of
+  any two values is structural equality, `===`.
 
   **An unsatisfied precondition does not suppress the same call's other verdicts**
   (WI-20260830-JM7A8). A precondition is proved from the KB; the call's effects are read

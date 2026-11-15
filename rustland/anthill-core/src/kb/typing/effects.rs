@@ -1047,14 +1047,27 @@ pub(super) fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, Ter
 /// in, and an effect row inferred here is read by callers in other scopes — so
 /// WI-648 must say which instance a discharge is entitled to consult before this
 /// site can keep deciding.
+///
+/// `op` is the operation whose clause `conj` is: the goal is read as typed in its signature
+/// ([`clause_goal`]), and a comparison's refutation proves the swapped comparison typed there
+/// too ([`negated_comparison_term`]), so each `eq` and `neq` is decided at its member.
 fn conjunct_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     conj: &Value,
 ) -> bool {
-    let conj = substitute_ref_terms(kb, conj, sigma);
-    refute_guard(kb, flow, &conj)
+    match negated_comparison_term(kb, conj) {
+        Some(negated) => {
+            let goal = clause_goal(kb, op, &Value::term(negated), sigma);
+            prove_from_gamma(kb, flow, &goal)
+        }
+        None => {
+            let goal = clause_goal(kb, op, conj, sigma);
+            refute_guard(kb, flow, &goal)
+        }
+    }
 }
 
 /// Is a guarded atom's guard `G` REFUTED (so the effect drops)? `G` is a
@@ -1066,6 +1079,7 @@ fn conjunct_refuted(
 fn guarded_atom_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     guard_value: &Value,
 ) -> bool {
@@ -1078,7 +1092,7 @@ fn guarded_atom_refuted(
     // never NAF). The empty guard (`:- true`) has no conjunct — irrefutable, kept.
     // Each list element is a single conjunct goal `Value`; ground + refute it via
     // the shared per-conjunct core carrier-neutrally (WI-621 — no reification).
-    goals.iter().any(|g| conjunct_refuted(kb, flow, sigma, g))
+    goals.iter().any(|g| conjunct_refuted(kb, flow, op, sigma, g))
 }
 
 /// The conjunct goals of a guarded atom's `guard` — its `List[reflect.Term]` Horn body —
@@ -1158,18 +1172,19 @@ pub(super) fn build_call_guard_sigma(
 }
 
 /// Is a STANDALONE guarded atom's guard refuted under σ + Γ? Reads the atom's
-/// `guard` child and refutes its conjunction via [`guarded_atom_refuted`].
+/// `guard` child and refutes its conjunction via [`guarded_atom_refuted`]. `op` declares it.
 pub(super) fn guarded_atom_value_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     subst: &Substitution,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     atom: &Value,
 ) -> bool {
     let guard_key = kb.intern("guard");
     let walked = walk_value_to_resolved(kb, subst, atom.clone());
     match named_child_value(kb, &walked, guard_key) {
-        Some(guard) => guarded_atom_refuted(kb, flow, sigma, &guard),
+        Some(guard) => guarded_atom_refuted(kb, flow, op, sigma, &guard),
         None => false,
     }
 }
@@ -1178,11 +1193,12 @@ pub(super) fn guarded_atom_value_refuted(
 /// guarded atom inside that row whose σ(guard) is refuted from Γ. The flatten
 /// ([`effect_row_present_values`]) left a guarded atom's label conservatively
 /// present (WI-478); discharge removes only the proven-dropped ones, matching by
-/// the carrier-aware [`resolved_labels_equal`].
+/// the carrier-aware [`resolved_labels_equal`]. `op` declares the row.
 pub(super) fn drop_refuted_guarded_labels(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     subst: &Substitution,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     row: &Value,
     present: &mut Vec<Value>,
@@ -1190,7 +1206,7 @@ pub(super) fn drop_refuted_guarded_labels(
     let guarded = collect_guarded_atoms(kb, subst, row);
     let mut dropped: Vec<Value> = Vec::new();
     for (label, guard) in guarded {
-        if guarded_atom_refuted(kb, flow, sigma, &guard) {
+        if guarded_atom_refuted(kb, flow, op, sigma, &guard) {
             dropped.push(label);
         }
     }
@@ -1649,12 +1665,13 @@ pub(super) fn op_requires_gamma(
 pub(super) fn precondition_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
+    op: Symbol,
     sigma: &HashMap<Symbol, TermId>,
     clause: &Value,
 ) -> bool {
     clause_conjuncts(kb, clause)
         .iter()
-        .any(|conj| conjunct_refuted(kb, flow, sigma, conj))
+        .any(|conj| conjunct_refuted(kb, flow, op, sigma, conj))
 }
 
 /// WI-539 (proposal 050 "operation call" modification rule, `ensures` half): if
