@@ -1,6 +1,6 @@
 # 010: Query System
 
-## Status: Brainstorming
+## Status: Brainstorming — superseded by [010.1](010.1-query-interfaces.md) (2026-11-15), whose §1 records what answered or superseded each part below
 
 ## Depends on: 011 (Type Resolution), 016 (Extensible Operators)
 
