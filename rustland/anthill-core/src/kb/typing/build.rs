@@ -1937,6 +1937,37 @@ pub(super) fn build_type(
                 node,
             }));
         }
+        TypeBuildFrame::ProofDischarge {
+            target,
+            derivation,
+            has_conclude,
+            body,
+            env,
+            expected,
+            fuel,
+        } => {
+            // Built only for `derivation`: building the goal interns its term twin into the
+            // hash-consed store for the KB's lifetime (CLAUDE.md — transient terms are
+            // deliberately not interned). The conclusion is read as typed: the occurrence the
+            // proof's body will hold, its calls classified. One that does not type is proved
+            // of nothing; its error reaches `ProofStmt`.
+            let goal = match (derivation, has_conclude) {
+                (false, _) => None,
+                (true, false) => Some(in_body_proof_goal(kb, target, None)),
+                (true, true) => match results.last() {
+                    Some(Ok(r)) => {
+                        let typed = Rc::clone(&r.node);
+                        Some(in_body_proof_goal(kb, target, Some(&typed)))
+                    }
+                    _ => None,
+                },
+            };
+            let body_env = match goal.filter(|goal| prove_from_gamma(kb, &env.flow, goal)) {
+                Some(goal) => env.with_flow(env.flow.assume(kb, goal)),
+                None => env,
+            };
+            push_visit(work, body, body_env, expected, fuel);
+        }
         TypeBuildFrame::ProofStmt {
             occ,
             env,

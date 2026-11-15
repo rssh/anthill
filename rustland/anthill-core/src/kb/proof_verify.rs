@@ -644,7 +644,7 @@ fn discharge_contract_proof(
     // verdict. MEASURED before this: `occurrence_to_term` asserted (a debug-build panic)
     // and in release read `result` as `⊥`, for `= if eq(x, 1) then 0 else 0` and
     // `= lambda () -> "x"` alike.
-    let Some(body_term) = super::node_occurrence::try_occurrence_to_term(kb, body_occ) else {
+    let Some(body_term) = super::typing::code_goal_term(kb, body_occ) else {
         return ProofVerdict::Deferred {
             reason: "the body has no term form (an `if`, a `match`, a `let` or a lambda), \
                      and this proof reads `result` as the body's term"

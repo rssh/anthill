@@ -1120,7 +1120,7 @@ pub(super) fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>
 /// runs. Without an entry the parameter stays symbolic and the guard is undecided, as it
 /// is at an operation's own parameter.
 pub(super) fn guard_arg_term(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<TermId> {
-    crate::kb::node_occurrence::try_occurrence_to_term(kb, arg).filter(|t| !kb.mentions_debruijn(t))
+    code_goal_term(kb, arg).filter(|t| !kb.mentions_debruijn(t))
 }
 
 /// Build the call substitution σ: callee parameter ↦ the actual argument's
@@ -1543,17 +1543,18 @@ pub(crate) fn clause_goal(
     match typed {
         Some(typed) => {
             let goal = crate::kb::node_occurrence::value_as_occurrence(kb, &substituted);
-            carry_call_classes(kb, &typed, &goal);
+            carry_eq_members(kb, &typed, &goal);
             Value::Node(goal)
         }
         None => substituted,
     }
 }
 
-/// Each call of `to` the typer classified at its twin in `from` — the same tree with some
-/// leaves replaced — takes that classification: walked pairwise while the two agree on a
-/// call's functor and arity, stopping where they part.
-fn carry_call_classes(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) {
+/// Each `eq` of `to` takes the member the typer decided at its twin in `from` — the same tree
+/// with some leaves replaced or lowered: walked pairwise while the two agree on a call's
+/// functor and arity, stopping where they part. Only `eq`'s: a `neq`'s classification runs
+/// its body, which reads a dictionary a goal does not pass.
+pub(super) fn carry_eq_members(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) {
     let (Some(from_expr), Some(to_expr)) = (from.as_expr(), to.as_expr()) else {
         return;
     };
@@ -1563,15 +1564,15 @@ fn carry_call_classes(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<Nod
     if kb.canonical_sym(f1) != kb.canonical_sym(f2) || p1.len() != p2.len() {
         return;
     }
-    if let Some(class) = from.call_class() {
+    if let Some(class) = from.call_class().filter(|_| is_semantic_equality(kb, f1)) {
         to.set_classification(class);
     }
     for (a, b) in p1.iter().zip(p2.iter()) {
-        carry_call_classes(kb, a, b);
+        carry_eq_members(kb, a, b);
     }
     for (k, a) in n1.iter() {
         if let Some((_, b)) = n2.iter().find(|(k2, _)| k2 == k) {
-            carry_call_classes(kb, a, b);
+            carry_eq_members(kb, a, b);
         }
     }
 }

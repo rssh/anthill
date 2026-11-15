@@ -4718,7 +4718,9 @@ ProofStatement ::= 'proof' Name ['using' NameList]
 The proof is checked in the body's local logical context and scopes over the
 continuation expression after `end`. `conclude` supplies a local proposition
 when no named rule supplies the goal; successful derivation feeds the conclusion
-back into that continuation's context.
+back into that continuation's context. The conclusion is typed as the body is and proved
+as typed: an `eq` in it is its carrier's member, so `conclude eq(some(Green), some(Red))`
+is `Option`'s `eq` at `Color`'s.
 
 A rule body may not hold one: it is itself a derivation, and a rule is proved by a
 proof declaration. An in-body proof written in a rule body is a load error. An
