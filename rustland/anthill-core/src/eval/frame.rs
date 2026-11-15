@@ -91,6 +91,9 @@ pub enum AwaitState {
         target: Symbol,
         buffered: Vec<Value>,
         remaining: Vec<Rc<NodeOccurrence>>,
+        /// An equality call whose class says the law `eq_refl` answers it on identical
+        /// operands (`KnowledgeBase::eq_call_law`): read when the operands are in.
+        law: bool,
     },
     /// Proposal 073 §2 — a call on an instance collecting its arguments; on the last one the
     /// receiver's dictionary names the member (`Interpreter::dispatch_on_instance`). `filled`
@@ -118,6 +121,9 @@ pub enum AwaitState {
         /// call: an abstract sort's default body entered through a dictionary of a carrier
         /// takes its receiver as the instance it is (`Interpreter::positions_to_pair`).
         pair_at: Option<Box<(crate::eval::value::Dictionary, SmallVec<[usize; 2]>)>>,
+        /// An equality call whose class says the law `eq_refl` answers it on identical
+        /// operands (`KnowledgeBase::eq_call_law`): read when the operands are in.
+        law: bool,
     },
     /// A constructor node is collecting (possibly named) field values.
     ConstructorArgs {

@@ -23116,9 +23116,6 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // where the member is entered, from the operands alone: at `Option[T = Float]` it does
     // not hold, and `eq(some(nan), some(nan))` is the member's `false`.
     let eq_providers = EqProviders::of(kb);
-    let lawful = |kb: &KnowledgeBase, sort: Symbol| {
-        eq_providers.carrier_eq(kb, sort) == Some(CarrierEq::Unconditional)
-    };
     let mut entries: Vec<(Symbol, Symbol, bool)> = Vec::new();
     // Collected rather than built into `LoadError`s as we go: `carriers` comes from
     // two `HashMap` walks, so this loop visits carriers in an arbitrary order, and a
@@ -23127,6 +23124,12 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // the index walks provisions in `provides_rids_by_spec` order).
     let mut ambiguous: Vec<(String, Vec<String>)> = Vec::new();
     for &sort_sym in &carriers {
+        // Whether the carrier provides `Eq`, read where a dictionary names it, whatever
+        // supplies its `eq`.
+        let carrier_eq = eq_providers.carrier_eq(kb, sort_sym);
+        if let Some(how) = carrier_eq {
+            kb.note_eq_carrier(sort_sym, how);
+        }
         let mut cands = eq_index.candidates(kb, sort_sym);
         // A derived member is the `eq` of a composite no `eq` was written for: one written
         // since — a witness's, in a later load — is the carrier's, and that load's change
@@ -23151,7 +23154,7 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         // reader returns nothing for it and its values would be headed by a functor
         // the index never keyed (WI-856). For a `sort … end` carrier the two agree —
         // the sort symbol itself carries no field schema.
-        let partial = !lawful(kb, sort_sym);
+        let partial = carrier_eq != Some(CarrierEq::Unconditional);
         // The law decides a call of the member on identical operands only where the member
         // is typed at this carrier: an operation with type parameters of its own, bound as the
         // carrier's `eq`, is called at other types too, where `Eq` says nothing.

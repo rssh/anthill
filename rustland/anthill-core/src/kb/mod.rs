@@ -809,6 +809,10 @@ pub(crate) struct SortOpsTable {
     /// identical operands are equal by `eq_refl` and the member is not asked
     /// (kernel-language.md §8.3). Rebuilt by `load::build_eq_dispatch_index`.
     eq_members: HashMap<Symbol, EqLaw>,
+    /// Each sort that provides `Eq`, by its canonical symbol, and whether under a condition:
+    /// the law at an instance a dictionary names ([`KnowledgeBase::dictionary_is_lawful`]).
+    /// Rebuilt with [`Self::eq_members`].
+    eq_carriers: HashMap<Symbol, crate::kb::load::CarrierEq>,
 }
 
 /// Where the law `eq_refl` decides a call of a carrier's `eq` member on identical operands
@@ -817,15 +821,16 @@ pub(crate) struct SortOpsTable {
 pub(crate) enum EqLaw {
     /// At every call: the member is typed at carriers that each provide `Eq`.
     Always,
-    /// Only on values of the carriers it is the `eq` of: the member has type parameters of its
-    /// own, so it is called at other types too, where `Eq` says nothing.
+    /// Only at an equality call, which the typer pins to it at one of the carriers it is the
+    /// `eq` of: the member has type parameters of its own, so it is called at other types too,
+    /// where `Eq` says nothing.
     AtItsCarriers,
     /// Never: a carrier whose `eq` it is provides no `Eq`.
     Never,
     /// A derived member of a carrier that provides `Eq` under a condition or not at all: two
-    /// identical operands are equal by the law where every value inside them is of a lawful
-    /// carrier ([`KnowledgeBase::value_self_equal_by_law`]) — the member compares field by
-    /// field, so its own answer there is the same.
+    /// identical operands are equal by the law where the instance the call is entered at is
+    /// lawful ([`KnowledgeBase::dictionary_is_lawful`]) — the member compares field by field,
+    /// each at its own member, so its own answer there is the same.
     ByItsFields,
 }
 
@@ -8777,6 +8782,60 @@ impl KnowledgeBase {
     /// load's rebuild of the index, which may give a carrier `Eq`.
     pub(crate) fn clear_eq_members(&mut self) {
         self.sort_ops.eq_members.clear();
+        self.sort_ops.eq_carriers.clear();
+    }
+
+    /// Record that `sort` provides `Eq`, and how ([`Self::dictionary_is_lawful`]). Called only
+    /// by `load::build_eq_dispatch_index`.
+    pub(crate) fn note_eq_carrier(&mut self, sort: Symbol, how: crate::kb::load::CarrierEq) {
+        let canon = self.canonical_sort_sym(sort);
+        self.sort_ops.eq_carriers.insert(canon, how);
+    }
+
+    /// Is every value of the instance `dict` names equal to itself by `Eq`'s law? Its provider
+    /// provides `Eq`, or provides it under a condition and every dictionary the provision's
+    /// conditions are filled with is such an instance (each such condition in the library is
+    /// `Eq` of the sort's parameters, as [`crate::kb::load::EqProviders::type_is_self_equal_by_law`]
+    /// reads a type). Read off the dictionary the typer built, never off a value.
+    pub(crate) fn dictionary_is_lawful(&self, dict: &crate::eval::dictionary::Dictionary) -> bool {
+        use crate::kb::load::CarrierEq;
+        match self.sort_ops.eq_carriers.get(&self.canonical_sort_sym(dict.impl_sort())) {
+            Some(CarrierEq::Unconditional) => true,
+            Some(CarrierEq::Conditional) => {
+                (0..dict.arity()).all(|k| dict.sub(k).is_some_and(|sub| self.dictionary_is_lawful(&sub)))
+            }
+            None => false,
+        }
+    }
+
+    /// Does the law `eq_refl` answer an equality call classified `class` on identical operands
+    /// (kernel-language.md §8.3)? Read off what the typer decided: the member the call is
+    /// pinned to and, for a member derived field by field, the dictionary it is entered with.
+    /// A member with type parameters of its own keeps the law at an equality call, which the
+    /// typer pins to it only at one of its carriers. `false` for a call classified any other
+    /// way, whose member is chosen where it runs.
+    pub(crate) fn eq_call_law(&self, class: &crate::kb::typing::CallClass) -> bool {
+        use crate::kb::typing::{CallClass, CalleeFrame};
+        let (member, dict) = match class {
+            CallClass::PinNow { impl_op_sym, .. } => (*impl_op_sym, None),
+            CallClass::ConcreteApplyWithin {
+                fn_target_sym, frame, ..
+            } => (
+                *fn_target_sym,
+                match frame {
+                    CalleeFrame::Dict(d) => Some(*d),
+                    _ => None,
+                },
+            ),
+            _ => return false,
+        };
+        match self.eq_law_of_member(member) {
+            EqLaw::Always | EqLaw::AtItsCarriers => true,
+            EqLaw::Never => false,
+            EqLaw::ByItsFields => dict
+                .and_then(|d| crate::eval::dictionary::Dictionary::from_view(self, &d))
+                .is_some_and(|d| self.dictionary_is_lawful(&d)),
+        }
     }
 
     /// Record `member` as the `eq` of one carrier, with where the law decides its call there.
@@ -8819,19 +8878,14 @@ impl KnowledgeBase {
             .unwrap_or(EqLaw::Never)
     }
 
-    /// Is `v` a value of a carrier, providing `Eq`, whose `eq` is `member`? Asked only for a
-    /// member with type parameters of its own ([`EqLaw::AtItsCarriers`]).
-    pub(crate) fn value_of_lawful_carrier_of(&self, v: &crate::eval::value::Value, member: Symbol) -> bool {
-        let Some(target) = self.sem_eq_dispatch_target(v) else {
-            return false;
-        };
-        !self.sem_eq_partial_head(v) && self.canonical_sym(target) == self.canonical_sym(member)
-    }
-
     /// WI-20261025-TSYS6 — is a value headed by `functor` of a carrier whose own `eq` decides
     /// identical operands too — one with an `eq` of its own that provides no `Eq`? O(1).
     pub(crate) fn eq_dispatch_is_partial(&self, functor: Symbol) -> bool {
-        self.sort_ops.eq_dispatch_partial.contains(&functor)
+        let partial = self.sort_ops.eq_dispatch_partial.contains(&functor);
+        if partial {
+            crate::kb::resolve::note_eq_index_read();
+        }
+        partial
     }
 
     /// WI-20261025-TSYS6 — does any carrier's own `eq` decide identical operands
@@ -8845,7 +8899,11 @@ impl KnowledgeBase {
     /// dispatches semantic equality through, if any. O(1); `None` = the value's
     /// carrier has no own `eq` (structural equality is its instance).
     pub(crate) fn eq_dispatch_target(&self, functor: Symbol) -> Option<Symbol> {
-        self.sort_ops.eq_dispatch.get(&functor).copied()
+        let target = self.sort_ops.eq_dispatch.get(&functor).copied();
+        if target.is_some() {
+            crate::kb::resolve::note_eq_index_read();
+        }
+        target
     }
 
     /// Is `op` the `eq` some carrier's equality is dispatched to? The one operation a

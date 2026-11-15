@@ -779,6 +779,7 @@ impl Interpreter {
                         *enclosing_op,
                         pos_args,
                         named_args,
+                        self.equality_call_law(class.as_deref()),
                     ),
                     // WI-1037 — EXHAUSTIVE, no `_` arm. The two classes above are
                     // routed to starts that install a requirements channel; every
@@ -820,7 +821,8 @@ impl Interpreter {
                                 target, handed, pos_args, named_args,
                             );
                         }
-                        self.start_apply_with_op_slots(target, &op_dicts, pos_args, named_args)
+                        let law = self.equality_call_law(class.as_deref());
+                        self.start_apply_with_op_slots(target, &op_dicts, pos_args, named_args, law)
                     }
                 }
             }
@@ -848,7 +850,7 @@ impl Interpreter {
                 }
                 // WI-822 LEG 1: no op-scoped slots — the IR `apply_within` form carries
                 // only the instance channel, and this arm is rebuild-only (see above).
-                self.start_apply_within(*functor, *functor, args, named_args, requirements, &[])
+                self.start_apply_within(*functor, *functor, args, named_args, requirements, &[], false)
             }
             Expr::Constructor {
                 name,
@@ -2183,11 +2185,14 @@ impl Interpreter {
         )
     }
 
+    /// `law`: an equality call the law `eq_refl` answers on identical operands
+    /// ([`AwaitState::ApplyArgs`]).
     fn start_apply(
         &mut self,
         functor: Symbol,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        law: bool,
     ) -> Result<StepOutcome, EvalError> {
         // WI-218: if this apply's functor has a typer-recorded dispatch
         // rewrite via the legacy term-keyed map, redirect to the impl op.
@@ -2220,6 +2225,7 @@ impl Interpreter {
                 target,
                 buffered: Vec::new(),
                 remaining,
+                law,
             },
             first,
         )
@@ -2281,6 +2287,8 @@ impl Interpreter {
         // `requires` of its own, and for the rebuild-only `Expr::ApplyWithin` arm,
         // whose IR form carries only the instance channel.
         op_dicts: &[Option<TermId>],
+        // An equality call whose class says the law answers identical operands.
+        law: bool,
     ) -> Result<StepOutcome, EvalError> {
         if requirements_occ.len() > 1 {
             return Err(EvalError::Internal(format!(
@@ -2327,7 +2335,7 @@ impl Interpreter {
                 .map(|positions| Box::new((dict, positions))),
             None => None,
         };
-        self.dispatch_apply_pairing(target, requirements, args, named_args, pair_at)
+        self.dispatch_apply_pairing(target, requirements, args, named_args, pair_at, law)
     }
 
     /// WI-822 LEG 1 — append `target`'s OP-SCOPED requirement slots (the tail of
@@ -2561,6 +2569,8 @@ impl Interpreter {
         enclosing_op: Option<Symbol>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        // An equality call whose class says the law answers identical operands.
+        law: bool,
     ) -> Result<StepOutcome, EvalError> {
         use crate::kb::typing::CalleeFrame;
         match frame {
@@ -2577,7 +2587,7 @@ impl Interpreter {
                 // correctly; the caller OPERATION's are its own and must not ride along.
                 self.strip_caller_op_slots(enclosing_op, &mut caller_reqs)?;
                 self.push_op_scoped_slots(target, target, op_dicts, &mut caller_reqs)?;
-                self.dispatch_apply_with_requirements(target, caller_reqs, pos_args, named_args)
+                self.dispatch_apply_pairing(target, caller_reqs, pos_args, named_args, None, law)
             }
             // WI-415: cross-sort / no-enclosing-sort call — install the
             // compile-stage-built dispatching dict through the existing
@@ -2592,10 +2602,11 @@ impl Interpreter {
                     named_args,
                     std::slice::from_ref(&dict_occ),
                     op_dicts,
+                    law,
                 )
             }
             CalleeFrame::Absent => {
-                self.start_apply_with_op_slots(target, op_dicts, pos_args, named_args)
+                self.start_apply_with_op_slots(target, op_dicts, pos_args, named_args, law)
             }
         }
     }
@@ -2634,15 +2645,16 @@ impl Interpreter {
         op_dicts: &[Option<TermId>],
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        law: bool,
     ) -> Result<StepOutcome, EvalError> {
         if !op_dicts.is_empty() {
             let mut reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> = SmallVec::new();
             self.push_op_scoped_slots(target, target, op_dicts, &mut reqs)?;
             if !reqs.is_empty() {
-                return self.dispatch_apply_with_requirements(target, reqs, pos_args, named_args);
+                return self.dispatch_apply_pairing(target, reqs, pos_args, named_args, None, law);
             }
         }
-        self.start_apply(target, pos_args, named_args)
+        self.start_apply(target, pos_args, named_args, law)
     }
 
     /// Runtime path for `CallClass::DeferToRequirement`: resolve the
@@ -2972,7 +2984,7 @@ impl Interpreter {
         let pair_at = self
             .positions_to_pair(spec_op_sym, target)
             .map(|positions| Box::new((dispatching_dict, positions)));
-        self.dispatch_apply_pairing(target, requirements, pos_args, named_args, pair_at)
+        self.dispatch_apply_pairing(target, requirements, pos_args, named_args, pair_at, false)
     }
 
     /// Proposal 073 §2 — where `target`, reached through a dictionary for a call of `spec_op`,
@@ -3301,7 +3313,7 @@ impl Interpreter {
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
-        self.dispatch_apply_pairing(target, requirements, pos_args, named_args, None)
+        self.dispatch_apply_pairing(target, requirements, pos_args, named_args, None, false)
     }
 
     /// [`Self::dispatch_apply_with_requirements`] with the argument positions `pair_at` names
@@ -3313,6 +3325,9 @@ impl Interpreter {
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         pair_at: Option<Box<(super::value::Dictionary, SmallVec<[usize; 2]>)>>,
+        // An equality call whose class says the law answers identical operands
+        // ([`AwaitState::ApplyWithinArgs`]).
+        law: bool,
     ) -> Result<StepOutcome, EvalError> {
         let total_args = pos_args.len() + named_args.len();
         if total_args == 0 {
@@ -3333,6 +3348,7 @@ impl Interpreter {
                 remaining,
                 requirements,
                 pair_at,
+                law,
             },
             first,
         )
@@ -3658,15 +3674,12 @@ impl Interpreter {
             return self.enter_reify_boundary(&arg_values, &requirements);
         }
 
-        // The `eq` of a carrier that provides `Eq`, on identical operands: equal by the law
-        // `eq_refl`, and not asked (kernel-language.md §8.3) — as the resolver's semantic
-        // equality and a call reaching `PartialEq.eq` with no member (step 2b) answer before
-        // they reach the member. A call
-        // pinned to the member at load, or entered through a dictionary, ran it and answered
-        // what a member breaking the law says.
-        // A member with type parameters of its own is called at other types too, where `Eq`
-        // says nothing: there the law holds only on its carriers' values.
-        if self.equal_by_the_law_at(target, &arg_values) {
+        // The `eq` of a carrier that provides `Eq`, entered on identical operands: equal by the
+        // law `eq_refl`, and not asked (kernel-language.md §8.3) — as the resolver's semantic
+        // equality answers before it reaches the member. Read off the member alone: a member
+        // with type parameters of its own keeps the law only at an equality call, whose class
+        // carries it to where the operands are in ([`Self::equality_call_law`]).
+        if self.equal_by_the_law_at(target, &arg_values, false) {
             return Ok(StepOutcome::Deliver(Value::Bool(true)));
         }
 
@@ -3726,7 +3739,7 @@ impl Interpreter {
                     == crate::kb::typing::impl_parent_sort_of_op(&self.kb, target)
             });
             if let Some(member) = in_its_spec.then(|| self.dictionary_resolved_sibling(target)).flatten() {
-                if self.equal_by_the_law_at(member, &arg_values) {
+                if self.equal_by_the_law_at(member, &arg_values, true) {
                     return Ok(StepOutcome::Deliver(Value::Bool(true)));
                 }
                 if let Some(outcome) =
@@ -4118,19 +4131,38 @@ impl Interpreter {
     /// absence-carrying dictionary still raises rather than dispatching.
     /// Are `args` two identical operands of a call of `member`, an `eq` whose carrier provides
     /// `Eq`, so that the law `eq_refl` answers `true` without entering it (kernel-language.md
-    /// §8.3)? A member with type parameters of its own is called at other types too, where `Eq`
-    /// says nothing: there the law holds only on its carriers' values.
-    fn equal_by_the_law_at(&self, member: Symbol, args: &[Value]) -> bool {
-        let [a, b] = args else {
-            return false;
-        };
+    /// §8.3)? Read off the member, never off the operands. A member with type parameters of its
+    /// own keeps the law where it is entered for an equality call (`at_an_eq_call`), which is at
+    /// one of its carriers; called at another type, `Eq` says nothing. A member derived field by
+    /// field is entered: it compares each field at the field's own member, whose law is its
+    /// own, so its answer on identical operands is the law's.
+    fn equal_by_the_law_at(&self, member: Symbol, args: &[Value], at_an_eq_call: bool) -> bool {
         let law = match self.kb.eq_law_of_member(member) {
-            crate::kb::EqLaw::Never => false,
             crate::kb::EqLaw::Always => true,
-            crate::kb::EqLaw::AtItsCarriers => self.kb.value_of_lawful_carrier_of(a, member),
-            crate::kb::EqLaw::ByItsFields => self.kb.value_self_equal_by_law(a, None),
+            crate::kb::EqLaw::AtItsCarriers => at_an_eq_call,
+            crate::kb::EqLaw::Never | crate::kb::EqLaw::ByItsFields => false,
         };
-        law && crate::kb::term_view::views_structurally_equal(&self.kb, a, b)
+        law && self.identical_operands(args)
+    }
+
+    /// Does the law `eq_refl` answer the call classified `class` on identical operands: an
+    /// equality call pinned at load or entered through the dictionary the typer built, where
+    /// its class says the law holds ([`crate::kb::KnowledgeBase::eq_call_law`])? Read off the
+    /// class, not the member it enters: a member with type parameters of its own is called at
+    /// other types too, where `Eq` says nothing.
+    fn equality_call_law(&self, class: Option<&crate::kb::typing::CallClass>) -> bool {
+        use crate::kb::typing::CallClass;
+        match class {
+            Some(
+                c @ (CallClass::PinNow { spec_op_sym, .. } | CallClass::ConcreteApplyWithin { spec_op_sym, .. }),
+            ) if self.is_eq_spec_op(*spec_op_sym) => self.kb.eq_call_law(c),
+            _ => false,
+        }
+    }
+
+    /// Are `args` two structurally identical operands?
+    fn identical_operands(&self, args: &[Value]) -> bool {
+        matches!(args, [a, b] if crate::kb::term_view::views_structurally_equal(&self.kb, a, b))
     }
 
     /// Enter `impl_target`, the member [`Self::dictionary_resolved_sibling`] found for a call
@@ -5740,9 +5772,13 @@ impl Interpreter {
                     target,
                     mut buffered,
                     mut remaining,
+                    law,
                 } => {
                     buffered.push(v);
                     if remaining.is_empty() {
+                        if law && self.identical_operands(&buffered) {
+                            return Ok(StepOutcome::Deliver(Value::Bool(true)));
+                        }
                         return self.dispatch_call(target, buffered);
                     }
                     let next_expr = remaining.remove(0);
@@ -5751,6 +5787,7 @@ impl Interpreter {
                         target,
                         buffered,
                         remaining,
+                        law,
                     });
                     let ctx = self.stack.top().unwrap().child_context();
                     self.stack.push(child_frame(ctx, next_expr))?;
@@ -5786,9 +5823,13 @@ impl Interpreter {
                     mut remaining,
                     requirements,
                     pair_at,
+                    law,
                 } => {
                     buffered.push(v);
                     if remaining.is_empty() {
+                        if law && self.identical_operands(&buffered) {
+                            return Ok(StepOutcome::Deliver(Value::Bool(true)));
+                        }
                         if let Some(pair) = pair_at {
                             let (dict, positions) = *pair;
                             for i in positions {
@@ -5812,6 +5853,7 @@ impl Interpreter {
                         remaining,
                         requirements,
                         pair_at,
+                        law,
                     });
                     let ctx = self.stack.top().unwrap().child_context();
                     self.stack.push(child_frame(ctx, next_expr))?;

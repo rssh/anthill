@@ -2502,6 +2502,8 @@ mod wi_cbrd2_list_literal_goal_test;
 mod wi_cbrd2_typed_neq_test;
 #[path = "include/wi_cbrd2_effect_guard_comparison_test.rs"]
 mod wi_cbrd2_effect_guard_comparison_test;
+#[path = "include/wi_cbrd2_equality_law_test.rs"]
+mod wi_cbrd2_equality_law_test;
 #[path = "include/wi_cbrd2_typed_execute_test.rs"]
 mod wi_cbrd2_typed_execute_test;
 #[path = "include/wi_cbrd2_typed_query_variable_test.rs"]

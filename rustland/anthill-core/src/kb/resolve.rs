@@ -118,13 +118,20 @@ thread_local! {
     static EQ_INDEX_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many `eq` goals the resolver has decided ON THIS THREAD, ever, at the member the equality
-/// index names for an operand's constructor: goals whose `eq` no type reached. An instrument for
-/// what a verdict cannot show, as the index names the member the typer would: that a typed
-/// comparison was decided at the member the typer gave it. A test reads it before and after a
+/// How many times the equality index has answered a question about a value's constructor ON
+/// THIS THREAD, ever: the carrier's `eq` a value headed by it has, or that the `eq` decides
+/// identical operands — the member and the law a comparison no type reached is read at. A probe
+/// that finds nothing is not counted: it decides nothing. An instrument for
+/// what a verdict cannot show, as the index names the member and the law the typer would: that a
+/// typed comparison was decided at what the typer gave it. A test reads it before and after a
 /// load or a query and asserts on the difference; a libtest thread runs one test.
 pub fn eq_index_reads_by_this_thread() -> usize {
     EQ_INDEX_READS.with(|c| c.get())
+}
+
+/// Count one read of the equality index ([`eq_index_reads_by_this_thread`]).
+pub(crate) fn note_eq_index_read() {
+    EQ_INDEX_READS.with(|c| c.set(c.get() + 1));
 }
 
 /// WI-500: how a constructor's POSITIONAL args map onto its declared field
@@ -1398,6 +1405,9 @@ impl Wait {
 struct PinnedEq {
     member: Symbol,
     entry: Option<(Symbol, TermId)>,
+    /// Whether the law `eq_refl` answers the call on identical operands, as the typer's class
+    /// of it says ([`KnowledgeBase::eq_call_law`]).
+    lawful: bool,
 }
 
 enum WovenEquality {
@@ -9280,6 +9290,7 @@ impl KnowledgeBase {
                         member,
                         // Only a member entered through a dictionary has one to enter it by.
                         entry: if through { self.classified_entry(o, member) } else { None },
+                        lawful: false,
                     })
             }
             _ => None,
@@ -9288,7 +9299,15 @@ impl KnowledgeBase {
             EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Stuck(state) => state.verdict(),
             EqOperands::Absent => BuiltinResult::Failure,
-            EqOperands::Ready(a, b) => self.sem_eq_values_at(a, b, subst, pinned),
+            EqOperands::Ready(a, b) => {
+                // The law is asked of identical operands alone.
+                let pinned = pinned.map(|p| PinnedEq {
+                    lawful: matches!(goal, Value::Node(o) if self.values_equal(&a, &b)
+                        && o.call_class().is_some_and(|class| self.eq_call_law(&class))),
+                    ..p
+                });
+                self.sem_eq_values_at(a, b, subst, pinned)
+            }
         };
         self.verdict_into_result_column(goal, subst, verdict)
     }
@@ -9319,18 +9338,25 @@ impl KnowledgeBase {
             }
             return self.tuple_components_sem_eq(pairs, subst);
         }
-        // WI-20261025-TSYS6 — an operand of a carrier whose own `eq` decides identical operands
-        // too (one that provides no `Eq`, or provides it under a condition) goes to that `eq`,
-        // past reflexivity (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). A composite
-        // holding a `Float` has its own `eq`, a derived member.
-        let own_eq_decides = self.has_partial_eq_dispatch()
-            && (self.sem_eq_partial_head(&a) || self.sem_eq_partial_head(&b));
-        // (2) Reflexivity — structurally-identical operands, where `Eq`'s law decides them:
-        // at a carrier whose own `eq` decides identical operands too, where every value
-        // inside is of a lawful one (`some(7)`, not `some(nan)`).
-        if (!own_eq_decides || self.value_self_equal_by_law(&a, Some(subst)))
-            && self.values_equal(&a, &b)
-        {
+        // (2) Reflexivity — structurally-identical operands, where `Eq`'s law decides them
+        // (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). A goal the typer pinned reads
+        // the law off its class: the member, and the dictionary a member derived field by
+        // field is entered with (`some(7)` at `Option[T = Int64]`, not `some(nan)` at `Option[T
+        // = Float]`). Without it its member decides identical operands too.
+        //
+        // WI-20261025-TSYS6 — a goal no type reached reads it off its operands: an operand of
+        // a carrier whose own `eq` decides identical operands too (one that provides no `Eq`,
+        // or provides it under a condition) goes to that `eq`, unless every value inside is of
+        // a lawful carrier.
+        let lawful = match pinned {
+            Some(p) => p.lawful,
+            None => {
+                let own_eq_decides = self.has_partial_eq_dispatch()
+                    && (self.sem_eq_partial_head(&a) || self.sem_eq_partial_head(&b));
+                !own_eq_decides || self.value_self_equal_by_law(&a, Some(subst))
+            }
+        };
+        if lawful && self.values_equal(&a, &b) {
             return sem_verdict(true, true);
         }
         // (3) No carrier overrides eq at all (the common KB): straight to
@@ -9341,14 +9367,13 @@ impl KnowledgeBase {
         // (4) Head-carrier override over GROUND operands ⇒ dispatch: the typer's pin, else the
         // index.
         let target = pinned.or_else(|| {
-            let read = self
-                .sem_eq_dispatch_target(&a)
+            self.sem_eq_dispatch_target(&a)
                 .or_else(|| self.sem_eq_dispatch_target(&b))
-                .map(|member| PinnedEq { member, entry: None });
-            if read.is_some() {
-                EQ_INDEX_READS.with(|c| c.set(c.get() + 1));
-            }
-            read
+                .map(|member| PinnedEq {
+                    member,
+                    entry: None,
+                    lawful: false,
+                })
         });
         if let Some(target) = target {
             if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
@@ -9511,7 +9536,7 @@ impl KnowledgeBase {
         b: Value,
         subst: &Substitution,
     ) -> BuiltinResult {
-        let PinnedEq { member: target, entry } = pinned;
+        let PinnedEq { member: target, entry, .. } = pinned;
         // Close the operands under the caller's σ: groundness was checked
         // AGAINST σ, but the sub-resolution starts from an empty substitution —
         // a σ-bound variable inside an entity-carried operand would enter the
