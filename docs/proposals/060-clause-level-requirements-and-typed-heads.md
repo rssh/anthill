@@ -271,17 +271,22 @@ of `Product(id: Int64, price: Int64)` checked through a typed column cost 16 res
 element and left an untried case per element on the search; the same domain written one clause per
 constructor cost 6, and generated the same lists in the same order.
 
-**The dictionary names whose `fill` runs — the value never does** (067 §3). Every fill call goes
-through its evidence — the dictionary a caller handed in, or, where none was handed, one built from
-a type, which a domain allows because it involves no choice of provider — and runs the clauses of
-that dictionary's `impl`; their heads then decide the mode. A value is never taken for the
-provider: inside `countAt[X]` below the asked type is a rigid `X`, a name, and only the dictionary
-knows its domain. **A value of a refining sort** (kernel-language §8.2) is a case of the DERIVED
-domain it refines, and the call applies that case: where the dictionary's `impl` is a derived
-domain and the value's constructor is not one of that sort's own, the call runs the `fill` of the
-value's own sort at the instance the DICTIONARY describes — its conditions, not a type — so
-`other(7)` under `sort Other requires Base` is filled at `Other` wherever `Base`'s dictionary is
-handed, rigid or not. A hand-written or primitive `impl` has no such case: its own clauses decide.
+**The dictionary names whose `fill` runs — the value never does** (067 §3). Every fill call runs
+the member of the provision its dictionary names, and every sub-domain below that dictionary comes
+out of its slots: a recursive field is handed the same dictionary, a field typed by a parameter the
+condition's slot, a value of a refining sort a dictionary for its own sort put together from those
+slots. A type builds a dictionary only at the top, where no caller hands one — never below one, so
+a sub-domain a caller handed for a rigid type is never replaced by the one its type would name:
+inside `countAt[X]` below, the asked type is a rigid `X`, a name, and only the dictionary knows its
+domain. A relation reached by a sort's name — `<Sort>.domain`, cited or written in the sort's body —
+could do none of this: it takes no requirements, so it cannot receive a caller's sub-domain, which
+is why it is superseded (the decided item below). **A value of a refining sort** (kernel-language
+§8.2) is a case of the DERIVED domain it refines, and the call applies that case: where the
+dictionary's `impl` is a derived domain and the value's constructor is not one of that sort's own,
+the call runs the `fill` of the value's own sort with a dictionary put together from the handed
+one's slots — so `other(7)` under `sort Other requires Base` is filled at `Other` wherever `Base`'s
+dictionary is handed, rigid or not, with the sub-domains it carries. A hand-written or primitive
+`impl` has no such case: its own clauses decide.
 The case is the call's because no clause can hold it: as an indexed clause (`Base.fill(other(n:
 ?n)) :- …`) its head would match an unbound `?x` and list the refining sorts' values, and with a
 variable head it would be tried, and refuted, beside every value of `Base`'s own.

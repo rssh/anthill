@@ -2873,14 +2873,16 @@ List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]    -- derived
 **The head decides the mode** (WI-20261115-YR3N7). A bound value selects the one
 clause its constructor heads, so a typed column CHECKS it and proposes no other
 case; an unbound value matches every head, in clause order, and the column
-GENERATES. The dictionary a fill call is handed — or, where none is handed, one
-built from a type, since a domain involves no choice of provider — names whose
-clauses run, and the value never does: the domain of a caller's rigid `X` is the
-dictionary the caller holds (below). A value of a refining sort (§8.2) is a case
-of the DERIVED domain it refines, applied by the call: where the dictionary's
-provider is a derived domain and the value's constructor is not one of that
-sort's own, the value is filled at its own sort, at the instance the dictionary
-describes. A hand-written or primitive provider's own clauses decide, and an
+GENERATES. The dictionary a fill call is handed names whose clauses run — the
+value never does — and every sub-domain below it comes out of its slots: a
+recursive field is handed the same dictionary, a field typed by a parameter the
+condition's slot. A type builds a dictionary only where no caller hands one,
+never below one, so the sub-domain a caller handed for a rigid `X` is the one
+used (below). A value of a refining sort (§8.2) is a case of the DERIVED domain
+it refines, applied by the call: where the dictionary's provider is a derived
+domain and the value's constructor is not one of that sort's own, the value is
+filled at its own sort, with a dictionary put together from the handed one's
+slots. A hand-written or primitive provider's own clauses decide, and an
 unbound value is filled with the provider's own constructors.
 `List[T = Bit]` and `List[T = Letter]` are one provision, conditional on the
 element's `SortDomain`: the element's domain reaches `fill` as that condition's

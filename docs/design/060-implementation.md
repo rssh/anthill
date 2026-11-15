@@ -1005,15 +1005,19 @@ in the same order.
    one matches every head in clause order — generation, in WI-743's order.
 2. **Fields are filled in the body**, recursive fields first, and every fill call is the dispatching
    `apply_domain(evidence, v)`; no fill is called by name.
-3. **The dictionary names whose fill runs; refinement is the derived domain's case, applied by
-   the call.** `apply_domain(D, v)` runs the clauses of `D`'s `impl` — never a fill chosen by
-   `v`'s own sort: for a caller's rigid `X` the asked type is a name, and only the dictionary knows
-   its domain ("Why the instance must be THREADED", above). `D` is built from a type only where no
-   caller hands one, which a domain allows because it involves no choice of provider. A value of a
-   refining sort is the one case a DERIVED `impl` adds: where `D`'s `impl` is derived and `v`'s
-   constructor is not one of that sort's own, the call runs the fill of `v`'s own sort at the
-   instance `D` describes — its conditions, as `lower_refined_domain` reads them today — so a rigid
-   `X`'s dictionary serves as a concrete one does. A hand-written or primitive `impl` adds no such
+3. **The dictionary names whose fill runs, every sub-domain below it comes out of its slots, and
+   refinement is the derived domain's case, applied by the call.** `apply_domain(D, v)` runs the
+   member of the provision `D` names — never a fill chosen by `v`'s own sort or by a sort's name:
+   for a caller's rigid `X` the asked type is a name, and only the dictionary knows its domain,
+   the sub-domains it carries included ("Why the instance must be THREADED", above). Below `D`, a
+   recursive field is handed `D` again and a field typed by a parameter `D`'s condition slot; a
+   type builds a dictionary only at the top, where no caller hands one. A value of a refining sort
+   is the one case a DERIVED `impl` adds: where `D`'s `impl` is derived and `v`'s constructor is
+   not one of that sort's own, the call runs the fill of `v`'s own sort with a dictionary put
+   together from `D`'s slots. `lower_refined_domain` does NOT do that today: it keeps only the
+   conditions that are types ("a condition held as a dictionary, or not yet pinned, is an argument
+   left unwritten"), so it drops the sub-domain a rigid caller handed; moving the case into the
+   call must pass those conditions on. A hand-written or primitive `impl` adds no such
    case. The `__refined_domain` clause leaves the relation: indexed (`Base.fill(other(n: ?n)) :-
    …`), its head would match an unbound `?x` too and the domain would list the refining sorts'
    values, where WI-20261104-J9SSG's control lists the sort's own; with a variable head it would be
@@ -1036,8 +1040,11 @@ in the same order.
   condition has its own dictionary read, and a clause that reads none (`fill(nil)`) has none; the
   marker already lays a relation's dictionaries out per clause (`resolve::bind_citation_reads`, an
   offset per clause). (b) The derived path hands ONE dictionary (`fill_goal`: `vec![dict]`), right
-  only while the relation is one clause; it must hand one per reading clause, as the hand-written
-  path already does (`requirement_read_specs`, `fill_goal`'s `Written` arm). (c) A read's witness
+  only while the relation is one clause; it must hand the provision's WHOLE dictionary to each
+  reading clause. The hand-written path is no model for it: `fill_goal`'s `Written` arm routes the
+  `SortDomain` read alone and hands every other read `__unrouted` — the domain relation's
+  inability to take requirements, which a written provision (WT8WG item 2) must not inherit.
+  (c) A read's witness
   is the head's constructor pattern, not `?x`: after the head match it is the same value, so an
   unfilled read still builds the dictionary from the value's type.
 

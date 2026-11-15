@@ -36,6 +36,14 @@ end
   operation creates them.
 - **Its implementations** are the provisions of it: a sort's derived domain (060 §2.3), a
   primitive's, a collection builder's, or one an author writes.
+- **A GENERAL INTERFACE, and an interface, not a relation** (user, 2026-11-15). `SortDomain` — a
+  sort's domain, what a typed column requires (060 §2.3) — is ONE implementation; the others are
+  the cases that need custom unification, a collection builder (§4) among them. It is an interface
+  because a relation cannot carry what a fill needs: a provision's conditions are its
+  requirements, and the dictionary a caller hands in carries them down — the sub-fills of a rigid
+  type, custom ones included — while a relation reached by a sort's name takes no requirements and
+  has no choice. That is why `<Sort>.domain` is superseded (060 §2.3's decided item;
+  060-implementation §7.3, 2026-11-02).
 
 ## 2. `Fillable` is a MONOID — `combine` and `empty`
 
