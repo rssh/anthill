@@ -2855,30 +2855,40 @@ rule colouring(wa: Colour, nt: Colour, sa: Colour) :- wa != nt, wa != sa, nt != 
 enumerates, with no generator written down: `sort Colour { entity red, entity
 green, entity blue }` is the generator.
 
-The derived clause is the constructor list read EXISTENTIALLY — a disjunction
-over the constructors, with each field's own domain conjoined inside its branch —
-where the induction principle reads the same list universally. **The type travels
-as an argument**, which is what lets one clause serve a parameterized sort at
-every instantiation and every nesting depth:
+The derived relation is the constructor list read EXISTENTIALLY — ONE CLAUSE PER
+CONSTRUCTOR, the constructor in the clause's head and each field's own domain filled
+in its body — where the induction principle reads the same list universally. It is
+the sort's `SortDomain` provision (proposal 060 §2.3, 067):
 
 ```
-domain_member(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
-domain_member(?x, List[T = ?T]) :- ?x <=> nil()
-                                 | (?x <=> cons(head: ?h, tail: ?t)
-                                      & domain_member(?t, List[T = ?T])
-                                      & domain_member(?h, ?T))
+Letter provides SortDomain[T = Letter]                            -- derived
+  rule fill(a)
+  rule fill(b)
+  rule fill(c)
+List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]    -- derived
+  rule fill(nil)
+  rule fill(cons(head: ?h, tail: ?t)) :- fill(?t), SortDomain[T].fill(?h)
 ```
 
-`anthill.kernel.domain_member` is the relation (the clauses above and one
-catch-all); `anthill.kernel.domain` is the conformance guard §2 prepends. Both
-are declared and both are writable from a rule body — a goal on the 2-ary
-`domain_member` is the spelling to reach for when the TYPE is itself a variable.
-The 1-ary `<Sort>.domain` below is the ordinary one.
-
-The `List` head binds `?T` from the caller's `List[T = Letter]` by ordinary
-unification — types are terms with logical variables — and the element goal
-dispatches on the bound term. `List[T = Bit]` and `List[T = Letter]` are one
-clause; no dictionary and no per-sort lookup happens at run time.
+**The head decides the mode** (WI-20261115-YR3N7). A bound value selects the one
+clause its constructor heads, so a typed column CHECKS it and proposes no other
+case; an unbound value matches every head, in clause order, and the column
+GENERATES. The dictionary a fill call is handed — or, where none is handed, one
+built from a type, since a domain involves no choice of provider — names whose
+clauses run, and the value never does: the domain of a caller's rigid `X` is the
+dictionary the caller holds (below). A value of a refining sort (§8.2) is a case
+of the DERIVED domain it refines, applied by the call: where the dictionary's
+provider is a derived domain and the value's constructor is not one of that
+sort's own, the value is filled at its own sort, at the instance the dictionary
+describes. A hand-written or primitive provider's own clauses decide, and an
+unbound value is filled with the provider's own constructors.
+`List[T = Bit]` and `List[T = Letter]` are one provision, conditional on the
+element's `SortDomain`: the element's domain reaches `fill` as that condition's
+sub-dictionary, built from the type a column names or handed in by a citation.
+`anthill.kernel.domain` is the conformance guard §2 prepends. *Not built:* the
+derivation emits a sort's cases as ONE clause whose body is a disjunction over its
+constructors, with a last case for a refining sort's value, so a check proposes
+each constructor to the value in turn.
 
 **Finiteness is not a condition.** It decides only whether the stream ENDS. A
 closed sort with a recursive constructor has a fair, lazy, INFINITE domain
@@ -2942,12 +2952,21 @@ literals, not entity constructors, so there is no constructor list to read.
 A bound that is a TYPE VARIABLE — `rule el(?x: T) :- true` inside `sort Wrap[T]`
 — names no sort, so its domain is an implicit parameter of the clause: a
 `SortDomain[T = T]` dictionary, where `anthill.reflect.SortDomain` is the kernel
-spec whose member is a sort's `domain` and whose instances the loader derives for
-every sort with one. A citation fills it from its caller's evidence —
+spec whose member is a sort's `fill` (through `Fillable`, proposal 067) and whose
+instances the loader derives for every sort with one. A citation fills it from its
+caller's evidence —
 `operation countAt[X]() requires SortDomain[T = X] = Wrap[T = X].el.takeN(5).length()`
 counts `Colour`'s three values under `countAt[X = Colour]()` — and with `?x` bound
 the clause reads it off the value's type; with neither, the bound keeps §2's
-ladder (WI-20260911-5G28A).
+ladder (WI-20260911-5G28A). Inside `countAt` the `X` is RIGID — a name, not a
+domain — so the dictionary is the only thing that knows `X`'s domain, and it is
+threaded whole: the citation routes the clause's read to `countAt`'s slot, the
+read hands it to its provider's clauses, and a clause hands it on unchanged to a
+recursive field and its condition's sub-dictionary to a field typed by a
+parameter. So `countAt[X = Wrap[T = Colour]]()` counts three, `wrap(red)`,
+`wrap(green)`, `wrap(blue)`: `Wrap`'s clause `fill(wrap(v: ?v))` fills `?v`
+through `Colour`'s dictionary, `Wrap`'s condition (proposal 060 §2.3, "How `fill`
+is threaded").
 
 **The parameter form (proposal 060 §2.1).** In the head of the predicate a rule
 DEFINES, `name: Type` introduces a typed clause variable with no `?` sigil:

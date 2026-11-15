@@ -187,7 +187,9 @@ below are the ones that stayed:
   them: mode (in) checks conformance and membership, mode (out) enumerates. A mode
   split — generate from a subset but accept anything conforming — would make the
   relation's answers depend on call mode, and is refused. For a derived domain
-  membership is conformance, so the common case costs nothing extra.
+  membership is conformance, and mode (in) is a CHECK, not a generation: a bound value
+  selects the one clause its constructor heads (§2.3, "The head decides the mode"), so no
+  case is proposed to it and refuted.
 - **Rule-local narrowing stays an ordinary body goal.** A sort's domain is the sort's
   everywhere; "this rule's `x` ranges over a subset" is written as a goal.
 - **A sort that defines its own domain** provides `SortDomain`'s `fill` (§2.3's decided
@@ -248,16 +250,41 @@ last answering 27 and stopping.
 SortDomain[List] = combine(SortDomain[List.nil], SortDomain[List.cons])
 ```
 
-An entity's case unifies `?x` with the constructor over fresh fields, then fills each field — so
-for `List`:
+An entity's case is ONE CLAUSE: the constructor over fresh fields in its HEAD, and a body that
+fills each field — so for `List`:
 
 ```anthill
 List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]      -- derived
-  rule fill(?x) :- ?x <=> nil()
-                 | ( ?x <=> cons(head: ?h, tail: ?t),
-                     fill(?t),                                      -- the tail first
-                     SortDomain[T].fill(?h) )                       -- then the head, through its SortDomain
+  rule fill(nil)
+  rule fill(cons(head: ?h, tail: ?t)) :- fill(?t),                  -- the tail first
+                                         SortDomain[T].fill(?h)     -- then the head, through its SortDomain
 ```
+
+**The head decides the mode** (user, 2026-11-15, WI-20261115-YR3N7). A bound value selects the one
+clause whose head its constructor matches, so mode (in) is a check: no case is proposed and
+refuted, and none is left to try. An unbound `?x` matches every head, in clause order, so mode
+(out) generates — in the order the two rules below give. Nothing else picks the mode: it is how a
+goal selects clauses, the index over clause heads. The shape first derived put the cases in ONE
+clause's body, `fill(?x) :- ?x <=> nil() | (?x <=> cons(head: ?h, tail: ?t), …)`, which proposes
+each constructor to `?x` in turn and so generates even where it checks: MEASURED 2026-11-15, a list
+of `Product(id: Int64, price: Int64)` checked through a typed column cost 16 resolution steps per
+element and left an untried case per element on the search; the same domain written one clause per
+constructor cost 6, and generated the same lists in the same order.
+
+**The dictionary names whose `fill` runs — the value never does** (067 §3). Every fill call goes
+through its evidence — the dictionary a caller handed in, or, where none was handed, one built from
+a type, which a domain allows because it involves no choice of provider — and runs the clauses of
+that dictionary's `impl`; their heads then decide the mode. A value is never taken for the
+provider: inside `countAt[X]` below the asked type is a rigid `X`, a name, and only the dictionary
+knows its domain. **A value of a refining sort** (kernel-language §8.2) is a case of the DERIVED
+domain it refines, and the call applies that case: where the dictionary's `impl` is a derived
+domain and the value's constructor is not one of that sort's own, the call runs the `fill` of the
+value's own sort at the instance the DICTIONARY describes — its conditions, not a type — so
+`other(7)` under `sort Other requires Base` is filled at `Other` wherever `Base`'s dictionary is
+handed, rigid or not. A hand-written or primitive `impl` has no such case: its own clauses decide.
+The case is the call's because no clause can hold it: as an indexed clause (`Base.fill(other(n:
+?n)) :- …`) its head would match an unbound `?x` and list the refining sorts' values, and with a
+variable head it would be tried, and refuted, beside every value of `Base`'s own.
 
 **Per field.** Each field's type decides how it is filled and what the provision requires:
 
@@ -273,6 +300,85 @@ type parameter. (S3a's rows put one condition on each parameter, so a parameter 
 sort whose field cannot be filled — `Delay`'s arrow — got a row it could not honour.) A member of a
 conditional provision reads its condition (066); at run time the condition is a sub-dictionary of
 the dictionary `fill` was reached through (067 §3).
+
+**How `fill` is threaded — a rigid variable.** The rigid is the reason `SortDomain` reaches a clause
+as a dictionary at all (060-implementation §7.3, "Why the instance must be THREADED — the RIGID
+type variable"). The fixture of `wi_5g28a_sort_domain_test` and `wi_shed7_fillable_test`:
+
+```anthill
+sort Colour
+  entity red
+  entity green
+  entity blue
+end
+sort Wrap[T]
+  entity wrap(v: T)
+  rule el(?x: T) :- true
+end
+operation countAt[X]() -> Int64 effects {Error} requires SortDomain[T = X] =
+  Wrap[T = X].el.takeN(9).length()
+operation colours() -> Int64 effects {Error} = countAt[X = Colour]()              -- 3
+operation wrapped() -> Int64 effects {Error} = countAt[X = Wrap[T = Colour]]()    -- 3
+```
+
+Inside `countAt`, `X` is RIGID: the body is typed once for every instantiation, so no type in it
+names `X`'s domain. Only `countAt`'s caller knows `X`, and it hands the domain in as the dictionary
+its `requires` slot holds. What the typer compiles and the loader derives, written with the
+dictionaries visible — `?d` and `?self` are a clause's dictionary reads, never head arguments
+(060-implementation §7.3, "THE HEAD-ARGUMENT ALTERNATIVE STAYS REJECTED"):
+
+```
+Wrap.el(?x) :- __domain_guard(?x, T),                                  -- §2's type test, in front
+               apply_domain(?d, ?x, T),                                 -- the fill, through ?d
+               find_dictionary(SortDomain, SortDomain, ?x, out: ?d)     -- el's IMPLICIT PARAMETER
+
+Colour.fill(red)                                                        -- derived: a clause per constructor
+Colour.fill(green)
+Colour.fill(blue)
+Wrap.fill(wrap(v: ?v)) :- find_dictionary(SortDomain, SortDomain, wrap(v: ?v), out: ?self),
+                          apply_domain(__domain_sub(?self, k), ?v)      -- the element: ?self's condition k
+```
+
+`k` is the condition's slot in the dictionary's layout, after `SortDomain`'s own chain
+(060-implementation §7.3, "DELIVERED 2026-09-25").
+
+`colours()`:
+1. The call `countAt[X = Colour]()` knows the instance, so it builds `countAt`'s slot from the
+   provisions: `D_Colour = Dictionary(…, impl: Colour)`. A domain involves no choice — a sort has
+   one — so the type determines it.
+2. In `countAt`'s body the citation `Wrap[T = X].el` can build nothing for the rigid `X`. The typer
+   ROUTES `el`'s read `?d` to `countAt`'s slot, and evaluating the citation hands `D_Colour` in with
+   the relation value.
+3. Opening `el`'s clause binds `?d = D_Colour`. `?x` is unbound, so the guard waits, and
+   `apply_domain` lowers through `D_Colour`'s `impl` to `Colour.fill(?x)`.
+4. An unbound `?x` matches all three heads, in clause order — `red`, `green`, `blue`: GENERATION.
+   Each binding wakes the guard, which checks it. Three rows.
+
+`wrapped()`:
+1. The call builds `D = Dictionary(…, D_Colour, impl: Wrap)`: `Wrap`'s provision is conditional on
+   its element's `SortDomain`, so `Colour`'s dictionary is `D`'s condition.
+2. The same route hands `D` in; opening `el` binds `?d = D`, and `apply_domain` lowers to
+   `Wrap.fill(?x)`, handing `D` on to that clause's read.
+3. An unbound `?x` matches `Wrap.fill(wrap(v: ?v))`, whose read binds `?self = D`. The element's
+   call `apply_domain(__domain_sub(D, k), ?v)` takes `D_Colour` out of `D` and lowers to
+   `Colour.fill(?v)`: `wrap(red)`, `wrap(green)`, `wrap(blue)`.
+
+A BOUND value takes the same path, and the heads make it a CHECK. In `operation hasAt[X](v: X) ->
+Int64 effects {Error} requires SortDomain[T = X] = Wrap[T = X].el(v).takeN(1).length()`, called as
+`hasAt[X = Wrap[T = Colour]](wrap(v: red))`, the same `D` is handed in and `?x` is bound when `el`
+opens: the guard reads `T` off the value and holds; `apply_domain(D, wrap(v: red), T)` lowers to
+`Wrap.fill(wrap(v: red))`, which selects the one clause `Wrap.fill(wrap(v: ?v))`; the element's call
+lowers to `Colour.fill(red)`, which selects the clause `Colour.fill(red)` and no other. No case is
+proposed and refuted, and none is left to try. Called as `hasAt[X = Base](other(7))` under `sort
+Other requires Base`, the handed dictionary is `Base`'s, a derived domain, and `other` is not one of
+`Base`'s constructors, so the call fills `other(7)` at `Other`, at the instance `Base`'s dictionary
+describes.
+
+Through every step `X` stays a name: no step reads `X`'s type to choose a `fill`. The dictionary
+chooses, the clause heads decide check or generate, and the dictionary goes down the value — whole
+to a recursive field (`List`'s `fill(?t)` is `apply_domain(?self, ?t)`), and as a sub-dictionary to
+a field typed by a parameter. `colours()` and `wrapped()` answer 3 today, on the derivation this
+section replaces; the bound rows (`hasAt`) are this section's reading, not yet measured.
 
 **The order is semantic — two rules.** `fill` recurses, so it can have infinitely many answers, and
 the order of its alternatives decides what is ever reached. WI-743 measured both:
@@ -293,11 +399,13 @@ of this section, which fills a parameter through its `SortDomain` and reads a ty
 primitive's `SortDomain` is not DERIVED — it has no constructors — and its `fill` is the waiting type
 check: it leaves the variable free with its check waiting, so `List[T = Int64]` fills to skeletons —
 `[]` definitely, then `[?a]`, conditional until something binds `?a`, which is what the type-keyed
-goal answered before. A hand-written `Fillable` (067 §4's builder) is a `Fillable` and not a
+goal answered before. A primitive whose values are finitely many LITERALS — `Bool` — has a derived
+case per literal, `fill(true)` and `fill(false)`, not a hand-written domain (WI-20260911-5TK6B; not
+built). A hand-written `Fillable` (067 §4's builder) is a `Fillable` and not a
 `SortDomain`, so it is accepted where `Fillable` itself is required.
 
-**The loader applies `combine` when deriving:** a sort's `fill` is emitted as the disjunction of its
-entities' cases, so `SortDomain[List.cons]` — a nested entity as a TYPE ARGUMENT, which is new
+**The loader applies `combine` when deriving:** a sort's `fill` is emitted as its entities' cases,
+one clause each, in `combine`'s order, so `SortDomain[List.cons]` — a nested entity as a TYPE ARGUMENT, which is new
 (kernel-language §6.3 makes a nested entity a constructor of its sort, not a sort) — is notation for
 the derivation's parts, and nothing at run time needs it.
 
@@ -312,8 +420,9 @@ the derivation's parts, and nothing at run time needs it.
   rule cited by name (`rule colours(?x: Colour) :- true`, then `colours.takeN(5)`) — which also
   reaches the domain of a type variable (`rule el(?x: T) :- true` in `sort Wrap[T]`, cited as
   `Wrap[T = X].el` under `requires SortDomain[T = X]`). A sort that defines its own domain
-  provides `SortDomain`'s `fill` — `S provides SortDomain[T = S]` with `rule fill(?x) :- …`, the
-  form printed above for the derived case — in place of a `domain(?x)` written in its body.
+  provides `SortDomain`'s `fill` — `S provides SortDomain[T = S]` with one `rule fill(<case>) :-
+  …` per case, its case in the head, the form printed above for the derived case — in place of a
+  `domain(?x)` written in its body.
   The per-sort relation stays only as the internal target a `SortDomain` dictionary lands on.
   A hand-written `Fillable` is untouched: it is not a `SortDomain`, and is for fills other than a
   type's domain (067). Retiring the surface is WI-20260911-WT8WG
