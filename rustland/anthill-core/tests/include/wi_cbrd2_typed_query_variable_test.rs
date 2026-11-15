@@ -4,8 +4,8 @@
 //! `fill` after it, by name where it reads no dictionary and through the type where it does.
 //! A type that leaves a parameter unwritten is refused, its domain being a requirement at an
 //! open type that a query has no caller to pass; a variable given two types is refused, as a
-//! rule head's is; a typed variable under a connective is refused, its goals standing around the
-//! goal it is written in; and a pattern no typer reads (`--match`, a goal built at run time) refuses
+//! rule head's is; the goals stand around the goal the variable is written in, so under `not`
+//! or in a branch of `|` they type that negand or branch; and a pattern no typer reads (`--match`, a goal built at run time) refuses
 //! a typed variable, having nothing to read it with. Before this, `?bal: Int64` in a query
 //! panicked the loader (`unreachable!` in `convert_query_term_expecting`).
 //!
@@ -20,10 +20,15 @@
 //!   [`a_parameterised_type_is_checked_through_its_domain`] (`Option[T = String]` answers 1),
 //!   [`a_type_left_open_is_refused`] and [`a_variable_given_two_types_is_refused`] (each
 //!   converts);
-//! * the connective check not made: [`a_typed_variable_under_a_connective_is_refused`] (both
-//!   patterns convert, the disjunction then answering `Color`'s three values and no account);
+//! * the goals placed around the whole pattern rather than the goal the variable is written
+//!   in: [`a_typed_variable_in_a_branch_types_that_branch`] (the first disjunction answers
+//!   `Color`'s three values and no account) and
+//!   [`a_typed_variable_in_a_negand_types_the_negand`] (`not(held(?o: Option[T = String]))`
+//!   checks `?o` outside the negand and answers none);
 //! * the query walk not descending through a conjunction (`collect_undefined_goal_functors`):
 //!   [`a_typed_pattern_naming_nothing_is_reported`] (the typed pattern reports nothing);
+//! * a quantifier's typed binder not refused (its goals then stand around the quantifier):
+//!   [`a_typed_variable_in_a_quantifier_body_types_the_body`] (the binder's pattern converts);
 //! * the untyped conversion not refusing a typed variable:
 //!   [`a_pattern_no_typer_reads_refuses_a_typed_variable`] (it converts, the type dropped).
 //!
@@ -143,21 +148,72 @@ fn a_typed_pattern_naming_nothing_is_reported() {
     }
 }
 
-/// Under a connective the goals would stand around the whole pattern and check the type outside
-/// the negand or branch the variable is written in: `account(?id, ?o, ?b) | anyOf(?b: Color)`
-/// would keep only `Color`s from the `account` branch too. A typed variable is refused there.
+/// The definite and total answers of the goals `patterns`, one query typed together.
+fn conjunction(patterns: &[&str]) -> (usize, usize) {
+    let mut kb = load_kb_with(SRC);
+    let goals = crate::common::query_goals(&mut kb, patterns);
+    let sols = kb.resolve(&goals, &anthill_core::kb::resolve::ResolveConfig::default());
+    (sols.iter().filter(|s| s.is_definite()).count(), sols.len())
+}
+
+/// A typed variable's goals stand around the goal it is written in. In a branch of `|` they
+/// type that branch alone: `account(?id, ?o, ?b) | anyOf(?b: Color)` answers both accounts and
+/// `Color`'s three values, and with `?b: String` on the `account` branch, `Color`'s values alone.
 #[test]
-fn a_typed_variable_under_a_connective_is_refused() {
-    for pattern in [
-        "not(test.cbrd2.tqv.Account.account(?id, ?o, ?b: String))",
-        "test.cbrd2.tqv.Account.account(?id, ?o, ?b) | test.cbrd2.tqv.anyOf(?b: test.cbrd2.tqv.Color)",
-    ] {
-        let errs = refusals(pattern);
-        assert!(
-            errs.iter().any(|e| e.contains("is written under a connective")),
-            "`{pattern}` is refused; got {errs:?}"
-        );
-    }
+fn a_typed_variable_in_a_branch_types_that_branch() {
+    assert_eq!(
+        definite(
+            "test.cbrd2.tqv.Account.account(?id, ?o, ?b) | test.cbrd2.tqv.anyOf(?b: test.cbrd2.tqv.Color)"
+        ),
+        5
+    );
+    assert_eq!(
+        definite(
+            "test.cbrd2.tqv.Account.account(?id, ?o, ?b: String) | test.cbrd2.tqv.anyOf(?b: test.cbrd2.tqv.Color)"
+        ),
+        3
+    );
+}
+
+/// Under `not` the goals stand inside the negand: with `?o` bound to `some(3)` by the goal
+/// before it, `not(held(?o: Option[T = String]))` holds and `not(held(?o: Option[T = Int64]))`
+/// does not.
+#[test]
+fn a_typed_variable_in_a_negand_types_the_negand() {
+    assert_eq!(
+        conjunction(&[
+            "test.cbrd2.tqv.held(?o)",
+            "not(test.cbrd2.tqv.held(?o: anthill.prelude.Option[T = String]))",
+        ]),
+        (1, 1)
+    );
+    assert_eq!(
+        conjunction(&[
+            "test.cbrd2.tqv.held(?o)",
+            "not(test.cbrd2.tqv.held(?o: anthill.prelude.Option[T = Int64]))",
+        ]),
+        (0, 0)
+    );
+}
+
+/// In a quantifier's body the goals stand inside the body: every element of `[1, 2]` is an
+/// `Int64` and none a `String`. A binder written with a type is refused: it ranges over its
+/// collection, and goals around the quantifier would check it where it is free.
+#[test]
+fn a_typed_variable_in_a_quantifier_body_types_the_body() {
+    assert_eq!(
+        definite("anthill.kernel.forall_in(?x, [1, 2], tuple(test.cbrd2.tqv.anyOf(?x: Int64)))"),
+        1
+    );
+    assert_eq!(
+        definite("anthill.kernel.forall_in(?x, [1, 2], tuple(test.cbrd2.tqv.anyOf(?x: String)))"),
+        0
+    );
+    let errs = refusals("anthill.kernel.forall_in(?x: Int64, [1, 2], tuple(test.cbrd2.tqv.anyOf(?x)))");
+    assert!(
+        errs.iter().any(|e| e.contains("binder `?x` is written with a type")),
+        "a typed binder is refused; got {errs:?}"
+    );
 }
 
 /// The untyped conversion — a structural browse's, a goal built at run time's — has no typer to

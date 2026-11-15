@@ -26391,42 +26391,7 @@ fn convert_query_term_unrouted(
     // answer. AT THE ENTRY POINT: an ARGUMENT of the pattern is a data slot, which the
     // walk reads by its context where it converts it (`query_data_slot_name`,
     // WI-20260902-JB6RS), as the loader's own data-slot walk reads the fact's.
-    let occ = expand_bare_entity_query_name(kb, occ);
-    let mut typed = Vec::new();
-    query_typed_variables(parsed, parse_id, &mut typed);
-    if typed.is_empty() {
-        return Ok(occ);
-    }
-    // The goals a typed variable declares stand around the goal it is written in. Under a
-    // connective that goal is a negand or a branch, and goals added around the whole pattern
-    // would check the type outside it — `p(?b) | q(?b: Colour)` keeping only `Colour`s from
-    // `p` too — so a typed variable is read in a pattern that is no connective, and refused
-    // under one.
-    if is_goal_connective_pattern(kb, &occ) {
-        return Err(vec![LoadError::Other {
-            message: format!(
-                "the typed variable `?{}: …` is written under a connective (`not`, a branch of \
-                 `|`), where its type is not read; type it in a pattern of its own",
-                typed_variable_name(parsed, typed[0].0),
-            ),
-        }]);
-    }
-    with_typed_variable_goals(kb, parsed, scope, var_map, occ, typed)
-}
-
-/// Is the query pattern `occ` a connective — a goal with a slot the resolver proves, a `not`
-/// negand or an `or` branch — rather than a goal of its own?
-fn is_goal_connective_pattern(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
-    use super::term_view::{TermView, ViewHead};
-    match Value::Node(Rc::clone(occ)).head(kb) {
-        ViewHead::Functor {
-            functor, pos_arity, ..
-        } => kb
-            .goal_slot_readings(functor, pos_arity)
-            .iter()
-            .any(|slot| matches!(slot.reading, super::SlotReading::Proved)),
-        _ => false,
-    }
+    Ok(expand_bare_entity_query_name(kb, occ))
 }
 
 /// A dotted paren-less name written where a query proves a goal, read as the NAME it spells
@@ -27318,6 +27283,103 @@ fn convert_query_term_expecting(
     // fact it searches for fold alike.
     fold: ConstFold,
     // What lowering a compound expression refused ([`query_compound_expression`]).
+    errors: &mut Vec<LoadError>,
+) -> Rc<NodeOccurrence> {
+    let occ = convert_query_node(kb, parsed, parse_id, scope, var_map, expected, fold, errors);
+    if fold != ConstFold::Goal {
+        return occ;
+    }
+    // A typed variable `?x: T` (proposal 010.1 §3.1) declares its goals around the goal it is
+    // written in: the pattern, a negand, a branch. A connective's goal slots are goals of their
+    // own, converted here too, so each wraps the typed variables written in its own data.
+    let mut typed = Vec::new();
+    let mut binders = Vec::new();
+    goal_typed_variables(kb, parsed, parse_id, &occ, &mut typed, &mut binders);
+    // A quantifier's binder ranges over its collection, and goals around the quantifier would
+    // check a variable that is free there; the type belongs on the body's goals.
+    if let Some((var, _)) = binders.first() {
+        errors.push(LoadError::Other {
+            message: format!(
+                "the quantifier's binder `?{}` is written with a type; a binder ranges over its \
+                 collection, so type it where the body uses it",
+                typed_variable_name(parsed, *var),
+            ),
+        });
+        return occ;
+    }
+    if typed.is_empty() {
+        return occ;
+    }
+    match with_typed_variable_goals(kb, parsed, scope, var_map, Rc::clone(&occ), typed) {
+        Ok(wrapped) => wrapped,
+        Err(refused) => {
+            errors.extend(refused);
+            occ
+        }
+    }
+}
+
+/// The typed variables the goal `parse_id`, converted as `occ`, declares: those written in its
+/// data, into `out`. A goal slot of a connective is a goal of its own and declares its own; a
+/// quantifier's binder slot is neither, and what is written there goes to `binders`.
+fn goal_typed_variables(
+    kb: &KnowledgeBase,
+    parsed: &ParsedFile,
+    parse_id: ParseTermId,
+    occ: &Rc<NodeOccurrence>,
+    out: &mut Vec<(ParseTermId, Option<TypeExpr>)>,
+    binders: &mut Vec<(ParseTermId, Option<TypeExpr>)>,
+) {
+    use super::term_view::{TermView, ViewHead};
+    let (slots, converted_arity): (SmallVec<[super::GoalSlot; 3]>, usize) =
+        match Value::Node(Rc::clone(occ)).head(kb) {
+            ViewHead::Functor {
+                functor, pos_arity, ..
+            } => (kb.goal_slot_readings(functor, pos_arity), pos_arity),
+            _ => (SmallVec::new(), 0),
+        };
+    if slots.is_empty() {
+        query_typed_variables(parsed, parse_id, out);
+        return;
+    }
+    let Term::Fn {
+        pos_args,
+        named_args,
+        ..
+    } = parsed.terms.get(parse_id)
+    else {
+        return;
+    };
+    // The converter chose each child's fold by the slot at the same index of the written
+    // arguments (`const_fold_goal_slots`), so a connective keeps its positional layout.
+    debug_assert_eq!(
+        pos_args.len(),
+        converted_arity,
+        "a connective's converted arity is its written one, so its goal slots index both"
+    );
+    for (i, &arg) in pos_args.iter().enumerate() {
+        match slots.iter().find(|slot| slot.index == i).map(|slot| slot.reading) {
+            Some(super::SlotReading::Binders) => query_typed_variables(parsed, arg, binders),
+            Some(_) => {}
+            None => query_typed_variables(parsed, arg, out),
+        }
+    }
+    for &(_, arg) in named_args.iter() {
+        query_typed_variables(parsed, arg, out);
+    }
+}
+
+/// One node of a query pattern, converted ([`convert_query_term_expecting`], which adds the
+/// goals its typed variables declare).
+#[allow(clippy::too_many_arguments)]
+fn convert_query_node(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    parse_id: ParseTermId,
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+    expected: Option<Value>,
+    fold: ConstFold,
     errors: &mut Vec<LoadError>,
 ) -> Rc<NodeOccurrence> {
     let parse_terms = &parsed.terms;
