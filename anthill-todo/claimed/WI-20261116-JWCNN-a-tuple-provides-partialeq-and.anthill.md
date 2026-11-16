@@ -3,9 +3,9 @@
 - id: WI-20261116-JWCNN-a-tuple-provides-partialeq-and
 - created: 2026-11-16T17:19:45Z
 
-- status: Open
+- status: Claimed
 - status_agent: claude
-- status_at: 2026-11-16T17:19:45Z
+- status_at: 2026-11-16T20:33:44Z
 
 - acceptance: cargo-test
 
@@ -20,4 +20,8 @@ A TUPLE PROVIDES PartialEq, AND Eq, THROUGH A GENERATED MEMBER THAT IS A DICTION
 ### 2026-11-16T20:17:00Z — feedback — claude
 
 Stage 1 of proposal 004's extension (docs/proposals/004-tuple-sorts.md, 'Extension (2026-11-16): a tuple is a NamedTuple', agreed with the user 2026-11-16): a tuple type is the sort NamedTuple applied to its components; its PartialEq and Eq are derived, the member comparing the components through theirs, the instance Dictionary(d1 … dn, impl: NamedTuple). The extension's target programs T1–T5, T7, T8 are this ticket's acceptance rows (T4, TypeValue at a tuple, is stage 2).
+
+### 2026-11-16T20:39:58Z — feedback — claude
+
+IMPLEMENTATION PLAN (2026-11-16, from a map of the machinery). Today no route gives a tuple a provider: every dictionary's impl is a sort with provision rows (SortGoal → resolve_inner, typing/synth.rs:1034; collect_provides_candidates, candidates.rs:214), a dictionary's arity is predicted from two sorts (dict_layout, requires.rs:2634; check_against_prediction; expand_dispatching_dict, eval.rs:3081; alloc_dictionary, eval/mod.rs:2206), = at a tuple returns unclassified (apply.rs:4091-4110) and is compared component by component with no member (resolve.rs tuple_components_sem_eq; builtins.rs semantic_equal :1566), and the Map key check special-cases tuples (coherence.rs unlawful_eq_part :1181, KeyAtRigidParts). PLAN: (A1) prelude: sort anthill.prelude.NamedTuple with a host member (operation namedTupleEq(a: NamedTuple, b: NamedTuple) -> Bool @[host_implemented], provides PartialEq[T = NamedTuple, eq = namedTupleEq]), bound in anthill-stl like Term's termEq (HOST_FNS entry); no Eq row (its law is conditional): eq_carriers[NamedTuple] = Conditional and the member's law ByItsFields, registered in build_eq_dispatch_index. (A2) a tuple arm in resolve_inner, before the provision rows: PartialEq or Eq at a tuple type resolves each component at the same spec and answers Conditional{impl: NamedTuple, sub_resolutions per component}; emit_tree_as_projection then builds Dictionary(d1 … dn, impl: NamedTuple). (A3) the layout checks read a NamedTuple dictionary's arity as its component count. (A4) = at a tuple classified ConcreteApplyWithin through that dictionary instead of the early return. (B1) the resolver's tuple branch, pinned through a NamedTuple dictionary, compares each component at its sub-dictionary's member; (B2) the interpreter's host namedTupleEq compares components through the sub-dictionaries (isolated, as semantic_equal's nested runs are). (C) the Map key check reads Eq at the tuple through the arm instead of its special case; eq_derive's field_conditions stops refusing a tuple as a type argument; kernel-language §4.5 and §8.3.
 

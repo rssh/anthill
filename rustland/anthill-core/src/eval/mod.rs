@@ -1135,10 +1135,16 @@ impl Interpreter {
             // The calling clause's conditions for the builtin's own chain stand in for what
             // its argument values would give, as they do for a body below (WI-20260925-P7VP4).
             let requirements = self.supplied_channel(sym, supplied_slots);
+            // A host member entered through a dictionary reads it, as one dispatched in a body
+            // does (`eval.rs`'s registered-builtin step): a tuple's `eq`, its sub-dictionaries.
+            let saved_dict = self.builtin_dispatch_dict.take();
+            self.builtin_dispatch_dict = dispatched_through.map(|(_, dict)| dict.clone());
             // Proposal 073 §2 — handed back to the host as the carrier's value.
-            return self
+            let result = self
                 .call_host(sym, &builtin, args, requirements)
                 .map(|v| self.carried_for_host(sym, v));
+            self.builtin_dispatch_dict = saved_dict;
+            return result;
         }
         // 068 §2: an operation whose carrier the call would be dispatched by, reached with
         // that carrier one of the caller's unknowns, cannot be chosen yet — run as it is, a

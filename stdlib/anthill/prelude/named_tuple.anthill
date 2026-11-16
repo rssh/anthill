@@ -1,0 +1,13 @@
+-- NamedTuple: the sort of tuple types (proposal 004, its extension of 2026-11-16). A tuple
+-- type `(l1: T1, …, ln: Tn)` is this sort applied to its components, one per label, in order;
+-- it is written only as tuple syntax.
+--
+-- Its `PartialEq` and `Eq` are derived: a tuple provides each where every component's type
+-- does, and its dictionary holds one sub-dictionary per component, in component order. `eq`
+-- compares the components through them. No program writes a provision at it: the row below
+-- is the one the derived instance enters, and nothing provides `Eq` here, since the law at a
+-- tuple is its components'.
+sort anthill.prelude.NamedTuple
+  operation namedTupleEq(a: NamedTuple, b: NamedTuple) -> Bool @[host_implemented]
+  provides anthill.prelude.PartialEq[T = NamedTuple, eq = namedTupleEq]
+end

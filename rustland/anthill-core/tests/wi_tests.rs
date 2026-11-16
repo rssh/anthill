@@ -2518,6 +2518,8 @@ mod wi_cbrd2_bridge_slot_test;
 mod wi_cbrd2_guard_argument_test;
 #[path = "include/wi_cbrd2_proof_derives_no_dictionary_test.rs"]
 mod wi_cbrd2_proof_derives_no_dictionary_test;
+#[path = "include/wi_jwcnn_tuple_equality_test.rs"]
+mod wi_jwcnn_tuple_equality_test;
 #[path = "include/wi_cbrd2_constraint_typed_test.rs"]
 mod wi_cbrd2_constraint_typed_test;
 #[path = "include/wi_cbrd2_typed_execute_test.rs"]

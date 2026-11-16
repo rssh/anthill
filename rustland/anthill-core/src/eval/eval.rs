@@ -3085,6 +3085,11 @@ impl Interpreter {
         dict: &super::value::Dictionary,
     ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
         let provider = dict.impl_sort();
+        // A tuple's dictionary holds one sub-dictionary per component, however many the tuple
+        // has, and its member reads them off the dictionary itself.
+        if self.kb.is_named_tuple_sort(provider) {
+            return Ok(smallvec::smallvec![(self.fields.req_self, dict.clone())]);
+        }
         // WI-866 — the dictionary's SPEC, DECIDED. The `impl_parent_of_op(..)
         // .unwrap_or(provider)` this replaced folded three answers into one, and the
         // comment over it named the one shape that never reached it: a NAMESPACE-level

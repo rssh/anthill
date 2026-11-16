@@ -2367,8 +2367,11 @@ pub struct KnowledgeBase {
     /// `Eq` was WRITTEN (`Pair`) has an `eq` of the author's, which may be total at an
     /// argument its `provides` clause declines to claim — mirroring it would refuse a
     /// key on a guess. `Pair[A = Float, …]` therefore stays the gap §8.3 names.
-    pub(crate) conditional_eq_params:
-        std::collections::HashMap<(Symbol, Symbol), Vec<Symbol>>,
+    /// Each condition is kept as derived, its spec beside its parameter: a field that needs
+    /// a parameter lawful (`s: Set[T = F]`, whose `PartialEq` asks `Eq[F]`) conditions the
+    /// carrier's `PartialEq` on `Eq[F]`, not on `PartialEq[F]`.
+    pub(crate) conditional_eq_conditions:
+        std::collections::HashMap<(Symbol, Symbol), Vec<(Symbol, Symbol)>>,
     /// The `eq` members the derivation gave composites (`eq_derive::derived_eq_member_source`,
     /// loaded by `load::load_derived_eq_members`), each by its symbol and its canonical
     /// copy. A code generator realizes a composite's equality itself (`operator==`,
@@ -3265,7 +3268,7 @@ impl KnowledgeBase {
             ranking_rigids: HashMap::new(),
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
-            conditional_eq_params: std::collections::HashMap::new(),
+            conditional_eq_conditions: std::collections::HashMap::new(),
             derived_eq_members: std::collections::HashSet::new(),
             derived_type_value_carriers: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
@@ -8929,6 +8932,21 @@ impl KnowledgeBase {
     /// free of head probes in a KB with none, which is nearly every KB.
     pub(crate) fn has_partial_eq_dispatch(&self) -> bool {
         !self.sort_ops.eq_dispatch_partial.is_empty()
+    }
+
+    /// The sort of tuple types (proposal 004's extension), whose derived instances of
+    /// `PartialEq` and `Eq` hold one sub-dictionary per component; `None` in a KB without the
+    /// prelude.
+    pub(crate) fn named_tuple_sort(&self) -> Option<Symbol> {
+        self.try_resolve_symbol("anthill.prelude.NamedTuple")
+    }
+
+    /// Is `sort` [`Self::named_tuple_sort`]?
+    pub(crate) fn is_named_tuple_sort(&self, sort: Symbol) -> bool {
+        // The name first: the sort's own is read on every dictionary entered.
+        self.local_name_of(sort) == "NamedTuple"
+            && self.named_tuple_sort()
+            .is_some_and(|n| self.canonical_sort_sym(n) == self.canonical_sort_sym(sort))
     }
 
     /// WI-616 — the carrier `eq` override a value headed by `functor`

@@ -58,6 +58,10 @@ pub static SOURCES: &[(&str, &str)] = &[
         include_str!("../../../stdlib/anthill/prelude/eq.anthill"),
     ),
     (
+        "anthill/prelude/named_tuple",
+        include_str!("../../../stdlib/anthill/prelude/named_tuple.anthill"),
+    ),
+    (
         "anthill/prelude/ordered",
         include_str!("../../../stdlib/anthill/prelude/ordered.anthill"),
     ),
@@ -405,6 +409,10 @@ pub static SOURCES: &[(&str, &str)] = &[
         include_str!("../anthill/kernel.anthill"),
     ),
     ("rustland/anthill-stl/map", include_str!("../anthill/map.anthill")),
+    (
+        "rustland/anthill-stl/named_tuple",
+        include_str!("../anthill/named_tuple.anthill"),
+    ),
     (
         "rustland/anthill-stl/relation",
         include_str!("../anthill/relation.anthill"),

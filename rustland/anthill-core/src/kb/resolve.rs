@@ -9578,13 +9578,35 @@ impl KnowledgeBase {
         if let (Some(x), Some(y)) = (self.value_f64(&a), self.value_f64(&b)) {
             return sem_verdict(x == y, true);
         }
-        // A tuple has no `eq` member: its components are compared, each by these steps
-        // (eval's twin is in `semantic_equal`).
-        if let Some(pairs) = self.tuple_component_pairs(&a, &b) {
-            if self.value_self_equal_by_law(&a, Some(subst)) && self.values_equal(&a, &b) {
-                return sem_verdict(true, true);
+        // A tuple's equality the typer pinned to `NamedTuple`'s member compares each pair of
+        // components at the member its sub-dictionary names, so one decided pair decides; with a
+        // dictionary that is no term to read (a forward into a caller's frame) it is the member's,
+        // run through the bridge (step 4). One no type reached compares its components, each by
+        // these steps (eval's twin is in `semantic_equal`).
+        let tuple_pins = match pinned {
+            Some(p)
+                if super::typing::impl_parent_sort_of_op(self, p.member)
+                    .is_some_and(|s| self.is_named_tuple_sort(s)) =>
+            {
+                Some(self.tuple_component_pins(&p))
             }
-            return self.tuple_components_sem_eq(pairs, subst);
+            _ => None,
+        };
+        match tuple_pins {
+            None => {
+                if let Some(pairs) = self.tuple_component_pairs(&a, &b) {
+                    if self.value_self_equal_by_law(&a, Some(subst)) && self.values_equal(&a, &b) {
+                        return sem_verdict(true, true);
+                    }
+                    return self.tuple_components_sem_eq(pairs, None, subst);
+                }
+            }
+            Some(Some(pins)) => {
+                if let Some(pairs) = self.tuple_component_pairs_in_order(&a, &b) {
+                    return self.tuple_components_sem_eq(pairs, Some(pins), subst);
+                }
+            }
+            Some(None) => {}
         }
         // (2) Reflexivity — structurally-identical operands, where `Eq`'s law decides them
         // (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). A goal the typer pinned reads
@@ -9649,15 +9671,22 @@ impl KnowledgeBase {
     fn tuple_components_sem_eq(
         &mut self,
         pairs: super::eq_derive::TuplePairs,
+        // The pair at each position's member, where the typer pinned the tuple's equality.
+        pins: Option<Vec<PinnedEq>>,
         subst: &Substitution,
     ) -> BuiltinResult {
         let super::eq_derive::TuplePairs::Pairs(pairs) = pairs else {
             return sem_verdict(false, true);
         };
+        if pins.as_ref().is_some_and(|pins| pins.len() != pairs.len()) {
+            return BuiltinResult::Error(ResolveError::new(
+                "a tuple's dictionary holds another number of components than its values".to_string(),
+            ));
+        }
         let mut saw_delay = false;
         let mut saw_truncated = false;
         let mut saw_unknown: Option<UnknownCause> = None;
-        for (x, y) in pairs {
+        for (k, (x, y)) in pairs.into_iter().enumerate() {
             let (x, y) = (self.chase_value(x, subst), self.chase_value(y, subst));
             // A component no binding has reached yet is compared once one has (§8.3: a
             // compare holding an unbound variable suspends).
@@ -9665,7 +9694,7 @@ impl KnowledgeBase {
                 saw_delay = true;
                 continue;
             }
-            match self.sem_eq_values_at(x, y, subst, None) {
+            match self.sem_eq_values_at(x, y, subst, pins.as_ref().map(|pins| pins[k])) {
                 BuiltinResult::Success => {}
                 BuiltinResult::Failure => return sem_verdict(false, true),
                 BuiltinResult::Delay { truncated } => {
@@ -9689,6 +9718,33 @@ impl KnowledgeBase {
             return BuiltinResult::Unknown { cause };
         }
         sem_verdict(true, true)
+    }
+
+    /// The pins of a tuple equality's components: at each, the member of `PartialEq.eq` its
+    /// sub-dictionary of the tuple's dictionary names, entered through it, in
+    /// [`KnowledgeBase::tuple_component_order`]. `None` where the dictionary the call was entered
+    /// with is no dictionary term (a forward into a caller's frame).
+    fn tuple_component_pins(&mut self, pinned: &PinnedEq) -> Option<Vec<PinnedEq>> {
+        let (spec_op, dict) = pinned.entry?;
+        let whole = crate::eval::value::Dictionary::from_view(self, &Value::term(dict))?;
+        let Term::Fn { pos_args, .. } = self.get_term(dict).clone() else {
+            return None;
+        };
+        if pos_args.len() != whole.arity() {
+            return None;
+        }
+        let eq = self.eq_functor();
+        let mut pins = Vec::with_capacity(pos_args.len());
+        for (k, sub) in pos_args.into_iter().enumerate() {
+            let d = whole.sub(k)?;
+            let member = super::typing::resolve_op_target_checked(self, d.impl_sort(), eq).ok()?;
+            pins.push(PinnedEq {
+                member,
+                entry: Some((spec_op, sub)),
+                lawful: self.dictionary_is_lawful(&d),
+            });
+        }
+        Some(pins)
     }
 
     /// `goal` as an equality the weave gave its clause's dictionary — an `ApplyWithin` of
@@ -9809,7 +9865,11 @@ impl KnowledgeBase {
         // body-less `eq` (`Int64.eq`) answers yes to that and falls into
         // `prove_rule_predicate` below, where its goal runs the primitive the member
         // carries (`BuiltinTag::ScalarEq`), not a clause search.
-        if super::typing::op_has_runnable_body(self, target) {
+        // A tuple's member is the host's and reads the tuple's dictionary, so it is run through
+        // the bridge with that dictionary, as a member with a body is.
+        let tuple_member = super::typing::impl_parent_sort_of_op(self, target)
+            .is_some_and(|s| self.is_named_tuple_sort(s));
+        if super::typing::op_has_runnable_body(self, target) || tuple_member {
             return match self.bridge_eq_op_to_eval(target, a, b, entry) {
                 Ok(BridgeEqOutcome::Decided(v)) => sem_verdict(v, true),
                 // WI-628: carry the incompleteness bit straight through — a re-entry
@@ -13214,6 +13274,10 @@ impl KnowledgeBase {
     /// (`dictionary_covers_target`'s `names.is_empty()` arm), so its frame is the
     /// dictionary's `__req_self` alone.
     fn dictionary_owed_to(&mut self, provider: Symbol, target: Symbol) -> DictionaryOwed {
+        // A tuple's member reads its components' sub-dictionaries off the tuple's dictionary.
+        if self.is_named_tuple_sort(provider) {
+            return DictionaryOwed::Environment;
+        }
         let Some(parent) = super::typing::impl_parent_of_op(self, target) else {
             return DictionaryOwed::Nothing;
         };
@@ -13696,6 +13760,34 @@ impl KnowledgeBase {
         *self = interp.into_kb();
         BRIDGE_REENTRY_DEPTH.with(|d| d.set(d.get() - 1));
         Some(outcome)
+    }
+
+    /// `a` and `b` compared at the member of `PartialEq.eq` the dictionary `dict` names, entered
+    /// through it, in an isolated scratch interpreter ([`Self::bridge_eq_op_to_eval`]): a
+    /// tuple's component, compared through its sub-dictionary.
+    pub(crate) fn bridge_eq_through_dictionary(
+        &mut self,
+        dict: &crate::eval::value::Dictionary,
+        a: Value,
+        b: Value,
+    ) -> Result<BridgeEqOutcome, EvalError> {
+        let spec_op = self.eq_functor();
+        let member = super::typing::resolve_op_target_checked(self, dict.impl_sort(), spec_op)
+            .map_err(|refusal| EvalError::dispatch_refused(self, spec_op, dict.impl_sort(), refusal))?;
+        let Some(outcome) = self.run_in_bridge_interp(|interp| {
+            interp.call_op_bridged(member, &[a, b], Some((spec_op, dict)), &[])
+        }) else {
+            return Ok(BridgeEqOutcome::Undecided { truncated: true });
+        };
+        match outcome {
+            Ok(Value::Bool(v)) => Ok(BridgeEqOutcome::Decided(v)),
+            Err(EvalError::Suspended { truncated, .. }) => Ok(BridgeEqOutcome::Undecided { truncated }),
+            Ok(other) => Err(EvalError::Internal(format!(
+                "`{}` answered a non-Bool: {other:?}",
+                self.qualified_name_of(member)
+            ))),
+            Err(e) => Err(e),
+        }
     }
 
     /// WI-625 gap 2 — decide `eq`/`neq` for a RETROACTIVE instance-fact carrier
