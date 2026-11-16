@@ -2706,7 +2706,11 @@ requirements that rule's clauses declare. Over `rule cmp[A](?a: A, ?b: A, ?c) :-
 A], WeakOrd.compare(?a, ?b, ?c)`, `rule ints(?c) :- cmp(1, 2, ?c)` loads, `rule outer(?a, ?b,
 ?c) :- cmp(?a, ?b, ?c)` is refused, and `rule outer[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A],
 cmp(?a, ?b, ?c)` loads and hands `cmp` the dictionary it holds, at every turn of a recursion
-too. A citation fixes the clause's declared type parameters at the citing call's
+too. A rule of a sort holds the requirements its sort states, as the sort's operations do: in
+`sort Holder` with `requires Marker[T = T]`, `rule viaH(?x: T, ?t) :- keep(?x, ?t)` passes
+`keep` its `Marker[A]` at `T`, and `Holder[T = Int64].viaH(1, ?t)` answers through `Int64`'s;
+a requirement the sort states at another instance, or under two names, is refused at the goal.
+A citation fixes the clause's declared type parameters at the citing call's
 instantiation, as an operation call's are, and a dictionary it passes is the requirement's,
 whatever the value's own type. A requirement at a type no head column reaches, or one no caller passes, is refused at load,
 naming the requirement and the type it is open at: over `fact src(1)` and `fact src(true)`,
