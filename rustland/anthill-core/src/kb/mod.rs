@@ -2225,6 +2225,19 @@ pub struct KnowledgeBase {
     /// [`Self::simp_guard_depth`] is.
     pub(crate) spec_as_providers_depth: usize,
 
+    /// How many proofs from Γ are being made right now, nested ([`super::typing::prove_from_gamma`]):
+    /// a guard refuted, a precondition proved, an in-body proof while a load is typed, and a
+    /// contract's proof. A proof reads no dictionary from the values: inside one, the eval
+    /// bridge refuses to derive a call's dictionaries from its arguments
+    /// ([`super::typing::resolve_bridge_requirements_supplied`]), and the proof is undecided
+    /// where it would need them. A rule a proof at load runs may not have its requirement
+    /// reads yet, since operation bodies are typed before rule bodies, and its calls then
+    /// read the provider the values give, not the one the run will.
+    ///
+    /// A counter, every increment paired with a decrement on the way out, as
+    /// [`Self::simp_guard_depth`] is.
+    pub(crate) gamma_proof_depth: usize,
+
     /// Explicit obligations attached to opened carrier type variables. Rule
     /// entries close these into provider_requirements; activations and citations
     /// reopen them with their own fresh frame, preserving rigid variable identity.
@@ -3233,6 +3246,7 @@ impl KnowledgeBase {
             simp_gate_cache: None,
             simp_guard_depth: 0,
             spec_as_providers_depth: 0,
+            gamma_proof_depth: 0,
             type_var_provider_requirements: HashMap::new(),
             eq_connective_sym: None,
             or_connective_sym: None,

@@ -34,9 +34,19 @@ pub fn prove_from_gamma(kb: &mut KnowledgeBase, flow: &FlowEnv, goal: &Value) ->
         memory: flow.memory_view(),
         ..crate::kb::resolve::ResolveConfig::default()
     };
-    kb.resolve(std::slice::from_ref(goal), &config)
-        .iter()
-        .any(|s| s.residual.is_empty())
+    in_gamma_proof(kb, |kb| {
+        kb.resolve(std::slice::from_ref(goal), &config)
+            .iter()
+            .any(|s| s.residual.is_empty())
+    })
+}
+
+/// `prove` run as a proof from Γ, [`KnowledgeBase::gamma_proof_depth`] raised around it.
+fn in_gamma_proof<R>(kb: &mut KnowledgeBase, prove: impl FnOnce(&mut KnowledgeBase) -> R) -> R {
+    kb.gamma_proof_depth += 1;
+    let r = prove(kb);
+    kb.gamma_proof_depth -= 1;
+    r
 }
 
 /// WHAT Γ SAYS ABOUT A GOAL — three answers, because a proof bridge has three.
@@ -141,7 +151,7 @@ pub fn prove_from_gamma_verdict(
     // `resolve_with_stats`, NOT `resolve_goals_with_truncation`: the latter answers
     // `(solutions, truncated)` and DROPS `ResolveStats::errors`, so a goal the resolver
     // could not evaluate came back indistinguishable from one that merely floundered.
-    let (sols, stats) = kb.resolve_with_stats(std::slice::from_ref(goal), &config);
+    let (sols, stats) = in_gamma_proof(kb, |kb| kb.resolve_with_stats(std::slice::from_ref(goal), &config));
     let truncated = stats.truncated;
 
     // READ THE CAUSE, do not infer it from the list being non-empty. Both causes today

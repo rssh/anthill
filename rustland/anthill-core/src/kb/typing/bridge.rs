@@ -177,9 +177,23 @@ pub(crate) fn resolve_bridge_requirements_supplied(
         BridgeRequirements::Resolved(_, slots) => slots.iter().any(|(_, s)| !matches!(s, BridgeSlot::Supplied(_))),
         _ => true,
     };
-    if from_the_values {
-        crate::kb::resolve::note_bridge_derivation();
+    if !from_the_values {
+        return derived;
     }
+    // A proof reads no dictionary from the values (`KnowledgeBase::gamma_proof_depth`); an
+    // answer that suspends anyway keeps its own reason.
+    if kb.gamma_proof_depth > 0 {
+        return match derived {
+            BridgeRequirements::Resolved(..) => BridgeRequirements::Unresolvable {
+                detail: format!(
+                    "a proof does not read `{}`'s dictionaries from its argument values",
+                    kb.qualified_name_of(op)
+                ),
+            },
+            other => other,
+        };
+    }
+    crate::kb::resolve::note_bridge_derivation();
     derived
 }
 

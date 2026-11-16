@@ -605,6 +605,8 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // WI-20261005-KSSA4 — the same class: the type-bound questions currently ON THE
         // STACK, 0 outside one.
         spec_as_providers_depth: _,
+        // The same class: the proofs from Γ currently on the stack, 0 outside one.
+        gamma_proof_depth: _,
     } = kb;
 }
 

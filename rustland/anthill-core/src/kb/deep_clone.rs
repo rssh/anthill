@@ -1192,6 +1192,7 @@ impl KnowledgeBase {
             // ── at rest, or the copy was refused above (`deep_clone_refusal`) ──
             simp_guard_depth: 0,
             spec_as_providers_depth: 0,
+            gamma_proof_depth: 0,
             type_var_provider_requirements: plain(&self.type_var_provider_requirements),
             eq_connective_sym: plain(&self.eq_connective_sym),
             unify_connective_sym: plain(&self.unify_connective_sym),
@@ -1295,6 +1296,7 @@ impl KnowledgeBase {
         let in_flight = [
             ("simp_guard_depth", self.simp_guard_depth != 0),
             ("spec_as_providers_depth", self.spec_as_providers_depth != 0),
+            ("gamma_proof_depth", self.gamma_proof_depth != 0),
             (
                 "witness_admissibility_in_flight",
                 !self.witness_admissibility_in_flight.borrow().is_empty(),
