@@ -137,6 +137,20 @@ pub(crate) fn note_eq_index_read() {
 thread_local! {
     static UNPINNED_SPEC_GOALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static VALUE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static BRIDGE_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times a call's dictionaries were derived from its argument values ON THIS THREAD,
+/// ever (`typing::resolve_bridge_requirements`): a slot of the call's chain no one passed, built
+/// at the types the values carry. An instrument for tests, as [`eq_index_reads_by_this_thread`]
+/// is.
+pub fn bridge_derivations_by_this_thread() -> usize {
+    BRIDGE_DERIVATIONS.with(|c| c.get())
+}
+
+/// Count one derivation from argument values ([`bridge_derivations_by_this_thread`]).
+pub(crate) fn note_bridge_derivation() {
+    BRIDGE_DERIVATIONS.with(|c| c.set(c.get() + 1));
 }
 
 /// How many dictionary reads for a call the search has answered ON THIS THREAD, ever, with no

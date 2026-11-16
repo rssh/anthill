@@ -480,13 +480,14 @@ fn transitive_requires_rejects_wrong_type_param_witness() {
 
 // ── WI-625 Layer B — bridged op dispatching a USER spec op via a real dict ────
 //
-// `Box.combineBox` has a host body that dispatches the user-defined `Combiner.combine`
-// on its abstract element (`Box requires Combiner[T]`). At the bridge the resolver
-// builds the REAL `Combiner` provider dictionary at the concrete element type and
-// threads it into the op's frame, so the dispatch reaches `TagCombiner.combine` and
-// DECIDES — where the gap-1 empty-dict floor would residualize. `Other` provides no
-// `Combiner`, so a box over it is the unresolvable case (must residualize, not
-// mis-decide).
+// `Box.combineBox` has a body that dispatches the user-defined `Combiner.combine` on its
+// abstract element (`Box requires Combiner[T]`). The rule declares the requirement at the
+// element (060.1 §1: a rule takes a dictionary only where it declares one), a query passes
+// the REAL `Combiner` provider's dictionary at the concrete element type, and the bridge
+// threads it into the op's frame, so the dispatch reaches `TagCombiner.combine` and DECIDES.
+// The bridge derived it from the argument values before the rule had to declare it. `Other`
+// provides no `Combiner`, so a query over a box of it is refused where it is read: combineBox
+// never runs with a missing dictionary.
 const COMBINER_SRC: &str = r#"
     namespace gap3b.combiner
       import anthill.prelude.{Int64, Bool}
@@ -514,96 +515,46 @@ const COMBINER_SRC: &str = r#"
             case box(c) -> combine(c, c)
       end
       import gap3b.combiner.Box.{combineBox}
-      -- `<=>`, not `=`: an `=` at the box's open element type owes an instance the rule
-      -- declares none of (WI-20261105-CBRD2); the subject here is the call's dictionary.
-      rule combines_to(?b, ?r) :- ?r <=> combineBox(?b)
+      rule combines_to[A](?b: Box[T = A], ?r) :- Combiner[A], ?r <=> combineBox(?b)
     end
 "#;
 
-/// A `gap3b.combiner.Tag.tag(n: v)` entity term.
-fn tag_entity(kb: &mut KnowledgeBase, v: i64) -> TermId {
-    let f = kb
-        .try_resolve_symbol("gap3b.combiner.Tag.tag")
-        .expect("Tag.tag");
-    let n = kb.intern("n");
-    let nv = int_term(kb, v);
-    kb.alloc(Term::Fn {
-        functor: f,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(n, nv)]),
-    })
-}
+const COMBINER_NS: &str = "gap3b.combiner";
 
-/// A `gap3b.combiner.Box.box(content: <content>)` entity term.
-fn box_of(kb: &mut KnowledgeBase, content: TermId) -> TermId {
-    let f = kb
-        .try_resolve_symbol("gap3b.combiner.Box.box")
-        .expect("Box.box");
-    let c = kb.intern("content");
-    kb.alloc(Term::Fn {
-        functor: f,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(c, content)]),
-    })
-}
-
-fn definite_count(kb: &mut KnowledgeBase, g: TermId) -> usize {
-    kb.resolve(&[g], &ResolveConfig::default())
-        .iter()
-        .filter(|s| s.residual.is_empty())
-        .count()
+/// `combines_to(box(<content>), <result>)` asked as a query: its definite answers and all.
+fn combines_to(kb: &mut KnowledgeBase, content: &str, result: &str) -> (usize, usize) {
+    let ns = COMBINER_NS;
+    common::pattern_answer_counts(kb, &format!("{ns}.combines_to({ns}.Box.box(content: {content}), {result})"))
 }
 
 #[test]
 fn layerb_bridged_op_dispatches_user_spec_via_threaded_dict() {
     let mut kb = common::load_kb_with(COMBINER_SRC);
-    // combineBox(box(tag(5))) = combine(tag(5), tag(5)) = tag(99) via the threaded
-    // TagCombiner dict; eq(tag(99), tag(99)) succeeds ⇒ one definite solution.
-    let tag5 = tag_entity(&mut kb, 5);
-    let b = box_of(&mut kb, tag5);
-    let tag99 = tag_entity(&mut kb, 99);
-    let g = goal(&mut kb, "gap3b.combiner.combines_to", &[b, tag99]);
+    let tag = |n: i64| format!("{COMBINER_NS}.Tag.tag(n: {n})");
+    // combineBox(box(tag(5))) = combine(tag(5), tag(5)) = tag(99) through TagCombiner's
+    // dictionary, which the query passes.
     assert_eq!(
-        definite_count(&mut kb, g),
-        1,
-        "combineBox must DECIDE via the real Combiner dict built at the bridge",
+        combines_to(&mut kb, &tag(5), &tag(99)),
+        (1, 1),
+        "combineBox must DECIDE via the real Combiner dict the query passes",
     );
-
-    // eq(tag(99), tag(5)) fails ⇒ no solution (the op still ran; the compare is false).
-    let tag5b = tag_entity(&mut kb, 5);
-    let b2 = box_of(&mut kb, tag5b);
-    let tag5r = tag_entity(&mut kb, 5);
-    let g2 = goal(&mut kb, "gap3b.combiner.combines_to", &[b2, tag5r]);
-    assert_eq!(
-        definite_count(&mut kb, g2),
-        0,
-        "combineBox = tag(99) ≠ tag(5)"
-    );
+    // tag(99) is no tag(5): the op still ran, and the comparison is false.
+    assert_eq!(combines_to(&mut kb, &tag(5), &tag(5)), (0, 0), "combineBox = tag(99) ≠ tag(5)");
 }
 
 #[test]
 fn layerb_unresolvable_provider_residualizes() {
-    // box(other(1)): the element `Other` provides no `Combiner`, so the bridge cannot
-    // resolve the dictionary — it SUSPENDS and the operand residualizes. The soundness
-    // property: NO definite solution (never run combineBox with a wrong/missing dict).
+    // box(other(1)): the element `Other` provides no `Combiner`, so no dictionary is built and
+    // the query is refused where it is read — never run combineBox with a wrong or missing
+    // dictionary.
     let mut kb = common::load_kb_with(COMBINER_SRC);
-    let otherf = kb
-        .try_resolve_symbol("gap3b.combiner.Other.other")
-        .expect("Other.other");
-    let k = kb.intern("k");
-    let one = int_term(&mut kb, 1);
-    let other1 = kb.alloc(Term::Fn {
-        functor: otherf,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(k, one)]),
-    });
-    let b = box_of(&mut kb, other1);
-    let r = int_term(&mut kb, 0);
-    let g = goal(&mut kb, "gap3b.combiner.combines_to", &[b, r]);
-    assert_eq!(
-        definite_count(&mut kb, g),
-        0,
-        "Other provides no Combiner: the bridge must residualize, never mis-decide",
+    let refusals = common::query_pattern_refusals(
+        &mut kb,
+        &format!("{COMBINER_NS}.combines_to({COMBINER_NS}.Box.box(content: {COMBINER_NS}.Other.other(k: 1)), ?r)"),
+    );
+    assert!(
+        refusals.iter().any(|e| e.contains("Other") && e.contains("Combiner")),
+        "Other provides no Combiner: the query is refused, {refusals:?}"
     );
 }
 

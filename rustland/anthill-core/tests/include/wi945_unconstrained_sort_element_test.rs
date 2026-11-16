@@ -31,12 +31,11 @@
 //!      unpinned, an OPERATION body, and it answers 1. `FiniteCollection.size`'s body
 //!      (`List.length(collect(c))`) reads no `__req_*` at all, so the absent dictionary
 //!      is an irrelevance. Pinned here by `control_a_callee_that_never_reads_the_slot`.
-//!   3. `gap3b.combiner`'s `combines_to(?b, ?r)` (wi625 Layer B) — a RULE-body goal,
-//!      whose dictionaries the SLD→eval bridge resolves from the CONCRETE argument
-//!      values (`call_op_bridged` → `resolve_bridge_requirements`) and suspends when it
-//!      cannot. An element unpinned at load is the ordinary case there, every goal
-//!      argument being a variable. Pinned here by
-//!      `control_a_rule_body_goal_is_supplied_by_the_bridge`.
+//!   3. `gap3b.combiner`'s `combines_to(?b, ?r)` (wi625 Layer B) — a RULE-body goal. Its
+//!      dictionaries were resolved by the SLD→eval bridge from the argument values; a rule
+//!      now takes a dictionary only where it declares one (060.1 §1, proposal 073 §6.2), so
+//!      the clause is refused by the rule's own check, not by this park. Pinned here by
+//!      `control_a_rule_body_goal_is_refused_by_the_rules_own_check`.
 //!   4. `PartialEq[T = PartialOrd.T]` at `anthill.prelude.PartialOrd` — a rule-body
 //!      goal like (3), and the most common of the four: 89 of the 97 instrumented
 //!      hits across the workspace.
@@ -83,17 +82,13 @@
 //!    and failed if `op_body_reads_sort_requirement_slot` was dropped from the verdict;
 //!    that walk is now deleted, because a declared `requires` is owed BECAUSE IT IS
 //!    DECLARED, and the row drives the repair (delete the unused clause) instead.
-//!  - `control_a_rule_body_goal_is_supplied_by_the_bridge` fails if the
-//!    `enclosing_op` gate is dropped at the park. It passes with the whole change
-//!    reverted. wi625's `layerb_bridged_op_dispatches_user_spec_via_threaded_dict` is
-//!    the independent witness for the same claim; this one states the reason.
+//!  - `control_a_rule_body_goal_is_refused_by_the_rules_own_check` fails if the
+//!    `enclosing_op` gate is dropped at the park: the clause is then refused twice. It
+//!    passes with the whole change reverted.
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use smallvec::SmallVec;
 
 /// A spec over a vector `V` and a scalar `F`, with TWO providers at `Vec3` that bind `F`
 /// differently — so a requirement naming `Vec3` and leaving `F` open is at an element
@@ -472,65 +467,31 @@ namespace test.wi945.bridged
 end
 "#;
 
-fn tag_entity(kb: &mut KnowledgeBase, v: i64) -> TermId {
-    let f = kb
-        .try_resolve_symbol("test.wi945.bridged.Tag.tag")
-        .expect("Tag.tag");
-    let n = kb.intern("n");
-    let nv = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(v)));
-    kb.alloc(Term::Fn {
-        functor: f,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(n, nv)]),
-    })
-}
-
-fn box_of(kb: &mut KnowledgeBase, content: TermId) -> TermId {
-    let f = kb
-        .try_resolve_symbol("test.wi945.bridged.Box.box")
-        .expect("Box.box");
-    let c = kb.intern("content");
-    kb.alloc(Term::Fn {
-        functor: f,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(c, content)]),
-    })
-}
-
-/// CONTROL — the rule-body gate, DRIVEN to both verdicts so a goal that resolved
-/// somewhere wrong could not pass by answering "one solution". Fails if the park's
-/// `enclosing_op` gate is dropped: the program is then refused at load and neither
-/// assertion is reached.
+/// CONTROL — the rule-body gate. A rule takes a dictionary only where it declares one (060.1
+/// §1, proposal 073 §6.2): `combines_to(?b, ?r) :- ?r <=> combineBox(?b)`, `?b` a `Box` at an
+/// element nothing fixes, is refused by the rule's own check, once — not by this park, whose
+/// `enclosing_op` gate keeps it to operation bodies. The repair, the requirement declared at
+/// the element, answers through the dictionary its query passes: `tag(n: 99)`, and nothing at
+/// `tag(n: 5)`.
 #[test]
-fn control_a_rule_body_goal_is_supplied_by_the_bridge() {
-    let mut kb = crate::common::load_kb_with(BRIDGED_SRC);
-    let pred = kb
-        .try_resolve_symbol("test.wi945.bridged.combines_to")
-        .expect("combines_to");
-    let mut definite = |content: i64, want: i64| -> usize {
-        let t = tag_entity(&mut kb, content);
-        let b = box_of(&mut kb, t);
-        let r = tag_entity(&mut kb, want);
-        let g = kb.alloc(Term::Fn {
-            functor: pred,
-            pos_args: SmallVec::from_slice(&[b, r]),
-            named_args: SmallVec::new(),
-        });
-        kb.resolve(&[g], &ResolveConfig::default())
-            .iter()
-            .filter(|s| s.residual.is_empty())
-            .count()
+fn control_a_rule_body_goal_is_refused_by_the_rules_own_check() {
+    let errs = crate::common::load_errors_of(BRIDGED_SRC);
+    assert!(
+        errs.len() == 1 && errs[0].contains("a requirement of `Combiner` the clause declares"),
+        "{errs:?}"
+    );
+    let repaired = BRIDGED_SRC.replace(
+        "rule combines_to(?b, ?r) :- ?r <=> combineBox(?b)",
+        "rule combines_to[A](?b: Box[T = A], ?r) :- Combiner[A], ?r <=> combineBox(?b)",
+    );
+    let mut kb = crate::common::load_kb_with(&repaired);
+    let ns = "test.wi945.bridged";
+    let answers = |kb: &mut KnowledgeBase, want: i64| {
+        crate::common::pattern_answer_counts(
+            kb,
+            &format!("{ns}.combines_to({ns}.Box.box(content: {ns}.Tag.tag(n: 5)), {ns}.Tag.tag(n: {want}))"),
+        )
     };
-    assert_eq!(
-        definite(5, 99),
-        1,
-        "combineBox(box(tag(5))) = tag(99) via the dictionary the BRIDGE builds — the \
-         goal pins nothing, and that is not a load error",
-    );
-    assert_eq!(
-        definite(5, 5),
-        0,
-        "…and the same goal must FAIL at tag(5), so the solution above is the answer \
-         and not merely a search that succeeded",
-    );
+    assert_eq!(answers(&mut kb, 99), (1, 1), "combineBox(box(tag(5))) is tag(99) through TagCombiner");
+    assert_eq!(answers(&mut kb, 5), (0, 0), "…and the same goal fails at tag(5)");
 }

@@ -1009,7 +1009,7 @@ fn slot_route(
     let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, call.functor) else {
         return SlotRoute::Read;
     };
-    let at: Vec<Value> = rec
+    let mut at: Vec<Value> = rec
         .params
         .iter()
         .zip(&call.args)
@@ -1019,8 +1019,50 @@ fn slot_route(
         })
         .filter_map(|(_, arg)| arg.inferred_type())
         .collect();
-    // No parameter is typed by the binding alone (`List[T = A]`): no argument says the slot's
-    // instance, which the read derives from the values where the call runs.
+    // A parameter whose type holds the binding — the receiver, typed by the callee's own sort
+    // (`b: Self`, `Box[T = T]`) — says the slot's instance too: what the argument's type binds
+    // there (`Box[T = A]` puts `Combiner[T]` at `A`). The parameter's type is opened, each type
+    // parameter it names at a fresh variable, and met with the argument's.
+    let at_by_parameter_type = at.is_empty();
+    if at.is_empty() {
+        let binding_var = match binding.head(kb) {
+            ViewHead::Var(Var::Global(v)) => Some(v),
+            _ => None,
+        };
+        for ((_, ty), arg) in rec.params.iter().zip(&call.args) {
+            let (Some(arg_ty), Some(binding_var)) = (arg.inferred_type(), binding_var) else {
+                continue;
+            };
+            let opened: std::cell::RefCell<Vec<(VarId, VarId)>> = std::cell::RefCell::new(Vec::new());
+            let pattern = rewrite_type_leaves(kb, ty, &|kb, leaf| {
+                let ViewHead::Var(Var::Global(param)) = as_param_var(kb, leaf).head(kb) else {
+                    return None;
+                };
+                let known = opened.borrow().iter().find(|(p, _)| *p == param).map(|(_, f)| *f);
+                let fresh = known.unwrap_or_else(|| {
+                    let name = kb.intern("slot_param");
+                    let fresh = kb.fresh_var(name);
+                    opened.borrow_mut().push((param, fresh));
+                    fresh
+                });
+                Some(Value::Var(Var::Global(fresh)))
+            })
+            .unwrap_or_else(|| ty.clone());
+            let Some(fresh) = opened.borrow().iter().find(|(p, _)| *p == binding_var).map(|(_, f)| *f) else {
+                continue;
+            };
+            let mut pins = Substitution::new();
+            if !pin_type_vars(kb, &mut pins, &arg_ty, &pattern) {
+                continue;
+            }
+            let there = walk_type_deep_value(kb, &pins, &Value::Var(Var::Global(fresh)));
+            if !matches!(&there, Value::Var(Var::Global(v)) if *v == fresh) {
+                at.push(there);
+            }
+        }
+    }
+    // No parameter's type holds the binding: no argument says the slot's instance, which the
+    // read derives from the values where the call runs.
     if at.is_empty() {
         return SlotRoute::Read;
     }
@@ -1038,7 +1080,10 @@ fn slot_route(
         return SlotRoute::Read;
     }
     if !at.iter().any(|ty| type_reaches_the_head(kb, rid, ty)) {
-        return SlotRoute::Open;
+        // Read off a parameter's type, an instance the clause's typing left open in the body
+        // may be one the typer did not infer (`?r <=> Error.reify(…)`'s error type): it is
+        // read where the call runs, as before.
+        return if at_by_parameter_type { SlotRoute::Read } else { SlotRoute::Open };
     }
     SlotRoute::Undeclared
 }

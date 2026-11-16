@@ -171,6 +171,26 @@ pub(crate) fn resolve_bridge_requirements_supplied(
     named_slot_ties: NamedSlotTies,
     supplied: &[Option<crate::eval::value::Dictionary>],
 ) -> BridgeRequirements {
+    let derived = derive_bridge_requirements(kb, op, args, named_slot_ties, supplied);
+    let from_the_values = match &derived {
+        BridgeRequirements::NoneNeeded => false,
+        BridgeRequirements::Resolved(_, slots) => slots.iter().any(|(_, s)| !matches!(s, BridgeSlot::Supplied(_))),
+        _ => true,
+    };
+    if from_the_values {
+        crate::kb::resolve::note_bridge_derivation();
+    }
+    derived
+}
+
+/// [`resolve_bridge_requirements_supplied`]'s derivation.
+fn derive_bridge_requirements(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    args: &[Value],
+    named_slot_ties: NamedSlotTies,
+    supplied: &[Option<crate::eval::value::Dictionary>],
+) -> BridgeRequirements {
     let Some(parent) = impl_parent_of_op(kb, op) else {
         // A caller that SUPPLIED slots holds dictionaries for a chain this op must then have,
         // and a frame with no parent has nowhere to put them — refused, never dropped.
