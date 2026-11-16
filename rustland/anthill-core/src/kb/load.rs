@@ -2807,6 +2807,13 @@ pub enum LoadError {
         label: Option<String>,
         detail: String,
     },
+    /// A registered integrity constraint whose goals the typer refuses where it reads them, as
+    /// a query's are (proposal 073 §6.2): a requirement at a type nothing at the constraint
+    /// fixes, or at a type nothing provides. Load-BLOCKING, as any constraint not decided is.
+    ConstraintRefused {
+        label: Option<String>,
+        detail: String,
+    },
     /// Proposal 060.1 §5: the kernel's dictionary read, `find_dictionary`, written by a name
     /// (`..anthill.kernel.find_dictionary(Desc[T = Leaf])`, its qualified name, an import) —
     /// the removed requirement form by another spelling. `name` is the functor as written.
@@ -4580,6 +4587,9 @@ impl LoadError {
                     label_suffix(label),
                     detail,
                 )
+            }
+            LoadError::ConstraintRefused { label, detail } => {
+                format!("integrity constraint{} is refused: {}", label_suffix(label), detail)
             }
             LoadError::ConstraintUndecidable { label, detail } => {
                 format!(
@@ -6373,6 +6383,9 @@ impl std::fmt::Display for LoadError {
                     label_suffix(label),
                     detail
                 )
+            }
+            LoadError::ConstraintRefused { label, detail } => {
+                write!(f, "integrity constraint{} is refused: {}", label_suffix(label), detail)
             }
             LoadError::ConstraintUndecidable { label, detail } => {
                 write!(
@@ -19551,6 +19564,9 @@ fn load_phase_inner(
             // silent pass.
             super::GuardCheck::Undecidable(label, detail) => {
                 all_errors.push(LoadError::ConstraintUndecidable { label, detail });
+            }
+            super::GuardCheck::Refused(label, detail) => {
+                all_errors.push(LoadError::ConstraintRefused { label, detail });
             }
         }
     }

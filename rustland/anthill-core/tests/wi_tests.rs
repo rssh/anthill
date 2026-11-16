@@ -2508,6 +2508,8 @@ mod wi_cbrd2_effect_guard_comparison_test;
 mod wi_cbrd2_equality_law_test;
 #[path = "include/wi_cbrd2_sort_requirement_handed_on_test.rs"]
 mod wi_cbrd2_sort_requirement_handed_on_test;
+#[path = "include/wi_cbrd2_constraint_typed_test.rs"]
+mod wi_cbrd2_constraint_typed_test;
 #[path = "include/wi_cbrd2_typed_execute_test.rs"]
 mod wi_cbrd2_typed_execute_test;
 #[path = "include/wi_cbrd2_typed_query_variable_test.rs"]

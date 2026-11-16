@@ -883,8 +883,9 @@ impl KnowledgeBase {
 
     /// `goals` routed as one query's, each as the occurrence the typer read. The typer marks
     /// what it decided on the occurrence it reads (a call's member), so the goal that runs is
-    /// that occurrence, whatever carrier the goal came on.
-    fn type_query_goals(&mut self, goals: &[Value]) -> Result<Vec<Value>, LowerError> {
+    /// that occurrence, whatever carrier the goal came on. An integrity guard's goals are typed
+    /// so too, when the guard is checked ([`KnowledgeBase::check_guards_except`]).
+    pub(crate) fn type_query_goals(&mut self, goals: &[Value]) -> Result<Vec<Value>, LowerError> {
         let occs: Vec<std::rc::Rc<super::node_occurrence::NodeOccurrence>> = goals
             .iter()
             .map(|g| super::node_occurrence::value_as_occurrence(self, g))

@@ -232,7 +232,10 @@ fn the_goal_answers_as_its_twin_wherever_a_goal_is_proved() {
 
 /// A constraint guard is read as a rule body is: `no … -: Pred.ok(?y)` is violated by a row
 /// whose `ok` holds, as its twin `Pred.ok(?y, true)` is, and holds over one whose `ok` is
-/// false. RESOLVER: the violated goal row loads clean. The rest are controls.
+/// false. The guard's goals are typed where the check reads them, so the goal is pinned to
+/// `Leaf.ok`: the row passes with the resolver's leg backed out, and its violated goal row loads
+/// clean with the guard's typing backed out as well (`wi_cbrd2_constraint_typed_test`). The rest
+/// are controls.
 #[test]
 fn a_constraint_guard_reads_the_goal_as_its_twin() {
     use anthill_core::kb::load::LoadError;

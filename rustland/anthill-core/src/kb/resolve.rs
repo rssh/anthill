@@ -134,6 +134,36 @@ pub(crate) fn note_eq_index_read() {
     EQ_INDEX_READS.with(|c| c.set(c.get() + 1));
 }
 
+thread_local! {
+    static UNPINNED_SPEC_GOALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many goals of a body-less spec operation the search has admitted through its `Bool` view
+/// or its result-column view ON THIS THREAD, ever, with neither the member the typer pinned nor
+/// a dictionary a clause wove in: goals that, run as a call, have their member found from the
+/// argument's value. A goal answered from a hypothesis instead is counted too. An instrument for
+/// tests, as [`eq_index_reads_by_this_thread`] is.
+pub fn unpinned_spec_goals_by_this_thread() -> usize {
+    UNPINNED_SPEC_GOALS.with(|c| c.get())
+}
+
+/// Count `goal`, a goal of the body-less spec operation `f` a view of it admitted, where it
+/// carries neither a pin nor a woven dictionary ([`unpinned_spec_goals_by_this_thread`]).
+fn note_unpinned_spec_goal(goal: &Value, f: Symbol) {
+    let woven = matches!(goal, Value::Node(o) if matches!(o.as_expr(), Some(Expr::ApplyWithin { .. })));
+    if !woven && goal_pin(goal, f).is_none() {
+        UNPINNED_SPEC_GOALS.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// The member the typer pinned goal `goal`, spelled with `f`, to: another operation than `f`.
+fn goal_pin(goal: &Value, f: Symbol) -> Option<Symbol> {
+    match goal {
+        Value::Node(o) => o.classified_apply_target().filter(|t| *t != f),
+        _ => None,
+    }
+}
+
 /// WI-500: how a constructor's POSITIONAL args map onto its declared field
 /// NAMES — the loader's "rank-among-not-named" rule, factored out so the runtime
 /// value→term lowering (`alloc_from_value`, `value_to_term`) canonicalizes to the
@@ -3514,6 +3544,9 @@ impl SearchStream {
             if declared_arity == Some(pos_arity + named_arity)
                 && kb.dispatched_bool_relation(&goal_val, f)
             {
+                if !kb.bare_bodied_bool_relation(f) {
+                    note_unpinned_spec_goal(&goal_val, f);
+                }
                 // In a proof from Γ, a hypothesis that is the goal as written answers it: an
                 // `if isEmpty(xs)` branch, a callee's own guard, a `forall` antecedent.
                 // Rewritten first, the goal heads `eq` and no such hypothesis matches it.
@@ -3702,6 +3735,9 @@ impl SearchStream {
         // candidate selection rather than matched a second time.
         let mut hypotheses: Option<Vec<Candidate>> = None;
         if let Some((f, n)) = kb.functional_relation_goal(&goal_val) {
+            if kb.functional_relation_arity(f).is_none() {
+                note_unpinned_spec_goal(&goal_val, f);
+            }
             if let Some(FunctionalRelationCall { call, result }) =
                 kb.functional_relation_call(&goal_val, f, n)
             {
@@ -14585,11 +14621,7 @@ impl KnowledgeBase {
     /// at goal selection; it is a separate question from this ticket's, and this note is
     /// here so the "arity only" reading does not license it silently.
     fn dispatched_relation_arity(&self, goal: &Value, f: Symbol) -> Option<usize> {
-        let pinned = match goal {
-            Value::Node(o) => o.classified_apply_target().filter(|t| *t != f),
-            _ => None,
-        };
-        let Some(target) = pinned else {
+        let Some(target) = goal_pin(goal, f) else {
             return self
                 .functional_relation_arity(f)
                 .or_else(|| self.body_less_relation_arity(f));
@@ -14644,11 +14676,7 @@ impl KnowledgeBase {
         if self.bare_bodied_bool_relation(f) {
             return true;
         }
-        let pinned = match goal {
-            Value::Node(o) => o.classified_apply_target().filter(|t| *t != f),
-            _ => None,
-        };
-        pinned.is_some_and(|target| {
+        goal_pin(goal, f).is_some_and(|target| {
             self.rules_by_functor_iter(f).next().is_none() && self.bare_bodied_bool_relation(target)
         }) || self.body_less_bool_relation(f)
     }

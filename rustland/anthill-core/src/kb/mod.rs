@@ -161,6 +161,10 @@ pub enum GuardCheck {
     /// silently passing — deciding a constraint from a truncated search is the
     /// unsoundness WI-628 closes. Carries the source label (if any) and a reason.
     Undecidable(Option<String>, String),
+    /// The constraint's goals are refused where they are read, typed as a query's are
+    /// (proposal 073 §6.2): a requirement at a type nothing fixes, or one nothing provides.
+    /// Carries the source label (if any) and the typer's account.
+    Refused(Option<String>, String),
 }
 
 /// WI-628 — the three-way verdict of evaluating an integrity guard, distinct
@@ -5707,6 +5711,20 @@ impl KnowledgeBase {
                     self.retract(rule_id);
                     return None;
                 }
+                // A guard whose goals the typer refuses at the fact's types cannot confirm
+                // the fact keeps the invariant: rejected, and said, as an undecided one is.
+                Err(execute::LowerError::QueryRefused(detail)) => {
+                    let label = self.guards[idx].label.clone();
+                    eprintln!(
+                        "anthill: integrity constraint{} is refused where it is read ({}) — \
+                         fact rejected (an integrity guard must not admit a fact it cannot \
+                         verify)",
+                        load::label_suffix(&label),
+                        detail,
+                    );
+                    self.retract(rule_id);
+                    return None;
+                }
                 // WI-513: an unsupported-form lowering error on this per-assert
                 // runtime path is an internal invariant violation — the post-load
                 // `check_all_guards` pass makes such a constraint load-BLOCKING, so a
@@ -5760,6 +5778,7 @@ impl KnowledgeBase {
                 Ok(GuardStatus::Undecidable(reason)) => {
                     out.push(GuardCheck::Undecidable(label, reason.to_string()))
                 }
+                Err(execute::LowerError::QueryRefused(detail)) => out.push(GuardCheck::Refused(label, detail)),
                 Err(e) => out.push(GuardCheck::Unsupported(label, e.to_string())),
             }
         }
@@ -5860,6 +5879,7 @@ impl KnowledgeBase {
             // No goals means trivially satisfied; count depends on context
             return Ok(GuardStatus::from_holds(min == 0));
         }
+        let goals = self.type_query_goals(&goals)?;
 
         let config = resolve::ResolveConfig {
             // One extra to detect overflow. `saturating_add` guards `some_q`,
@@ -5941,6 +5961,7 @@ impl KnowledgeBase {
         if goals.is_empty() {
             return Ok(GuardStatus::Holds);
         }
+        let goals = self.type_query_goals(&goals)?;
 
         // If any DEFINITE solution exists, the forall is violated. WI-519: a
         // floundered residual must NOT count — counting it would report the
@@ -5980,6 +6001,7 @@ impl KnowledgeBase {
                 // negation of empty_query (always true) = false
                 return Ok(GuardStatus::Violated);
             }
+            let goals = self.type_query_goals(&goals)?;
             let config = resolve::ResolveConfig {
                 max_solutions: 1,
                 // WI-519: only a DEFINITE inner solution refutes the negation; a
