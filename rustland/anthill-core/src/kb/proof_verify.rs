@@ -801,7 +801,7 @@ fn contract_goal(
     conj: &Value,
     sigma: &HashMap<Symbol, TermId>,
 ) -> Value {
-    super::typing::clause_goal(kb, op_sym, conj, sigma)
+    super::typing::clause_goal(kb, op_sym, conj, sigma, &HashMap::new())
 }
 
 /// Write a `Failed(Unknown(reason))` verdict onto a contract `ProofRecord` and

@@ -3739,7 +3739,7 @@ pub(super) fn push_effect_with_guard_discharge(
     flow: &FlowEnv,
     subst: &Substitution,
     op: Symbol,
-    guard_sigma: &HashMap<Symbol, TermId>,
+    guard_sigma: &CallSigma,
     has_guarded: bool,
     walked: Value,
     out: &mut Vec<Value>,
@@ -3836,7 +3836,7 @@ pub(super) fn dispatched_impl_effects_of(
         .effects
         .iter()
         .any(|e| !collect_guarded_atoms(kb, subst, e).is_empty());
-    let mut guard_sigma: HashMap<Symbol, TermId> = HashMap::new();
+    let mut guard_sigma = CallSigma::default();
     let mut places = ArgPlaces::default();
     // WI-604: the IMPL op's parameter TYPES, keyed by impl-param symbol, so a
     // projection-bearing impl effect (`Stream.isEmpty effects s.E`) is δ-reduced
@@ -3882,9 +3882,7 @@ pub(super) fn dispatched_impl_effects_of(
         // the paragraph stating this rule had been displaced off this function. Pairing a
         // MIXED call's positional arg by its index is the same wrong operand again.
         if impl_has_guarded {
-            if let Some(t) = guard_arg_term(kb, arg_occ) {
-                guard_sigma.insert(*impl_param_sym, t);
-            }
+            guard_sigma.bind(kb, *impl_param_sym, arg_occ);
         }
     }
     let eff_rekey = places.eff_rekey();
@@ -3986,7 +3984,7 @@ pub(super) fn dispatched_impl_effects_of(
                 kb,
                 call.env,
                 flow,
-                &guard_sigma,
+                &guard_sigma.terms,
                 &out[before..],
                 impl_op_sym,
                 span,

@@ -2514,6 +2514,8 @@ mod wi_cbrd2_sort_requirement_call_read_test;
 mod wi_cbrd2_contract_member_goal_test;
 #[path = "include/wi_cbrd2_bridge_slot_test.rs"]
 mod wi_cbrd2_bridge_slot_test;
+#[path = "include/wi_cbrd2_guard_argument_test.rs"]
+mod wi_cbrd2_guard_argument_test;
 #[path = "include/wi_cbrd2_constraint_typed_test.rs"]
 mod wi_cbrd2_constraint_typed_test;
 #[path = "include/wi_cbrd2_typed_execute_test.rs"]

@@ -2625,7 +2625,7 @@ fn check_apply_call(
                     // argument twin survives it, and the diagnostic quotes it in SOURCE
                     // spelling (`TermPrinter::quoting_source`), as the `c` its author
                     // wrote rather than the loader's `var_ref` wrapper.
-                    let judged = substitute_ref_terms(kb, &clause, &req_sigma);
+                    let judged = substitute_ref_terms(kb, &clause, &req_sigma.terms);
                     // WI-K88TN: a surviving RIGID is what says a DECLARATION is owed
                     // rather than a fact at this call — the same question the gate above
                     // asked, read at the other end. Asked on `judged` and not on the
@@ -2692,7 +2692,7 @@ fn check_apply_call(
         // carries its label and not the atom (`make_arrow_value`). An argument with no
         // clean twin is absent — its param stays symbolic and the guard flounders,
         // conservatively kept.)
-        let guard_sigma: HashMap<Symbol, TermId> = if op_has_guarded {
+        let guard_sigma: CallSigma = if op_has_guarded {
             let mut sigma =
                 build_call_guard_sigma(kb, &op.params, &pos_call_params, pos_args, named_args);
             // WI-20260929-0RP29: effects the WI-606 fallback threaded are the OVERRIDE's, and a
@@ -2701,13 +2701,11 @@ fn check_apply_call(
             // position, take the spec parameters' σ entries. Without them an override's guard
             // was never refuted and the call was refused an effect it does not incur.
             for (impl_p, spec_p) in &impl_to_spec {
-                if let Some(&t) = sigma.get(spec_p) {
-                    sigma.insert(*impl_p, t);
-                }
+                sigma.alias(*impl_p, *spec_p);
             }
             sigma
         } else {
-            HashMap::new()
+            CallSigma::default()
         };
         let mut substituted_op_effects: Vec<Value> = Vec::new();
         // WI-20260823-4GBQV: the first `Modify` this call incurs over a parameter whose
@@ -2787,7 +2785,7 @@ fn check_apply_call(
                 kb,
                 env,
                 flow,
-                &guard_sigma,
+                &guard_sigma.terms,
                 &substituted_op_effects[before..],
                 fn_sym,
                 span,

@@ -1055,16 +1055,16 @@ fn conjunct_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     op: Symbol,
-    sigma: &HashMap<Symbol, TermId>,
+    sigma: &CallSigma,
     conj: &Value,
 ) -> bool {
     match negated_comparison_term(kb, conj) {
         Some(negated) => {
-            let goal = clause_goal(kb, op, &Value::term(negated), sigma);
+            let goal = sigma.clause_goal(kb, op, &Value::term(negated));
             prove_from_gamma(kb, flow, &goal)
         }
         None => {
-            let goal = clause_goal(kb, op, conj, sigma);
+            let goal = sigma.clause_goal(kb, op, conj);
             refute_guard(kb, flow, &goal)
         }
     }
@@ -1080,7 +1080,7 @@ fn guarded_atom_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     op: Symbol,
-    sigma: &HashMap<Symbol, TermId>,
+    sigma: &CallSigma,
     guard_value: &Value,
 ) -> bool {
     // An unexpected carrier keeps the effect (sound).
@@ -1131,15 +1131,98 @@ pub(super) fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>
 /// in `?s <=> stampIf(?b)`) lowers to its raw De Bruijn index, which the resolver
 /// compares as a constant distinct from every literal, so `neq(?#0, true)` was proved and
 /// the guard `eq(b, true)` refuted at an argument whose value is not known until the rule
-/// runs. Without an entry the parameter stays symbolic and the guard is undecided, as it
-/// is at an operation's own parameter.
+/// runs. So for an argument whose term is not its value ([`term_is_the_value`]): the term of
+/// `listOf(4).head` is the reflect datum `dot_apply(…)`, and of `four()` the bare name `four`,
+/// and `eq(n, 4)` was refuted over both. Without an entry the parameter stays symbolic and the
+/// guard is undecided, as it is at an operation's own parameter.
 pub(super) fn guard_arg_term(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<TermId> {
+    if !term_is_the_value(kb, arg) {
+        return None;
+    }
     code_goal_term(kb, arg).filter(|t| !kb.mentions_debruijn(t))
 }
 
-/// Build the call substitution σ: callee parameter ↦ the actual argument's
-/// term ([`guard_arg_term`]). Used by guard discharge to ground a guard over the
-/// actual arguments before refuting it. An argument with no such term is absent from
+/// Is every node of `occ` a form whose goal term the resolver reads as its value: a literal,
+/// a name, a variable, a type, a constructor, a list, set or tuple literal, or a call of an
+/// operation with an argument? Not a call written with none, whose term is its bare name
+/// (`four()` is `four`); nor a call of a function parameter (`g(4)`), which no clause answers;
+/// nor a dotted call, a function value's application, a lambda or a compound form, whose
+/// terms are reflect data.
+fn term_is_the_value(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(occ)];
+    while let Some(node) = stack.pop() {
+        // A type written where a value goes is its type term.
+        let Some(expr) = node.as_expr() else {
+            continue;
+        };
+        let reads = match expr {
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                type_args,
+                ..
+            } => {
+                kb.is_constructor_symbol(*functor)
+                    || (!(pos_args.is_empty() && named_args.is_empty() && type_args.is_empty())
+                        && crate::kb::op_info::with_op_signature(kb, *functor, |_| ()).is_some())
+            }
+            Expr::Constructor { .. }
+            | Expr::Instantiation { .. }
+            | Expr::ListLit(..)
+            | Expr::SetLit(..)
+            | Expr::TupleLit { .. }
+            | Expr::TypeValue { .. }
+            | Expr::VarRef { .. }
+            | Expr::Var(_)
+            | Expr::Const(_)
+            | Expr::Ref(_)
+            | Expr::Ident(_) => true,
+            _ => false,
+        };
+        if !reads {
+            return false;
+        }
+        crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    true
+}
+
+/// A call's substitution σ for its callee's contract and guards: each parameter ↦ the term
+/// its argument stands for ([`guard_arg_term`]), beside the argument as the typer typed it. A
+/// goal a proof builds from the terms takes, at each call inside an argument, what the typer
+/// decided there — its member and the dictionaries the call passes ([`clause_goal`]): the term
+/// keeps neither, and the resolver read `made[A = Int64, WeakOrd = Descending](1, 5)` as
+/// `made(1, 5)`, deriving `WeakOrd`'s provider from the values.
+#[derive(Default)]
+pub(crate) struct CallSigma {
+    pub(crate) terms: HashMap<Symbol, TermId>,
+    args: HashMap<Symbol, Rc<NodeOccurrence>>,
+}
+
+impl CallSigma {
+    /// `param` ↦ `arg`, where the argument has a term to substitute ([`guard_arg_term`]).
+    pub(super) fn bind(&mut self, kb: &mut KnowledgeBase, param: Symbol, arg: &Rc<NodeOccurrence>) {
+        if let Some(t) = guard_arg_term(kb, arg) {
+            self.terms.insert(param, t);
+            self.args.insert(param, Rc::clone(arg));
+        }
+    }
+
+    /// `to` reads what `from` is bound to.
+    pub(super) fn alias(&mut self, to: Symbol, from: Symbol) {
+        if let Some(&t) = self.terms.get(&from) {
+            self.terms.insert(to, t);
+        }
+        if let Some(arg) = self.args.get(&from).cloned() {
+            self.args.insert(to, arg);
+        }
+    }
+}
+
+/// Build the call substitution σ: callee parameter ↦ the actual argument
+/// ([`CallSigma::bind`]). Used by guard discharge to ground a guard over the
+/// actual arguments before refuting it. An argument with no term is absent from
 /// σ — its param stays symbolic, so its guard flounders and the effect is
 /// conservatively kept.
 pub(super) fn build_call_guard_sigma(
@@ -1148,24 +1231,20 @@ pub(super) fn build_call_guard_sigma(
     pos_params: &[Option<usize>],
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
-) -> HashMap<Symbol, TermId> {
-    let mut sigma: HashMap<Symbol, TermId> = HashMap::new();
+) -> CallSigma {
+    let mut sigma = CallSigma::default();
     // WI-20260929-0RP29: the parameter each positional argument FILLS (`pos_params`, the call's
     // [`positional_param_indices`]) — in a mixed call not the one at its index — so a guard
     // reads the operand the call binds.
     for (j, arg_occ) in pos_args.iter().enumerate() {
         if let Some((param_sym, _)) = pos_params[j].and_then(|p| params.get(p)) {
-            if let Some(t) = guard_arg_term(kb, arg_occ) {
-                sigma.insert(*param_sym, t);
-            }
+            sigma.bind(kb, *param_sym, arg_occ);
         }
     }
     for (arg_name, arg_occ) in named_args {
         if let Some((param_sym, _)) = match_named_arg_param(kb, params, *arg_name) {
             let param_sym = *param_sym;
-            if let Some(t) = guard_arg_term(kb, arg_occ) {
-                sigma.insert(param_sym, t);
-            }
+            sigma.bind(kb, param_sym, arg_occ);
         }
     }
     sigma
@@ -1178,7 +1257,7 @@ pub(super) fn guarded_atom_value_refuted(
     flow: &FlowEnv,
     subst: &Substitution,
     op: Symbol,
-    sigma: &HashMap<Symbol, TermId>,
+    sigma: &CallSigma,
     atom: &Value,
 ) -> bool {
     let guard_key = kb.intern("guard");
@@ -1199,7 +1278,7 @@ pub(super) fn drop_refuted_guarded_labels(
     flow: &FlowEnv,
     subst: &Substitution,
     op: Symbol,
-    sigma: &HashMap<Symbol, TermId>,
+    sigma: &CallSigma,
     row: &Value,
     present: &mut Vec<Value>,
 ) {
@@ -1518,7 +1597,7 @@ fn view_scan_rigids<V: TermView>(
 pub(super) fn precondition_proved(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
-    sigma: &HashMap<Symbol, TermId>,
+    sigma: &CallSigma,
     // The operation the clause is a precondition of, whose typed contract holds the
     // members of its comparisons.
     op_sym: Symbol,
@@ -1533,7 +1612,7 @@ pub(super) fn precondition_proved(
     // functor-headed goal, so an unreadable carrier simply fails to prove (the same
     // conservative UNPROVED default as the dual `guarded_atom_refuted`'s `false`).
     for conj in clause_conjuncts(kb, clause) {
-        let goal = clause_goal(kb, op_sym, &conj, sigma);
+        let goal = sigma.clause_goal(kb, op_sym, &conj);
         if !prove_from_gamma(kb, flow, &goal) {
             return false;
         }
@@ -1541,54 +1620,131 @@ pub(super) fn precondition_proved(
     true
 }
 
+impl CallSigma {
+    /// The goal a proof asks of `op`'s contract or guard conjunct `conj` at this call
+    /// ([`clause_goal`]).
+    pub(super) fn clause_goal(&self, kb: &mut KnowledgeBase, op: Symbol, conj: &Value) -> Value {
+        clause_goal(kb, op, conj, &self.terms, &self.args)
+    }
+}
+
 /// A contract clause's conjunct `conj` with `sigma` substituted, as the goal a proof asks: an
 /// occurrence whose comparisons and goals of a spec's member carry the members the typer gave
-/// the clause's own (`type_contract_comparisons`), the substitution leaving the clause's shape and replacing
-/// only what its parameters and `result` stood for.
+/// the clause's own (`type_contract_comparisons`), and whose calls inside an argument carry
+/// what the typer decided at them in `args`, the call's arguments by parameter — the
+/// substitution leaving the clause's shape and replacing only what its parameters and `result`
+/// stood for.
 pub(crate) fn clause_goal(
     kb: &mut KnowledgeBase,
     op_sym: Symbol,
     conj: &Value,
     sigma: &HashMap<Symbol, TermId>,
+    args: &HashMap<Symbol, Rc<NodeOccurrence>>,
 ) -> Value {
     let substituted = substitute_ref_terms(kb, conj, sigma);
     let typed = match conj {
         Value::Term { id, .. } => kb.typed_contract_conjunct(op_sym, *id),
         _ => None,
     };
-    match typed {
-        Some(typed) => {
-            let goal = crate::kb::node_occurrence::value_as_occurrence(kb, &substituted);
-            carry_comparison_members(kb, &typed, &goal);
-            Value::Node(goal)
-        }
-        None => substituted,
+    if typed.is_none() && args.is_empty() {
+        return substituted;
     }
+    let goal = crate::kb::node_occurrence::value_as_occurrence(kb, &substituted);
+    let mut carried = false;
+    if let Some(typed) = &typed {
+        carry_comparison_members(kb, typed, &goal);
+        carried = true;
+    }
+    if !args.is_empty() {
+        let written = match &typed {
+            Some(typed) => Rc::clone(typed),
+            None => crate::kb::node_occurrence::value_as_occurrence(kb, conj),
+        };
+        carried |= carry_argument_stamps(kb, &written, &goal, args);
+    }
+    if carried {
+        Value::Node(goal)
+    } else {
+        substituted
+    }
+}
+
+/// Where `written`, a clause's conjunct, names a parameter `args` binds, the calls of the goal
+/// `to` built from it take the typer's stamps of the argument's ([`carry_call_stamps`]).
+/// Whether a call took any.
+fn carry_argument_stamps(
+    kb: &KnowledgeBase,
+    written: &Rc<NodeOccurrence>,
+    to: &Rc<NodeOccurrence>,
+    args: &HashMap<Symbol, Rc<NodeOccurrence>>,
+) -> bool {
+    let mut carried = false;
+    walk_call_pairs(kb, written, to, &mut |w, t, call| {
+        if call.is_some() {
+            return;
+        }
+        if let Some(Expr::VarRef { name: p } | Expr::Ref(p) | Expr::Ident(p)) = w.as_expr() {
+            if let Some(arg) = args.get(p) {
+                carried |= carry_call_stamps(kb, arg, t);
+            }
+        }
+    });
+    carried
+}
+
+/// Each call of `to`, the goal-term twin of `from` materialized, takes the typer's stamps of its
+/// twin in `from` where that call holds a class or the dictionaries it passes (a list literal,
+/// written as the list it builds, parts the two). Whether a call took any.
+fn carry_call_stamps(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) -> bool {
+    let mut carried = false;
+    walk_call_pairs(kb, from, to, &mut |f, t, call| {
+        if call.is_some() && (f.call_class().is_some() || f.op_dicts().iter().any(Option::is_some)) {
+            t.carry_typer_stamps_from(f);
+            carried = true;
+        }
+    });
+    carried
 }
 
 /// Each `eq` and `neq` of `to`, and each goal of a body-less spec member, takes the member the
 /// typer decided at its twin in `from`, where a goal reads it ([`goal_reads_member`]) — the same
-/// tree with some leaves replaced or lowered: walked pairwise while the two agree on a call's
-/// functor and arity, stopping where they part.
+/// tree with some leaves replaced or lowered.
 pub(super) fn carry_comparison_members(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) {
-    let (Some(from_expr), Some(to_expr)) = (from.as_expr(), to.as_expr()) else {
-        return;
-    };
-    let (Some((f1, p1, n1)), Some((f2, p2, n2))) = (expr_call_parts(from_expr), expr_call_parts(to_expr)) else {
+    walk_call_pairs(kb, from, to, &mut |f, t, call| {
+        if let Some((functor, arity)) = call {
+            if let Some(class) = f.call_class().filter(|class| goal_reads_member(kb, functor, arity, class)) {
+                t.set_classification(class);
+            }
+        }
+    });
+}
+
+/// `a` and `b` walked pairwise from the root while they agree on a call's functor and arity:
+/// `visit` sees each pair reached, with `a`'s functor and arity where the two are such calls,
+/// and the walk goes on into their arguments, matched by position and by label.
+fn walk_call_pairs(
+    kb: &KnowledgeBase,
+    a: &Rc<NodeOccurrence>,
+    b: &Rc<NodeOccurrence>,
+    visit: &mut impl FnMut(&Rc<NodeOccurrence>, &Rc<NodeOccurrence>, Option<(Symbol, usize)>),
+) {
+    let (Some((f1, p1, n1)), Some((f2, p2, n2))) =
+        (a.as_expr().and_then(expr_call_parts), b.as_expr().and_then(expr_call_parts))
+    else {
+        visit(a, b, None);
         return;
     };
     if kb.canonical_sym(f1) != kb.canonical_sym(f2) || p1.len() != p2.len() {
+        visit(a, b, None);
         return;
     }
-    if let Some(class) = from.call_class().filter(|class| goal_reads_member(kb, f1, p1.len() + n1.len(), class)) {
-        to.set_classification(class);
+    visit(a, b, Some((f1, p1.len() + n1.len())));
+    for (x, y) in p1.iter().zip(p2.iter()) {
+        walk_call_pairs(kb, x, y, visit);
     }
-    for (a, b) in p1.iter().zip(p2.iter()) {
-        carry_comparison_members(kb, a, b);
-    }
-    for (k, a) in n1.iter() {
-        if let Some((_, b)) = n2.iter().find(|(k2, _)| k2 == k) {
-            carry_comparison_members(kb, a, b);
+    for (k, x) in n1.iter() {
+        if let Some((_, y)) = n2.iter().find(|(k2, _)| k2 == k) {
+            walk_call_pairs(kb, x, y, visit);
         }
     }
 }
@@ -1666,7 +1822,7 @@ pub(super) fn precondition_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     op: Symbol,
-    sigma: &HashMap<Symbol, TermId>,
+    sigma: &CallSigma,
     clause: &Value,
 ) -> bool {
     clause_conjuncts(kb, clause)
@@ -1721,7 +1877,7 @@ pub(super) fn assume_call_ensures(
     // σ: callee params ↦ actual arg terms, plus `result` ↦ var_ref(binder). The
     // reserved `result` is the op scope's (proposal 041).
     let pos_params = positional_param_indices(kb, &rec.params, pos_args.len(), &named_args);
-    let mut sigma = build_call_guard_sigma(kb, &rec.params, &pos_params, &pos_args, &named_args);
+    let mut sigma = build_call_guard_sigma(kb, &rec.params, &pos_params, &pos_args, &named_args).terms;
     if let Some(result_sym) = crate::kb::region::resolve_op_result_sym(kb, functor) {
         let binder_term = kb.make_var_ref_term(binder);
         sigma.insert(result_sym, binder_term);
