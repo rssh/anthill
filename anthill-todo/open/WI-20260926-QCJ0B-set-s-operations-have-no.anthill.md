@@ -42,3 +42,7 @@ ROWS FROM WI-20260926-K4JGC (user, 2026-09-30). (1) THE POPULATION IS WIDER THAN
 
 FROM WI-20261017-CK7PP (2026-10-23, d1633320): Set.empty() in an operation body is now refused at load (a member naming its sort in its result alone, nothing providing Set with a member); Set.contains / insert on an argument typed Set still load, by the user's decision — the value's sort answers when the call runs. The SET LITERAL {1, 2} in an operation body is left to this ticket: it types as Set[T = …] and makes a Set with no carrier (MEASURED: Set.contains({1, 2}, 1) loads and dies 'operation has no body: Set.contains'); kernel-language says the literal is 'desugared by typing to concrete constructors', and with no provider there are none. Whichever route this ticket takes decides what the literal builds.
 
+### 2026-11-16T10:13:07Z — feedback — claude
+
+Measured 2026-11-16 on 7c63d768 (found in WI-20261105-CBRD2 part 5g): set literals are compared as written, not as sets. rule eqSets() :- {1, 2} = {2, 1} answers no solutions in a rule body, where rule eqSame() :- {1, 2} = {1, 2} holds; and requires eq(s, {1, 2}) at needy({2, 1}) is refused as an unsatisfied precondition.
+
