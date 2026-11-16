@@ -2719,7 +2719,9 @@ passes `Int64`'s instance. A query is typed where it is read, as a rule body's g
 its bracket binds what the relation declares: `keep[A = Int64](?x, ?r)` passes `Int64`'s
 instance and answers the `Int64` row. A query a program builds as a value is typed when
 `KB.execute` reads it, before it runs, and one the typer refuses is reported as
-`malformed_query`. A typed variable in a query reads as one in a rule head:
+`malformed_query`. A guard `KB.add_guard` registers is typed when it is checked, as a query
+is: one the typer refuses blocks the load that checks it, and a fact asserted under it is
+rejected. A typed variable in a query reads as one in a rule head:
 `account(?id, ?o, ?b: Int64)` checks `?b`, `anyOf(?c: Colour)` over `rule anyOf(?c) :- true`,
 which binds nothing, lists `Colour`'s values, and `?o: Option`, whose type leaves a parameter
 unwritten, is refused, as is `?b: String` over an `Int64` column. Its type is checked in the goal
