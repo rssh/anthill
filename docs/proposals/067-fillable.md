@@ -4,7 +4,7 @@
 
 ## Relates to: [060](060-clause-level-requirements-and-typed-heads.md) §2.2–§2.3 (a sort's domain — an implementation of `Fillable`), [`060-typedomains-implementation.md`](../design/060-typedomains-implementation.md) (the requirement channel), [058](058-modular-instances.md) (dictionaries; §3.8 conditional provisions), [052](052-rules-as-stream-valued-operations.md) (`Relation`), [056](056-variadic-argument-capture.md) (the `...` spelling).
 
-## Tracked by: WI-20260925-SHED7. WI-20260911-5G28A depends on it.
+## Tracked by: WI-20260925-SHED7. WI-20260911-5G28A depended on it for §6 step 1, delivered; the edge was dropped 2026-11-15, as were WT8WG's, 5TK6B's and 09E6M's — none of them needs §5 q3 or §4.
 
 ## The problem
 
@@ -36,6 +36,14 @@ end
   operation creates them.
 - **Its implementations** are the provisions of it: a sort's derived domain (060 §2.3), a
   primitive's, a collection builder's, or one an author writes.
+- **A GENERAL INTERFACE, and an interface, not a relation** (user, 2026-11-15). `SortDomain` — a
+  sort's domain, what a typed column requires (060 §2.3) — is ONE implementation; the others are
+  the cases that need custom unification, a collection builder (§4) among them. It is an interface
+  because a relation cannot carry what a fill needs: a provision's conditions are its
+  requirements, and the dictionary a caller hands in carries them down — the sub-fills of a rigid
+  type, custom ones included — while a relation reached by a sort's name takes no requirements and
+  has no choice. That is why `<Sort>.domain` is superseded (060 §2.3's decided item;
+  060-implementation §7.3, 2026-11-02).
 
 ## 2. `Fillable` is a MONOID — `combine` and `empty`
 

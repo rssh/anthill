@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260925-SHED7-inductive-relations-proposal
+- depends_on: WI-20261115-YR3N7-a-typed-column-s-domain-check
 
 ## Description
 
@@ -51,4 +51,12 @@ redundant, and if so the two rows that measure them today say which.
 ### 2026-10-31T05:34:59Z — feedback — claude
 
 MOVES TO `SortDomain.fill` (user, 2026-10-31), so this waits on WI-20260925-SHED7. Since SHED7's step 1 a sort's domain is its `SortDomain`'s derived `fill` (proposal 060 §2.3), and the two ordering rules this ticket describes are written there (`kb/fill_derive.rs`); SHED7's increment (e) retires the `domain` derivation. The fair enumeration of two recursive positions is that `fill`'s; the limit is still pinned by `wi743_finite_domain_test::two_recursive_positions_in_one_constructor_are_not_fair`.
+
+### 2026-11-15T17:40:39Z — feedback — claude
+
+DEPENDS ON WI-20261115-YR3N7 (user, 2026-11-15: build the right architecture first). YR3N7 derives a sort's domain one clause per constructor, the constructor in the head, so that a bound value selects its one clause — a check — and an unbound one matches every head in clause order — generation (proposal 060 §2.3, "The head decides the mode"). Interleaving changes generation only, and must keep that shape: an interleaving written as a disjunction in one clause, or a generator run ahead of the clauses, puts mode (in) back on the generator, which is what YR3N7 measured at 16 resolution steps per list element against 6.
+
+### 2026-11-15T20:20:50Z — feedback — claude
+
+DEPENDENCY ON WI-20260925-SHED7 DROPPED (user, 2026-11-15: "review dependency and it is now not needed - drop it"). It was for SHED7's step 1 (a sort's domain is its derived fill), delivered 2026-09-25; SHED7's open steps (067 §5 q3, the monoid's home; §4, MiniSat over a builder) are not needed for fair enumeration of the derived fill. It keeps WI-20261115-YR3N7, the shape interleaving must keep.
 

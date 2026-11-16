@@ -673,18 +673,29 @@ namespace anthill.reflect
   --     out as a row. Usually it holds the faulted goal (a faulted goal residualizes);
   --     EMPTY when the fault surfaced at exhaustion or displaced a definite answer.
   --
-  -- `search_truncated` is raised where the stream would end, when the search abandoned a
-  -- branch at a depth limit and recorded no fault: the rows already handed out are
-  -- answers, and the end is not the claim that they were all. `max_depth` is the depth
-  -- limit of the search the stream runs; a search nested in it with a budget of its own
-  -- (a negation's, a carrier `eq`'s) ends it the same way.
+  -- `search_truncated` is raised where the stream would end, when the search was cut by one
+  -- of its limits and recorded no fault: the rows already handed out are answers, and the
+  -- end is not the claim that they were all. `limit` names the limit (WI-20261115-0WT09):
+  -- `depth(max_depth)` where a goal nested deeper than the search's depth limit was not
+  -- asked — a goal opened from a clause's body is one deeper than the goal the clause
+  -- answered — and `steps(max_steps)` where the whole search took its fuel, `max_steps`
+  -- steps, and stopped. A negation's sub-search runs on that fuel and ends it the same way.
+  -- A search nested in it with budgets of its own — a carrier `eq`'s, one an operation body
+  -- runs — ends it too when it is cut, and is named `depth`, whichever of its own limits cut it.
   enum ResolveStreamFailure
     import anthill.prelude.{Int64, List, Option, String}
     entity malformed_query(detail: String)
     entity unsupported_operation(detail: String)
     entity stream_misused(detail: String)
     entity evaluation_failure(goals: List[T = Term], reason: String, at: Option[T = NodeOccurrence])
-    entity search_truncated(max_depth: Int64)
+    entity search_truncated(limit: SearchLimit)
+  end
+
+  -- The limit a truncated search reached (`search_truncated`'s `limit`).
+  enum SearchLimit
+    import anthill.prelude.{Int64}
+    entity depth(max_depth: Int64)
+    entity steps(max_steps: Int64)
   end
 
   -- The storage of the in-memory knowledge base: the pool (proposal 037 §2) that

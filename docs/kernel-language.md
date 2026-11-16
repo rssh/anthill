@@ -2196,7 +2196,7 @@ The result column may be named `result:`, at any arity: `clamp(12, result: ?r)` 
 
 **For the `Bool` view, "effect-free" is about the row's MEMBERS, not its length** (WI-20260830-DQD5W). An operation declared over an effect-row PARAMETER — `Iterable.isEmpty(c: C) -> Bool effects E`, on a sort declaring `effects E = ?` — has a non-empty row that names no effect: `E` is instantiated by the CARRIER, and `List` writes `E = {}`. Such an operation IS granted the `Bool` relational view. So is a bodied operation whose row's concrete members are all `Error`, bare or applied: the bridge runs the body, and a raise in it leaves the call unreduced, which is what the call answers in a value slot. A row with any other concrete member (`Modify[c]`, `Clock`) is refused. Measured before this: `rule empty(?b) :- Box(items: ?ls), isEmpty(?ls)` answered **NO SOLUTIONS** beside a `contains(?ls, "a")` that answered 1, and a goal with no clauses is FALSE rather than an error — so `forall ?ls: Verdict(labels: ?ls) -: nonEmpty(?ls)` loaded clean and then fired on **every** verdict, indistinguishable from a working constraint. The parametric row is admitted only for a **bodied** operation, and that is what keeps it safe rather than lenient: the SLD→eval bridge runs a body under an empty effect registry, so a carrier that instantiates the row to a real effect raises it, the bridge catches it, and the goal residualizes as before. A HOST-implemented operation performs a state effect where the bridge cannot catch it — its declared row is the only guard — so a parametric row does not admit one; an `Error` member does, since a host function's error is returned to the bridge, which reports it.
 
-**A raise that escapes the bridge is a FAULT, not "no solutions"** (WI-20260911-0V0F7). The bridge turned every evaluator error into a residualize-and-say-nothing, so a goal whose callee *ran and raised* came back indistinguishable from one the structural fold merely declined — and the empty answer set read as a relation with nothing in it. Measured on an operation whose row is EMPTY so nothing else warns: `rule answer(?r) :- guardExhaustible(0, ?r)` over a guard-exhaustible `match` answered **no solutions** with no diagnostic, beside `guardExhaustible(5, ?r)` answering `?r = 5`. The goal still **residualizes** — WI-483 substitution transparency says a callee's own failure must not break the enclosing rule — but the search now records the raise on `ResolveStats::errors` and marks itself **incomplete**, so an empty result is *undecided*, not a refutation. The repair the diagnostic names is `Error.reify` (§ the `Error` layer): declaring the label instead does not catch the raise: the goal stays undecided. What is *not* a fault is a raise that is not a domain failure of the callee — a floundered relation drain (`relation_floundered`) and a scoped load reporting its diagnostics (`load_failed`) both ride the same channel and both mean "no answer yet" — so the partition is by the payload's constructor, not by the raise channel. Nor is a drain whose search was cut at its depth limit: an `execute` stream or a relation hands out the rows found before the cut and raises `search_truncated(max_depth)` where it would have ended, and a rule-body call that raises it waits, its search incomplete, with nothing to report. `relation_floundered`, `load_failed`, `evaluation_failure` and `search_truncated` are the runtime's accounts of what it could not do: a program matches one in an operation's pattern and raises a caught one again, and does not construct one, so a construction of one in a program — in an operation body, a const, a fact or a rule — is refused at load. A payload of one of them is therefore the runtime's wherever it is raised, also where a boundary caught it and the program raised it again, in the same operation or in a later goal of the rule. An effect that a call the bridge runs for a rule body asks of its handler is declined the same way and reported — a call that performs one is refused at load where a clause writes it (§5.3, "A rule body performs no effect"), so what reaches the bridge is a goal no clause wrote, or an effect no row declares: the run stops there, the goal is undecided, and the fault names the effect ("it performs `anthill.prelude.Time.Clock`, and a rule body performs no effect"), so a relation drained from an operation body fails with that reason, and a rule that calls that operation is told the effect, not to reach for `Error.reify`, also where the operation catches the failure and raises it again. Like a raise, the fault marks the whole search incomplete from the moment the goal is first tried, a branch a later goal refutes included: a negation over the goal is conditional, a quantified constraint over it cannot be decided and the program does not load, and the verdict follows the order of the goals. Where the operation's own row declares no such effect, the fault says that instead: the run asked a handler for an effect the row does not hold.
+**A raise that escapes the bridge is a FAULT, not "no solutions"** (WI-20260911-0V0F7). The bridge turned every evaluator error into a residualize-and-say-nothing, so a goal whose callee *ran and raised* came back indistinguishable from one the structural fold merely declined — and the empty answer set read as a relation with nothing in it. Measured on an operation whose row is EMPTY so nothing else warns: `rule answer(?r) :- guardExhaustible(0, ?r)` over a guard-exhaustible `match` answered **no solutions** with no diagnostic, beside `guardExhaustible(5, ?r)` answering `?r = 5`. The goal still **residualizes** — WI-483 substitution transparency says a callee's own failure must not break the enclosing rule — but the search now records the raise on `ResolveStats::errors` and marks itself **incomplete**, so an empty result is *undecided*, not a refutation. The repair the diagnostic names is `Error.reify` (§ the `Error` layer): declaring the label instead does not catch the raise: the goal stays undecided. What is *not* a fault is a raise that is not a domain failure of the callee — a floundered relation drain (`relation_floundered`) and a scoped load reporting its diagnostics (`load_failed`) both ride the same channel and both mean "no answer yet" — so the partition is by the payload's constructor, not by the raise channel. Nor is a drain whose search was cut by one of its limits (§8.3): an `execute` stream or a relation hands out the rows found before the cut and raises `search_truncated(limit)` where it would have ended, `limit` naming the limit, and a rule-body call that raises it waits, its search incomplete, with nothing to report. `relation_floundered`, `load_failed`, `evaluation_failure` and `search_truncated` are the runtime's accounts of what it could not do: a program matches one in an operation's pattern and raises a caught one again, and does not construct one, so a construction of one in a program — in an operation body, a const, a fact or a rule — is refused at load. A payload of one of them is therefore the runtime's wherever it is raised, also where a boundary caught it and the program raised it again, in the same operation or in a later goal of the rule. An effect that a call the bridge runs for a rule body asks of its handler is declined the same way and reported — a call that performs one is refused at load where a clause writes it (§5.3, "A rule body performs no effect"), so what reaches the bridge is a goal no clause wrote, or an effect no row declares: the run stops there, the goal is undecided, and the fault names the effect ("it performs `anthill.prelude.Time.Clock`, and a rule body performs no effect"), so a relation drained from an operation body fails with that reason, and a rule that calls that operation is told the effect, not to reach for `Error.reify`, also where the operation catches the failure and raises it again. Like a raise, the fault marks the whole search incomplete from the moment the goal is first tried, a branch a later goal refutes included: a negation over the goal is conditional, a quantified constraint over it cannot be decided and the program does not load, and the verdict follows the order of the goals. Where the operation's own row declares no such effect, the fault says that instead: the run asked a handler for an effect the row does not hold.
 
 **The arity+1 view reads the row the same way** (WI-20260830-NX4FD). `size(?ls, ?n)` — `FiniteCollection.size(c: C) -> Int64 effects E`, reached through `List`'s provision — binds `?n` to the list's length, exactly as the carrier's own `length(?ls, ?n)` does. It answered **nothing** before, and the effect clause alone did not fix it. The other half is a rule about **requirement dictionaries**, not about this view: when a call's argument types pin some of a `requires` clause's type-parameters and not others (`FiniteCollection requires Iterable[C, Element, E]`, of which `size(c: C)` pins only `C`), the slot is completed from the spec's providers where they leave exactly one possibility, and otherwise **kept as a recorded absence** — a slot that is loud at any read and costs nothing at none. Aborting the whole call instead is what made the goal silent. The absence belongs to this route (it holds argument values, which carry no type arguments), not to the program: the compile-time dictionary builder resolves the same slot from the call's types, and a slot it can't fill is refused at load (WI-20260925-4ZZKZ).
 
@@ -2859,35 +2859,47 @@ rule colouring(wa: Colour, nt: Colour, sa: Colour) :- wa != nt, wa != sa, nt != 
 enumerates, with no generator written down: `sort Colour { entity red, entity
 green, entity blue }` is the generator.
 
-The derived clause is the constructor list read EXISTENTIALLY — a disjunction
-over the constructors, with each field's own domain conjoined inside its branch —
-where the induction principle reads the same list universally. **The type travels
-as an argument**, which is what lets one clause serve a parameterized sort at
-every instantiation and every nesting depth:
+The derived relation is the constructor list read EXISTENTIALLY — ONE CLAUSE PER
+CONSTRUCTOR, the constructor in the clause's head and each field's own domain filled
+in its body — where the induction principle reads the same list universally. It is
+the sort's `SortDomain` provision (proposal 060 §2.3, 067):
 
 ```
-domain_member(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
-domain_member(?x, List[T = ?T]) :- ?x <=> nil()
-                                 | (?x <=> cons(head: ?h, tail: ?t)
-                                      & domain_member(?t, List[T = ?T])
-                                      & domain_member(?h, ?T))
+Letter provides SortDomain[T = Letter]                            -- derived
+  rule fill(a)
+  rule fill(b)
+  rule fill(c)
+List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]    -- derived
+  rule fill(nil)
+  rule fill(cons(head: ?h, tail: ?t)) :- fill(?t), SortDomain[T].fill(?h)
 ```
 
-`anthill.kernel.domain_member` is the relation (the clauses above and one
-catch-all); `anthill.kernel.domain` is the conformance guard §2 prepends. Both
-are declared and both are writable from a rule body — a goal on the 2-ary
-`domain_member` is the spelling to reach for when the TYPE is itself a variable.
-The 1-ary `<Sort>.domain` below is the ordinary one.
-
-The `List` head binds `?T` from the caller's `List[T = Letter]` by ordinary
-unification — types are terms with logical variables — and the element goal
-dispatches on the bound term. `List[T = Bit]` and `List[T = Letter]` are one
-clause; no dictionary and no per-sort lookup happens at run time.
+**The head decides the mode** (WI-20261115-YR3N7). A bound value selects the one
+clause its constructor heads, so a typed column CHECKS it and proposes no other
+case; an unbound value matches every head, in clause order, and the column
+GENERATES. The dictionary a fill call is handed names whose clauses run — the
+value never does — and every sub-domain below it comes out of its slots: a
+recursive field is handed the same dictionary, a field typed by a parameter the
+condition's slot. A type builds a dictionary only where no caller hands one,
+never below one, so the sub-domain a caller handed for a rigid `X` is the one
+used (below). A value of a refining sort (§8.2) is a case of the DERIVED domain
+it refines, applied by the call: where the dictionary's provider is a derived
+domain and the value's constructor is not one of that sort's own, the value is
+filled at its own sort, with a dictionary put together from the handed one's
+slots. A hand-written or primitive provider's own clauses decide, and an
+unbound value is filled with the provider's own constructors.
+`List[T = Bit]` and `List[T = Letter]` are one provision, conditional on the
+element's `SortDomain`: the element's domain reaches `fill` as that condition's
+sub-dictionary, built from the type a column names or handed in by a citation.
+`anthill.kernel.domain` is the conformance guard §2 prepends. *Not built:* the
+derivation emits a sort's cases as ONE clause whose body is a disjunction over its
+constructors, with a last case for a refining sort's value, so a check proposes
+each constructor to the value in turn.
 
 **Finiteness is not a condition.** It decides only whether the stream ENDS. A
 closed sort with a recursive constructor has a fair, lazy, INFINITE domain
-(`takeN` reads the rows within the depth limit; a drain past it raises
-`search_truncated`, §5.2), and fairness comes from ORDER
+(`takeN` reads the rows within the search's limits; a drain past them raises
+`search_truncated`, §5.2, §8.3), and fairness comes from ORDER
 alone — base constructors before recursive ones, and inside a branch the
 recursive field positions before the others — so a free `List[T = Letter]` comes
 out by length. Only a sort with NO constructors (`String`, a primitive, an
@@ -2946,12 +2958,21 @@ literals, not entity constructors, so there is no constructor list to read.
 A bound that is a TYPE VARIABLE — `rule el(?x: T) :- true` inside `sort Wrap[T]`
 — names no sort, so its domain is an implicit parameter of the clause: a
 `SortDomain[T = T]` dictionary, where `anthill.reflect.SortDomain` is the kernel
-spec whose member is a sort's `domain` and whose instances the loader derives for
-every sort with one. A citation fills it from its caller's evidence —
+spec whose member is a sort's `fill` (through `Fillable`, proposal 067) and whose
+instances the loader derives for every sort with one. A citation fills it from its
+caller's evidence —
 `operation countAt[X]() requires SortDomain[T = X] = Wrap[T = X].el.takeN(5).length()`
 counts `Colour`'s three values under `countAt[X = Colour]()` — and with `?x` bound
 the clause reads it off the value's type; with neither, the bound keeps §2's
-ladder (WI-20260911-5G28A).
+ladder (WI-20260911-5G28A). Inside `countAt` the `X` is RIGID — a name, not a
+domain — so the dictionary is the only thing that knows `X`'s domain, and it is
+threaded whole: the citation routes the clause's read to `countAt`'s slot, the
+read hands it to its provider's clauses, and a clause hands it on unchanged to a
+recursive field and its condition's sub-dictionary to a field typed by a
+parameter. So `countAt[X = Wrap[T = Colour]]()` counts three, `wrap(red)`,
+`wrap(green)`, `wrap(blue)`: `Wrap`'s clause `fill(wrap(v: ?v))` fills `?v`
+through `Colour`'s dictionary, `Wrap`'s condition (proposal 060 §2.3, "How `fill`
+is threaded").
 
 **The parameter form (proposal 060 §2.1).** In the head of the predicate a rule
 DEFINES, `name: Type` introduces a typed clause variable with no `?` sigil:
@@ -6069,6 +6090,8 @@ The kernel's reasoning engine supports:
 **Forward chaining (bottom-up):** When a new fact is asserted, the engine checks all rules whose body might be newly satisfiable. If a rule's body is fully satisfied, its head is derived as a new fact.
 
 **Backward chaining (top-down):** Given a query `?- goal`, the engine searches for rules whose head unifies with the goal, then recursively proves the body terms.
+
+**A search has two limits, its depth and its fuel** (WI-20261115-0WT09). A goal's *depth* is its NESTING: the query's goals are at depth 0, and a goal of the body of the clause that answers a goal at depth `d` is at `d + 1` — as is a goal a quantifier opens for one of its instances. Every other goal keeps its own depth: the two operands of a conjunction or a choice stand where the goal stood, as do the goals a builtin puts in its place and a goal lowered to a call of the relation it names, and a goal moved behind the others to wait is no deeper for it. So a conjunct's proof is never charged to the goals beside it: two walks of one list need the depth of one. A goal deeper than the search's depth limit (`--max-depth`, default 100) is not asked, and since a derivation that never ends opens clauses without end, the depth limit stops every such descent. A search's *fuel* is the number of steps it may take, counting every branch and the sub-search of each negation it decides (`--max-steps`); out of it, the search stops. The depth bounds how deep a proof goes, the fuel how much work a search does, which a shallow search can still make exponential: a rule that calls itself twice per level is as deep as its argument and takes twice as long at every level. A search cut by either limit is *incomplete*. Its answers are answers, but its end is not the claim that they were all: a negation over it is undecided, never a refutation, and a stream or relation over it raises `search_truncated(limit)` where it would have ended (§5.2), its `limit` naming the limit that cut it — `depth(max_depth)`, or `steps(max_steps)` where its fuel ran out. A carrier's `eq` decided in a closed sub-proof (below), and a search an operation's body runs, have budgets of their own and are not charged to the search that asked; one of them cut ends that search as cut at its depth limit, whichever of its own limits cut it.
 
 **A query yields ANSWERS; a relation yields PROOFS** (WI-FFPGD). Backward chaining enumerates *proofs*, and one answer can have many: a body variable written `?` is **existential**, so `rule tagged(?t) :- check(t: ?t, witness: ?)` over three `check` rows two of which agree on `t` is proved three ways and answers **twice**. A query's result is therefore projected onto the query's own goals — two proofs agreeing on every query variable are ONE solution, however differently they were derived, and two disagreeing anywhere in the query are two, however much of the proof they share. The projection is over the whole goal **vector**, not any one goal: `a(?x), b(?y)` over two facts each still has four answers. A **query** variable is part of the answer however it is spelled, `?` included — the caller can read its binding, so it distinguishes.
 

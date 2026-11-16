@@ -731,7 +731,10 @@ point 1 says what its member is).
   goal because it is not only a test: it reads the value's type into `B`'s variables (060 §2.2's
   (in, out) read), which is what ties two columns — in
   `my_rule(?x: List[T = ?t], ?res: List[T = ?t])` it pins `?t := Int64` off `[1, 2]` and refuses
-  `["a"]` for `?res`. Member then runs `B`'s domain on the value, through `D`.
+  `["a"]` for `?res`. Member then runs `B`'s domain on the value, through `D`. (As derived, that
+  domain was one clause whose body proposed each constructor to the value, so MEMBER generated
+  where it should check; the clauses are one per constructor since the 2026-11-15 decision below,
+  "a domain is derived as one clause per constructor".)
 * `?x` UNBOUND — GENERATE, through `D`.
 
 **WHERE `D` COMES FROM** — the one thing that varies between bounds:
@@ -951,8 +954,9 @@ alike.
    `requires SortDomain[T = X]` (the `countAt` rows of `wi_5g28a_sort_domain_test` and
    `wi_shed7_fillable_test`).
 2. **A sort that defines its own domain provides `SortDomain`'s `fill`** — `S provides
-   SortDomain[T = S]` with `rule fill(?x) :- …`, the form 060 §2.3 prints for the derived case —
-   in place of the `domain(?x)` written in the sort's body (060 §2.2's "user-definable" bullet).
+   SortDomain[T = S]` with one `rule fill(<case>) :- …` per case, its case in the head, the form
+   060 §2.3 prints for the derived case (since 2026-11-15, below) — in place of the `domain(?x)`
+   written in the sort's body (060 §2.2's "user-definable" bullet).
    NOT BUILT: today the loader takes a written domain only from a 1-ary relation `<Sort>.domain`
    in the sort's own scope (`load::derive_sort_domains`, which records it as
    `SortDomainKind::Written`); a written provision of `SortDomain` is not read as one.
@@ -965,9 +969,90 @@ alike.
 deprecated or refused (decided at the work); `examples/classic-mini/map-colouring`'s `main` and
 the `wi_wt8wg_domain_value_face_test` rows moved to typed rules; item 2's provision built and the
 written `domain(?x)` migrated to it; kernel-language.md §5.3's value-face and written-domain
-paragraphs rewritten, beside SHED7's pending rewrite of its `domain_member` paragraphs. It depends
-on WI-20260925-SHED7 for item 2: an author-written implementation of `fill` is proposal 067's
-("one an author writes", §1), which SHED7 tracks and its step 1 did not build.
+paragraphs rewritten, beside SHED7's pending rewrite of its `domain_member` paragraphs. It depended
+on WI-20260925-SHED7 for item 2, an author-written implementation of `fill` being proposal 067's
+("one an author writes", §1); the edge was DROPPED 2026-11-15 (user: "review dependency and it is
+now not needed - drop it"): SHED7's open steps — 067 §5 q3, the monoid's home, and §4, MiniSat
+over a builder through `fromList` — build no author-written provision, and item 2's provision is
+this work's own. It depends on WI-20261115-YR3N7 (below): the retirement keeps the per-sort
+relation (item 3), whose derivation that ticket changes, and item 2's provision is written in its
+shape, carrying its conditions to its member clauses.
+
+### DECIDED 2026-11-15 — a domain is derived as one clause per constructor
+
+User, 2026-11-15, on WI-20261115-YR3N7 ("we start generating instead of checking", "we should
+change generation", "build right architecture at first"). The merged goal's MEMBER (above) runs
+`B`'s domain on a bound value, and the domain was derived as ONE clause whose body is a choice over
+the constructors:
+
+```
+List.domain(?x) :- find_dictionary(SortDomain, SortDomain, ?x, out: ?self),
+                   push_choice( unify(?x, nil),
+                                push_and(unify(?x, cons(head: ?h, tail: ?t)),
+                                         push_and(apply_domain(?self, ?t),
+                                                  apply_domain(__domain_sub(?self, 0), ?h))),
+                                __refined_domain(?x, ?self) )
+```
+
+That is a generator's shape: it proposes each constructor to `?x` and tests it by unification. On
+a bound value it does so at every piece — `nil` fails, `cons` matches, the refined case stays on the
+search untried — so a check generated. MEASURED on the CLI of 2026-11-14 (the smallest
+`--max-depth` that answers): a typed column costs 16 steps per `Product(id: Int64, price: Int64)`
+of a list (7 + 16n), and YR3N7's two-product, two-order state 107, past the default 100. The same
+domain written one clause per constructor costs 6 per element (2 + 6n) and generates the same lists
+in the same order.
+
+**THE ARCHITECTURE** (060 §2.3, "The head decides the mode"; kernel-language §5.3):
+1. **One `fill` clause per constructor, the constructor in the head**, base constructors first.
+   Clause selection decides the mode: a bound value selects its one clause — a check; an unbound
+   one matches every head in clause order — generation, in WI-743's order.
+2. **Fields are filled in the body**, recursive fields first, and every fill call is the dispatching
+   `apply_domain(evidence, v)`; no fill is called by name.
+3. **The dictionary names whose fill runs, every sub-domain below it comes out of its slots, and
+   refinement is the derived domain's case, applied by the call.** `apply_domain(D, v)` runs the
+   member of the provision `D` names — never a fill chosen by `v`'s own sort or by a sort's name:
+   for a caller's rigid `X` the asked type is a name, and only the dictionary knows its domain,
+   the sub-domains it carries included ("Why the instance must be THREADED", above). Below `D`, a
+   recursive field is handed `D` again and a field typed by a parameter `D`'s condition slot; a
+   type builds a dictionary only at the top, where no caller hands one. A value of a refining sort
+   is the one case a DERIVED `impl` adds: where `D`'s `impl` is derived and `v`'s constructor is
+   not one of that sort's own, the call runs the fill of `v`'s own sort with a dictionary put
+   together from `D`'s slots. `lower_refined_domain` does NOT do that today: it keeps only the
+   conditions that are types ("a condition held as a dictionary, or not yet pinned, is an argument
+   left unwritten"), so it drops the sub-domain a rigid caller handed; moving the case into the
+   call must pass those conditions on. A hand-written or primitive `impl` adds no such
+   case. The `__refined_domain` clause leaves the relation: indexed (`Base.fill(other(n: ?n)) :-
+   …`), its head would match an unbound `?x` too and the domain would list the refining sorts'
+   values, where WI-20261104-J9SSG's control lists the sort's own; with a variable head it would be
+   tried, and refuted, beside every value of the sort's own. The threaded form, on the rigid case
+   (`countAt[X]`, `wrapped()`, a bound `hasAt`), is 060 §2.3's "How `fill` is threaded".
+4. **The dictionary is read only in the clauses that read a condition** — `fill(nil)` is a fact.
+5. **A primitive keeps one clause**, the waiting type check; a primitive with finitely many literal
+   values (`Bool`) gets a derived clause per literal — WI-20260911-5TK6B.
+6. **What builds on the relation keeps the shape**: a hand-written domain's provision (item 2
+   above, WI-20260911-WT8WG), fair interleaving (WI-20260911-09E6M), `Bool`'s clauses.
+7. **Depth is nesting**, a dispatch costs no depth, and fuel is a separate counter
+   (WI-20261115-0WT09): a ground check is then as deep as the value is nested — about one level
+   per list cell, as `member` over the same list — and sibling fields do not add.
+
+**TO VERIFY at the work:**
+- The relation's column type rides its head's typed variable today (`install_rule_type_bounds` in
+  `fill_derive::emit_fill_clause`), which the value face reads until WT8WG retires it; with a
+  constructor in the head it is read from the sort's `SortDomain` entry.
+- THE THREADING, which the new shape changes in three places. (a) Each clause that reads a
+  condition has its own dictionary read, and a clause that reads none (`fill(nil)`) has none; the
+  marker already lays a relation's dictionaries out per clause (`resolve::bind_citation_reads`, an
+  offset per clause). (b) The derived path hands ONE dictionary (`fill_goal`: `vec![dict]`), right
+  only while the relation is one clause; it must hand the provision's WHOLE dictionary to each
+  reading clause. The hand-written path is no model for it: `fill_goal`'s `Written` arm routes the
+  `SortDomain` read alone and hands every other read `__unrouted` — the domain relation's
+  inability to take requirements, which a written provision (WT8WG item 2) must not inherit.
+  (c) A read's witness
+  is the head's constructor pattern, not `?x`: after the head match it is the same value, so an
+  unfilled read still builds the dictionary from the value's type.
+
+**NOT CHANGED:** what a typed head means (060 §2's table), the guard in front of the body, the
+dictionary channel, and the answers of every mode — only how a bound value is checked.
 
 ### The next case — MiniSat over a collection BUILDER: the collection's domain creates it
 

@@ -2082,6 +2082,8 @@ mod wi_6rrva_law_names_nothing_test;
 mod wi_8y5be_interpreter_stream_failure_test;
 #[path = "include/wi_p9qbf_lazy_truncation_test.rs"]
 mod wi_p9qbf_lazy_truncation_test;
+#[path = "include/wi_0wt09_depth_is_nesting_test.rs"]
+mod wi_0wt09_depth_is_nesting_test;
 
 #[path = "include/wi_hrfr5_witness_attribution_test.rs"]
 mod wi_hrfr5_witness_attribution_test;

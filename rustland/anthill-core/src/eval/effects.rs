@@ -1072,15 +1072,32 @@ impl Interpreter {
         )
     }
 
-    /// WI-20260913-P9QBF — raise a resolver stream whose search ran dry with a branch cut
-    /// at a depth limit as the declared `Error[ResolveStreamFailure]`: payload
-    /// `search_truncated(max_depth)`, the interpreter-face twin of the host bridge's
-    /// `SearchTruncated`.
-    pub fn raise_search_truncated(&mut self, max_depth: i64) -> EvalError {
+    /// WI-20260913-P9QBF — raise a resolver stream whose search ran dry cut by one of its
+    /// limits as the declared `Error[ResolveStreamFailure]`: payload
+    /// `search_truncated(limit)`, the interpreter-face twin of the host bridge's
+    /// `SearchTruncated`. `limit` names the limit (WI-20261115-0WT09):
+    /// `SearchLimit.depth(max_depth)` or `SearchLimit.steps(max_steps)`.
+    pub fn raise_search_truncated(&mut self, limit: crate::kb::resolve::SearchLimit) -> EvalError {
+        use crate::kb::resolve::SearchLimit;
+        let (ctor, field, n) = match limit {
+            SearchLimit::Depth { max_depth } => ("depth", "max_depth", max_depth),
+            SearchLimit::Steps { max_steps } => ("steps", "max_steps", max_steps),
+        };
+        let qname = format!("anthill.reflect.SearchLimit.{ctor}");
+        let functor = match crate::eval::builtins::require_symbol(self, &qname, ctor) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let field = self.kb_mut().intern(field);
+        let limit = Value::Entity {
+            functor,
+            pos: Rc::from([]),
+            named: vec![(field, Value::Int(n))].into(),
+        };
         self.raise_error_payload(
             crate::kb::RuntimeAccount::SearchTruncated.qualified_name(),
             "search_truncated",
-            vec![("max_depth", Value::Int(max_depth))],
+            vec![("limit", limit)],
             // A pull whose search was cut.
             RaiseBy::Account(|l| &l.resolve_stream_failure_type),
         )

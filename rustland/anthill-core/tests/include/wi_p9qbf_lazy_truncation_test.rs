@@ -1,6 +1,8 @@
 //! WI-20260913-P9QBF — a LAZY search cut at its depth limit does not end as a complete
 //! empty answer set: where the stream would end, it raises the declared
-//! `Error[ResolveStreamFailure]` with `search_truncated(max_depth)`.
+//! `Error[ResolveStreamFailure]` with `search_truncated(limit)`, the limit
+//! `depth(max_depth)` (WI-20261115-0WT09 made the payload name its limit; the fuel's,
+//! `steps(max_steps)`, is driven by `wi_0wt09_depth_is_nesting_test`).
 //!
 //! WI-628 made the EAGER drains honest (`drain_all` / `drain_verdict` carry `truncated`, so
 //! NAF, guards and counts read a cut search as undecided), but `SearchStream::split_first`
@@ -19,7 +21,7 @@
 
 use crate::common::{interp_for, load_errors_of, load_kb_with, query_pattern_term};
 use anthill_core::eval::{EvalError, Interpreter, Value};
-use anthill_core::kb::resolve::{ResolveConfig, SearchFailure};
+use anthill_core::kb::resolve::{ResolveConfig, SearchFailure, SearchLimit};
 
 /// `Deep` is cut at the depth limit with no answer. `Some1` has one answer, which every
 /// level of its recursion derives again, so it yields rows and is then cut. `Reach` is a
@@ -34,6 +36,7 @@ namespace test.p9qbf
   import anthill.prelude.Result.{ok, err}
   import anthill.reflect.{Term, Solution, fresh_var, as_term, ResolveStreamFailure}
   import anthill.reflect.ResolveStreamFailure.{search_truncated}
+  import anthill.reflect.SearchLimit.{depth}
   import anthill.reflect.KB.{kb, execute}
   import anthill.reflect.LogicalQuery.{pattern_query}
 
@@ -81,7 +84,7 @@ namespace test.p9qbf
   operation caughtDepth() -> Int64 =
     match Error.reify(lambda () -> executeDeep())
       case ok(n) -> n
-      case err(search_truncated(d)) -> d
+      case err(search_truncated(depth(d))) -> d
       case err(_) -> -1
 
   operation deepCount() -> Int64 effects Error = length(deep.takeN(10))
@@ -110,17 +113,29 @@ fn raised(interp: &Interpreter, result: Result<Value, EvalError>, what: &str) ->
     }
 }
 
-/// The `max_depth` field of a `search_truncated` payload.
+/// The `max_depth` of a `search_truncated` payload's limit, `depth(max_depth)`.
 fn max_depth_of(interp: &Interpreter, payload: &Value) -> i64 {
-    let Value::Entity { named, .. } = payload else {
-        panic!("expected an entity payload, got {payload:?}")
+    let field = |entity: &Value, name: &str| -> Value {
+        let Value::Entity { named, .. } = entity else {
+            panic!("expected an entity, got {entity:?}")
+        };
+        named
+            .iter()
+            .find(|(k, _)| interp.kb().local_name_of(*k) == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("no `{name}` field in {entity:?}"))
     };
-    match named
-        .iter()
-        .find(|(k, _)| interp.kb().local_name_of(*k) == "max_depth")
-        .map(|(_, v)| v)
-    {
-        Some(Value::Int(d)) => *d,
+    let limit = field(payload, "limit");
+    let Value::Entity { functor, .. } = &limit else {
+        panic!("`limit` is a SearchLimit entity, got {limit:?}")
+    };
+    assert_eq!(
+        interp.kb().qualified_name_of(*functor),
+        "anthill.reflect.SearchLimit.depth",
+        "a depth limit cut this search, not its fuel"
+    );
+    match field(&limit, "max_depth") {
+        Value::Int(d) => d,
         other => panic!("`max_depth` is an Int64 field, got {other:?} in {payload:?}"),
     }
 }
@@ -286,11 +301,21 @@ fn split_first_reports_the_cut_at_its_end() {
         }
     };
     match drain(&mut kb, "Deep(x: ?x)") {
-        (0, Some(SearchFailure::Truncated { max_depth: 7 })) => {}
+        (
+            0,
+            Some(SearchFailure::Truncated {
+                limit: SearchLimit::Depth { max_depth: 7 },
+            }),
+        ) => {}
         other => panic!("`Deep` is cut at the stream's limit 7 with no row; got {other:?}"),
     }
     match drain(&mut kb, "Some1(x: ?x)") {
-        (rows, Some(SearchFailure::Truncated { max_depth: 7 })) if rows >= 1 => {}
+        (
+            rows,
+            Some(SearchFailure::Truncated {
+                limit: SearchLimit::Depth { max_depth: 7 },
+            }),
+        ) if rows >= 1 => {}
         other => panic!("`Some1` yields its rows, then is cut; got {other:?}"),
     }
     // CONTROL, passes either way: the recursion ends at depth 3.
@@ -364,16 +389,19 @@ fn a_rule_body_drain_that_was_cut_is_a_truncation_not_a_value() {
 /// FAILS WHEN BACKED OUT (the account): both shapes load.
 #[test]
 fn a_program_does_not_construct_search_truncated() {
+    // A WELL-FORMED payload (WI-20261115-0WT09: `search_truncated(limit: depth(…))`), so the
+    // refusal is the account's and not an unknown label's (`/code-review`).
     let header = "namespace test.p9qbf.forge\n  import anthill.prelude.{Int64, Error}\n  \
                   import anthill.reflect.{ResolveStreamFailure}\n  \
-                  import anthill.reflect.ResolveStreamFailure.{search_truncated}\n";
+                  import anthill.reflect.ResolveStreamFailure.{search_truncated}\n  \
+                  import anthill.reflect.SearchLimit.{depth}\n";
     for (shape, item) in [
         (
             "an operation body's raise",
             "operation forge() -> Int64 effects {Error[ResolveStreamFailure]} = \
-             Error.raise(search_truncated(max_depth: 1))",
+             Error.raise(search_truncated(limit: depth(max_depth: 1)))",
         ),
-        ("a fact", "fact held(search_truncated(max_depth: 1))"),
+        ("a fact", "fact held(search_truncated(limit: depth(max_depth: 1)))"),
     ] {
         let errs = load_errors_of(&format!("{header}  {item}\nend\n"));
         crate::common::assert_refused_naming(
