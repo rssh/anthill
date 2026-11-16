@@ -240,8 +240,10 @@ pub(crate) fn is_woven_slots_call(kb: &KnowledgeBase, node: &NodeOccurrence) -> 
     })
 }
 
-/// Did [`infer_rule_body_requirements`] synthesize this body goal? The read-only face of
-/// [`inferred_requirement_pass`], for the checks that run on a shared borrow.
+/// Did [`infer_rule_body_requirements`] synthesize this body goal, or the hand-on of a
+/// requirement the clause's sort states (`install_sort_requirement_reads`)? A read no author
+/// wrote, and so no declaration. The read-only face of [`inferred_requirement_pass`], for the
+/// checks that run on a shared borrow.
 ///
 /// The pass name is looked up in the symbol table's INTERN map (`lookup`), which is where
 /// `register_pass` puts it — not through `try_resolve_symbol`, which searches DECLARED
@@ -250,9 +252,11 @@ pub(crate) fn is_woven_slots_call(kb: &KnowledgeBase, node: &NodeOccurrence) -> 
 /// NR6FJ's refusal of a slot nothing can fill.
 pub fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -> bool {
     node.synthesized_by().is_some_and(|by| {
-        kb.symbols
-            .lookup(INFERRED_REQUIREMENT_PASS)
-            .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
+        [INFERRED_REQUIREMENT_PASS, SORT_REQUIREMENT_READ_PASS].iter().any(|pass| {
+            kb.symbols
+                .lookup(pass)
+                .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
+        })
     })
 }
 

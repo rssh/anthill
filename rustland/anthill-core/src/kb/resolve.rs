@@ -136,6 +136,14 @@ pub(crate) fn note_eq_index_read() {
 
 thread_local! {
     static UNPINNED_SPEC_GOALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static VALUE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many dictionary reads for a call the search has answered ON THIS THREAD, ever, with no
+/// dictionary passed in: reads that look the provider up from the call's argument values. An
+/// instrument for tests, as [`eq_index_reads_by_this_thread`] is.
+pub fn value_reads_by_this_thread() -> usize {
+    VALUE_READS.with(|c| c.get())
 }
 
 /// How many goals of a body-less spec operation the search has admitted through its `Bool` view
@@ -10712,6 +10720,9 @@ impl KnowledgeBase {
                 crate::eval::value::Dictionary::from_view(self, &out).map(|d| d.impl_sort()),
             )
         } else {
+            if !supplied {
+                VALUE_READS.with(|c| c.set(c.get() + 1));
+            }
             super::typing::fetch_dictionary(
                 self, subst, spec_sort, op_functor, arg_vals, bracket, rung,
             )

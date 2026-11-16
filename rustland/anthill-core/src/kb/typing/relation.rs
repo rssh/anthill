@@ -2243,6 +2243,23 @@ fn route_requirement_read(
             None => {}
         }
     }
+    // A read for a call whose receiver is a column typed at the parameter the sort's requirement
+    // of the spec is at: the call's dictionary is that requirement (060.1 §8.2), at the types the
+    // citation fixes the sort's parameters to — `Conv.conv(?x, ?r)` with `?x: T` in `sort Two2`
+    // with `requires Conv[A = T, B = U]`, cited at `Two2[T = Int64, U = Bool]`, reads `Conv[A =
+    // Int64, B = Bool]`, which the witness's `Int64` alone leaves to two providers.
+    if slot_read_index(kb, named_args).is_none()
+        && call_read_is_the_sorts_requirement(kb, rid, spec_sort, op_functor, &pos_args[2..])
+    {
+        match sort_requirement_route(kb, pending, rid, spec_sort, fresh, carrier_subst) {
+            Some(Ok(route)) => return Some(route),
+            Some(Err(misfit)) => {
+                misfits.push(misfit);
+                return None;
+            }
+            None => {}
+        }
+    }
     let bracket = requirement_bracket(kb, &Value::Node(Rc::clone(&pos_args[0])));
     let mut arg_types: Vec<Value> = Vec::with_capacity(pos_args.len().saturating_sub(2));
     for witness in &pos_args[2..] {

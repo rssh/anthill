@@ -542,8 +542,10 @@ fn a_construction_crosses_into_an_inlined_rule_closed_over_its_callers_frame() {
 /// the clause's frame, `two`'s clause 1 named its `?b` (of `T`) and clause 2 its `?c` (a
 /// real) alike, and the proof was refused — "of sort T in one world … and of Real in
 /// another" (/code-review, measured); on d7a8ffcb it was z3's "unknown constant". Clause
-/// 2's `?c` is `var_7`: clause 1's `lt` reads `PartialOrd` through the dictionary `Scope`'s
-/// `requires` holds (WI-20260909-SM910), one more name of the frame (`var_6` before).
+/// 2's `?c` is `var_8`: clause 1's `lt` reads `PartialOrd` through the dictionary `Scope`'s
+/// `requires` holds (WI-20260909-SM910), and `worlds` reads that requirement to hand it to
+/// `two`, whose clause 1 reads it for its `lt` (WI-20261105-CBRD2): two more names of the frame
+/// (`var_6` before).
 #[test]
 fn own_names_run_on_across_the_worlds_of_a_document() {
     let out = dry_run(
@@ -570,10 +572,10 @@ end
     let document = stated(&out, "test.fheek.many.Scope.worlds");
     for line in [
         format!("(declare-const var_2 {t})"),
-        format!("(declare-const var_4 {t})"),
-        "(declare-const var_7 Real)".to_owned(),
-        format!("(and (anthill.prelude.PartialOrd.lt@{t} var_2 var_4) (>= 0.0 5.0))"),
-        "(and (<= var_7 1.0) (>= 1.0 5.0))".to_owned(),
+        format!("(declare-const var_5 {t})"),
+        "(declare-const var_8 Real)".to_owned(),
+        format!("(and (anthill.prelude.PartialOrd.lt@{t} var_2 var_5) (>= 0.0 5.0))"),
+        "(and (<= var_8 1.0) (>= 1.0 5.0))".to_owned(),
     ] {
         assert!(document.contains(&line.as_str()), "`{line}`:\n{}", document.join("\n"));
     }
