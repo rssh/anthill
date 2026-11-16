@@ -496,17 +496,43 @@ pub enum SearchFailure {
     /// than as a callee that failed. `max_depth` is the limit of THIS search, as the
     /// payload's `Int64` (saturated); a search nested in it with a budget of its own (a
     /// negation's, a carrier `eq`'s, the bridge's re-entry cap) ends it the same way.
-    Truncated { max_depth: i64 },
+    ///
+    /// `limit` names WHICH limit cut it (WI-20261115-0WT09): a goal nested past
+    /// [`ResolveConfig::max_depth`], or the whole search past [`ResolveConfig::max_steps`].
+    /// Where both happened the fuel is named — it stopped the search outright. The limit is
+    /// THIS search's: a negation's sub-search runs on its fuel, but a search nested in it with
+    /// budgets of its own — a carrier `eq`'s sub-proof, one an operation body runs — reaches
+    /// it as a bare truncation and is named `Depth`, whichever of its own limits cut it.
+    Truncated { limit: SearchLimit },
+}
+
+/// WI-20261115-0WT09 — the limit a truncated search reached, as the payload names it
+/// (`anthill.reflect.SearchLimit`): `depth(max_depth)` or `steps(max_steps)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchLimit {
+    /// A goal nested deeper than `max_depth` was not asked.
+    Depth { max_depth: i64 },
+    /// The search took `max_steps` steps, its fuel, and stopped.
+    Steps { max_steps: i64 },
 }
 
 impl std::fmt::Display for SearchFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SearchFailure::Faulted(fault) => f.write_str(&fault.error.message),
-            SearchFailure::Truncated { max_depth } => write!(
+            SearchFailure::Truncated {
+                limit: SearchLimit::Depth { max_depth },
+            } => write!(
                 f,
-                "the search abandoned a branch at a depth limit (its own is {max_depth}), so \
-                 the answers it gave are not all there are"
+                "the search abandoned a branch at its depth limit ({max_depth}), so the answers \
+                 it gave are not all there are"
+            ),
+            SearchFailure::Truncated {
+                limit: SearchLimit::Steps { max_steps },
+            } => write!(
+                f,
+                "the search stopped at its step limit ({max_steps} steps), so the answers it \
+                 gave are not all there are"
             ),
         }
     }
@@ -897,6 +923,27 @@ pub(crate) enum BridgeEqOutcome {
     Undecided { truncated: bool },
 }
 
+/// WI-20261115-0WT09 — the depth a [`Candidate::Continuation`]'s goals stand at, relative
+/// to the goal the choice point answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Nesting {
+    /// A branch of the goal itself (`push_choice`'s two operands): at its depth.
+    Split,
+    /// A body opened for the goal (an unfolded operation's arm, a quantifier's instance):
+    /// one deeper, as a clause body is.
+    Opened,
+}
+
+impl Nesting {
+    /// The depth of goals produced for a goal at `depth`.
+    fn depth_below(self, depth: usize) -> usize {
+        match self {
+            Nesting::Split => depth,
+            Nesting::Opened => depth + 1,
+        }
+    }
+}
+
 /// A resolution candidate — either a regular KB rule/fact or a
 /// scoped assumption. WI-251: the legacy `Occurrence(OccurrenceId, …)`
 /// variant was removed when the legacy occurrence side-table went; reflection
@@ -936,7 +983,12 @@ enum Candidate {
     /// op-call goals as `Value::Node` occurrences so the re-triggered operand is
     /// recognized without a `term_body_to_nodes` round-trip at re-entry
     /// (proposal 033 §"TermId / Value asymmetry").
-    Continuation(Vec<Value>),
+    ///
+    /// `nesting` says what depth the goals stand at (WI-20261115-0WT09): a branch of a
+    /// choice is a SPLIT, at the depth of the goal it splits; an operation body unfolded
+    /// into goals, and a bounded quantifier's instance, are OPENED, one deeper — the
+    /// unfold re-triggers on its own hoisted calls, so only nesting bounds it.
+    Continuation { goals: Vec<Value>, nesting: Nesting },
     /// Row from a mounted [`ExtentSource`] (`kb.extents`) — proposal 057
     /// §"Mounts", WI-797 (successor to the retired `RouteHandler`). The
     /// substitution unifies the goal pattern with the row's `Value`
@@ -976,10 +1028,35 @@ pub struct OpaqueSkolems {
     pub not_self_equal: std::collections::HashSet<Symbol>,
 }
 
+/// WI-20261115-0WT09 — the default fuel, [`ResolveConfig::max_steps`], MEASURED before it was
+/// chosen (the user's decision): over the whole workspace's suites (12 180 tests, 2026-11-16)
+/// and this repository's own ticket store (about 1 770 items, every read command), NO search
+/// took 100 000 steps — a temporary census logged each one crossing 10^5, 10^6, 10^7 and 10^8,
+/// and logged none. So this is more than a hundred times the largest search there is, chosen
+/// that wide because a PROGRAM cannot raise it: the relations an operation body drains and its
+/// `execute` calls run at the default, and only the CLI (`--max-steps`) and a Rust caller can
+/// set another. A join over a thousand rows by a thousand is a million steps by itself. At
+/// roughly 5 µs a step (an optimized build on a loaded machine), it stops a runaway search in
+/// under a minute.
+pub const DEFAULT_MAX_STEPS: u64 = 10_000_000;
+
 /// Configuration for SLD resolution.
 pub struct ResolveConfig {
-    /// Maximum resolution depth (default 100).
+    /// The deepest a goal may be NESTED (default 100): a goal opened from a clause's body
+    /// is one deeper than the goal the clause answered, and every other goal keeps its own
+    /// depth (WI-20261115-0WT09; each goal of a frame carries its own). A goal deeper than this is not
+    /// asked, and the search is truncated at [`SearchLimit::Depth`]. It bounds every chain
+    /// of clause openings — an infinite derivation opens an infinite one — and charges
+    /// nothing to a goal for the work of the goals beside it.
     pub max_depth: usize,
+    /// WI-20261115-0WT09 — FUEL: the most steps the WHOLE search may take, across every
+    /// branch, default [`DEFAULT_MAX_STEPS`]. A negation's sub-search runs on what is left of
+    /// it and is charged back. A carrier `eq`'s closed sub-proof (`prove_rule_predicate`)
+    /// and a search an operation body runs through the bridge are NOT charged: each has
+    /// budgets of its own. Out of it, the search stops, truncated at
+    /// [`SearchLimit::Steps`]. Depth bounds how deep a proof goes, fuel how much work a
+    /// search does: a rule that calls itself twice per level is shallow and exponential.
+    pub max_steps: u64,
     /// Maximum number of solutions to collect (0 = unlimited).
     pub max_solutions: usize,
     /// Whether to apply equational rewriting as fallback during resolution.
@@ -1078,6 +1155,7 @@ impl Default for ResolveConfig {
     fn default() -> Self {
         Self {
             max_depth: 100,
+            max_steps: DEFAULT_MAX_STEPS,
             max_solutions: 0,
             simplify: false,
             definite_only: false,
@@ -1269,7 +1347,6 @@ struct ResolverFrame {
     // behavior-preserving carrier swap every goal is still `Value::Term`.
     goals: Vec<FrameGoal>,
     subst: Substitution,
-    depth: usize,
     state: FrameState,
     /// Antecedents assumed under a `forall_impl` discharge that landed in
     /// this frame's goal stream. Consulted as zero-body facts during the
@@ -1303,15 +1380,31 @@ struct FrameGoal {
     /// waiting at the residualization gate, the residual is this clause's body, not the
     /// goal ([`SearchStream::waiting_clause_residual`]).
     clause: Option<RuleId>,
+    /// WI-20261115-0WT09 — the goal's NESTING depth: how many clause openings (and calls)
+    /// stand between it and the query. DEPTH IS DEPTH, not a count of steps (user,
+    /// 2026-11-15: "Depth is depth. If we need step-count (like fuel), then better have
+    /// other counter for this"): a goal opened from a clause's body is one deeper than the
+    /// goal the clause answered, and every other goal keeps its own. So the steps a
+    /// conjunct's proof takes are never charged to its siblings — the sum of a typed
+    /// column's check and the body beside it used to exhaust the limit together
+    /// (WI-20261115-YR3N7 row 1). The work a search does is the other counter,
+    /// [`ResolveConfig::max_steps`].
+    ///
+    /// Read at the goal's turn: a goal deeper than [`ResolveConfig::max_depth`] is not asked
+    /// and the search is truncated ([`SearchStream::step_init`]). It rides with its goal
+    /// through every rotation, splice and frame push, as the wait state does, so the frame
+    /// has no depth of its own.
+    depth: usize,
 }
 
 impl FrameGoal {
-    /// A goal that has not been asked yet.
-    fn ready(goal: Value) -> Self {
+    /// A goal that has not been asked yet, at nesting `depth`.
+    fn ready(goal: Value, depth: usize) -> Self {
         FrameGoal {
             goal,
             wait: Wait::Ready,
             clause: None,
+            depth,
         }
     }
 }
@@ -1577,6 +1670,10 @@ pub struct ResolveStats {
     /// instead of silently deciding from a truncated search. Mirrors the
     /// stream-level [`SearchStream::truncated`] flag, snapshotted at drain time.
     pub truncated: bool,
+    /// WI-20261115-0WT09 — the truncation was the FUEL's: the search took
+    /// [`ResolveConfig::max_steps`] steps and stopped (implies `truncated`). `false` with
+    /// `truncated` set means a goal nested past `max_depth`, or a sub-search below, cut it.
+    pub out_of_fuel: bool,
     /// Faults the search detected ([`ResolveError`]) — empty for a healthy resolution.
     /// Snapshotted from the stream's own list at drain, beside `truncated` and for the
     /// same reason: `resolve` has no `Err` channel to return them on. A lazy consumer
@@ -1648,6 +1745,12 @@ pub struct SearchStream {
     /// [`Self::split_first`]'s exhaustion exit, which reports it to the LAZY ones as
     /// [`SearchFailure::Truncated`].
     truncated: bool,
+    /// WI-20261115-0WT09 — set when the search ran out of FUEL: it took
+    /// [`ResolveConfig::max_steps`] steps, counting a sub-search's, and stopped with every
+    /// branch still open abandoned. It also sets [`Self::truncated`] — the search is
+    /// incomplete, for every reader that asks — and names the limit the exhaustion exit
+    /// reports ([`SearchLimit::Steps`]).
+    out_of_fuel: bool,
     /// Faults this search DETECTED — see [`ResolveError`]. Empty for a healthy
     /// resolution.
     ///
@@ -1720,6 +1823,11 @@ struct DrainVerdict {
     /// `errors` that stopped it answering. `step_naf` promotes these, not `errors`,
     /// into the outer search's faults when `not(P)` comes out undecided.
     faults: Vec<ResolveError>,
+    /// WI-20261115-0WT09 — the steps the sub-search took, which the search that ran it
+    /// charges to its own fuel ([`SearchStream::charge_sub_search`]).
+    steps: u64,
+    /// WI-20261115-0WT09 — the sub-search ran out of fuel (it implies `truncated`).
+    out_of_fuel: bool,
 }
 
 /// WI-1044 — what [`KnowledgeBase::classify_unstamped_spec_op_call`] did, as the
@@ -2012,15 +2120,52 @@ impl SearchStream {
     /// The exhaustion exit of [`Self::split_first`]: the first recorded fault, else the
     /// truncation, else the end.
     fn exhausted(self) -> Result<Option<(Solution, SearchStream)>, SearchFailure> {
+        let limit = self.limit_reached();
         match self.faults.into_iter().next() {
             Some(error) => Err(SearchFailure::Faulted(SearchFault {
                 error,
                 residual: Vec::new(),
             })),
-            None if self.truncated => Err(SearchFailure::Truncated {
-                max_depth: i64::try_from(self.config.max_depth).unwrap_or(i64::MAX),
-            }),
+            None if self.truncated => Err(SearchFailure::Truncated { limit }),
             None => Ok(None),
+        }
+    }
+
+    /// WI-20261115-0WT09 — the limit a truncated search reached: its fuel where it ran out,
+    /// else its depth limit — a branch was cut, or a search below it with budgets of its own
+    /// was, by either of them (see [`SearchFailure::Truncated`]).
+    fn limit_reached(&self) -> SearchLimit {
+        if self.out_of_fuel {
+            SearchLimit::Steps {
+                max_steps: i64::try_from(self.config.max_steps).unwrap_or(i64::MAX),
+            }
+        } else {
+            SearchLimit::Depth {
+                max_depth: i64::try_from(self.config.max_depth).unwrap_or(i64::MAX),
+            }
+        }
+    }
+
+    /// WI-20261115-0WT09 — out of fuel: every open branch is abandoned and the search is
+    /// truncated at [`SearchLimit::Steps`]. The answers already yielded stand.
+    fn run_out_of_fuel(&mut self) {
+        self.out_of_fuel = true;
+        self.truncated = true;
+        self.stack.clear();
+    }
+
+    /// WI-20261115-0WT09 — the fuel a sub-search of this one may take: what is left of this
+    /// search's own. Its steps are charged back with [`Self::charge_sub_search`].
+    fn remaining_fuel(&self) -> u64 {
+        self.config.max_steps.saturating_sub(self.stats.steps)
+    }
+
+    /// WI-20261115-0WT09 — charge a finished sub-search's `steps` to this search, and stop
+    /// this one where the sub-search ran out of fuel: the fuel it ran on was this search's.
+    fn charge_sub_search(&mut self, steps: u64, out_of_fuel: bool) {
+        self.stats.steps = self.stats.steps.saturating_add(steps);
+        if out_of_fuel {
+            self.run_out_of_fuel();
         }
     }
 
@@ -2066,6 +2211,8 @@ impl SearchStream {
             undecided,
             errors: self.errors.clone(),
             faults: self.faults.clone(),
+            steps: self.stats.steps,
+            out_of_fuel: self.out_of_fuel,
         }
     }
 
@@ -2104,6 +2251,7 @@ impl SearchStream {
         }
         let mut stats = self.stats.clone();
         stats.truncated = self.truncated;
+        stats.out_of_fuel = self.out_of_fuel;
         stats.errors = self.errors.clone();
         (solutions, stats)
     }
@@ -2117,6 +2265,18 @@ impl SearchStream {
     /// Execute one step of the search. Returns `None` when the stack is
     /// empty (no more work).
     fn step(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
+        if self.stack.is_empty() {
+            return None;
+        }
+        // FUEL (WI-20261115-0WT09): the steps of the whole search, across every branch and
+        // the sub-searches it ran, against `max_steps`. Out of it, every open branch is
+        // abandoned at once and the search is incomplete — a truncation, never a
+        // refutation, and the one bound on the WORK a search does now that its depth
+        // counts nesting and not steps.
+        if self.stats.steps >= self.config.max_steps {
+            self.run_out_of_fuel();
+            return None;
+        }
         let frame = self.stack.last_mut()?;
         self.stats.steps += 1;
         match frame.state {
@@ -2268,7 +2428,11 @@ impl SearchStream {
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
         let frame = self.stack.last().unwrap();
-        let mut new_goals: Vec<FrameGoal> = goals.into_iter().map(FrameGoal::ready).collect();
+        // A SPLICE IS NO CALL (WI-20261115-0WT09): the goals that take `goals[0]`'s place — a
+        // conjunction's two operands, `<=>`'s pending equations, a goal with its arguments
+        // evaluated — stand where it stood, at its depth. Only opening a clause nests.
+        let mut new_goals: Vec<FrameGoal> =
+            goals.into_iter().map(|g| FrameGoal::ready(g, depth)).collect();
         new_goals.extend_from_slice(&frame.goals[1..]);
         let mut new_subst = frame.subst.clone();
         // WI-502 Step 2 (M7(b)) — carry `extra`'s TOP-LEVEL constraint
@@ -2317,7 +2481,6 @@ impl SearchStream {
         let f = self.stack.last_mut().unwrap();
         f.goals = new_goals;
         f.subst = new_subst;
-        f.depth = depth + 1;
         f.state = FrameState::Init {
             delay_mode: delay_mode.reset(),
         };
@@ -2423,7 +2586,10 @@ impl SearchStream {
     /// Handle a frame in `Init` state — classify the current goal.
     fn step_init(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
         let frame = self.stack.last().unwrap();
-        let depth = frame.depth;
+        // The CURRENT goal's nesting depth (WI-20261115-0WT09): the depth this step is charged
+        // at, and the one a goal it opens is placed one below. A frame with no goal left is an
+        // answer, which no limit cuts.
+        let depth = frame.goals.first().map_or(0, |g| g.depth);
         let (delay_mode, builtin_only, clauses_only) = match &frame.state {
             FrameState::Init { delay_mode } => (delay_mode.clone(), false, false),
             FrameState::BuiltinInit { delay_mode } => (delay_mode.clone(), true, false),
@@ -2533,7 +2699,7 @@ impl SearchStream {
         } else {
             delay_mode
         };
-        if let Some(step) = self.pass_over_waiting_goal(depth, &delay_mode) {
+        if let Some(step) = self.pass_over_waiting_goal(&delay_mode) {
             return step;
         }
         self.stats.goals_asked += 1;
@@ -2644,7 +2810,6 @@ impl SearchStream {
                 let drop_from = f.assumed_facts.len().saturating_sub(n);
                 f.assumed_facts.truncate(drop_from);
                 f.goals.remove(0);
-                f.depth += 1;
                 f.state = FrameState::Init {
                     delay_mode: delay_mode.reset(),
                 };
@@ -2701,7 +2866,6 @@ impl SearchStream {
             if b {
                 let f = self.stack.last_mut().unwrap();
                 f.goals.remove(0);
-                f.depth += 1;
                 f.state = FrameState::Init {
                     delay_mode: delay_mode.reset(),
                 };
@@ -2899,7 +3063,6 @@ impl SearchStream {
                         }
                         None => {
                             f.goals.remove(0);
-                            f.depth = depth + 1;
                             f.state = FrameState::Init {
                                 delay_mode: delay_mode.reset(),
                             };
@@ -2949,8 +3112,14 @@ impl SearchStream {
                     Self::resolve_binary_goal_args(kb, &goal_val, &subst)
                 {
                     let candidates = vec![
-                        Candidate::Continuation(vec![goal_a]),
-                        Candidate::Continuation(vec![goal_b]),
+                        Candidate::Continuation {
+                            goals: vec![goal_a],
+                            nesting: Nesting::Split,
+                        },
+                        Candidate::Continuation {
+                            goals: vec![goal_b],
+                            nesting: Nesting::Split,
+                        },
                     ];
                     let f = self.stack.last_mut().unwrap();
                     f.state = FrameState::ChoicePoint {
@@ -3014,7 +3183,6 @@ impl SearchStream {
                 let new_delay = delay_mode.reset();
                 let f = self.stack.last_mut().unwrap();
                 f.goals.remove(0);
-                f.depth += 1;
                 f.state = FrameState::Init {
                     delay_mode: new_delay,
                 };
@@ -3188,13 +3356,11 @@ impl SearchStream {
                     // Remove goals[0], bump depth, reset delay counter if delayed
                     let new_goals = frame.goals[1..].to_vec();
                     let new_subst = frame.subst.clone();
-                    let new_depth = depth + 1;
                     let new_delay = delay_mode.reset();
                     // Replace current frame
                     let f = self.stack.last_mut().unwrap();
                     f.goals = new_goals;
                     f.subst = new_subst;
-                    f.depth = new_depth;
                     f.state = FrameState::Init {
                         delay_mode: new_delay,
                     };
@@ -3896,13 +4062,16 @@ impl SearchStream {
         // antecedents go out of scope before the surrounding rule's remaining
         // goals run (WI-108 scoping invariant).
         let n_assumed = skolemized_antecedents.len();
+        // The consequents are OPENED for the quantifier (WI-20261115-0WT09): one deeper, and
+        // the marker that ends the assumptions' scope with them.
+        let below = Nesting::Opened.depth_below(depth);
         let mut new_goals: Vec<FrameGoal> = skolemized_consequents
             .into_iter()
-            .map(FrameGoal::ready)
+            .map(|c| FrameGoal::ready(c, below))
             .collect();
         if n_assumed > 0 {
             let marker = Self::make_pop_assumption_marker(kb, n_assumed);
-            new_goals.push(FrameGoal::ready(Value::term(marker)));
+            new_goals.push(FrameGoal::ready(Value::term(marker), below));
         }
         let frame = self.stack.last().unwrap();
         // WI-20260926-CYNPE — the tail keeps its wait states. The antecedents assumed here
@@ -3920,7 +4089,6 @@ impl SearchStream {
         self.stack.push(ResolverFrame {
             goals: new_goals,
             subst: new_subst,
-            depth: depth + 1,
             state: FrameState::Init {
                 delay_mode: new_delay,
             },
@@ -4150,7 +4318,8 @@ impl SearchStream {
             let mut new_goals: Vec<FrameGoal> = per_element
                 .into_iter()
                 .flatten()
-                .map(FrameGoal::ready)
+                // A quantifier's instances are OPENED for it (WI-20261115-0WT09): one deeper.
+                .map(|g| FrameGoal::ready(g, Nesting::Opened.depth_below(depth)))
                 .collect();
             new_goals.extend(frame.goals[1..].iter().cloned());
             let new_subst = frame.subst.clone();
@@ -4159,7 +4328,6 @@ impl SearchStream {
             self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: new_subst,
-                depth: depth + 1,
                 state: FrameState::Init {
                     delay_mode: delay_mode.reset(),
                 },
@@ -4174,7 +4342,10 @@ impl SearchStream {
             }
             let candidates: Vec<Candidate> = per_element
                 .into_iter()
-                .map(Candidate::Continuation)
+                .map(|goals| Candidate::Continuation {
+                    goals,
+                    nesting: Nesting::Opened,
+                })
                 .collect();
             let original_goal = self.stack.last().unwrap().goals[0].goal.clone();
             let f = self.stack.last_mut().unwrap();
@@ -4213,7 +4384,10 @@ impl SearchStream {
             return self.yield_sole_goal(goal, cause);
         }
         let wait = self.suspended_on_blockers(kb, &goal, cause);
-        self.rotate_first(FrameGoal { goal, wait, clause: None }, depth, next_consecutive(&delay_mode));
+        self.rotate_first(
+            FrameGoal { goal, wait, clause: None, depth },
+            next_consecutive(&delay_mode),
+        );
         Some(StepResult::Continue)
     }
 
@@ -4259,11 +4433,12 @@ impl SearchStream {
     /// ([`next_consecutive`]), so the `consecutive_delays >= goals.len()` gate in
     /// [`Self::step_init`] advances and the rotation terminates; a hard-coded `1` would pin
     /// it and spin (WI-629).
-    fn rotate_first(&mut self, goal: FrameGoal, depth: usize, new_consecutive: usize) {
+    ///
+    /// The goal keeps its own depth (WI-20261115-0WT09): a rotation is no step deeper.
+    fn rotate_first(&mut self, goal: FrameGoal, new_consecutive: usize) {
         let f = self.stack.last_mut().unwrap();
         f.goals.remove(0);
         f.goals.push(goal);
-        f.depth = depth + 1;
         f.state = FrameState::Init {
             delay_mode: DelayMode::Delayed {
                 consecutive_delays: new_consecutive,
@@ -4302,11 +4477,7 @@ impl SearchStream {
     /// otherwise the step that passes it over, exactly as a delay would rotate it — the
     /// only goal in `Normal` mode residualizes, anything else rotates with its wait
     /// unchanged and counts toward the gate.
-    fn pass_over_waiting_goal(
-        &mut self,
-        depth: usize,
-        delay_mode: &DelayMode,
-    ) -> Option<Option<StepResult>> {
+    fn pass_over_waiting_goal(&mut self, delay_mode: &DelayMode) -> Option<Option<StepResult>> {
         let frame = self.stack.last_mut().unwrap();
         let waiting = match &frame.goals[0].wait {
             Wait::Ready => false,
@@ -4324,7 +4495,7 @@ impl SearchStream {
             let cause = head.wait.cause();
             return Some(self.yield_sole_goal(head.goal, cause));
         }
-        self.rotate_first(head, depth, next_consecutive(delay_mode));
+        self.rotate_first(head, next_consecutive(delay_mode));
         Some(Some(StepResult::Continue))
     }
 
@@ -4983,8 +5154,8 @@ impl SearchStream {
             }
             _ => self.suspended_on_blockers(kb, goal_val, cause),
         };
-        let goal = FrameGoal { goal: goal_val.clone(), wait, clause: None };
-        self.rotate_first(goal, depth, next_consecutive(&delay_mode));
+        let goal = FrameGoal { goal: goal_val.clone(), wait, clause: None, depth };
+        self.rotate_first(goal, next_consecutive(&delay_mode));
         Some(StepResult::Continue)
     }
 
@@ -5054,7 +5225,6 @@ impl SearchStream {
                     super::typing::MemoryAnswer::Fails => {
                         let f = self.stack.last_mut().unwrap();
                         f.goals.remove(0);
-                        f.depth += 1;
                         f.state = FrameState::Init {
                             delay_mode: delay_mode.reset(),
                         };
@@ -5106,6 +5276,9 @@ impl SearchStream {
             let remaining_depth = self.config.max_depth.saturating_sub(depth);
             let sub_config = ResolveConfig {
                 max_depth: remaining_depth,
+                // WI-20261115-0WT09: the negation's search runs on what is left of THIS
+                // search's fuel, and its steps are charged back after the drain.
+                max_steps: self.remaining_fuel(),
                 max_solutions: 0,
                 simplify: self.config.simplify,
                 definite_only: false,
@@ -5147,6 +5320,19 @@ impl SearchStream {
                 // stream truncated would turn a decided constraint into an undecidable
                 // one. The completeness fold stays in its own arm below.
                 self.note_error(err);
+            }
+            // Its steps were this search's fuel (WI-20261115-0WT09). Out of it, this search
+            // stops too — the stack is gone, so nothing below may touch the frame — and
+            // `not(P)` is undecided, so the sub-search's faults are this search's, as in
+            // the undecided arm below: at the end a fault outranks the truncation. AFTER
+            // the fold above, which a fault recorded before the fuel ran out must not miss
+            // (`/code-review`).
+            self.charge_sub_search(v.steps, v.out_of_fuel);
+            if self.out_of_fuel {
+                for err in v.faults.iter().cloned() {
+                    ResolveError::push_deduped(&mut self.faults, err);
+                }
+                return Some(StepResult::Continue);
             }
 
             if v.definite {
@@ -5237,10 +5423,12 @@ impl SearchStream {
                     // delay path, so a hard `1` would pin the counter and a conjunction
                     // of ≥2 ground-floundering `not()`s would rotate forever without
                     // ever reaching the `consecutive_delays >= goals.len()` residual
-                    // gate in `step_init` (it would burn to the depth limit and return
-                    // NO solution — the exact verdict dishonesty WI-629 fixes).
-                    let goal = FrameGoal { goal: goal.clone(), wait, clause: None };
-                    self.rotate_first(goal, depth, next_consecutive(&delay_mode));
+                    // gate in `step_init` (it would burn the search's fuel — a rotation
+                    // is no step deeper since WI-20261115-0WT09, so the depth limit, which
+                    // it burned before, no longer stops it — and return NO solution: the
+                    // exact verdict dishonesty WI-629 fixes).
+                    let goal = FrameGoal { goal: goal.clone(), wait, clause: None, depth };
+                    self.rotate_first(goal, next_consecutive(&delay_mode));
                     return Some(StepResult::Continue);
                 }
             } else {
@@ -5251,7 +5439,6 @@ impl SearchStream {
                 let new_goals = f.goals[1..].to_vec();
                 f.goals = new_goals;
                 f.subst = subst;
-                f.depth = depth + 1;
                 f.state = FrameState::Init {
                     delay_mode: new_delay,
                 };
@@ -5484,11 +5671,11 @@ impl SearchStream {
         if let Candidate::Waiting(rid) = candidate {
             let wait = self.suspended_on_blockers(kb, &original_goal, None);
             let frame = self.stack.last().unwrap();
-            let depth = frame.depth;
+            // The goal the choice point answers keeps its depth behind the tail.
+            let depth = frame.goals[0].depth;
             self.stack.push(ResolverFrame {
                 goals: frame.goals.clone(),
                 subst: frame.subst.clone(),
-                depth,
                 state: FrameState::Init {
                     delay_mode: delay_mode.clone(),
                 },
@@ -5498,8 +5685,9 @@ impl SearchStream {
                 goal: original_goal,
                 wait,
                 clause: Some(rid),
+                depth,
             };
-            self.rotate_first(goal, depth, next_consecutive(&delay_mode));
+            self.rotate_first(goal, next_consecutive(&delay_mode));
             return Some(StepResult::Continue);
         }
 
@@ -5510,7 +5698,6 @@ impl SearchStream {
             self.stack.push(ResolverFrame {
                 goals: frame.goals.clone(),
                 subst: frame.subst.clone(),
-                depth: frame.depth,
                 state: FrameState::BuiltinInit {
                     delay_mode: delay_mode.clone(),
                 },
@@ -5523,7 +5710,6 @@ impl SearchStream {
             self.stack.push(ResolverFrame {
                 goals: frame.goals.clone(),
                 subst: frame.subst.clone(),
-                depth: frame.depth,
                 state: FrameState::ClauseInit {
                     delay_mode: delay_mode.clone(),
                 },
@@ -5536,16 +5722,16 @@ impl SearchStream {
         // new bindings to merge and no walk of the tail to perform. See
         // proposal 033 §"TermId / Value asymmetry" for why σ is omitted
         // from the variant.
-        if let Candidate::Continuation(body) = candidate {
+        if let Candidate::Continuation { goals: body, nesting } = candidate {
             let frame = self.stack.last().unwrap();
+            let below = nesting.depth_below(frame.goals[0].depth);
             let tail = &frame.goals[1..];
             let mut new_goals: Vec<FrameGoal> = Vec::with_capacity(body.len() + tail.len());
-            new_goals.extend(body.into_iter().map(FrameGoal::ready));
+            new_goals.extend(body.into_iter().map(|g| FrameGoal::ready(g, below)));
             new_goals.extend(tail.iter().cloned());
             self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: frame.subst.clone(),
-                depth: frame.depth + 1,
                 state: FrameState::Init {
                     delay_mode: delay_mode.reset(),
                 },
@@ -5561,7 +5747,7 @@ impl SearchStream {
             Candidate::ExtentRow(subst) => (None, subst),
             Candidate::Builtin => unreachable!("handled above"),
             Candidate::Clauses => unreachable!("handled above"),
-            Candidate::Continuation(_) => unreachable!("handled above"),
+            Candidate::Continuation { .. } => unreachable!("handled above"),
             Candidate::Waiting(_) => unreachable!("handled above"),
         };
 
@@ -5672,10 +5858,10 @@ impl SearchStream {
             }
             let new_delay = delay_mode.reset();
             let inherited = frame.assumed_facts.clone();
+            // A fact opens no goal: the tail keeps its own depths.
             self.stack.push(ResolverFrame {
                 goals: remaining,
                 subst: merged,
-                depth: frame.depth + 1,
                 state: FrameState::Init {
                     delay_mode: new_delay,
                 },
@@ -5776,7 +5962,10 @@ impl SearchStream {
 
             // Capture what the push still needs from `frame` before the
             // `self`-mut barrier-tagging below ends its borrow.
-            let parent_depth = frame.depth;
+            // A CLAUSE BODY IS ONE DEEPER than the goal the clause answers (WI-20261115-0WT09)
+            // — the one place a goal's depth grows, so a nesting depth bounds every chain of
+            // clause openings and charges nothing to the goals beside it (`remaining`).
+            let body_depth = frame.goals[0].depth + 1;
             let inherited = frame.assumed_facts.clone();
             let new_delay = delay_mode.reset();
 
@@ -5856,23 +6045,22 @@ impl SearchStream {
                     let baked = Self::bake_cut_term(kb, cut_sym, barrier);
                     for n in fresh_nodes {
                         if Self::cut_marker_functor(kb, &n).is_some() {
-                            new_goals.push(FrameGoal::ready(Value::term(baked)));
+                            new_goals.push(FrameGoal::ready(Value::term(baked), body_depth));
                         } else {
-                            new_goals.push(FrameGoal::ready(Value::Node(n)));
+                            new_goals.push(FrameGoal::ready(Value::Node(n), body_depth));
                         }
                     }
                 }
                 None => new_goals.extend(
                     fresh_nodes
                         .into_iter()
-                        .map(|n| FrameGoal::ready(Value::Node(n))),
+                        .map(|n| FrameGoal::ready(Value::Node(n), body_depth)),
                 ),
             }
             new_goals.extend(remaining);
             self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: merged,
-                depth: parent_depth + 1,
                 state: FrameState::Init {
                     delay_mode: new_delay,
                 },
@@ -6254,9 +6442,9 @@ impl KnowledgeBase {
         // popped before any solution is yielded.
         let query_goals = goals.clone();
         let initial_frame = ResolverFrame {
-            goals: goals.into_iter().map(FrameGoal::ready).collect(),
+            // The query's goals are at depth 0: no clause stands between them and the query.
+            goals: goals.into_iter().map(|g| FrameGoal::ready(g, 0)).collect(),
             subst: Substitution::new(),
-            depth: 0,
             state: FrameState::Init {
                 delay_mode: DelayMode::Normal,
             },
@@ -6268,6 +6456,7 @@ impl KnowledgeBase {
             seen_answers: HashSet::new(),
             config: ResolveConfig {
                 max_depth: config.max_depth,
+                max_steps: config.max_steps,
                 max_solutions: config.max_solutions,
                 simplify: config.simplify,
                 // WI-519: thread the residual-honesty mode into the stream's
@@ -6290,6 +6479,7 @@ impl KnowledgeBase {
             routing_read_cache: HashMap::new(),
             read_layout_cache: HashMap::new(),
             truncated: false,
+            out_of_fuel: false,
             errors: Vec::new(),
             faults: Vec::new(),
             answers_yielded: 0,
@@ -9634,10 +9824,15 @@ impl KnowledgeBase {
         pred: Symbol,
         args: Vec<Value>,
     ) -> PredicateProof {
-        // Generous but bounded: the relational instances consume one depth unit
-        // per goal along a branch (Set: O(n²) for n elements), so the outer
-        // default of 100 would truncate at ~10 elements. Truncation degrades to
-        // UNDECIDED, never a wrong verdict. WI-628: production uses the fixed
+        // Generous but bounded. Sized when the depth counted every step along a branch
+        // (the relational instances took one per goal — Set: O(n²) for n elements — so
+        // the outer default of 100 truncated at ~10 elements). Since WI-20261115-0WT09 the
+        // depth counts nesting, so the same number is the FUEL too: the steps this budget
+        // stood for, so a carrier `eq` that does not terminate costs a comparison what it
+        // did, not the default fuel's hundred times as much (`/code-review`). The fuel is
+        // this sub-proof's own, not charged to the search that asked: it runs on a `&mut
+        // KnowledgeBase` with no stream to charge, as the depth always had a budget of its
+        // own. Truncation degrades to UNDECIDED, never a wrong verdict. WI-628: production uses the fixed
         // `DEFAULT_SEM_EQ_SUB_DEPTH`; a `cfg(test)` field lowers it so a unit test
         // can force truncation cheaply (no production mutable knob).
         #[cfg(not(test))]
@@ -9647,6 +9842,7 @@ impl KnowledgeBase {
         let goal = self.make_goal_value(pred, args);
         let config = ResolveConfig {
             max_depth,
+            max_steps: max_depth as u64,
             // An EXISTENCE question (WI-FFPGD): `drain_verdict` stops at the first
             // DEFINITE solution and dedup never touches a residual yield, so it
             // cannot change any of the three verdicts — only cost fingerprints.
@@ -15326,7 +15522,10 @@ impl KnowledgeBase {
             // Term arm at re-entry.
             let mut goals = vec![unify_g, result_g];
             goals.extend(hoists);
-            cands.push(Candidate::Continuation(goals));
+            cands.push(Candidate::Continuation {
+                goals,
+                nesting: Nesting::Opened,
+            });
         }
         Some(cands)
     }

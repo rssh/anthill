@@ -28,10 +28,16 @@ private enum FrameState:
 
 // ── Frame ───────────────────────────────────────────────────────
 
+/** One goal of a frame's resolvent with its NESTING depth (WI-20261115-0WT09): a goal opened
+  * from a clause's body is one deeper than the goal the clause answered, and every other goal
+  * keeps its own — "depth is depth", rustland's `FrameGoal::depth`. So the steps one goal's
+  * proof takes are never charged to its siblings; the work a search does is the fuel,
+  * `ResolveConfig.maxSteps`. */
+private final case class FrameGoal(goal: TermId, depth: Int)
+
 private class Frame(
-  var goals: ArrayBuffer[TermId],
+  var goals: ArrayBuffer[FrameGoal],
   var subst: Substitution,
-  var depth: Int,
   var state: FrameState
 )
 
@@ -54,7 +60,16 @@ private enum StepResult:
   *
   * `actualWalks` is the strict subset where σ was non-empty and
   * `goals(0)` was actually walked + memoized. */
-case class ResolveStats(steps: Long, goalSelections: Long, actualWalks: Long)
+case class ResolveStats(
+  steps: Long,
+  goalSelections: Long,
+  actualWalks: Long,
+  /** A goal nested past `maxDepth` was not asked, or the fuel ran out: the search is
+    * INCOMPLETE (WI-20261115-0WT09). */
+  truncated: Boolean = false,
+  /** The search took `maxSteps` steps, its fuel, and stopped (implies `truncated`). */
+  outOfFuel: Boolean = false
+)
 
 // ── SearchStream ────────────────────────────────────────────────
 
@@ -69,10 +84,19 @@ class SearchStream private (
   private var stepsCount_ : Long = 0L
   private var goalSelections_ : Long = 0L
   private var actualWalks_ : Long = 0L
+  private var truncated_ : Boolean = false
+  private var outOfFuel_ : Boolean = false
 
   /** Telemetry snapshot (see [[ResolveStats]]). Returns an immutable
     * value; callers cannot mutate the underlying counters. */
-  def stats: ResolveStats = ResolveStats(stepsCount_, goalSelections_, actualWalks_)
+  def stats: ResolveStats =
+    ResolveStats(stepsCount_, goalSelections_, actualWalks_, truncated_, outOfFuel_)
+
+  /** WI-20261115-0WT09 — out of fuel: every open branch is abandoned, the search truncated. */
+  private def runOutOfFuel(): Unit =
+    outOfFuel_ = true
+    truncated_ = true
+    stack.clear()
 
   /** Yield the next solution, returning continuation. */
   def splitFirst(kb: KnowledgeBase): Option[(Solution, SearchStream)] =
@@ -109,6 +133,11 @@ class SearchStream private (
 
   private def step(kb: KnowledgeBase): Option[StepResult] =
     if stack.isEmpty then return None
+    // FUEL (WI-20261115-0WT09): the steps of the whole search, against `maxSteps`. Out of
+    // it, every open branch is abandoned: a truncation, never a refutation.
+    if stepsCount_ >= config.maxSteps then
+      runOutOfFuel()
+      return None
     val frame = stack.last
     stepsCount_ += 1
     frame.state match
@@ -117,13 +146,17 @@ class SearchStream private (
 
   private def stepInit(kb: KnowledgeBase): Option[StepResult] =
     val frame = stack.last
-    val depth = frame.depth
+    // The CURRENT goal's nesting depth (WI-20261115-0WT09); a frame with no goal left is an
+    // answer, which no limit cuts.
+    val depth = if frame.goals.nonEmpty then frame.goals(0).depth else 0
     val delayMode = frame.state match
       case FrameState.Init(dm) => dm
       case _ => return Some(StepResult.Continue) // unreachable
 
-    // 1. Depth limit
+    // 1. Depth limit: a goal nested past `maxDepth` is not asked, and the search is
+    // incomplete (recorded on the stats, as rustland's `truncated`).
     if depth > config.maxDepth then
+      truncated_ = true
       stack.remove(stack.length - 1)
       return Some(StepResult.Continue)
 
@@ -133,7 +166,7 @@ class SearchStream private (
     // reads the same (its answer dedup and `definite_only` tell the two apart).
     delayMode match
       case DelayMode.Delayed(cd) if frame.goals.nonEmpty && cd >= frame.goals.length =>
-        val sol = Solution(frame.subst.snapshot(), frame.goals.toIndexedSeq)
+        val sol = Solution(frame.subst.snapshot(), frame.goals.map(_.goal).toIndexedSeq)
         stack.remove(stack.length - 1)
         return Some(StepResult.YieldSolution(sol))
       case _ =>
@@ -154,11 +187,11 @@ class SearchStream private (
     // could change anything anyway).
     goalSelections_ += 1
     val goal =
-      if frame.subst.isEmpty then frame.goals(0)
+      if frame.subst.isEmpty then frame.goals(0).goal
       else
         actualWalks_ += 1
-        val walked = kb.applySubst(frame.goals(0), frame.subst)
-        frame.goals(0) = walked
+        val walked = kb.applySubst(frame.goals(0).goal, frame.subst)
+        frame.goals(0) = frame.goals(0).copy(goal = walked)
         walked
 
     // NARC7 / §5.3: boolean goals are searches at every depth, including NAF and
@@ -168,7 +201,6 @@ class SearchStream private (
       case Term.Const(Literal.BoolLit(value)) =>
         if value then
           frame.goals.remove(0)
-          frame.depth = depth + 1
           frame.state = FrameState.Init(delayMode.reset)
         else stack.remove(stack.length - 1)
         return Some(StepResult.Continue)
@@ -188,7 +220,6 @@ class SearchStream private (
             val newGoals = ArrayBuffer.from(frame.goals.drop(1))
             val newDelay = delayMode.reset
             frame.goals = newGoals
-            frame.depth = depth + 1
             frame.state = FrameState.Init(newDelay)
             return Some(StepResult.Continue)
 
@@ -197,7 +228,6 @@ class SearchStream private (
             frame.subst.bindCompressed(extra.bindings, kb.terms)
             val newDelay = delayMode.reset
             frame.goals = newGoals
-            frame.depth = depth + 1
             frame.state = FrameState.Init(newDelay)
             return Some(StepResult.Continue)
 
@@ -249,11 +279,12 @@ class SearchStream private (
       // [WI-172] No eager applySubst-each. Bindings from this match
       // enter newSubst via bindCompressed above; remaining goals are
       // lazily walked at selection time in stepInit.
+      // A fact opens no goal: the tail keeps its own depths.
       val newGoals = ArrayBuffer.from(frame.goals.drop(1))
 
       val newDelay = cp.delayMode.reset
 
-      stack += Frame(newGoals, newSubst, frame.depth + 1, FrameState.Init(newDelay))
+      stack += Frame(newGoals, newSubst, FrameState.Init(newDelay))
     else
       // Rule with body (or a bodyless arity>0 rule) — open its DeBruijn vars.
       val (freshBody, answerLinks) = kb.withFreshVars(rid, treeSubst)
@@ -274,11 +305,15 @@ class SearchStream private (
       // concretised through withFreshVars; caller-side bindings flow
       // into newSubst via bindCompressed above; remaining goals walk
       // lazily in stepInit.
-      val newGoals = ArrayBuffer.from(freshBody) ++= frame.goals.drop(1)
+      // A CLAUSE BODY IS ONE DEEPER than the goal the clause answers (WI-20261115-0WT09) —
+      // the one place a goal's depth grows.
+      val bodyDepth = frame.goals(0).depth + 1
+      val newGoals =
+        ArrayBuffer.from(freshBody.map(FrameGoal(_, bodyDepth))) ++= frame.goals.drop(1)
 
       val newDelay = cp.delayMode.reset
 
-      stack += Frame(newGoals, newSubst, frame.depth + 1, FrameState.Init(newDelay))
+      stack += Frame(newGoals, newSubst, FrameState.Init(newDelay))
 
     Some(StepResult.Continue)
 
@@ -294,18 +329,18 @@ class SearchStream private (
       case fn: Term.Fn[TermId] if fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
         val tail = frame.goals.drop(1)
         val nextState = FrameState.Init(delayMode.reset)
+        // A SPLIT IS NO CALL (WI-20261115-0WT09): both operands stand at the goal's depth.
         if choice then
           // LIFO: retain the right continuation below the left one so DFS exhausts
           // the left branch (including its tail) before trying the right branch.
           val leftSubst = frame.subst.snapshot()
-          frame.goals = ArrayBuffer(fn.posArgs(1)) ++= tail
-          frame.depth = depth + 1
+          frame.goals = ArrayBuffer(FrameGoal(fn.posArgs(1), depth)) ++= tail
           frame.state = nextState
-          stack += Frame(ArrayBuffer(fn.posArgs(0)) ++= tail,
-            leftSubst, depth + 1, nextState)
+          stack += Frame(ArrayBuffer(FrameGoal(fn.posArgs(0), depth)) ++= tail,
+            leftSubst, nextState)
         else
-          frame.goals = ArrayBuffer(fn.posArgs(0), fn.posArgs(1)) ++= tail
-          frame.depth = depth + 1
+          frame.goals =
+            ArrayBuffer(FrameGoal(fn.posArgs(0), depth), FrameGoal(fn.posArgs(1), depth)) ++= tail
           frame.state = nextState
       case _ =>
         throw IllegalArgumentException("binary resolver primitive requires exactly two positional goals")
@@ -331,9 +366,27 @@ class SearchStream private (
       case GroundCheck.HasVar =>
         handleDelay(frame, goal, depth, delayMode)
       case GroundCheck.Ground =>
-        // Run sub-resolution
-        val subStream = SearchStream.create(kb, ArrayBuffer(reified), Substitution(), config)
+        // Run sub-resolution, on what is left of this search's depth below the goal and of
+        // its fuel (WI-20261115-0WT09, as rustland's `step_naf`), its steps charged back.
+        val subConfig = config.copy(
+          maxDepth = math.max(0, config.maxDepth - depth),
+          maxSteps = math.max(0L, config.maxSteps - stepsCount_)
+        )
+        val subStream = SearchStream.create(kb, ArrayBuffer(reified), Substitution(), subConfig)
         val hasSolution = subStream.splitFirst(kb).isDefined
+        stepsCount_ += subStream.stats.steps
+        if subStream.stats.outOfFuel then
+          // Its fuel was this search's: this search stops too.
+          runOutOfFuel()
+          return Some(StepResult.Continue)
+        if !hasSolution && subStream.stats.truncated then
+          // A CUT SEARCH PROVES NOTHING (rustland's WI-628): `P`'s search was cut at its depth
+          // limit, so its empty result is no refutation and `not(P)` is UNDECIDED — it waits
+          // and residualizes, and this search is incomplete. Before, `not(P)` succeeded here;
+          // the sub-search's budget is `maxDepth - depth` since WI-20261115-0WT09, which made
+          // the cut likelier (`/code-review`).
+          truncated_ = true
+          return handleDelay(frame, goal, depth, delayMode)
         if hasSolution then
           // Inner goal succeeded → not(Goal) fails
           stack.remove(stack.length - 1)
@@ -345,7 +398,6 @@ class SearchStream private (
             case DelayMode.Normal => DelayMode.Normal
             case DelayMode.Delayed(_) => DelayMode.Delayed(0)
           frame.goals = newGoals
-          frame.depth = depth + 1
           frame.state = FrameState.Init(newDelay)
           Some(StepResult.Continue)
 
@@ -359,17 +411,16 @@ class SearchStream private (
           stack.remove(stack.length - 1)
           Some(StepResult.YieldSolution(sol))
         else
+          // The goal keeps its own depth behind the tail: a rotation is no step deeper.
           val rotated = ArrayBuffer.from(frame.goals.drop(1))
-          rotated += goal
+          rotated += FrameGoal(goal, depth)
           frame.goals = rotated
-          frame.depth = depth + 1
           frame.state = FrameState.Init(DelayMode.Delayed(1))
           Some(StepResult.Continue)
       case DelayMode.Delayed(cd) =>
         val rotated = ArrayBuffer.from(frame.goals.drop(1))
-        rotated += goal
+        rotated += FrameGoal(goal, depth)
         frame.goals = rotated
-        frame.depth = depth + 1
         frame.state = FrameState.Init(DelayMode.Delayed(cd + 1))
         Some(StepResult.Continue)
 
@@ -381,7 +432,8 @@ object SearchStream:
     config: ResolveConfig = ResolveConfig()
   ): SearchStream =
     val stack = ArrayBuffer.empty[Frame]
-    stack += Frame(goals, subst, 0, FrameState.Init(DelayMode.Normal))
+    // The query's goals are at depth 0.
+    stack += Frame(goals.map(FrameGoal(_, 0)), subst, FrameState.Init(DelayMode.Normal))
     SearchStream(stack, config)
 
   /** Convenience: resolve a single goal pattern against the KB. */

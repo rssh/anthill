@@ -200,13 +200,17 @@ fn match_conflicts_with_resolve() {
 /// A depth-truncated search abandoned branches, so its "no solutions" is
 /// UNDECIDED — without the caveat a correct rule reads as refuted, the exact
 /// silent-wrong-answer class WI-767 was filed about, on the depth axis.
+///
+/// `--max-depth 0` since WI-20261115-0WT09, which made the depth count NESTING: `loc`'s
+/// body is one deeper than the query, so depth 1 reaches it and answers `"a"` (measured),
+/// where it counted the steps before and two were needed.
 #[test]
 fn depth_truncated_search_is_flagged_undecided() {
     let fx = fixture();
     let out = anthill(&[
         "query",
         "--max-depth",
-        "1",
+        "0",
         "-p",
         fx.to_str().unwrap(),
         "probe.wi767.loc(?n)",
@@ -214,7 +218,7 @@ fn depth_truncated_search_is_flagged_undecided() {
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
     assert!(
         out.stdout.contains("no solutions"),
-        "depth 1 cannot reach the rule body; got stdout:\n{}",
+        "depth 0 cannot reach the rule body, one deeper than the query; got stdout:\n{}",
         out.stdout
     );
     assert!(

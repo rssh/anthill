@@ -92,6 +92,8 @@ mod wi_drgcp_query_answer_spelling_test;
 
 #[path = "include/wi767_query_resolve_default_test.rs"]
 mod wi767_query_resolve_default_test;
+#[path = "include/wi_0wt09_max_steps_test.rs"]
+mod wi_0wt09_max_steps_test;
 
 #[path = "include/wi781_policy_dispatch_test.rs"]
 mod wi781_policy_dispatch_test;

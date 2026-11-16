@@ -709,9 +709,17 @@ impl SearchStreamAdapter {
                     .at
                     .map(|occ| ReflectNodeOccurrence::new(Value::Node(occ))),
             },
-            SearchFailure::Truncated { max_depth } => {
-                ResolveStreamFailure::SearchTruncated { max_depth }
-            }
+            // WI-20261115-0WT09 — the payload names the limit that cut the search.
+            SearchFailure::Truncated { limit } => ResolveStreamFailure::SearchTruncated {
+                limit: match limit {
+                    anthill_core::kb::resolve::SearchLimit::Depth { max_depth } => {
+                        SearchLimit::Depth { max_depth }
+                    }
+                    anthill_core::kb::resolve::SearchLimit::Steps { max_steps } => {
+                        SearchLimit::Steps { max_steps }
+                    }
+                },
+            },
         }
     }
 }
@@ -1645,8 +1653,9 @@ end
     fn is_truncated<T: std::fmt::Debug>(r: &Result<T, ResolveStreamFailure>) -> bool {
         matches!(
             r,
-            Err(ResolveStreamFailure::SearchTruncated { max_depth })
-                if *max_depth == ResolveConfig::default().max_depth as i64
+            Err(ResolveStreamFailure::SearchTruncated {
+                limit: SearchLimit::Depth { max_depth },
+            }) if *max_depth == ResolveConfig::default().max_depth as i64
         )
     }
 

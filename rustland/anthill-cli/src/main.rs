@@ -312,11 +312,20 @@ struct QueryArgs {
     #[arg(long = "match", conflicts_with = "resolve")]
     match_heads: bool,
 
-    /// Maximum resolution depth (default 100). Resolution-only, so an
+    /// The deepest a goal may be NESTED (default 100): a goal opened from a
+    /// clause's body is one deeper than the goal the clause answered, and every
+    /// other goal keeps its own depth (WI-20261115-0WT09). Resolution-only, so an
     /// explicit value is refused — not silently dropped — under --match
     /// or a listing mode; `Option` keeps "user passed it" detectable.
     #[arg(long)]
     max_depth: Option<usize>,
+
+    /// FUEL: the most steps the whole search may take, across every branch
+    /// (WI-20261115-0WT09; default `anthill_core::kb::resolve::DEFAULT_MAX_STEPS`).
+    /// Out of it the search stops, and a missing answer is UNDECIDED. Resolution-only,
+    /// refused where --max-depth is.
+    #[arg(long)]
+    max_steps: Option<u64>,
 
     /// Answer from the given paths ALONE, without the embedded stdlib. WI-1047:
     /// the stdlib is included by DEFAULT (as it already was for `check`) — this
@@ -1519,11 +1528,16 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
         eprintln!("error: --match/--resolve apply only to --mode pattern");
         return Err(1);
     }
-    if (listing_mode || args.match_heads) && args.max_depth.is_some() {
-        eprintln!(
-            "error: --max-depth applies only to resolution (--mode pattern, without --match)"
-        );
-        return Err(1);
+    // The resolution budgets, refused together where nothing resolves (WI-20261115-0WT09
+    // added the fuel beside the depth).
+    for (flag, given) in [
+        ("--max-depth", args.max_depth.is_some()),
+        ("--max-steps", args.max_steps.is_some()),
+    ] {
+        if (listing_mode || args.match_heads) && given {
+            eprintln!("error: {flag} applies only to resolution (--mode pattern, without --match)");
+            return Err(1);
+        }
     }
 
     let mut kb = load_kb(&args.paths, false, !args.no_stdlib)?;
@@ -1671,6 +1685,9 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         let cap = args.max_results;
                         let config = ResolveConfig {
                             max_depth: args.max_depth.unwrap_or(DEFAULT_QUERY_DEPTH),
+                            max_steps: args
+                                .max_steps
+                                .unwrap_or(anthill_core::kb::resolve::DEFAULT_MAX_STEPS),
                             // One PAST the display cap: a solution beyond `cap`
                             // proves the cap cut the answer set, so the summary
                             // can say so rather than pass a capped count off as
@@ -1734,6 +1751,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                             qt,
                             cap,
                             stats.truncated,
+                            stats.out_of_fuel,
                             !stats.errors.is_empty(),
                         );
                     }
@@ -2387,6 +2405,7 @@ fn print_solutions(
     query_term: &QueryPattern,
     max: usize,
     truncated: bool,
+    out_of_fuel: bool,
     faulted: bool,
 ) {
     // A depth-truncated search abandoned branches, so an absent answer is
@@ -2415,8 +2434,14 @@ fn print_solutions(
             // `truncated` bit for two causes, so neither can be ruled out here.
             println!(
                 "note: the search is INCOMPLETE — a goal could not be evaluated (see \
-                 the warning(s) on stderr), and/or a branch was cut at --max-depth; a \
-                 missing answer is UNDECIDED, not refuted"
+                 the warning(s) on stderr), and/or a branch was cut at {}; a \
+                 missing answer is UNDECIDED, not refuted",
+                if out_of_fuel { "--max-steps" } else { "--max-depth" }
+            );
+        } else if out_of_fuel {
+            // WI-20261115-0WT09 — the FUEL ran out: the search stopped with branches open.
+            println!(
+                "note: search stopped at --max-steps; a missing answer is UNDECIDED, not refuted"
             );
         } else {
             println!(

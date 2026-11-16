@@ -85,6 +85,8 @@ fn main() {
             // WI-20260911-8Y5BE — the payload `KB.execute` and its stream raise
             // (`E = Error[ResolveStreamFailure]`). Same closure reason as `LoadFailed`.
             "ResolveStreamFailure".into(),
+            // WI-20261115-0WT09 — the limit `search_truncated` names. Same closure reason.
+            "SearchLimit".into(),
             // proposal 053: the write-policy enum the persistence `Store`
             // algebra's `monotonicity` op returns (store.anthill imports it).
             "Monotonicity".into(),

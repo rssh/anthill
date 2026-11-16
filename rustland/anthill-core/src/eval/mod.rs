@@ -2647,7 +2647,7 @@ impl Interpreter {
             SearchFailure::Faulted(fault) => {
                 self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
             }
-            SearchFailure::Truncated { max_depth } => self.raise_search_truncated(max_depth),
+            SearchFailure::Truncated { limit } => self.raise_search_truncated(limit),
         }
     }
 

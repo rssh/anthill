@@ -20,7 +20,7 @@
 -- to the end and so diverge on a maybe-infinite carrier (WI-589 / proposal
 -- library/003 Phase C; `stream.anthill` makes the same cut for `Stream` itself).
 -- Providing `collect` IS the finiteness guarantee (`finite_collection.anthill`), and
--- a relation cannot honor it: the resolver's depth cap makes a drain TERMINATE, but
+-- a relation cannot honor it: the resolver's limits make a drain TERMINATE, but
 -- "terminates" is not "can be fully consumed" — a truncated drain ends in a raise
 -- (`search_truncated`, below), not in the whole answer.
 --
@@ -40,8 +40,9 @@
 -- `Error[ResolveStreamFailure]`'s `evaluation_failure`, the same payload `KB.execute`
 -- raises — "never decided" would misreport a goal that was never evaluated.
 --
--- A search cut at its depth limit raises where the stream would end, as
--- `search_truncated(max_depth)`, after the rows found before the cut: an ordinary end
+-- A search cut by one of its limits raises where the stream would end, as
+-- `search_truncated(limit)` naming it — `depth(max_depth)` or `steps(max_steps)` — after the
+-- rows found before the cut: an ordinary end
 -- would say those rows were all there are, and `isEmpty` would read a cut search as having
 -- no member. A consumer that stops before the end (`takeN(5)`) never meets it.
 --
@@ -80,7 +81,7 @@
 --   to 1-collapse at one column to the element type, which erased the relation's ARITY
 --   and cost `join` / `fix` / `project` the ability to name a single column at all.)
 -- E = the search access-effect row (⊇ {Error}): running a query is NOT pure —
---   search can raise (a depth limit, or an `Error.raise` from an operation body
+--   search can raise (a depth or step limit, or an `Error.raise` from an operation body
 --   evaluated during resolution), exactly `execute`'s `effects Error`. The provides
 --   edge threads it so every inherited Stream op types at {Error}, not {}.
 sort anthill.prelude.Relation
