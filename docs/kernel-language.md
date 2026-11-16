@@ -3514,7 +3514,9 @@ checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
   over an `Int64` result, `effects { Boom :- eq(c, 1) }` over `c: Color`. So is a goal there
   calling a spec's member: `requires Pred.ok(x)` over `x: Leaf` is the call of `Leaf`'s `ok`,
   and over an `x` whose type provides no `Pred` it is refused. A comparison of any two values
-  is structural equality, `===`.
+  is structural equality, `===`. A proof of a guard, a precondition or a contract reads no
+  dictionary from the values: where a call's dictionaries were not decided by the typer, the
+  proof is undecided.
 
   **An unsatisfied precondition does not suppress the same call's other verdicts**
   (WI-20260830-JM7A8). A precondition is proved from the KB; the call's effects are read
