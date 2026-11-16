@@ -1230,10 +1230,11 @@ pub enum TypeError {
         /// suffix (the WI-1049 shape the declared-effects error already uses).
         kind: PreconditionFailure,
     },
-    /// A comparison of a contract or an effect guard (`=`, `eq`, `neq`) that does not type in
-    /// the operation's signature: a comparison is a call of its carrier's member, and `cause`
-    /// is why this one has none (`eq(c, 1)` over `c: Color`). Structural equality, which
-    /// compares any two values, is written `===`.
+    /// A comparison of a contract or an effect guard (`=`, `eq`, `neq`), or a goal there of a
+    /// body-less spec member (`Pred.ok(x)`), that does not type in the operation's signature: a
+    /// comparison is a call of its carrier's member, and `cause` is why this one has none
+    /// (`eq(c, 1)` over `c: Color`, `Pred.ok(x)` over an `x` whose type provides no `Pred`).
+    /// Structural equality, which compares any two values, is written `===`.
     IllTypedComparison {
         span: Option<Span>,
         op: Symbol,
@@ -1279,6 +1280,20 @@ impl ContractPart {
 /// The repair [`TypeError::IllTypedComparison`] names: what `cause` refuses, then the
 /// structural spelling.
 fn ill_typed_comparison_text(kb: &KnowledgeBase, comparison: &Value, cause: &TypeError) -> (String, String) {
+    // A goal of a spec's member: what its call needs, and why it has none.
+    let functor = match comparison.head(kb) {
+        ViewHead::Functor { functor, .. } => Some(functor),
+        _ => None,
+    };
+    if functor.is_some_and(|f| !is_equality_comparison(kb, f)) {
+        return (
+            format!(
+                "`{}` to call a member its arguments' types provide",
+                format_precondition_clause(kb, comparison)
+            ),
+            cause.format(kb),
+        );
+    }
     let why = match cause {
         // The operand that set the comparison's type, then the one that does not fit it.
         TypeError::TypeMismatch { expected, actual, .. } => {

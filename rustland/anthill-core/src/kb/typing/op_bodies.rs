@@ -1192,7 +1192,7 @@ fn type_contract_comparisons(
         errors.extend(refused.into_iter().map(|(comparison, cause)| match cause {
             // A field projection that names nothing is refused as its own error.
             Refusal::Projection(e) => e,
-            Refusal::Comparison(e) => TypeError::IllTypedComparison {
+            Refusal::Comparison(e) | Refusal::Call(e) => TypeError::IllTypedComparison {
                 span: e.span(kb),
                 op: op_sym,
                 part,
@@ -1210,12 +1210,15 @@ fn type_contract_comparisons(
     }
 }
 
-/// Why a contract comparison is refused ([`type_conjunct_comparisons`]).
+/// Why a contract comparison or a contract's goal of a spec member is refused
+/// ([`type_conjunct_comparisons`]).
 enum Refusal {
     /// A field projection in it names nothing.
     Projection(TypeError),
     /// The comparison does not type.
     Comparison(TypeError),
+    /// The goal of a spec's member does not type: no provider at its type, or two.
+    Call(TypeError),
 }
 
 /// Type each comparison of the contract conjunct `conj` ([`type_contract_comparisons`]), put the
@@ -1230,39 +1233,47 @@ fn type_conjunct_comparisons(
     refused: &mut Vec<(Value, Refusal)>,
 ) {
     let occ = crate::kb::node_occurrence::value_as_occurrence(kb, conj);
-    let mut comparisons = Vec::new();
+    // Each comparison, and each goal calling a body-less spec member (`Pred.ok(x)`, its twin
+    // `Pred.ok(x, true)`, `Desc.describe(x, 3)`), the walk reaches through the goal's
+    // connectives; a call inside a comparison's operand is the comparison's to type.
+    let mut calls: Vec<(Rc<NodeOccurrence>, bool)> = Vec::new();
     let mut stack = vec![Rc::clone(&occ)];
     while let Some(node) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
-        if let Some((functor, _, _)) = expr_call_parts(expr) {
+        if let Some((functor, pos, named)) = expr_call_parts(expr) {
             if is_equality_comparison(kb, functor) {
-                comparisons.push(Rc::clone(&node));
+                calls.push((Rc::clone(&node), true));
+                continue;
+            }
+            if is_contract_member_goal(kb, functor, pos.len() + named.len()) {
+                calls.push((Rc::clone(&node), false));
                 continue;
             }
         }
         crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
     }
     let mut kept = false;
-    for cmp in comparisons {
-        let copy = match typable_comparison(kb, &cmp, site) {
+    for (call, comparison) in calls {
+        let copy = match typable_comparison(kb, &call, site) {
             Ok(copy) => copy,
             Err(e) => {
-                refused.push((Value::Node(Rc::clone(&cmp)), Refusal::Projection(e)));
+                refused.push((Value::Node(Rc::clone(&call)), Refusal::Projection(e)));
                 continue;
             }
         };
         match type_check_node(kb, cenv, &copy, None) {
             Ok(_) => {
-                let functor = copy.as_expr().and_then(expr_call_parts).map(|(f, _, _)| f);
+                let written = call.as_expr().and_then(expr_call_parts).map(|(f, p, n)| (f, p.len() + n.len()));
                 let class = copy
                     .call_class()
-                    .filter(|class| functor.is_some_and(|f| goal_reads_comparison_member(kb, f, class)));
+                    .filter(|class| written.is_some_and(|(f, arity)| goal_reads_member(kb, f, arity, class)));
                 if let Some(class) = class {
-                    cmp.set_classification(class);
+                    call.set_classification(class);
                     kept = true;
                 }
             }
-            Err(e) => refused.push((Value::Node(Rc::clone(&cmp)), Refusal::Comparison(e))),
+            Err(e) if comparison => refused.push((Value::Node(Rc::clone(&call)), Refusal::Comparison(e))),
+            Err(e) => refused.push((Value::Node(Rc::clone(&call)), Refusal::Call(e))),
         }
     }
     // The conjunct as loaded is a term, which carries no member: its typed twin is kept
@@ -1328,20 +1339,30 @@ fn typable_comparison(
             node.owner,
         ))
     }
-    // A comparison written with its result column (`neq(x, 1, true)`, the relational form a
-    // goal may take) is typed as the call of its two operands; the column is its `Bool`.
+    // A comparison or a member's goal written with its result column (`neq(x, 1, true)`,
+    // `Pred.ok(x, true)`, the relational form a goal may take) is typed as the call of its
+    // arguments before the column; the column is its `Bool`.
     let Some(Expr::Apply {
         functor, pos_args, named_args, ..
     }) = cmp.as_expr()
     else {
         return copy(kb, cmp, site, field_access);
     };
-    if pos_args.len() == 3 && named_args.is_empty() {
+    let declared = kb
+        .op_record(*functor)
+        .and_then(|r| r.signature.as_ref())
+        .map(|sig| sig.params.len());
+    let result_column = if is_equality_comparison(kb, *functor) {
+        pos_args.len() == 3
+    } else {
+        declared.is_some_and(|n| pos_args.len() == n + 1)
+    };
+    if result_column && named_args.is_empty() {
         let operands = NodeOccurrence::new_expr(
             Expr::Apply {
                 recv_type: None,
                 functor: *functor,
-                pos_args: pos_args[..2].to_vec(),
+                pos_args: pos_args[..pos_args.len() - 1].to_vec(),
                 named_args: Vec::new(),
                 type_args: Vec::new(),
             },

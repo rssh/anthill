@@ -1779,6 +1779,25 @@ pub(super) fn goal_reads_comparison_member(kb: &KnowledgeBase, op: Symbol, class
     is_semantic_equality(kb, op) || (kb.is_neq_op(op) && class.enters_spec_body_through_dictionary())
 }
 
+/// Is a goal of `op` with `arity` arguments one a contract clause or an effect guard writes as
+/// the call of a body-less spec member — `requires Pred.ok(x)`, `effects { Boom :- Pred.ok(x)
+/// }`, `requires Desc.describe(x, 3)` — read through the `Bool` view
+/// ([`KnowledgeBase::body_less_bool_relation`]) or the result-column view
+/// ([`KnowledgeBase::body_less_relation_arity`])?
+pub(super) fn is_contract_member_goal(kb: &KnowledgeBase, op: Symbol, arity: usize) -> bool {
+    !is_equality_comparison(kb, op)
+        && (kb.body_less_bool_relation(op) || kb.body_less_relation_arity(op).is_some_and(|n| arity == n + 1))
+}
+
+/// Does a goal of `op` with `arity` arguments the typer classified `class` keep the class when a
+/// proof reads it: a comparison's member ([`goal_reads_comparison_member`]), or the member a
+/// contract's goal of a body-less spec member is pinned to ([`is_contract_member_goal`]), which
+/// the resolver's views read off the pin.
+pub(super) fn goal_reads_member(kb: &KnowledgeBase, op: Symbol, arity: usize, class: &CallClass) -> bool {
+    goal_reads_comparison_member(kb, op, class)
+        || (is_contract_member_goal(kb, op, arity) && matches!(class, CallClass::PinNow { .. }))
+}
+
 /// Is a call of `functor` at the type `ty` `=` at a tuple, whose equality is its components'
 /// (kernel-language §8.3)? It owes no instance at the tuple, which carries no provision.
 pub(super) fn equality_at_a_tuple(kb: &KnowledgeBase, functor: Symbol, ty: &Value) -> bool {

@@ -1542,8 +1542,8 @@ pub(super) fn precondition_proved(
 }
 
 /// A contract clause's conjunct `conj` with `sigma` substituted, as the goal a proof asks: an
-/// occurrence whose comparisons carry the members the typer gave the clause's own
-/// (`type_contract_comparisons`), the substitution leaving the clause's shape and replacing
+/// occurrence whose comparisons and goals of a spec's member carry the members the typer gave
+/// the clause's own (`type_contract_comparisons`), the substitution leaving the clause's shape and replacing
 /// only what its parameters and `result` stood for.
 pub(crate) fn clause_goal(
     kb: &mut KnowledgeBase,
@@ -1566,10 +1566,10 @@ pub(crate) fn clause_goal(
     }
 }
 
-/// Each `eq` and `neq` of `to` takes the member the typer decided at its twin in `from`, where a
-/// goal reads it ([`goal_reads_comparison_member`]) — the same tree with some leaves replaced or
-/// lowered: walked pairwise while the two agree on a call's functor and arity, stopping where
-/// they part.
+/// Each `eq` and `neq` of `to`, and each goal of a body-less spec member, takes the member the
+/// typer decided at its twin in `from`, where a goal reads it ([`goal_reads_member`]) — the same
+/// tree with some leaves replaced or lowered: walked pairwise while the two agree on a call's
+/// functor and arity, stopping where they part.
 pub(super) fn carry_comparison_members(kb: &KnowledgeBase, from: &Rc<NodeOccurrence>, to: &Rc<NodeOccurrence>) {
     let (Some(from_expr), Some(to_expr)) = (from.as_expr(), to.as_expr()) else {
         return;
@@ -1580,7 +1580,7 @@ pub(super) fn carry_comparison_members(kb: &KnowledgeBase, from: &Rc<NodeOccurre
     if kb.canonical_sym(f1) != kb.canonical_sym(f2) || p1.len() != p2.len() {
         return;
     }
-    if let Some(class) = from.call_class().filter(|class| goal_reads_comparison_member(kb, f1, class)) {
+    if let Some(class) = from.call_class().filter(|class| goal_reads_member(kb, f1, p1.len() + n1.len(), class)) {
         to.set_classification(class);
     }
     for (a, b) in p1.iter().zip(p2.iter()) {
