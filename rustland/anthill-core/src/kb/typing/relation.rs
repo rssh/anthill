@@ -2879,12 +2879,7 @@ pub(super) fn cited_sort_params(
             crate::kb::term_view::ViewHead::Var(Var::Global(v)) => v,
             _ => type_param_global_var(kb, ref_or_nullary_name_view(kb, leaf)?)?,
         };
-        // A De Bruijn index is the position counted from the frame's end
-        // ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
-        let opened = globals
-            .iter()
-            .position(|g| *g == vid)
-            .and_then(|position| fresh.get(globals.len() - 1 - position).copied());
+        let opened = frame_slot_of(&globals, vid).and_then(|slot| fresh.get(slot as usize).copied());
         if let Some(opened) = opened {
             match walk_type_deep_value(kb, pins, &Value::Var(Var::Global(opened))) {
                 Value::Var(Var::Global(end)) if end == opened => {}

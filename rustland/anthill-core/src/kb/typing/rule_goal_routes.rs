@@ -10,15 +10,18 @@
 //! ```
 //!
 //! one slot per position of the callee's layout ([`requirement_read_counts`]). A slot is
-//!  * a requirement the clause declares, at the instance the goal is at (060.1 §1), or, for a
-//!    goal of the clause's own relation at the clause's own column types, what the clause
-//!    took, handed on down the recursion — the variable the clause's read binds;
+//!  * a requirement the clause declares, at the instance the goal is at (060.1 §1), or one its
+//!    sort states, at the type the goal puts at the sort's parameter, which the clause reads
+//!    for the goal ([`install_sort_requirement_reads`]), or, for a goal of the clause's own
+//!    relation at the clause's own column types, what the clause took, handed on down the
+//!    recursion — the variable the clause's read binds;
 //!  * a dictionary built at load, where the goal's bracket or its arguments fix the instance
 //!    (`Wrap[T = Int64].el(?x)`, `cmp(1, 2, ?c)`);
-//!  * `__unrouted`, where nothing is passed: a read that is no guard, or a guard at a spec the
-//!    clause's sort supplies. A guard at a type nothing at the goal fixes is refused instead
-//!    (proposal 073 §6.2), and a citation that leaves the callee's sort parameter free there
-//!    is refused (`refuse_goals_left_free`).
+//!  * `__unrouted`, where nothing is passed: a read that is no guard. A guard at a type nothing
+//!    at the goal fixes is refused instead (proposal 073 §6.2), and so is one at a type the
+//!    clause declares nothing at, its sort's requirement at another instance included; a
+//!    citation that leaves the callee's sort parameter free there is refused
+//!    (`refuse_goals_left_free`).
 //!
 //! REPLACE, NOT INHERIT (op-to-rule-requirement-channel.md §1): what a goal passes is what
 //! the typer routes to it here, never what its clause happened to receive.
@@ -27,6 +30,10 @@ use super::*;
 
 /// The pass that wraps a goal in its citation marker.
 const RULE_GOAL_ROUTES_PASS: &str = "anthill.kb.passes.rule_goal_routes";
+
+/// The pass that gives a sort's clause the read of a requirement its sort states, for a goal
+/// ([`install_sort_requirement_reads`]).
+const SORT_REQUIREMENT_READ_PASS: &str = "anthill.kb.passes.sort_requirement_read";
 
 /// What one slot of a goal's marker passes ([`route_goal`]).
 enum GoalSlot {
@@ -53,6 +60,7 @@ pub(super) fn route_rule_goal_requirements(
     let Some(mut routing) = Routing::new(kb) else {
         return refused;
     };
+    install_sort_requirement_reads(kb, routing.syms.fd);
     // The clauses this run routes, by relation.
     let mut clauses: Vec<(RuleId, Symbol)> = Vec::new();
     for rid in kb.live_rule_ids() {
@@ -1187,15 +1195,38 @@ fn route_goal(
                         }
                     }
                 }
-                _ if writer.clause().is_some_and(|rid| clause_sort_supplies(kb, rid, spec)) => {
-                    GuardRoute::NoGuard
-                }
+                // A requirement the clause's sort states at the goal's instance is read by the
+                // clause and passed (`install_sort_requirement_reads`); one it states at another
+                // is no more the clause's than one it does not state, and one it states under two
+                // names is two the goal says neither of.
                 Some(at)
                     if writer
                         .clause()
                         .is_some_and(|rid| type_reaches_the_head(kb, rid, &at)) =>
                 {
-                    GuardRoute::Undeclared(spec)
+                    let rid = writer.clause().expect("the guard reaches the clause's head");
+                    let slots = sort_param_slots(kb, rid);
+                    let at_goal =
+                        guard_instance_at_goal(kb, rid, &slots, site, crid, carrier, instance.expect_term());
+                    let states = match &at_goal {
+                        Some(at_goal) => sort_states_requirement(kb, rid, spec, &Value::term(at_goal.instance)),
+                        None => SortStates::No,
+                    };
+                    match (states, at_goal) {
+                        // The requirement the sort states there, which the clause reads for the goal.
+                        (SortStates::Once, Some(at_goal)) => match sort_requirement_read(kb, fd, rid, spec, &at_goal) {
+                            Some(out) => GuardRoute::Declared(out),
+                            None => GuardRoute::Undeclared(spec, None),
+                        },
+                        (SortStates::Twice(first, second), _) => {
+                            tie.get_or_insert((first, second));
+                            GuardRoute::NoGuard
+                        }
+                        (SortStates::No, _) if clause_sort_supplies(kb, rid, spec) => {
+                            GuardRoute::Undeclared(spec, Some(kb.rule_domain(rid)))
+                        }
+                        _ => GuardRoute::Undeclared(spec, None),
+                    }
                 }
                 at => GuardRoute::Open(OpenGuard {
                     spec,
@@ -1271,10 +1302,18 @@ fn route_goal(
     }
     // 060.1 §1 — a goal at an instance that names a type variable of the clause is supplied
     // by what the clause declares, and refused where it declares nothing there.
-    if let Some(spec) = declared.iter().find_map(|g| match g {
-        GuardRoute::Undeclared(spec) if !refused_load => Some(*spec),
+    if let Some((spec, sort_states)) = declared.iter().find_map(|g| match g {
+        GuardRoute::Undeclared(spec, sort_states) if !refused_load => Some((*spec, *sort_states)),
         _ => None,
     }) {
+        let spec_name = short_name_of(kb.qualified_name_of(spec)).to_owned();
+        let sort_states = match sort_states {
+            Some(sort) => format!(
+                "the clause's sort `{}` states `{spec_name}` at another instance, ",
+                short_name_of(kb.qualified_name_of(sort)),
+            ),
+            None => String::new(),
+        };
         refused.push((
             TypeError::Other {
                 site: TypeError::here(),
@@ -1286,12 +1325,11 @@ fn route_goal(
                 expected: format!(
                     "a requirement of `{spec_name}` the clause declares, at the type the goal of \
                      `{callee_name}` is at",
-                    spec_name = short_name_of(kb.qualified_name_of(spec)),
                     callee_name = kb.qualified_name_of(callee),
                 ),
                 actual: format!(
-                    "the clause declares none, and a rule takes no dictionary it does not \
-                     declare: {}",
+                    "{sort_states}the clause declares none, and a rule takes no dictionary it \
+                     does not declare: {}",
                     crate::parse::desugar_target::DECLARE_A_REQUIREMENT,
                 ),
             },
@@ -1495,14 +1533,15 @@ enum GuardRoute {
     Declared(Rc<NodeOccurrence>),
     /// A concrete instance: the dictionary built there at load.
     Concrete(Value),
-    /// An instance that names a type variable of the caller, which declares nothing there.
-    Undeclared(Symbol),
+    /// An instance that names a type variable of the caller, which declares nothing there, and
+    /// the caller's sort where it states the spec at another instance.
+    Undeclared(Symbol, Option<Symbol>),
     /// An instance at a type nothing at the goal fixes — a type no head column of the caller
     /// reaches, or a query's variable — which no caller can pass.
     Open(OpenGuard),
     /// A concrete instance nothing provides, or two providers answer: why, as the fetch says.
     Unbuilt(Symbol, String),
-    /// No guard, or one the caller's sort supplies: the route is what it was.
+    /// No guard: the route is what it was.
     NoGuard,
 }
 
@@ -1777,9 +1816,6 @@ fn declared_route(
 ) -> Option<Rc<NodeOccurrence>> {
     // The caller's parameter the carrier stands at, as its frame numbers it.
     let caller_carrier = caller_param_at(kb, rid, at)?;
-    if !kb.rule_type_params(rid).iter().any(|(_, d)| *d == caller_carrier) {
-        return None;
-    }
     let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
     let held: Vec<(Rc<NodeOccurrence>, Option<Symbol>)> = clause_requirement_reads(kb, fd, &body)
         .into_iter()
@@ -1835,10 +1871,16 @@ pub(super) fn clause_var_stamps(kb: &KnowledgeBase, rid: RuleId) -> Vec<(u32, Va
 /// column's variable, which is how the typing's variable for a parameter is told. `None` for
 /// any other type.
 pub(super) fn caller_param_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value) -> Option<u32> {
+    let params: Vec<u32> = kb.rule_type_params(rid).iter().map(|(_, d)| *d).collect();
+    caller_slot_at(kb, rid, at, &params)
+}
+
+/// The frame slot among `params` of clause `rid` that `at` — a type its typing stamped on a
+/// body leaf — is, read as [`caller_param_at`] reads a declared type parameter.
+fn caller_slot_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value, params: &[u32]) -> Option<u32> {
     let crate::kb::term_view::ViewHead::Var(target) = crate::kb::term_view::TermView::head(at, kb) else {
         return None;
     };
-    let params: Vec<u32> = kb.rule_type_params(rid).iter().map(|(_, d)| *d).collect();
     let stamps = clause_var_stamps(kb, rid);
     let name = kb.intern("declared_route");
     let frame_len = (kb.rule_arity(rid) as usize).max(kb.rule_globals(rid).len());
@@ -1853,7 +1895,7 @@ pub(super) fn caller_param_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value) -
         if !pin_type_vars(kb, &mut pins, stamp, &opened) {
             continue;
         }
-        for &c in &params {
+        for &c in params {
             let x = walk_type_deep_value(kb, &pins, &Value::Var(Var::Global(fresh[c as usize])));
             if matches!(crate::kb::term_view::TermView::head(&x, kb), crate::kb::term_view::ViewHead::Var(v) if v == target) {
                 return Some(c);
@@ -1861,6 +1903,375 @@ pub(super) fn caller_param_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value) -
         }
     }
     None
+}
+
+/// The De Bruijn index of frame global `var` among `globals`, a clause's frame: the position
+/// counted from the frame's end ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
+pub(super) fn frame_slot_of(globals: &[VarId], var: VarId) -> Option<u32> {
+    let position = globals.iter().position(|g| *g == var)?;
+    Some((globals.len() - 1 - position) as u32)
+}
+
+/// The frame slots of clause `rid` that stand for parameters of the sort it is written in: the
+/// clause variable a typed head at the parameter (`?x: T`) is bound to. A parameter no typed
+/// head names has none.
+fn sort_param_slots(kb: &KnowledgeBase, rid: RuleId) -> Vec<u32> {
+    let globals = kb.rule_globals(rid);
+    kb.type_param_syms_of(kb.rule_domain(rid))
+        .iter()
+        .filter_map(|&param| frame_slot_of(globals, type_param_global_var(kb, param)?))
+        .collect()
+}
+
+/// 060.1 §1, §8.2 — A REQUIREMENT THE CLAUSE'S SORT STATES, HANDED ON TO A GOAL. A rule of a
+/// sort declares no requirement its sort states. Where a goal's callee guards one at the type the
+/// goal puts at the sort's parameter — `rule viaH(?x: T, ?t) :- keep(?x, ?t)` in `sort Holder`
+/// with `requires Marker[T = T]`, under `rule keep[A](?x: A, ?t) :- Marker[A], …` — the clause
+/// reads the requirement as a guard of its own is read, and the goal passes that read
+/// ([`declared_route`]). A citation fixing the sort's parameter fills it as it fills any guard
+/// at a typed head: `Holder[T = Int64].viaH(1, ?t)` passes `Int64`'s `Marker`. A requirement the
+/// sort states under a name is read under it, so a citation's bracket selects it by the name.
+///
+/// Before any goal is routed, so a read given here is in its clause's layout when the clause's
+/// callers are routed; to a fixed point, since a clause given one is a callee whose callers in
+/// the sort may take one in turn — a later round asks only the goals of a relation an earlier
+/// one gave a read. A clause routed already is left as it is, unless a callee's layout has
+/// changed under it, when it is routed again ([`route_rule_goal_requirements`]) and read here
+/// first.
+fn install_sort_requirement_reads(kb: &mut KnowledgeBase, fd: Symbol) {
+    let pass = kb.register_pass(SORT_REQUIREMENT_READ_PASS);
+    // The relations given a read in the round before; `None` in the first round, which asks
+    // every goal.
+    let mut grown: Option<HashSet<Symbol>> = None;
+    loop {
+        let mut grew: HashSet<Symbol> = HashSet::new();
+        for rid in kb.live_rule_ids() {
+            if kb.is_fact(rid)
+                || kb.has_equational_head(rid)
+                || rule_body_is_typed_once(kb, rid)
+                || (holds_goal_marker(kb, rid) && !holds_stale_marker(kb, rid))
+            {
+                continue;
+            }
+            let slots = sort_param_slots(kb, rid);
+            if slots.is_empty() {
+                continue;
+            }
+            for (site, callee) in cited_goals(kb, rid) {
+                if grown.as_ref().is_some_and(|grown| !grown.contains(&callee)) {
+                    continue;
+                }
+                for (crid, _) in requirement_read_counts(kb, callee) {
+                    let reads = clause_requirement_reads(kb, fd, &kb.rule_body_nodes(crid).to_vec());
+                    for read in reads {
+                        if let Some(handed) = handed_on_requirement(kb, fd, rid, &slots, &site, crid, &read) {
+                            add_sort_requirement_read(kb, rid, fd, pass, &handed);
+                            if let Value::Term { id, .. } = kb.rule_head_value(rid).clone() {
+                                grew.extend(kb.head_functor(id));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if grew.is_empty() {
+            break;
+        }
+        grown = Some(grew);
+    }
+}
+
+/// Each goal of clause `rid` that cites a relation, with the relation: a goal as written, or the
+/// goal a citation marker wraps.
+fn cited_goals(kb: &KnowledgeBase, rid: RuleId) -> Vec<(Rc<NodeOccurrence>, Symbol)> {
+    goal_sites(kb, rid)
+        .into_iter()
+        .filter_map(|site| match goal_marker(kb, &site) {
+            Some(marker) => Some((Rc::clone(marker.goal), marker.relation)),
+            None => relation_goal_callee(kb, &site).map(|callee| (site, callee)),
+        })
+        .collect()
+}
+
+/// Does a citation marker of `rid` hold another number of slots than its callee's layout has
+/// positions now ([`Routing::has_stale_marker`], read without its memo, which a read added here
+/// would leave behind)?
+fn holds_stale_marker(kb: &KnowledgeBase, rid: RuleId) -> bool {
+    goal_sites(kb, rid).iter().any(|n| {
+        goal_marker(kb, n).is_some_and(|m| {
+            let total: usize = requirement_read_counts(kb, m.relation).iter().map(|(_, c)| c).sum();
+            m.slots.len() != total
+        })
+    })
+}
+
+/// The requirement of its sort that clause `rid` reads for goal `site` to pass `read`, a guard
+/// of `callee_clause` ([`install_sort_requirement_reads`]): the guard's instance at the goal,
+/// in `rid`'s frame ([`guard_instance_at_goal`]), where the sort states it once
+/// ([`sort_states_requirement`]) and the clause does not read it already.
+fn handed_on_requirement(
+    kb: &mut KnowledgeBase,
+    fd: Symbol,
+    rid: RuleId,
+    slots: &[u32],
+    site: &Rc<NodeOccurrence>,
+    callee_clause: RuleId,
+    read: &Rc<NodeOccurrence>,
+) -> Option<HandedOn> {
+    let (spec, carrier, instance) = guard_read_parts(kb, read)?;
+    let at_goal = guard_instance_at_goal(kb, rid, slots, site, callee_clause, carrier, instance.expect_term())?;
+    if !matches!(sort_states_requirement(kb, rid, spec, &Value::term(at_goal.instance)), SortStates::Once) {
+        return None;
+    }
+    let held = sort_requirement_read(kb, fd, rid, spec, &at_goal).is_some();
+    (!held).then_some(HandedOn { spec, at_goal })
+}
+
+/// The dictionary variable of clause `rid`'s read of the requirement of `spec` at `at_goal`
+/// ([`install_sort_requirement_reads`]), where it has one.
+fn sort_requirement_read(
+    kb: &mut KnowledgeBase,
+    fd: Symbol,
+    rid: RuleId,
+    spec: Symbol,
+    at_goal: &GuardAtGoal,
+) -> Option<Rc<NodeOccurrence>> {
+    let same_elements: Vec<(u32, u32)> = at_goal.elements.iter().map(|e| (*e, *e)).collect();
+    let wanted = Value::term(at_goal.instance);
+    clause_requirement_reads(kb, fd, &kb.rule_body_nodes(rid).to_vec())
+        .into_iter()
+        .find(|own| {
+            guard_read_parts(kb, own).is_some_and(|(own_spec, own_carrier, own_instance)| {
+                own_carrier == at_goal.carrier
+                    && same_sort_canonical(kb, own_spec, spec)
+                    && same_instance_at_the_goal(kb, &wanted, at_goal.carrier, &own_instance, own_carrier, &same_elements)
+            })
+        })
+        .and_then(|own| requirement_read_out(kb, fd, &own).cloned())
+}
+
+/// A guard's instance at a goal, in the citing clause's frame ([`guard_instance_at_goal`]): the
+/// slots of its carrier and of each element the goal puts at a parameter of the clause's sort,
+/// and the instance with each of them there and each element the goal fixes at a concrete type.
+struct GuardAtGoal {
+    carrier: u32,
+    elements: Vec<u32>,
+    instance: TermId,
+}
+
+/// The instance `instance` of `callee_clause`'s guard at `carrier` stands at in goal `site` of
+/// clause `rid`, written in `rid`'s frame: the carrier at the parameter of `rid`'s sort the goal
+/// puts it at — one of `slots` — and each other variable of the instance at a parameter of the
+/// sort or at the concrete type the goal puts it at. `None` where the goal puts one at another
+/// type.
+fn guard_instance_at_goal(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    slots: &[u32],
+    site: &Rc<NodeOccurrence>,
+    callee_clause: RuleId,
+    carrier: u32,
+    instance: TermId,
+) -> Option<GuardAtGoal> {
+    if slots.is_empty() {
+        return None;
+    }
+    let carrier_at = guard_carrier_at_goal(kb, site, callee_clause, carrier)?;
+    let carrier_slot = caller_slot_at(kb, rid, &carrier_at, slots)?;
+    let mut placed: Vec<(u32, TermId)> = vec![(carrier, kb.alloc(Term::Var(Var::DeBruijn(carrier_slot))))];
+    let mut elements = Vec::new();
+    for var in debruijn_vars(kb, instance) {
+        if var == carrier {
+            continue;
+        }
+        let at = guard_carrier_at_goal(kb, site, callee_clause, var)?;
+        if let Some(slot) = caller_slot_at(kb, rid, &at, slots) {
+            elements.push(slot);
+            placed.push((var, kb.alloc(Term::Var(Var::DeBruijn(slot)))));
+        } else if instance_is_concrete(kb, &at) {
+            let ty = crate::kb::node_occurrence::value_to_term(kb, &at)
+                .expect("a type the goal puts a guard's element at is a type, which has a term");
+            placed.push((var, ty));
+        } else {
+            return None;
+        }
+    }
+    Some(GuardAtGoal {
+        carrier: carrier_slot,
+        elements,
+        instance: place_debruijn(kb, instance, &placed),
+    })
+}
+
+/// The De Bruijn indices `term` names, each once, in the order met.
+fn debruijn_vars(kb: &KnowledgeBase, term: TermId) -> Vec<u32> {
+    fn walk(kb: &KnowledgeBase, term: TermId, out: &mut Vec<u32>) {
+        match kb.get_term(term) {
+            Term::Var(Var::DeBruijn(i)) => {
+                if !out.contains(i) {
+                    out.push(*i);
+                }
+            }
+            Term::Fn {
+                pos_args, named_args, ..
+            } => {
+                for a in pos_args.iter().chain(named_args.iter().map(|(_, a)| a)) {
+                    walk(kb, *a, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(kb, term, &mut out);
+    out
+}
+
+/// `term` with each De Bruijn index `from` of `placed` replaced by its term, all at once.
+fn place_debruijn(kb: &mut KnowledgeBase, term: TermId, placed: &[(u32, TermId)]) -> TermId {
+    match kb.get_term(term) {
+        Term::Var(Var::DeBruijn(i)) => match placed.iter().find(|(from, _)| from == i) {
+            Some((_, to)) => *to,
+            None => term,
+        },
+        Term::Fn { .. } => kb.map_fn_children(term, |kb, child| place_debruijn(kb, child, placed)),
+        _ => term,
+    }
+}
+
+/// A requirement of its sort a clause reads for a goal ([`handed_on_requirement`]): its spec and
+/// its instance at the goal.
+struct HandedOn {
+    spec: Symbol,
+    at_goal: GuardAtGoal,
+}
+
+/// What the sort a clause is written in states of a requirement ([`sort_states_requirement`]).
+enum SortStates {
+    /// Nothing at that instance.
+    No,
+    /// One requirement.
+    Once,
+    /// Two, each under a name of its own: two dictionaries, and nothing says which.
+    Twice(Symbol, Symbol),
+}
+
+/// What the sort clause `rid` is written in states of the requirement `instance` of `spec`,
+/// written in `rid`'s frame: the requirements of the sort's chain that bind as `instance` does
+/// every parameter `instance` writes — a clause variable standing for the sort's parameter where
+/// `instance` writes that variable — or, in a spec's own rule, the spec at its own parameters.
+/// One `instance` leaves unwritten the sort may fix: a guard's omitted element restricts nothing.
+/// Two such requirements under two names are two (§8.6); one beside unnamed ones is that one.
+fn sort_states_requirement(kb: &mut KnowledgeBase, rid: RuleId, spec: Symbol, instance: &Value) -> SortStates {
+    let written: Vec<(String, Value)> = instance
+        .named_keys(kb)
+        .into_iter()
+        .filter_map(|k| Some((kb.local_name_of(k).to_owned(), named_child_value(kb, instance, k)?)))
+        .collect();
+    let globals = kb.rule_globals(rid).to_vec();
+    // The frame slot of the sort's parameter a binding names.
+    let slot_of = |kb: &KnowledgeBase, binding: &Value| -> Option<u32> {
+        let var = match binding.head(kb) {
+            ViewHead::Var(Var::Global(v)) => v,
+            _ => type_param_global_var(kb, ref_or_nullary_name_view(kb, binding)?)?,
+        };
+        frame_slot_of(&globals, var)
+    };
+    let domain = kb.rule_domain(rid);
+    // A spec's own rule reads the spec at its own parameters (060.1 §3): each binding the
+    // instance writes is the clause variable standing for the parameter of that name.
+    if same_sort_canonical(kb, domain, spec) {
+        let params: Vec<Symbol> = kb.type_param_syms_of(domain).to_vec();
+        let own = written.iter().all(|(name, value)| {
+            let ViewHead::Var(Var::DeBruijn(at)) = value.head(kb) else {
+                return false;
+            };
+            params
+                .iter()
+                .find(|p| kb.local_name_of(**p) == name.as_str())
+                .and_then(|p| frame_slot_of(&globals, type_param_global_var(kb, *p)?))
+                == Some(at)
+        });
+        return if own { SortStates::Once } else { SortStates::No };
+    }
+    let mut stated: Vec<Option<Symbol>> = Vec::new();
+    for entry in requires_chain(kb, domain) {
+        let at_instance = same_sort_canonical(kb, entry.required_sort, spec)
+            && written.iter().all(|(name, value)| {
+                let Some(stated) = spec_binding_value(kb, &entry.spec, name) else {
+                    return false;
+                };
+                match value.head(kb) {
+                    ViewHead::Var(Var::DeBruijn(at)) => slot_of(kb, &stated) == Some(at),
+                    _ => views_structurally_equal(kb, value, &stated),
+                }
+            });
+        if at_instance && !stated.contains(&entry.binder) {
+            stated.push(entry.binder);
+        }
+    }
+    let mut names = stated.iter().flatten();
+    match (names.next(), names.next()) {
+        (Some(first), Some(second)) => SortStates::Twice(*first, *second),
+        _ if stated.is_empty() => SortStates::No,
+        _ => SortStates::Once,
+    }
+}
+
+/// Give clause `rid` the read of the requirement `handed` names, in the form a written guard's
+/// read has (`install_rule_provider_dictionaries`) — `find_dictionary(Marker[T = ?#0], Marker,
+/// ?#0, out: ?#d, carrier_type: true)`, each element's variable after the carrier's — before the
+/// body's goals.
+fn add_sort_requirement_read(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    fd: Symbol,
+    pass: crate::kb::occurrence::PassId,
+    handed: &HandedOn,
+) {
+    let HandedOn {
+        spec,
+        at_goal: GuardAtGoal {
+            carrier,
+            ref elements,
+            instance,
+        },
+    } = *handed;
+    let anchor = Rc::clone(kb.rule_body_nodes(rid).first().expect("a clause with a goal has a body"));
+    let d_index = kb.rule_globals(rid).len() as u32;
+    let dict_name = kb.intern("dict");
+    let d = kb.fresh_var(dict_name);
+    let bounds = kb.rule_type_bounds(rid).to_vec();
+    kb.extend_rule_frame_with_bounds(rid, &[d], bounds);
+    let (span, owner) = (anchor.span, anchor.owner);
+    let node = |e: Expr| NodeOccurrence::new_expr(e, span, owner);
+    let spec_ref = Value::term(kb.alloc(Term::Ref(spec)));
+    let out_label = kb.intern(REQUIREMENT_OUT_LABEL);
+    let carrier_label = kb.intern(PROVIDER_CARRIER_TYPE_LABEL);
+    let named_args = vec![
+        (out_label, node(Expr::Var(Var::DeBruijn(d_index)))),
+        (carrier_label, node(Expr::Const(Literal::Bool(true)))),
+    ];
+    let read = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor: fd,
+            pos_args: [
+                node(Expr::Spliced(Value::term(instance))),
+                node(Expr::Spliced(spec_ref)),
+                node(Expr::Var(Var::DeBruijn(carrier))),
+            ]
+            .into_iter()
+            .chain(elements.iter().map(|e| node(Expr::Var(Var::DeBruijn(*e)))))
+            .collect(),
+            named_args,
+            type_args: Vec::new(),
+        },
+        anchor,
+        pass,
+        owner,
+    );
+    kb.prepend_generated_body_goals(rid, vec![read]);
 }
 
 /// A guard's read (`find_dictionary(WeakOrd[T = ?#1], WeakOrd, ?#1, out: ?#0, carrier_type:
