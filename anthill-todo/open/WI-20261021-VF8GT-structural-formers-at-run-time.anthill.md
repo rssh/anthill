@@ -29,3 +29,7 @@ MEASURED 2026-10-22 on 619d6caf (the parent of WI-20261013-WF14Z's first part), 
 
 From WI-20261025-27050 (user, 2026-10-25): a type pattern at a named tuple or an arrow — an `Error.reify` boundary catching by a former's pattern, and `type_admits` judging two formers, which it leaves unjudged today — belongs here ("We have ticket about sort for tuple, and TypePattern will go there"). 27050 makes TypePattern answer at every sort, a spec included (is a subtype of an instance, or the carrier's own provision of one); this ticket extends it to the formers.
 
+### 2026-11-16T20:30:37Z — feedback — claude
+
+Proposal 004's extension (2026-11-16, docs/proposals/004-tuple-sorts.md, 'a tuple is a NamedTuple') gives the tuple former a sort that carries derived provisions: TypeValue at a tuple is its stage 2 (WI-20261116-411A7), SortDomain and type patterns at a tuple its parked stage 3 (WI-20261116-HWD8A, open question 1). What stays here: the arrow half (a closure carrying the arrow type it was typed at, domain at an arrow by the subtyping rule, TypeValue and SortDomain at an arrow), and (3), a tuple type written as a value in a data slot.
+

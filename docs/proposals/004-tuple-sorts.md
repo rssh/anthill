@@ -363,6 +363,12 @@ untyped one, and its components would start to error.
 
 ### Stages
 
+Tracked by the `proposal-004` sequence, one ticket per stage (filed 2026-11-16).
+
 1. The sort, and its derived `PartialEq` and `Eq` with their dictionary: WI-20261116-JWCNN.
-2. `TypeValue` at a tuple (065 §7 step 2's tuple half), and whatever open question 1 adds.
+   WI-20261105-CBRD2's run-time equality error depends on it.
+2. `TypeValue` at a tuple (065 §7 step 2's tuple half): WI-20261116-411A7.
+3. What open question 1 adds, parked until it is decided: WI-20261116-HWD8A.
+
+The arrow half of the formers stays with WI-20261021-VF8GT.
 
