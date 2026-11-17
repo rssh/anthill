@@ -354,11 +354,14 @@ untyped one, and its components would start to error.
 
 ### Open questions
 
-1. **Which specs derive at a tuple.** Proposed: `PartialEq`, `Eq` and `TypeValue`. `SortDomain`
-   and type patterns (VF8GT, proposal 071) follow the same rule and could be added here; with a
-   type pattern at a tuple, an `Error.reify` boundary could catch an `Error[(Int64, Int64)]`
-   payload, which today waits on a tuple's instance (065, the open question withdrawn
-   2026-10-16). `Ord` (lexicographic, by component order) is not proposed.
+1. **Which specs derive at a tuple.** Decided (2026-11-17): `PartialEq`, `Eq` and `TypeValue`
+   (stages 1 and 2), and `SortDomain` and type patterns (proposal 071) (stage 3). `Ord`
+   (lexicographic, by component order) is not proposed. A tuple's domain is the tuples of its
+   components' domains. A type pattern at a tuple admits a type as every pattern does, when the
+   type is a subtype of an instance of it, and `<:` at a tuple is by label with width and
+   permutation (rule 1): `(a: Int64)` and `(b: String, a: Int64)` admit `(a: Int64, b: String)`,
+   and `(Int64, String)`, whose labels are `_1` and `_2`, does not. So an `Error.reify` boundary
+   at a tuple catches an `Error[(a: Int64, b: String)]` payload.
 2. **Whether a program may name `NamedTuple`** as a type (`x: NamedTuple`, any tuple) or write a
    provision at it. Proposed: neither, in this extension: one written form for a tuple type, and
    derived provisions only.
@@ -370,7 +373,7 @@ Tracked by the `proposal-004` sequence, one ticket per stage (filed 2026-11-16).
 1. The sort, and its derived `PartialEq` and `Eq` with their dictionary: WI-20261116-JWCNN.
    WI-20261105-CBRD2's run-time equality error depends on it.
 2. `TypeValue` at a tuple (065 §7 step 2's tuple half): WI-20261116-411A7.
-3. What open question 1 adds, parked until it is decided: WI-20261116-HWD8A.
+3. `SortDomain` and type patterns at a tuple (open question 1): WI-20261116-HWD8A.
 
 The arrow half of the formers stays with WI-20261021-VF8GT.
 
