@@ -1261,12 +1261,20 @@ pub enum LoadError {
         /// The carrier the provision was written at, qualified.
         carrier: String,
     },
-    /// A `provides anthill.prelude.NamedTuple` (`typing::written_named_tuple_provisions`): a
+    /// A `provides anthill.prelude.NamedTuple` (`typing::written_tuple_provisions`): a
     /// tuple type is `NamedTuple` applied to its components, written only as tuple syntax, and
     /// no sort is one.
     ProvidesNamedTuple {
         /// The sort the provision is written on, qualified.
         provider: String,
+    },
+    /// A `provides anthill.reflect.SortDomain[T = …]` at a tuple type
+    /// (`typing::written_tuple_provisions`): a tuple's domain is derived from its components'.
+    SortDomainWrittenAtTuple {
+        /// The sort the provision is written on, qualified.
+        provider: String,
+        /// The tuple type it is written at, displayed.
+        tuple: String,
     },
     /// Proposal 071 §1.2 — a `provides anthill.reflect.TypePattern[…]` other than its one
     /// row, `TypeValuePattern`'s `provides TypePattern[T = T] :- TypeValue[T = T]` at its own
@@ -4047,6 +4055,9 @@ impl LoadError {
             LoadError::ProvidesNamedTuple { provider } => {
                 format!("'{provider}' writes `provides anthill.prelude.NamedTuple`, but no sort provides `NamedTuple`: a tuple type is `NamedTuple` applied to its components and is written only as tuple syntax. Delete the clause.")
             }
+            LoadError::SortDomainWrittenAtTuple { provider, tuple } => {
+                format!("'{provider}' writes `provides anthill.reflect.SortDomain[T = {tuple}]`, but a tuple's `SortDomain` is derived from its components' and none may be written at a tuple type: the derived one answers there, and a written one would never be read. Delete the clause.")
+            }
             LoadError::HandWrittenTypePattern { provider } => {
                 format!("a `provides anthill.reflect.TypePattern[…]` is written for '{}', but `TypePattern` has one row, `TypeValuePattern`'s, and no other may be written: a written `admits` would make what a type pattern admits a claim instead of a fact. Delete the clause: a type with a `TypeValue` instance is already a pattern.",
                     provider)
@@ -6622,6 +6633,14 @@ impl std::fmt::Display for LoadError {
                     f,
                     "'{provider}' writes `provides anthill.prelude.NamedTuple`, but no sort \
                      provides `NamedTuple`: a tuple type is written only as tuple syntax",
+                )
+            }
+            LoadError::SortDomainWrittenAtTuple { provider, tuple } => {
+                write!(
+                    f,
+                    "'{provider}' writes `provides anthill.reflect.SortDomain[T = {tuple}]`, \
+                     but a tuple's `SortDomain` is derived from its components' and none may \
+                     be written at a tuple type",
                 )
             }
             LoadError::HandWrittenTypePattern { provider } => {
@@ -18997,9 +19016,10 @@ fn load_phase_inner(
     // introduce no unbacked operation, so `check_provider_operations` passes them.
     mark!("eq_derive::classify + derive_total_eq + derive_conditional_eq");
     all_errors.extend(super::type_value_derive::run(kb));
-    // No sort provides `NamedTuple` (proposal 004's extension): a prelude rule, read whether or
-    // not the reflect library that `TypeValue`'s pass needs is loaded.
-    all_errors.extend(super::typing::written_named_tuple_provisions(kb));
+    // No sort provides `NamedTuple`, and no `SortDomain` is written at a tuple (proposal 004's
+    // extension): read whether or not the reflect library that `TypeValue`'s pass needs is
+    // loaded.
+    all_errors.extend(super::typing::written_tuple_provisions(kb));
     mark!("type_value_derive::run");
     // WI-1109 — materialize forwarded provision rows (`Ord provides WeakOrd[T = T]` ⇒
     // every `Ord` carrier gets a `WeakOrd` row at its own bindings). HERE, beside the

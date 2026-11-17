@@ -14,9 +14,9 @@
 -- labels beside them (`labels: (a, b)`), which `type_value` reads the type back from.
 --
 -- Its `SortDomain` is derived where every component's type has one: its domain is the tuples
--- of the components' domains, in the type's order. Its `Fillable` dictionary holds each
--- component's `SortDomain` and the labels, which the fill builds the tuple with; its
--- `SortDomain` dictionary holds that `Fillable` in its chain's slot.
+-- of the components' domains, in the type's order, and none may be written at a tuple type.
+-- Its `Fillable` dictionary holds each component's `SortDomain` and the labels, which the fill
+-- builds the tuple with; its `SortDomain` dictionary holds that `Fillable` in its chain's slot.
 sort anthill.prelude.NamedTuple
   operation namedTupleEq(a: NamedTuple, b: NamedTuple) -> Bool @[host_implemented]
   provides anthill.prelude.PartialEq[T = NamedTuple, eq = namedTupleEq]

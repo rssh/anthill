@@ -312,8 +312,10 @@ untyped one, and its components would start to error.
    A tuple provides `PartialEq` when each component's type provides it, and `Eq` when each
    provides `Eq`; `()` provides both. It provides `TypeValue` when each component's type does
    (065 §2, now for the tuple former too), and `SortDomain` (with the `Fillable` it provides)
-   when each does: its domain is the tuples of its components' domains, in the type's order. A
-   type pattern at a tuple (071) admits by `<:`, by label with width and permutation. No sort provides `NamedTuple`. A provision of another
+   when each does: its domain is the tuples of its components' domains, in the type's order,
+   and no `SortDomain` is written at a tuple type (decided 2026-11-17: the derived one answers
+   there, so a written one would never be read). A type pattern at a tuple (071) admits by
+   `<:`, by label with width and permutation. No sort provides `NamedTuple`. A provision of another
    spec at a tuple type is a sort's like any other (`W provides Show[T = (Int64, String)]`),
    and a written `PartialEq` at a tuple type answers in place of the derived one, as a sort's
    written equality does; the tuple's `Eq` is then not derived, and is written beside it.

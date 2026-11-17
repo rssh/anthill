@@ -21,7 +21,7 @@
 //! * A rule body's equality pinned to the written member compared component by component
 //!   (`resolve`'s `sem_eq_values_at`, the unpinned arm taken for any pin but `NamedTuple`'s):
 //!   [`a_provision_written_at_a_tuple_type_answers`] fails at its rule body.
-//! * No refusal of `provides NamedTuple` (`typing::written_named_tuple_provisions`):
+//! * No refusal of `provides NamedTuple` (`typing::written_tuple_provisions`):
 //!   [`no_sort_provides_named_tuple`] fails, the sort that writes `namedTupleEq` loading.
 //!   The provider-operations check owing such a provision its operation (`coherence`'s
 //!   `check_provider_operations`, its `NamedTuple` skip): the same row fails, told twice.

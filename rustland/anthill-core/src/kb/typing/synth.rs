@@ -1278,10 +1278,13 @@ fn tuple_chain_refusal(kb: &KnowledgeBase, goal: &SortGoal, slot: Symbol, chain_
     }
 }
 
-/// A written `provides NamedTuple`: a sort claiming to be a tuple. A tuple type is `NamedTuple`
-/// applied to its components and is written only as tuple syntax (proposal 004's extension,
-/// rule 1); no sort is one.
-pub(crate) fn written_named_tuple_provisions(kb: &KnowledgeBase) -> Vec<LoadError> {
+/// The provisions no program may write about tuples (proposal 004's extension): a `provides
+/// NamedTuple`, a sort claiming to be a tuple — a tuple type is `NamedTuple` applied to its
+/// components and is written only as tuple syntax, and no sort is one; and a `provides
+/// SortDomain` at a tuple type, whose domain is derived from its components' and which the
+/// derived instance answers in any case ([`tuple_instance`]), so a written one would never be
+/// read. One error per provider, in name order; a `SortDomain` one per provider and type.
+pub(crate) fn written_tuple_provisions(kb: &KnowledgeBase) -> Vec<LoadError> {
     let Some(named_tuple) = kb.named_tuple_sort() else {
         return Vec::new();
     };
@@ -1290,10 +1293,33 @@ pub(crate) fn written_named_tuple_provisions(kb: &KnowledgeBase) -> Vec<LoadErro
         .collect();
     providers.sort();
     providers.dedup();
-    providers
+    let mut errors: Vec<LoadError> = providers
         .into_iter()
         .map(|provider| LoadError::ProvidesNamedTuple { provider })
-        .collect()
+        .collect();
+    if let Some(sort_domain) = kb.try_resolve_symbol(SORT_DOMAIN_SPEC) {
+        let mut at_tuples: Vec<(String, String)> = provides_rows_of_spec(kb, sort_domain)
+            .filter_map(|row| {
+                let tuple = row
+                    .bindings(kb)
+                    .into_iter()
+                    .map(|(_, t)| t)
+                    .find(|t| matches!(type_head(kb, t), TypeHead::NamedTuple))?;
+                Some((
+                    kb.qualified_name_of(row.provider).to_string(),
+                    type_display_name_value(kb, &tuple),
+                ))
+            })
+            .collect();
+        at_tuples.sort();
+        at_tuples.dedup();
+        errors.extend(
+            at_tuples
+                .into_iter()
+                .map(|(provider, tuple)| LoadError::SortDomainWrittenAtTuple { provider, tuple }),
+        );
+    }
+    errors
 }
 
 /// Does a provision written by a program answer `goal`, a goal at a tuple type ([`tuple_instance`])

@@ -1910,7 +1910,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         if kb.is_unbacked_derived_provision(p.rid) {
             continue;
         }
-        // A `provides NamedTuple` is refused whole (`written_named_tuple_provisions`); an
+        // A `provides NamedTuple` is refused whole (`written_tuple_provisions`); an
         // operation advised for it would be a repair for a clause that may not be written.
         if kb.is_named_tuple_sort(p.spec) {
             continue;

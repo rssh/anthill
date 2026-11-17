@@ -60,6 +60,9 @@
 //!   `wi_n31xx_type_value_read_rule_test`'s `Option` holding an arrow is told of "a tuple or an
 //!   arrow".
 //!
+//! * No refusal of a `SortDomain` written at a tuple (`typing::written_tuple_provisions`'s second
+//!   half): [`a_written_sort_domain_at_a_tuple_is_refused`], the four programs loading clean.
+//!
 //! [`a_tuple_holding_an_arrow_is_still_refused`] is refused under every switch, by design: an
 //! arrow has no instance before or after; what moves is the text, which names the arrow.
 
@@ -490,4 +493,35 @@ fn a_requirement_at_a_tuple_is_answered() {
     ] {
         assert_eq!(int_of(&mut interp, &format!("{ns}.{entry}")), want, "`{entry}`");
     }
+}
+
+/// No `SortDomain` may be written at a tuple type (user, 2026-11-17): the derived instance answers
+/// there, and a written one would never be read. Refused at load, one error per provider and
+/// type — at a tuple, at an alias of one, at a labelled tuple, and on a conditional row over a
+/// parameter. A `SortDomain` written at a sort loads as before, a sort holding a tuple among its
+/// arguments included; that control passes either way by design.
+#[test]
+fn a_written_sort_domain_at_a_tuple_is_refused() {
+    let ns = "test.hwd8a.w";
+    let refused = src(
+        ns,
+        "  sort Pair = (Colour, Colour)\n  \
+         sort W\n    entity w\n    provides SortDomain[T = (Colour, Colour)]\n  end\n  \
+         sort Al\n    entity al\n    provides SortDomain[T = Pair]\n  end\n  \
+         sort Lab\n    entity lab\n    provides SortDomain[T = (a: Colour)]\n  end\n  \
+         sort Cond\n    sort A = ?\n    entity cond(a: A)\n    provides SortDomain[T = (A, Int64)] :- SortDomain[T = A]\n  end\n",
+    );
+    let errs = load_errors_of(&refused);
+    assert_eq!(errs.len(), 4, "{errs:#?}");
+    for provider in ["W", "Al", "Lab", "Cond"] {
+        let token = format!("'{ns}.{provider}' writes `provides anthill.reflect.SortDomain[T = (");
+        assert!(errs.iter().any(|e| e.contains(&token)), "`{provider}`: {errs:#?}");
+    }
+    assert!(errs.iter().all(|e| e.contains("none may be written at a tuple type")), "{errs:#?}");
+    let at_sorts = src(
+        ns,
+        "  sort V\n    entity v\n    provides SortDomain[T = Colour]\n  end\n  \
+         sort Inside\n    entity inside\n    provides SortDomain[T = Option[T = (Colour, Colour)]]\n  end\n",
+    );
+    assert_eq!(load_errors_of(&at_sorts), Vec::<String>::new(), "a SortDomain at a sort loads");
 }
