@@ -1185,6 +1185,14 @@ fn unlawful_eq_part(
     operation: Option<Symbol>,
 ) -> Option<Value> {
     if let Some(fields) = schema_fields(kb, ty) {
+        // A tuple whose `PartialEq` is written has no derived `Eq`: it is judged whole, as a
+        // sort with a written equality is, lawful only where `Eq` is written beside it.
+        // Asked of the resolver at the tuple itself: [`eq_holds_at`] reads a key's tuples by
+        // this function, and would ask it again.
+        if tuple_equality_is_written(kb, ty) {
+            let lawful = matches!(resolve_spec_at(kb, eq_sym, ty), Some(ResolutionResult::Resolved(_)));
+            return (!lawful).then(|| ty.clone());
+        }
         return fields
             .iter()
             .find_map(|(_, field)| unlawful_eq_part(kb, eq_sym, field, operation));
@@ -1900,6 +1908,11 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         // bindings agree — are about what the relation SAYS, and a derived row says
         // it as loudly as a written one.
         if kb.is_unbacked_derived_provision(p.rid) {
+            continue;
+        }
+        // A `provides NamedTuple` is refused whole (`written_named_tuple_provisions`); an
+        // operation advised for it would be a repair for a clause that may not be written.
+        if kb.is_named_tuple_sort(p.spec) {
             continue;
         }
         // WHO OWES THE OPERATIONS. A provider with constructors (the runtime witnesses), a

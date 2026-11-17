@@ -1261,6 +1261,13 @@ pub enum LoadError {
         /// The carrier the provision was written at, qualified.
         carrier: String,
     },
+    /// A `provides anthill.prelude.NamedTuple` (`typing::written_named_tuple_provisions`): a
+    /// tuple type is `NamedTuple` applied to its components, written only as tuple syntax, and
+    /// no sort is one.
+    ProvidesNamedTuple {
+        /// The sort the provision is written on, qualified.
+        provider: String,
+    },
     /// Proposal 071 §1.2 — a `provides anthill.reflect.TypePattern[…]` other than its one
     /// row, `TypeValuePattern`'s `provides TypePattern[T = T] :- TypeValue[T = T]` at its own
     /// `T` (`typing::written_type_pattern_provisions`). Refused wherever it is written, as
@@ -4037,6 +4044,9 @@ impl LoadError {
                 format!("'{}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: '{}' already has its derived instance.",
                     carrier, carrier)
             }
+            LoadError::ProvidesNamedTuple { provider } => {
+                format!("'{provider}' writes `provides anthill.prelude.NamedTuple`, but no sort provides `NamedTuple`: a tuple type is `NamedTuple` applied to its components and is written only as tuple syntax. Delete the clause.")
+            }
             LoadError::HandWrittenTypePattern { provider } => {
                 format!("a `provides anthill.reflect.TypePattern[…]` is written for '{}', but `TypePattern` has one row, `TypeValuePattern`'s, and no other may be written: a written `admits` would make what a type pattern admits a claim instead of a fact. Delete the clause: a type with a `TypeValue` instance is already a pattern.",
                     provider)
@@ -6605,6 +6615,13 @@ impl std::fmt::Display for LoadError {
                     "'{}' writes `provides anthill.reflect.TypeValue[…]`, but every \
                      `TypeValue` instance is DERIVED and none may be written",
                     carrier,
+                )
+            }
+            LoadError::ProvidesNamedTuple { provider } => {
+                write!(
+                    f,
+                    "'{provider}' writes `provides anthill.prelude.NamedTuple`, but no sort \
+                     provides `NamedTuple`: a tuple type is written only as tuple syntax",
                 )
             }
             LoadError::HandWrittenTypePattern { provider } => {
@@ -18980,6 +18997,9 @@ fn load_phase_inner(
     // introduce no unbacked operation, so `check_provider_operations` passes them.
     mark!("eq_derive::classify + derive_total_eq + derive_conditional_eq");
     all_errors.extend(super::type_value_derive::run(kb));
+    // No sort provides `NamedTuple` (proposal 004's extension): a prelude rule, read whether or
+    // not the reflect library that `TypeValue`'s pass needs is loaded.
+    all_errors.extend(super::typing::written_named_tuple_provisions(kb));
     mark!("type_value_derive::run");
     // WI-1109 — materialize forwarded provision rows (`Ord provides WeakOrd[T = T]` ⇒
     // every `Ord` carrier gets a `WeakOrd` row at its own bindings). HERE, beside the

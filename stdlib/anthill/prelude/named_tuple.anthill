@@ -4,9 +4,10 @@
 --
 -- Its `PartialEq` and `Eq` are derived: a tuple provides each where every component's type
 -- does, and its dictionary holds one sub-dictionary per component, in component order. `eq`
--- compares the components through them. No program writes a provision at it: the row below
--- is the one the derived instance enters, and nothing provides `Eq` here, since the law at a
--- tuple is its components'.
+-- compares the components through them. No sort provides `NamedTuple`: the row below is the
+-- one the derived instance enters, and nothing provides `Eq` here, since the law at a tuple is
+-- its components'. A `PartialEq` a sort writes at a tuple type answers there in place of the
+-- derived one, and the tuple's `Eq` is then the writer's to state.
 --
 -- Its `TypeValue` is derived the same way, where every component's type has one. Its
 -- dictionary holds one sub-dictionary per component, in the type's own order, and the

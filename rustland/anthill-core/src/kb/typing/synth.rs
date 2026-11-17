@@ -1120,11 +1120,37 @@ fn tuple_instance(
             labels: Some(fields.iter().map(|(label, _)| *label).collect()),
         }));
     }
+    // A PROVISION WRITTEN AT THIS TUPLE TYPE ANSWERS in place of the derived instance, as a
+    // sort's written equality does in place of its derived one: `W provides PartialEq[T =
+    // (Int64, String)]` is the instance at `(Int64, String)`, where it loaded and was never
+    // read. `NamedTuple`'s own row, which the derived member is entered by, is none.
+    let partial_eq = kb.try_resolve_symbol("anthill.prelude.PartialEq")?;
+    let ty = goal.bindings.first().map(|(_, t)| t.clone())?;
+    if written_at_tuple(kb, goal, scope) {
+        return None;
+    }
+    // The derived `Eq` is laid out over the tuple's derived `PartialEq`, so it stands only where
+    // that does: under a written `PartialEq` the law is the writer's to state.
+    if tuple_spec == TupleSpec::Eq {
+        if let Some(at_partial) = spec_goal_at(kb, partial_eq, &ty) {
+            if written_at_tuple(kb, &at_partial, scope) {
+                return Some(ResolutionResult::NoMatch {
+                    goal_text: format_goal(kb, goal),
+                    hint: format!(
+                        "the tuple's `PartialEq` is a written provision, {}, so its `Eq` is not \
+                         derived: write `provides anthill.prelude.Eq[…]` at the tuple beside it",
+                        format_goal(kb, &at_partial)
+                    ),
+                    spec: goal.spec_sort,
+                    forwarded: false,
+                });
+            }
+        }
+    }
     let fields = kb.tuple_type_components(fields);
     // The tuple's `PartialEq` instance holds its components' `PartialEq` dictionaries, the ones
     // its member reads. Its `Eq` instance holds where each component's `Eq` does, and is laid out
     // as every `Eq` dictionary is: its chain's `PartialEq` slot, which here is the tuple's own.
-    let partial_eq = kb.try_resolve_symbol("anthill.prelude.PartialEq")?;
     let asks_eq = kb.canonical_sort_sym(goal.spec_sort) != kb.canonical_sort_sym(partial_eq);
     let mut specs: SmallVec<[Symbol; 2]> = smallvec::smallvec![partial_eq];
     if asks_eq {
@@ -1150,7 +1176,6 @@ fn tuple_instance(
         }
     }
     stack.pop();
-    let ty = goal.bindings.first().map(|(_, t)| t.clone())?;
     let partial = ResolvedRequiresNode::Conditional {
         impl_sort: named_tuple,
         spec_sort: partial_eq,
@@ -1194,6 +1219,49 @@ fn tuple_instance(
         sub_resolutions: vec![partial],
         labels: None,
     }))
+}
+
+/// A written `provides NamedTuple`: a sort claiming to be a tuple. A tuple type is `NamedTuple`
+/// applied to its components and is written only as tuple syntax (proposal 004's extension,
+/// rule 1); no sort is one.
+pub(crate) fn written_named_tuple_provisions(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let Some(named_tuple) = kb.named_tuple_sort() else {
+        return Vec::new();
+    };
+    let mut providers: Vec<String> = provides_rows_of_spec(kb, named_tuple)
+        .map(|row| kb.qualified_name_of(row.provider).to_string())
+        .collect();
+    providers.sort();
+    providers.dedup();
+    providers
+        .into_iter()
+        .map(|provider| LoadError::ProvidesNamedTuple { provider })
+        .collect()
+}
+
+/// Does a provision written by a program answer `goal`, a goal at a tuple type ([`tuple_instance`])
+/// — any row but `NamedTuple`'s own?
+fn written_at_tuple(kb: &mut KnowledgeBase, goal: &SortGoal, scope: &ResolutionScope<'_>) -> bool {
+    written_answers(kb, goal, scope.sigma)
+}
+
+fn written_answers(kb: &mut KnowledgeBase, goal: &SortGoal, sigma: Option<&SigmaCtx>) -> bool {
+    collect_provides_candidates(kb, goal, sigma)
+        .iter()
+        .any(|c| !kb.is_named_tuple_sort(c.impl_sort))
+}
+
+/// Is the tuple type `ty`'s `PartialEq` a provision a program wrote at it ([`tuple_instance`]),
+/// in place of the derived one? Asked where an equality at a tuple is judged outside the
+/// resolver: `=`'s component refusal and the key check.
+pub(super) fn tuple_equality_is_written(kb: &mut KnowledgeBase, ty: &Value) -> bool {
+    let Some(partial_eq) = kb.try_resolve_symbol("anthill.prelude.PartialEq") else {
+        return false;
+    };
+    let Some(goal) = spec_goal_at(kb, partial_eq, ty) else {
+        return false;
+    };
+    written_answers(kb, &goal, None)
 }
 
 /// The refusal of a tuple's instance where the goal of `spec` at one of its components cannot be

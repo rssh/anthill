@@ -9582,7 +9582,8 @@ impl KnowledgeBase {
         // components at the member its sub-dictionary names, so one decided pair decides; with a
         // dictionary that is no term to read (a forward into a caller's frame) it is the member's,
         // run through the bridge (step 4). One no type reached compares its components, each by
-        // these steps (eval's twin is in `semantic_equal`).
+        // these steps (eval's twin is in `semantic_equal`). One pinned to another member — a
+        // provision written at the tuple type — is that member's (step 4).
         let tuple_pins = match pinned {
             Some(p)
                 if super::typing::impl_parent_sort_of_op(self, p.member)
@@ -9593,7 +9594,7 @@ impl KnowledgeBase {
             _ => None,
         };
         match tuple_pins {
-            None => {
+            None if pinned.is_none() => {
                 if let Some(pairs) = self.tuple_component_pairs(&a, &b) {
                     if self.value_self_equal_by_law(&a, Some(subst)) && self.values_equal(&a, &b) {
                         return sem_verdict(true, true);
@@ -9606,7 +9607,7 @@ impl KnowledgeBase {
                     return self.tuple_components_sem_eq(pairs, Some(pins), subst);
                 }
             }
-            Some(None) => {}
+            None | Some(None) => {}
         }
         // (2) Reflexivity — structurally-identical operands, where `Eq`'s law decides them
         // (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). A goal the typer pinned reads

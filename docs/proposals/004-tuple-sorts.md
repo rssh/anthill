@@ -311,7 +311,10 @@ untyped one, and its components would start to error.
 2. **Its provisions are derived, as a composite's classification is** (kernel-language §8.3).
    A tuple provides `PartialEq` when each component's type provides it, and `Eq` when each
    provides `Eq`; `()` provides both. It provides `TypeValue` when each component's type does
-   (065 §2, now for the tuple former too). No program writes a provision at `NamedTuple`.
+   (065 §2, now for the tuple former too). No sort provides `NamedTuple`. A provision of another
+   spec at a tuple type is a sort's like any other (`W provides Show[T = (Int64, String)]`),
+   and a written `PartialEq` at a tuple type answers in place of the derived one, as a sort's
+   written equality does; the tuple's `Eq` is then not derived, and is written beside it.
 3. **The derived member compares the components through their own members**, in order, as a
    composite's derived `eq` compares its fields. Its law is the components': `Eq` at the tuple
    holds where it holds at each component.
@@ -363,8 +366,10 @@ untyped one, and its components would start to error.
    and `(Int64, String)`, whose labels are `_1` and `_2`, does not. So an `Error.reify` boundary
    at a tuple catches an `Error[(a: Int64, b: String)]` payload.
 2. **Whether a program may name `NamedTuple`** as a type (`x: NamedTuple`, any tuple) or write a
-   provision at it. Proposed: neither, in this extension: one written form for a tuple type, and
-   derived provisions only.
+   provision at it. Decided for provisions (2026-11-17): no sort provides `NamedTuple`, and a
+   provision at a tuple type is written as rule 2 says. Open: what `x: NamedTuple` means — read
+   today as `()`, the tuple of no components, where a bare sort leaves its parameters open
+   (proposal 070) — and which operations a tuple of unknown shape has.
 
 ### Stages
 

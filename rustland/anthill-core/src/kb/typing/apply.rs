@@ -4094,9 +4094,12 @@ fn check_apply_call(
             // naming it, and the call is then dispatched as any call of a spec's member is.
             if is_semantic_equality(kb, fn_sym) {
                 let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                // A `PartialEq` written at the tuple type is the instance there, and its
+                // components are not asked.
                 if let Some(tuple) = goal_carrier_binding(kb, &goal)
                     .filter(|t| equality_at_a_tuple(kb, fn_sym, t))
                     .cloned()
+                    .filter(|t| !tuple_equality_is_written(kb, t))
                 {
                     if let Some(refusal) = tuple_component_without_equality(kb, spec_sort, &tuple, fn_sym, span) {
                         return Err(refusal);
