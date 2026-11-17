@@ -167,16 +167,16 @@ fn an_unbound_divisor_delays() {
 /// Only a zero divisor is partial for BigInt (no overflow).
 #[test]
 fn bigint_div_and_mod_compute() {
-    let d = query("div(60000000000000000000, 20000000000000000000, ?r)");
+    let d = query("div(60000000000000000000n, 20000000000000000000n, ?r)");
     assert!(
-        d.stdout.contains("?r = 3"),
+        d.stdout.contains("?r = 3n"),
         "6e19 / 2e19 = 3; stdout:\n{}",
         d.stdout
     );
     // 7e19 mod 2e19 = 1e19 (positive, euclidean).
-    let m = query("mod(70000000000000000000, 20000000000000000000, ?r)");
+    let m = query("mod(70000000000000000000n, 20000000000000000000n, ?r)");
     assert!(
-        m.stdout.contains("?r = 10000000000000000000"),
+        m.stdout.contains("?r = 10000000000000000000n"),
         "7e19 mod 2e19 = 1e19; stdout:\n{}",
         m.stdout
     );

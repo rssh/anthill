@@ -1051,6 +1051,9 @@ pub(super) fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, Ter
 /// `op` is the operation whose clause `conj` is: the goal is read as typed in its signature
 /// ([`clause_goal`]), and a comparison's refutation proves the swapped comparison typed there
 /// too ([`negated_comparison_term`]), so each `eq` and `neq` is decided at its member.
+///
+/// A conjunct [`clause_goal`] has no goal for — one that reads a term which is not its
+/// value — is undecided, and the effect kept.
 fn conjunct_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
@@ -1059,14 +1062,12 @@ fn conjunct_refuted(
     conj: &Value,
 ) -> bool {
     match negated_comparison_term(kb, conj) {
-        Some(negated) => {
-            let goal = sigma.clause_goal(kb, op, &Value::term(negated));
-            prove_from_gamma(kb, flow, &goal)
-        }
-        None => {
-            let goal = sigma.clause_goal(kb, op, conj);
-            refute_guard(kb, flow, &goal)
-        }
+        Some(negated) => sigma
+            .clause_goal(kb, op, &Value::term(negated), ClauseReading::Refuted)
+            .is_some_and(|goal| prove_from_gamma(kb, flow, &goal)),
+        None => sigma
+            .clause_goal(kb, op, conj, ClauseReading::Refuted)
+            .is_some_and(|goal| refute_guard(kb, flow, &goal)),
     }
 }
 
@@ -1142,12 +1143,92 @@ pub(super) fn guard_arg_term(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -
     code_goal_term(kb, arg).filter(|t| !kb.mentions_debruijn(t))
 }
 
+/// Which way a proof reads a contract or guard conjunct ([`clause_goal`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClauseReading {
+    /// To refute it: a guard at a call, which drops its effect; a precondition at a rule-body
+    /// call, which is then violated. Every goal must be one the resolver answers, over
+    /// arguments that read as their values: a datum unequal to every value, or a goal no
+    /// clause answers, refutes what the value would not.
+    Refuted,
+    /// To prove or assume it: a precondition at a call, a contract. A comparison's operand must
+    /// read as its value, since `neq(to_bigint(0), zero)` holds of the datum `zero`; a
+    /// predicate's argument is matched as written, against a clause written the same way
+    /// (`holds(Box[V = Untrusted])` by that fact, a lambda by the same lambda).
+    Proved,
+}
+
+/// Does the resolver read the contract or guard conjunct `goal` as it was written, for
+/// `reading` (WI-20261109-5VM2G)? Refuted: a goal it answers — a comparison, a predicate a rule
+/// or a fact declares, a variable, a constant — each argument of which reads as its value
+/// ([`term_is_the_value`]); not a goal calling a function parameter (`g(b)`), which no clause
+/// answers, nor an operation written with no argument (`enabled()`), whose term is its bare
+/// name, nor a dotted call or a function value's application, whose terms are reflect data.
+/// Proved: each operand of a comparison (`eq`, `neq`) reads as its value. The operands of a
+/// connective (`|`, `&`, `not`) are goals, read the same way. The term of `zero()` is the bare
+/// name `zero`, which the resolver compared as a datum unequal to every number, so
+/// `effects { Boom :- PartialEq.eq(b, zero()) }` was refuted at `risky(to_bigint(0))` and
+/// `requires PartialEq.neq(b, zero())` proved at `f(to_bigint(0))`.
+fn goal_reads_as_written(
+    kb: &mut KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    reading: ClauseReading,
+) -> bool {
+    let not_sym = kb.try_resolve_symbol("anthill.kernel.not").map(|s| kb.canonical_sym(s));
+    let (eq, neq) = eq_neq_functors(kb);
+    let (eq_sym, neq_sym) = (kb.canonical_sym(eq), neq.map(|s| kb.canonical_sym(s)));
+    let kb: &KnowledgeBase = kb;
+    let mut goals = vec![Rc::clone(goal)];
+    while let Some(goal) = goals.pop() {
+        let reads = match goal.as_expr() {
+            Some(Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            }) => {
+                let head = kb.canonical_sym(*functor);
+                let negation = pos_args.len() == 1 && Some(head) == not_sym;
+                let mut args = pos_args.iter().chain(named_args.iter().map(|(_, a)| a));
+                if named_args.is_empty()
+                    && (negation || kb.is_goal_connective(*functor, pos_args.len()))
+                {
+                    goals.extend(pos_args.iter().cloned());
+                    true
+                } else if head == eq_sym || Some(head) == neq_sym {
+                    args.all(|a| term_is_the_value(kb, a))
+                } else {
+                    match reading {
+                        ClauseReading::Refuted => {
+                            !kb.has_kind(*functor, crate::intern::SymbolKind::Param)
+                                && args.all(|a| term_is_the_value(kb, a))
+                        }
+                        ClauseReading::Proved => true,
+                    }
+                }
+            }
+            Some(Expr::Ref(name) | Expr::Ident(name)) => {
+                reading == ClauseReading::Proved
+                    || !crate::kb::op_info::operation_is_declared(kb, *name)
+            }
+            Some(Expr::VarRef { .. } | Expr::Var(_) | Expr::Const(_)) => true,
+            _ => reading == ClauseReading::Proved,
+        };
+        if !reads {
+            return false;
+        }
+    }
+    true
+}
+
 /// Is every node of `occ` a form whose goal term the resolver reads as its value: a literal,
 /// a name, a variable, a type, a constructor, a list, set or tuple literal, or a call of an
 /// operation with an argument? Not a call written with none, whose term is its bare name
-/// (`four()` is `four`); nor a call of a function parameter (`g(4)`), which no clause answers;
-/// nor a dotted call, a function value's application, a lambda or a compound form, whose
-/// terms are reflect data.
+/// (`four()` is `four`), nor that bare name (the same term, read back from a clause stored as
+/// one); nor a `const`, which a clause keeps as its name (§5.9) and the resolver compares as a
+/// datum; nor a call of a function parameter (`g(4)`), which no clause answers; nor a dotted
+/// call, a function value's application, a lambda or a compound form, whose terms are reflect
+/// data.
 fn term_is_the_value(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
     let mut stack = vec![Rc::clone(occ)];
     while let Some(node) = stack.pop() {
@@ -1165,7 +1246,7 @@ fn term_is_the_value(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
             } => {
                 kb.is_constructor_symbol(*functor)
                     || (!(pos_args.is_empty() && named_args.is_empty() && type_args.is_empty())
-                        && crate::kb::op_info::with_op_signature(kb, *functor, |_| ()).is_some())
+                        && crate::kb::op_info::operation_is_declared(kb, *functor))
             }
             Expr::Constructor { .. }
             | Expr::Instantiation { .. }
@@ -1175,9 +1256,12 @@ fn term_is_the_value(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
             | Expr::TypeValue { .. }
             | Expr::VarRef { .. }
             | Expr::Var(_)
-            | Expr::Const(_)
-            | Expr::Ref(_)
-            | Expr::Ident(_) => true,
+            | Expr::Const(_) => true,
+            Expr::Ref(name) | Expr::Ident(name) => {
+                kb.is_constructor_symbol(*name)
+                    || !(crate::kb::op_info::operation_is_declared(kb, *name)
+                        || kb.has_kind(*name, crate::intern::SymbolKind::Const))
+            }
             _ => false,
         };
         if !reads {
@@ -1612,7 +1696,10 @@ pub(super) fn precondition_proved(
     // functor-headed goal, so an unreadable carrier simply fails to prove (the same
     // conservative UNPROVED default as the dual `guarded_atom_refuted`'s `false`).
     for conj in clause_conjuncts(kb, clause) {
-        let goal = sigma.clause_goal(kb, op_sym, &conj);
+        // A conjunct with no goal reads a term that is not its value: unproved.
+        let Some(goal) = sigma.clause_goal(kb, op_sym, &conj, ClauseReading::Proved) else {
+            return false;
+        };
         if !prove_from_gamma(kb, flow, &goal) {
             return false;
         }
@@ -1623,8 +1710,14 @@ pub(super) fn precondition_proved(
 impl CallSigma {
     /// The goal a proof asks of `op`'s contract or guard conjunct `conj` at this call
     /// ([`clause_goal`]).
-    pub(super) fn clause_goal(&self, kb: &mut KnowledgeBase, op: Symbol, conj: &Value) -> Value {
-        clause_goal(kb, op, conj, &self.terms, &self.args)
+    pub(super) fn clause_goal(
+        &self,
+        kb: &mut KnowledgeBase,
+        op: Symbol,
+        conj: &Value,
+        reading: ClauseReading,
+    ) -> Option<Value> {
+        clause_goal(kb, op, conj, &self.terms, &self.args, reading)
     }
 }
 
@@ -1634,20 +1727,28 @@ impl CallSigma {
 /// what the typer decided at them in `args`, the call's arguments by parameter — the
 /// substitution leaving the clause's shape and replacing only what its parameters and `result`
 /// stood for.
+///
+/// `None` where the conjunct is not read as written for `reading` ([`goal_reads_as_written`]):
+/// no proof decides it.
 pub(crate) fn clause_goal(
     kb: &mut KnowledgeBase,
     op_sym: Symbol,
     conj: &Value,
     sigma: &HashMap<Symbol, TermId>,
     args: &HashMap<Symbol, Rc<NodeOccurrence>>,
-) -> Value {
+    reading: ClauseReading,
+) -> Option<Value> {
+    let written = crate::kb::node_occurrence::value_as_occurrence(kb, conj);
+    if !goal_reads_as_written(kb, &written, reading) {
+        return None;
+    }
     let substituted = substitute_ref_terms(kb, conj, sigma);
     let typed = match conj {
         Value::Term { id, .. } => kb.typed_contract_conjunct(op_sym, *id),
         _ => None,
     };
     if typed.is_none() && args.is_empty() {
-        return substituted;
+        return Some(substituted);
     }
     let goal = crate::kb::node_occurrence::value_as_occurrence(kb, &substituted);
     let mut carried = false;
@@ -1658,15 +1759,15 @@ pub(crate) fn clause_goal(
     if !args.is_empty() {
         let written = match &typed {
             Some(typed) => Rc::clone(typed),
-            None => crate::kb::node_occurrence::value_as_occurrence(kb, conj),
+            None => written,
         };
         carried |= carry_argument_stamps(kb, &written, &goal, args);
     }
-    if carried {
+    Some(if carried {
         Value::Node(goal)
     } else {
         substituted
-    }
+    })
 }
 
 /// Where `written`, a clause's conjunct, names a parameter `args` binds, the calls of the goal

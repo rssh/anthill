@@ -1,0 +1,68 @@
+==================================
+BigInt literal: the suffix n, any size, signed
+==================================
+
+const Z: BigInt = 0n
+const M: BigInt = -7n
+const L: BigInt = 123456789012345678901234567890n
+
+---
+
+(source_file
+  (const_declaration
+    name: (name
+      (identifier))
+    type: (simple_type
+      (name
+        (identifier)))
+    value: (bigint_literal))
+  (const_declaration
+    name: (name
+      (identifier))
+    type: (simple_type
+      (name
+        (identifier)))
+    value: (bigint_literal))
+  (const_declaration
+    name: (name
+      (identifier))
+    type: (simple_type
+      (name
+        (identifier)))
+    value: (bigint_literal)))
+
+==================================
+BigInt literal: a pattern and a call argument
+==================================
+
+operation f(b: BigInt) -> Int64 = match b case 0n -> 1 case _ -> eq(b, -2n)
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    body: (match_expr
+      scrutinee: (name
+        (identifier))
+      (match_branch
+        pattern: (pattern_literal
+          (bigint_literal))
+        body: (integer_literal))
+      (match_branch
+        pattern: (pattern_wildcard)
+        body: (fn_term
+          name: (name
+            (identifier))
+          (name
+            (identifier))
+          (bigint_literal))))))

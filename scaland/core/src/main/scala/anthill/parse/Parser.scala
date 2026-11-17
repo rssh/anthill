@@ -31,6 +31,6 @@ object Parser:
   private[anthill] def renderLiteral(lit: Literal): String = lit match
     case Literal.StringLit(s) => Tokens.encodeStringLiteral(s)
     case Literal.IntLit(v)    => v.toString
-    case Literal.BigIntLit(v) => v.toString
+    case Literal.BigIntLit(v) => s"${v}n"
     case Literal.FloatLit(v)  => Tokens.floatSurface(v.value)
     case Literal.BoolLit(v)   => v.toString

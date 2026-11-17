@@ -35,10 +35,11 @@
 -- for the two operations, plus the two laws no single category can state (`mul_comm`,
 -- and `distrib`, which reads both operations) — and it is Ord-free by construction,
 -- which is the property `Numeric` did not have. `PartialEq` is written out beside it
--- because the guards below spell `eq` and `neq` (`:- eq(a, 0)`, `:- neq(?b, 0)`), and it
--- is the ONE thing the `Numeric` chain was legitimately supplying, via `PartialOrd
--- requires PartialEq[T]`. Dropping `Numeric` without writing it out would have left every
--- guard in this file reading an `eq` no carrier owed.
+-- because the laws below spell `neq` (`:- neq(?b, 0)`), and it is the ONE thing the
+-- `Numeric` chain was legitimately supplying, via `PartialOrd requires PartialEq[T]`.
+-- Dropping `Numeric` without writing it out would have left every guard in this file
+-- reading a `neq` no carrier owed. (`recip`'s effect was guarded by `eq(a, 0)` too until
+-- WI-20261109-5VM2G made it unconditional.)
 --
 -- THE ASYMMETRY WITH `EuclideanDomain` NO LONGER HAS THE REASON STATED HERE, and this
 -- paragraph is left saying so rather than being quietly given a new one. It used to
@@ -127,9 +128,9 @@
 sort anthill.prelude.Field
   import anthill.prelude.{PartialEq, Divisible}
   import anthill.prelude.algebra.{Ring}
-  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
-  -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
-  import anthill.prelude.PartialEq.{eq, neq}
+  -- WI-20260825-KD9SW: a WRITTEN bare `neq` (a law's guard) names the operation by
+  -- import now; a minted `=`/`!=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{neq}
   -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
   import anthill.prelude.Multiplicative.{mul}
 
@@ -139,7 +140,9 @@ sort anthill.prelude.Field
   provides Divisible[T = T]
 
   operation {
-    recip(a: T) -> T effects { Error[DivisionByZero] :- eq(a, 0) }         -- `1 / a`; partial: a ≠ 0
+    -- Unconditional, for the reasons `Divisible.div` states (WI-20261109-5VM2G): a carrier
+    -- that raises guards it with a zero of its own type, and `Float.recip` raises nothing.
+    recip(a: T) -> T effects { Error[DivisionByZero] }         -- `1 / a`; partial: a ≠ 0
   }
 
   -- Inverse law: div really is the inverse of mul — but only for b ≠ 0.

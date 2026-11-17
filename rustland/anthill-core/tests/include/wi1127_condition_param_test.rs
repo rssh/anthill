@@ -415,11 +415,11 @@ namespace test.wi1127big
   sort Acct
     entity acct(name: String, balance: BigInt, rank: Int64)
   end
-  fact acct(name: "alice", balance: 99999999999999999999, rank: 1)
-  fact acct(name: "bob", balance: 88888888888888888888, rank: 2)
+  fact acct(name: "alice", balance: 99999999999999999999n, rank: 1)
+  fact acct(name: "bob", balance: 88888888888888888888n, rank: 2)
   rule acct_row(?name, ?balance, ?rank) :- acct(name: ?name, balance: ?balance, rank: ?rank)
   operation big() -> List[(name: String, balance: BigInt, rank: Int64)] effects Error =
-    acct_row.where(lambda c -> eq(c.balance, 99999999999999999999)).takeN(9)
+    acct_row.where(lambda c -> eq(c.balance, 99999999999999999999n)).takeN(9)
   operation control() -> List[(name: String, balance: BigInt, rank: Int64)] effects Error =
     acct_row.where(lambda c -> eq(c.rank, 1)).takeN(9)
 end

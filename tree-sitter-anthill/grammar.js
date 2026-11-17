@@ -196,6 +196,7 @@ module.exports = grammar({
     // position through (there are no singleton types).
     _type_literal: $ => choice(
       $.integer_literal,
+      $.bigint_literal,
       $.float_literal,
       $.string_literal,
       $.boolean_literal,
@@ -1271,6 +1272,7 @@ module.exports = grammar({
     _non_name_atom_term: $ => choice(
       $.string_literal,
       $.integer_literal,
+      $.bigint_literal,
       $.float_literal,
       $.boolean_literal,
       $.variable_term,
@@ -1742,6 +1744,7 @@ module.exports = grammar({
     pattern_literal: $ => choice(
       $.string_literal,
       $.integer_literal,
+      $.bigint_literal,
       $.float_literal,
       $.boolean_literal,
     ),
@@ -2050,6 +2053,10 @@ module.exports = grammar({
 
     string_literal: $ => /"([^"\\]|\\.)*"/,
     integer_literal: $ => /-?[0-9]+/,
+    // WI-20261109-5VM2G: a BigInt constant is written with the suffix `n` (`0n`, `-7n`),
+    // and is a BigInt whatever its size; an unsuffixed integer is an Int64, and one too
+    // large for it is refused by the converter rather than read as a BigInt.
+    bigint_literal: $ => /-?[0-9]+n/,
     float_literal: $ => /-?[0-9]+\.[0-9]+/,
     boolean_literal: $ => choice('true', 'false'),
     duration_literal: $ => /[0-9]+(?:ms|s|m|h|d)/,

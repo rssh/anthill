@@ -963,7 +963,8 @@ impl<'a> Converter<'a> {
                     effect_items.into_iter().map(|e| e.type_expr).collect();
                 TypeExpr::EffectRow(effects)
             }
-            "integer_literal" | "float_literal" | "string_literal" | "boolean_literal" => {
+            "integer_literal" | "bigint_literal" | "float_literal" | "string_literal"
+            | "boolean_literal" => {
                 // WI-302: a literal standing in a type-argument position
                 // (`Vector[Int, 3]`) is value-in-type → denoted(value).
                 TypeExpr::Denoted(self.convert_term(node))
@@ -1093,15 +1094,32 @@ impl<'a> Converter<'a> {
                 let term = Term::Const(Literal::String(self.string_lit(node)));
                 results.push(self.terms.alloc(term, span));
             }
+            // WI-20261109-5VM2G: a literal's type is its spelling. An unsuffixed integer is
+            // an `Int64`, and one too large for it is refused: it was read as a `BigInt`,
+            // so `0` and `99999999999999999999` were literals of two types and a small
+            // `BigInt` had no literal at all. A `BigInt` is written with the suffix `n`.
             "integer_literal" => {
                 let text = self.text(node);
                 let tid = if let Ok(n) = text.parse::<i64>() {
                     self.terms.alloc(Term::Const(Literal::Int(n)), span)
-                } else if let Ok(big) = text.parse::<num_bigint::BigInt>() {
-                    self.terms.alloc(Term::Const(Literal::BigInt(big)), span)
                 } else {
-                    self.err(format!("invalid integer: {text}"), node);
+                    self.err(
+                        format!("integer literal {text} overflows Int64; write {text}n for a BigInt"),
+                        node,
+                    );
                     self.terms.alloc(Term::Const(Literal::Int(0)), span)
+                };
+                results.push(tid);
+            }
+            "bigint_literal" => {
+                let text = self.text(node);
+                let digits = text.strip_suffix('n').unwrap_or(text);
+                let tid = match digits.parse::<num_bigint::BigInt>() {
+                    Ok(big) => self.terms.alloc(Term::Const(Literal::BigInt(big)), span),
+                    Err(_) => {
+                        self.err(format!("invalid BigInt literal: {text}"), node);
+                        self.terms.alloc(Term::Const(Literal::Int(0)), span)
+                    }
                 };
                 results.push(tid);
             }
@@ -6213,6 +6231,7 @@ fn is_data_literal_kind(kind: &str) -> bool {
         kind,
         "string_literal"
             | "integer_literal"
+            | "bigint_literal"
             | "float_literal"
             | "boolean_literal"
             | "collection_literal"

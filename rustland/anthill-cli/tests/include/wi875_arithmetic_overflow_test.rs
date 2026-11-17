@@ -231,10 +231,10 @@ fn ordinary_arithmetic_is_unchanged() {
 /// way, and goes red only if that rewrite made BigInt fault or fail.
 #[test]
 fn bigint_computes_where_int64_overflows() {
-    let out = query("add(9223372036854775808, 9223372036854775808, ?r)");
+    let out = query("add(9223372036854775808n, 9223372036854775808n, ?r)");
     assert_eq!(out.code, 0, "must run; stderr:\n{}", out.stderr);
     assert!(
-        out.stdout.contains("?r = 18446744073709551616"),
+        out.stdout.contains("?r = 18446744073709551616n"),
         "BigInt has no overflow: 2^63 + 2^63 computes; stdout:\n{}",
         out.stdout
     );
@@ -254,8 +254,8 @@ fn bigint_computes_where_int64_overflows() {
 #[test]
 fn mixing_int64_and_bigint_operands_faults() {
     for p in [
-        "add(9223372036854775808, 1, ?r)",
-        "add(1, 9223372036854775808, ?r)",
+        "add(9223372036854775808n, 1, ?r)",
+        "add(1, 9223372036854775808n, ?r)",
         "mul(2.5, 2, ?r)",
     ] {
         let out = query(p);

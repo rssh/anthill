@@ -845,6 +845,21 @@ end
     );
 }
 
+#[test]
+fn bigint_const_is_refused() {
+    // WI-20261109-5VM2G: `0n` writes a small BigInt, and `num_bigint::BigInt` has no Rust
+    // `const` form — its bare digits were emitted, Rust that does not compile, and the
+    // generator reported success. Backed out (`lower_literal_rust` emitting the digits),
+    // this fails on the `Ok`; `freestanding_const_to_module_const` passes either way.
+    let parsed = parse::parse("namespace test.consts\n  public const Z: BigInt = 0n\nend\n")
+        .expect("parse");
+    let errs = generate_rust(&parsed).expect_err("a BigInt const has no Rust const form");
+    assert!(
+        format!("{errs:?}").contains("const `Z`: the BigInt `0n` has no Rust `const` form"),
+        "{errs:?}"
+    );
+}
+
 // ── Test 26: WI-540 boxed_trait_objects mode (position-aware) ─────
 
 #[test]

@@ -663,8 +663,10 @@ fn discharge_contract_proof(
             continue;
         }
         for conj in clause_conjuncts(kb, c) {
-            let conj = contract_goal(kb, op_sym, &conj, &sigma);
-            flow = flow.assume(kb, conj);
+            // A conjunct that reads a term which is not its value is not assumed.
+            if let Some(conj) = contract_goal(kb, op_sym, &conj, &sigma) {
+                flow = flow.assume(kb, conj);
+            }
         }
     }
 
@@ -685,7 +687,15 @@ fn discharge_contract_proof(
             );
         }
         for conj in conjuncts {
-            let goal = contract_goal(kb, op_sym, &conj, &sigma);
+            let Some(goal) = contract_goal(kb, op_sym, &conj, &sigma) else {
+                return write_contract_failed(
+                    kb,
+                    rid,
+                    rule_qn,
+                    "an `ensures` conjunct compares a term that is not its value — an \
+                     operation written with no argument, a `const` — which no proof decides",
+                );
+            };
             // THREE FAILURES, THREE MESSAGES. This was one bool and one sentence —
             // "not derivable from the body" — for all three, which told an author
             // whose body is FINE that it is not: an `ensures` over a parameter maps to
@@ -794,14 +804,24 @@ fn discharge_contract_proof(
 /// there was its reflect term already, and each of those contracts discharged before
 /// as now.
 ///
+/// `None` for a conjunct that reads a term which is not its value (WI-20261109-5VM2G,
+/// [`super::typing::clause_goal`]).
+///
 /// [`value_as_occurrence`]: super::node_occurrence::value_as_occurrence
 fn contract_goal(
     kb: &mut KnowledgeBase,
     op_sym: Symbol,
     conj: &Value,
     sigma: &HashMap<Symbol, TermId>,
-) -> Value {
-    super::typing::clause_goal(kb, op_sym, conj, sigma, &HashMap::new())
+) -> Option<Value> {
+    super::typing::clause_goal(
+        kb,
+        op_sym,
+        conj,
+        sigma,
+        &HashMap::new(),
+        super::typing::ClauseReading::Proved,
+    )
 }
 
 /// Write a `Failed(Unknown(reason))` verdict onto a contract `ProofRecord` and

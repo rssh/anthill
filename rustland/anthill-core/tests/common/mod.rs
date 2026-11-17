@@ -1171,12 +1171,14 @@ pub fn parses_clean(src: &str) {
 /// Is `e` one of the refusals the standard library gets loaded without its host binding
 /// layer: a `@[host_implemented]` claim no binding block supplies, or a comparison or an
 /// equality at a carrier whose order and equality are provisions of that layer (`Int64`,
-/// `String`). Since WI-20260909-SM910 a comparison is its carrier's member, and since
+/// `String`, `BigInt`). Since WI-20260909-SM910 a comparison is its carrier's member, and since
 /// WI-20261105-CBRD2 an equality is, so the library's own `PartialOrd.gt` and `=` at `Int64`
-/// read the `PartialOrd[T = Int64]` and `PartialEq[T = Int64]` the layer provides.
+/// read the `PartialOrd[T = Int64]` and `PartialEq[T = Int64]` the layer provides; and since
+/// WI-20261109-5VM2G a host operation's guard is typed, so `BigInt.div`'s `eq(b, 0n)` reads
+/// the `PartialEq[T = BigInt]` it provides.
 #[allow(dead_code)]
 pub fn a_binding_less_stdlib_refusal(e: &str) -> bool {
-    let at_a_host_carrier = ["anthill.prelude.Int64", "anthill.prelude.String"]
+    let at_a_host_carrier = ["anthill.prelude.Int64", "anthill.prelude.String", "anthill.prelude.BigInt"]
         .iter()
         .any(|carrier| e.contains(&format!("[T = {carrier}]`")) || e.contains(&format!("carrier `{carrier}`")));
     let of_a_comparison = ["anthill.prelude.PartialOrd.", "anthill.prelude.PartialEq."]

@@ -3618,12 +3618,25 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                         // override actually wrote, not one rewritten to the spec's
                         // param names (WI-818 review).
                         let ie_aligned = align_effect_label(kb, ie, &align, &align_syms);
-                        let covered = spec_effs.iter().any(|se| {
+                        let covers = |kb: &mut KnowledgeBase, atom: &Value, se: &Value| {
                             decidable(kb, se) && {
                                 let mut subst = Substitution::new();
-                                types_compatible(kb, &mut subst, &ie_aligned, se)
+                                types_compatible(kb, &mut subst, atom, se)
                             }
-                        });
+                        };
+                        // WI-20261109-5VM2G (§8.7): a GUARDED atom is also covered by an
+                        // UNCONDITIONAL spec atom of its label — `E :- g` raises `E` at
+                        // fewer calls than `E` does, so it narrows. Matched whole, a guarded
+                        // atom was covered only by the spec's guard spelled identically,
+                        // which pinned every carrier's guard to the spec's text: a spec over
+                        // `T` writes its zero as the `Int64` literal `0`, and `BigInt`'s
+                        // guard had to compare a `BigInt` with it.
+                        let covered = spec_effs.iter().any(|se| covers(kb, &ie_aligned, se))
+                            || guarded_effect_label(kb, &ie_aligned).is_some_and(|label| {
+                                spec_effs.iter().any(|se| {
+                                    guarded_effect_label(kb, se).is_none() && covers(kb, &label, se)
+                                })
+                            });
                         if !covered {
                             errors.push(LoadError::IncompatibleOverride {
                                 carrier: kb.qualified_name_of(p.carrier).to_string(),

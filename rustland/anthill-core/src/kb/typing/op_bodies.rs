@@ -23,9 +23,13 @@ pub(super) fn check_operation_bodies(
         /// `None` for a body-less operation, which is checked only for the defaults its
         /// parameters declare (proposal 069 §1.1).
         body_node: Option<Rc<NodeOccurrence>>,
-        /// Where the operation's checked text is — its body, else its first default — and
-        /// the declaration it sits in: the span and owner the signature's slot fills read.
+        /// Where the operation's checked text is — its body, else its first default, else
+        /// its declaration — and the declaration it sits in: the span and owner the
+        /// signature's slot fills read.
         site: (crate::span::SourceSpan, Option<Symbol>),
+        /// A body-less operation with no default, checked for its contract and its guards
+        /// alone (WI-20261109-5VM2G).
+        contract_only: bool,
         params: Vec<(Symbol, Value)>,
         span: Option<Span>,
         /// WI-424/WI-942 — every type param in scope for this body → its per-body
@@ -72,12 +76,27 @@ pub(super) fn check_operation_bodies(
             continue;
         }
         // Body-less ops (specs, host operations) have no body to type-check, but a default
-        // their parameters declare is typed here as a body is (proposal 069 §3).
+        // their parameters declare is typed here as a body is (proposal 069 §3), and so are
+        // the comparisons of their contract and their guards (§5.4, WI-20261109-5VM2G): a
+        // host operation's guard was never typed, and `BigInt.div`'s compared its `BigInt`
+        // divisor with the `Int64` literal `0`. Such an op is typed at its declaration.
         let body_node = rec.body_node;
-        let site = match (&body_node, kb.op_param_defaults(rec.op_sym).first()) {
-            (Some(body), _) => (body.span, body.owner),
-            (None, Some((_, default))) => (default.span, default.owner),
-            (None, None) => continue,
+        let (site, contract_only) = match (&body_node, kb.op_param_defaults(rec.op_sym).first())
+        {
+            (Some(body), _) => ((body.span, body.owner), false),
+            (None, Some((_, default))) => ((default.span, default.owner), false),
+            (None, None) => match kb
+                .op_decl_sites
+                .get(&rec.op_sym)
+                .and_then(|sites| sites.first().copied())
+            {
+                Some(declared) if declares_contract_comparisons(kb, rec.op_sym) => {
+                    ((declared, Some(rec.op_sym)), true)
+                }
+                // Nothing to type; or no declaration in this load phase (`op_decl_sites` is
+                // the phase's): an earlier load's operation was typed by that load.
+                _ => continue,
+            },
         };
         // WI-392: while CHECKING this operation's body, its OWN declared type
         // parameters are universally quantified — Skolemize them to `Var::Rigid`
@@ -266,6 +285,7 @@ pub(super) fn check_operation_bodies(
             declared_effects,
             body_node,
             site,
+            contract_only,
             params,
             span,
             sort_rigid_len,
@@ -541,6 +561,12 @@ pub(super) fn check_operation_bodies(
         };
 
         type_contract_comparisons(kb, &env, op.op_sym, &effective_return, op.site.0, errors);
+        if op.contract_only {
+            // A precondition a call in the contract failed is drained here, as a body's is
+            // below.
+            errors.extend(env.take_deferred_preconditions());
+            continue;
+        }
 
         // WI-1059: the DECLARED EFFECTS get the same discharge as the return, against the
         // same param table, and for the same reason: `Stream.collect(s: Stream) effects
@@ -1208,6 +1234,23 @@ fn type_contract_comparisons(
             type_conjunct_comparisons(kb, &cenv, op_sym, &Value::term(negated), site, &mut Vec::new());
         }
     }
+}
+
+/// Does `op_sym` declare something [`type_contract_comparisons`] types: a value precondition
+/// or postcondition, or a guarded effect? What brings a body-less operation with no default
+/// into [`check_operation_bodies`].
+fn declares_contract_comparisons(kb: &mut KnowledgeBase, op_sym: Symbol) -> bool {
+    let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.clone()) else {
+        return false;
+    };
+    sig.requires
+        .iter()
+        .chain(&sig.ensures)
+        .any(|clause| is_value_precondition_clause(kb, clause))
+        || sig
+            .effects
+            .iter()
+            .any(|effect| !collect_guarded_atoms(kb, &Substitution::new(), effect).is_empty())
 }
 
 /// Why a contract comparison or a contract's goal of a spec member is refused

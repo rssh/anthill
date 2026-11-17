@@ -1,14 +1,15 @@
 -- BigInt: abstract spec for arbitrary-precision integer operations.
 -- Used for ZK field elements, cryptographic constants, and values exceeding i64.
--- Literals that overflow i64 are automatically parsed as BigInt.
+-- A BigInt literal carries the suffix `n` (`0n`, `-7n`, `123456789012345678901234567890n`);
+-- an unsuffixed literal is an Int64, and one too large for it is refused (spec §2.4).
 -- Spec satisfaction facts (Eq[BigInt], Ord[BigInt], Numeric[BigInt]) live
 -- in the per-language binding files (e.g. rustland/anthill-stl/anthill/bigint.anthill)
 -- — see proposal 038.
 sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ord, Numeric}
   import anthill.reflect.{TypeValue}
-  -- The division guards name `PartialEq.eq`, as the specs they refine do; a bare `eq`
-  -- written here is `BigInt.eq`, declared below.
+  -- The division guards name `PartialEq.eq`, as `Int64`'s do; a bare `eq` written here
+  -- is `BigInt.eq`, declared below.
   import anthill.prelude.{PartialEq}
 
   -- WI-876: `BigInt`'s ORDERING, declared here and backed by the host in
@@ -37,11 +38,14 @@ sort anthill.prelude.BigInt
   -- named in `rustland/anthill-stl/anthill/bigint.anthill`'s `operation_map`.
   --
   -- ONLY THE ZERO DIVISOR IS PARTIAL: `BigInt` is unbounded, so there is no
-  -- `Int64.div`-style overflow arm. The guarded effect is the one `Int64` writes.
+  -- `Int64.div`-style overflow arm. The guarded effect is the one `Int64` writes, at a
+  -- `BigInt` zero: `0n` (WI-20261109-5VM2G). It was `PartialEq.eq(b, 0)`, which compared a
+  -- `BigInt` divisor with the `Int64` literal — apart, so the effect was dropped at
+  -- `BigInt.div(x, to_bigint(0))` and the host raised from an operation declaring none.
   operation {
-    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated quotient; partial: b ≠ 0
-    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- Euclidean remainder, never negative; partial: b ≠ 0
-    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
+    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0n) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated quotient; partial: b ≠ 0
+    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0n) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- Euclidean remainder, never negative; partial: b ≠ 0
+    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0n) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
   }
 
   -- WI-880: `BigInt`'s ARITHMETIC, host-backed and named in this carrier's
@@ -88,8 +92,10 @@ sort anthill.prelude.BigInt
   -- preserved by the predecessor IH at every positive n.
   --
   -- WI-1056: the bounds are written `to_bigint(0)` / `to_bigint(1)` because a
-  -- small integer literal is an `Int64` — only one that OVERFLOWS i64 parses as
-  -- a `BigInt` (see this file's header), and there is no implicit widening. With
+  -- small integer literal is an `Int64` — a `BigInt` literal carries the suffix
+  -- `n` (see this file's header; WI-20261109-5VM2G, which this rule predates: an
+  -- unsuffixed literal too large for i64 was read as a `BigInt` then), and there is
+  -- no implicit widening. With
   -- the literals written bare this rule was ill-typed at every one of the three
   -- sites: `?n` is a `BigInt` (`gt`'s own parameter says so), so `sub(?n, 1)`
   -- passed an `Int64` where `BigInt` is declared. Only that one was ever
