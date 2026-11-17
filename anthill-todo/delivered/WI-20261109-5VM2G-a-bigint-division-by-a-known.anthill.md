@@ -3,9 +3,9 @@
 - id: WI-20261109-5VM2G-a-bigint-division-by-a-known
 - created: 2026-11-09T20:01:52Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-16T17:36:11Z
+- status_at: 2026-11-17T06:15:16Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -18,4 +18,8 @@ A BIGINT DIVISION BY A KNOWN ZERO LOADS WITH NO EFFECT DECLARED: the guard of `B
 ### 2026-11-16T17:36:23Z — feedback — user
 
 DECIDED with the user 2026-11-16. Measured on cd8d7b7e: bz/mod/rem still load, and so does to_bigint(7) / to_bigint(0); a program-written guard eq(b, 0) over b: BigInt is refused since CBRD2 5i. Three causes: (1) check_operation_bodies skips a body-less op with no defaults, so a host or spec op's guard is never typed (spec 5.4 says every guard is); (2) the override refinement check covers an impl effect atom only by types_compatible with a spec atom, guard included, so a carrier's guard is pinned to the spec's text and an unconditional spec effect covers no guarded one (measured both); (3) the discharge refutes a comparison it cannot evaluate: BigInt 0 vs Int64 0, and a guard's own nullary call (effects { Boom :- PartialEq.eq(b, zero()) } drops Boom at risky(to_bigint(0)), measured). A dispatched spec call is charged the member's row (measured). DECISIONS: (B) an unconditional spec effect covers a guarded effect of the same label (kernel-language 8.7); the spec rows Divisible.div, EuclideanDomain.mod/rem, Field.recip become unconditional and each carrier writes a typed guard in its own type. A BigInt literal is spelled with the suffix n (0n, -7n), always Literal::BigInt, printed with the suffix; an unsuffixed integer literal too large for Int64 is REFUSED ('write ...n for a BigInt'). BigInt's guards become PartialEq.eq(b, 0n). Also inline: type the guards and value contracts of body-less ops; a guard conjunct whose own term is not its value is undecided (effect kept). All inline in this ticket, the literal first.
+
+### 2026-11-17T06:15:13Z — feedback — user
+
+Delivered (43fe0d01). A BigInt literal is written with the suffix n and an unsuffixed one too large for Int64 is refused; an unconditional spec effect covers a guarded one (§8.7), so Divisible.div, EuclideanDomain.mod/rem and Field.recip declare Error[DivisionByZero] unconditionally and BigInt guards it with PartialEq.eq(b, 0n); a body-less operation's guards and value contracts are typed (§5.4); a conjunct comparing a term that is not its value (zero(), a const) is undecided for every reader, and a guard calling a function parameter is not refuted. Acceptance: bz, mod and rem are refused naming Error[DivisionByZero], so is to_bigint(7) / to_bigint(0); BigInt.div(to_bigint(7), to_bigint(2)) loads; the four controls keep their verdicts. Rows: wi_5vm2g_bigint_zero_divisor_test (12, 17 back-outs measured, table in its header). Gate 12230 / 0 / 17; two-step and fresh 11153 / 0 / 9; families green; scaland 859 / 0. Left as tickets (user, 2026-11-17): the verifier laws over T guarded with neq(?b, 0); serialize_json's one-field entity.
 
