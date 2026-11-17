@@ -2538,3 +2538,5 @@ mod positional_sort_goal_test;
 mod wi_5vm2g_bigint_zero_divisor_test;
 #[path = "include/wi_v0rpw_law_over_type_variable_test.rs"]
 mod wi_v0rpw_law_over_type_variable_test;
+#[path = "include/wi_22s8n_law_of_the_same_load_test.rs"]
+mod wi_22s8n_law_of_the_same_load_test;

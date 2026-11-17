@@ -394,11 +394,48 @@ pub(super) fn oracle_type_sealed_rules(kb: &mut KnowledgeBase) {
 
 /// Which rule bodies one call of [`type_rule_bodies`] types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RuleBodies {
-    /// Every rule a seal does not hold — the sweep.
-    NotSealed,
+pub(super) enum RuleBodies<'a> {
+    /// Every rule a seal does not hold, but `ahead` — the sweep.
+    NotSealed { ahead: &'a [RuleId] },
+    /// The laws a run elaborates AHEAD of the operation bodies ([`laws_elaborated_ahead`],
+    /// WI-20261117-22S8N): a proof of a guard takes one as a premise.
+    Ahead(&'a [RuleId]),
     /// The sealed ones only — the oracle's half.
     SealedOnly,
+}
+
+impl RuleBodies<'_> {
+    /// The rules this call types, in the order of their ids.
+    pub(super) fn rules(self, kb: &KnowledgeBase) -> Vec<RuleId> {
+        match self {
+            RuleBodies::Ahead(laws) => laws.to_vec(),
+            RuleBodies::SealedOnly => kb
+                .live_rule_ids_iter()
+                .filter(|&rid| rule_body_is_typed_once(kb, rid))
+                .collect(),
+            RuleBodies::NotSealed { ahead } => kb
+                .live_rule_ids_iter()
+                .filter(|&rid| !ahead.contains(&rid) && !rule_body_is_typed_once(kb, rid))
+                .collect(),
+        }
+    }
+}
+
+/// THE LAWS A TYPER RUN ELABORATES AHEAD OF THE OPERATION BODIES (WI-20261117-22S8N), in the
+/// order of their ids: each untagged guarded `=` law a seal does not hold. A proof of a guard
+/// or a precondition takes such a law as a premise (§5.3) and runs its body, so the law is
+/// typed and woven before the bodies whose proofs use it ([`type_rule_bodies`],
+/// `install_typed_head_domain_goals`, `install_rule_provider_dictionaries`, each handed this
+/// list). A `@[simp]` guarded equation is not one: it is a rewrite the bodies FIRE, whose
+/// right-hand side the requirement weave rewrites, and it keeps its place after them.
+pub(super) fn laws_elaborated_ahead(kb: &KnowledgeBase) -> Vec<RuleId> {
+    kb.live_rule_ids_iter()
+        .filter(|&rid| {
+            kb.is_guarded_eq_law(rid)
+                && !kb.is_directional_equation(rid)
+                && !rule_body_is_typed_once(kb, rid)
+        })
+        .collect()
 }
 
 /// The rule's body was typed by the sealed load that wrote it: its head is in a sealed

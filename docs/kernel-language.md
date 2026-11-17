@@ -3227,9 +3227,15 @@ member written with no argument resolves through the instance the clause holds: 
 above is `Additive[T = A]`'s, and at a `BigInt` divisor it is `0n`. A law written with no
 type variable is used at every type whose operations its terms name, which for an
 arithmetic identity is wrong somewhere — so the library's are written over theirs. A law is
-a premise for the proofs of a LATER load: within one load the operation bodies, and the
-proofs of their guards and preconditions, are typed before the rule sweep types the laws,
-so a law of the same load is not yet usable there, and is not used (WI-20261117-22S8N).
+a premise for the proofs of its own load as it is for those of a later one: a load
+elaborates its laws — their bodies typed, the goals of their bounds, the reads of their
+requirements — before it types the operation bodies whose guards and preconditions are
+proved with them (WI-20261117-22S8N). With `rule mul_div: div[A](mul(?a, ?b: A), ?b) = ?a :-
+EuclideanDomain[T = A], Additive[T = A], neq(?b, zero)` beside `operation risky(a: Int64, b:
+Int64) -> Int64 requires eq((a * b) / b, a)`, `risky(x, 2)` in the same file is proved and
+`risky(x, 0)` is refused. What a law's guard CALLS is elaborated with the load's other rules,
+after the bodies: a relation of the same load that needs a dictionary leaves the proof
+undecided there, as a proof derives none from the values.
 
 **Every firing site answers alike** — the resolver's rewriter, the typer's operation-body pass and the typer's dot-rule pass all share one guard evaluator — so a tagged rule means the same thing at a resolution goal, in the operation body that spells the same call, and at a method call. At the typer the redex is compile-time syntax, so most guards are simply under-determined and decline; the ones that fire are the ones already decidable from the program text (`nth(xs, -1)` under `nth(?_, ?i) = none :- lt(?i, 0)`), which is constant folding.
 

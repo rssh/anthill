@@ -13,7 +13,10 @@ fn call_functor(call: &NodeOccurrence) -> Option<Symbol> {
 
 /// Compile carrier obligations into reads of their separate dictionary slots.
 /// Written dictionary calls have already been woven and retain their selection.
-pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+pub(super) fn install_rule_provider_dictionaries(
+    kb: &mut KnowledgeBase,
+    clauses: Clauses,
+) -> Vec<TypeError> {
     let mut errors = Vec::new();
     let Some(fd) = find_dictionary_symbol(kb) else {
         return errors;
@@ -21,7 +24,7 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
     let pass = kb.register_pass("anthill.kb.passes.carrier_provider_dictionary");
     let out_label = kb.intern("out");
     let carrier_label = kb.intern(PROVIDER_CARRIER_TYPE_LABEL);
-    for rid in kb.live_rule_ids() {
+    for rid in clauses.rules(kb) {
         let requirements = kb.rule_provider_requirements(rid).to_vec();
         if requirements.is_empty() {
             continue;

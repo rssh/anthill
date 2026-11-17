@@ -61,31 +61,6 @@ fn owes_boom(src: &str) -> bool {
         .any(|e| e.contains("c.effects") && e.contains("undeclared effect: Boom"))
 }
 
-/// The errors of `src` loaded after the library, in the product's order — NOT THE RECIPE,
-/// BY NAME. A guard proof uses a law of an EARLIER load: within one load the operation bodies,
-/// and their guards' proofs, are typed before the rule sweep types the laws (kernel-language
-/// §5.3, WI-20261117-22S8N), so in the library's own one-shot load (`ANTHILL_TEST_FRESH_LOAD=1`)
-/// a lemma is not yet usable and a row that measures it USED differs (MEASURED: the two rows
-/// below). The rows measuring it NOT used read the switch, as every other row does.
-fn errors_after_the_library(src: &str) -> Vec<String> {
-    match crate::common::recipe_load(
-        &[src],
-        None,
-        anthill_core::kb::load::LoadOptions::default(),
-        crate::common::LoadRecipe::TwoStep,
-        |_| {},
-    ) {
-        Ok(_) => Vec::new(),
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
-
-fn owes_boom_after_the_library(src: &str) -> bool {
-    errors_after_the_library(src)
-        .iter()
-        .any(|e| e.contains("c.effects") && e.contains("undeclared effect: Boom"))
-}
-
 const EUCLID: &str = "neq(b * (a / b) + EuclideanDomain.rem(a, b), a)";
 const INVERSE: &str = "neq((a / b) * b, a)";
 
@@ -106,10 +81,10 @@ fn euclid_div_is_used_at_a_euclidean_domain_and_not_at_a_zero_divisor() {
     {
         let src = guarded(&format!("test.v0rpw.euclid{i}"), ty, EUCLID, call);
         assert_eq!(
-            owes_boom_after_the_library(&src),
+            owes_boom(&src),
             *owes,
             "{ty} {call}: {:?}",
-            errors_after_the_library(&src)
+            load_errors_of(&src)
         );
     }
 }
@@ -200,7 +175,7 @@ end
 "#
         )
     };
-    let used = errors_after_the_library(&program("test.v0rpw.fivefield.two", "f5(v: 2)"));
+    let used = load_errors_of(&program("test.v0rpw.fivefield.two", "f5(v: 2)"));
     assert!(used.is_empty(), "the law refutes the guard at a non-zero divisor: {used:?}");
     let src = program("test.v0rpw.fivefield.zero", "f5(v: 0)");
     assert!(owes_boom(&src), "not at a zero one: {:?}", load_errors_of(&src));

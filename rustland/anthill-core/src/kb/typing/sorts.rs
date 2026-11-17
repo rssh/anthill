@@ -220,6 +220,34 @@ pub(super) fn type_check_sorts_collect(
     // ABOVE BOTH CALLS, so the sort loop and the free-op sweep share the one set.
     let region_sorts = crate::kb::region::region_sorts(kb);
 
+    // WI-20261117-22S8N — THE GUARDED LAWS BEFORE THE BODIES WHOSE PROOFS USE THEM. A
+    // guard is refuted, and a precondition proved, while an operation body is typed, and a
+    // proof from Γ takes a guarded `=` law as a premise (§5.3): it instantiates the law's
+    // type variable and passes the instances its body reads (`law_type_instantiation`). A
+    // law of THIS load had none of that yet when the sweep below typed every rule after
+    // the bodies: its `zero` unwoven, its guards no reads, so the proof could not decide it
+    // and the lemma went unused — where the same law of an EARLIER load was used. MEASURED:
+    // `euclid_div` at `risky(x, 2)` over `Int64` owed `Boom` with the library and the
+    // program in one load, and a program's own `div[A](mul(?a, ?b: A), ?b) = ?a` law did
+    // in the product's order. So a law gets ALL its elaboration here (`laws_elaborated_ahead`):
+    // its body typed, the domain goal of its bound, and the reads of its declared
+    // requirements with the calls woven through them. The rest of the rule passes give an
+    // equational head nothing (`infer_rule_body_requirements` and
+    // `route_rule_goal_requirements` skip it, and the requirement checks read), and the
+    // sweep below passes over what is done here: `RuleBodies::NotSealed` leaves the list
+    // out, and the two installers find their stamps on a law's body. What a law's guard
+    // CALLS is still typed in that sweep: a relation of this load that the proof runs has
+    // no requirement reads yet, as before, and where it would need one the proof is
+    // undecided (WI-20261105-CBRD2: a proof derives no dictionary from the values). And a
+    // law's own refusals by the requirement checks below come after the bodies whose
+    // proofs used it — the load is refused all the same.
+    let ahead = laws_elaborated_ahead(kb);
+    sources.resize(errors.len(), None);
+    type_rule_bodies(kb, RuleBodies::Ahead(&ahead), &mut errors, &mut sources);
+    install_typed_head_domain_goals(kb, Clauses::Ahead(&ahead));
+    errors.extend(install_rule_provider_dictionaries(kb, Clauses::Ahead(&ahead)));
+    sources.resize(errors.len(), None);
+
     if kb.try_resolve_symbol("anthill.reflect.SortInfo").is_some() {
         // Each sort's constructors and operations, read ONCE: the loop below walks them,
         // and the pass before it needs the constructors to know which clauses are the
@@ -368,7 +396,7 @@ pub(super) fn type_check_sorts_collect(
     sources.resize(errors.len(), None);
     type_rule_bodies(
         kb,
-        RuleBodies::NotSealed,
+        RuleBodies::NotSealed { ahead: &ahead },
         &mut errors,
         &mut sources,
     );
@@ -389,11 +417,11 @@ pub(super) fn type_check_sorts_collect(
     // extends are settled and `collect_rule_var_types` has already read the body the
     // AUTHOR wrote — the generated goal must not feed the inference whose output it
     // exists to enforce.
-    install_typed_head_domain_goals(kb);
+    install_typed_head_domain_goals(kb, Clauses::All);
 
     // A rule's declared requirements — the head introducer's guards — compiled into reads
     // of their dictionaries, each covered call woven through its own.
-    errors.extend(install_rule_provider_dictionaries(kb));
+    errors.extend(install_rule_provider_dictionaries(kb, Clauses::All));
     // WI-642: this flags a rule-body spec-op call whose requirement is neither declared nor
     // satisfiable by a provision — statically missing, so the call would fail at
     // resolution for a reason no message names. Runs after the guards' reads are installed

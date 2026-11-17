@@ -344,7 +344,9 @@ pub(super) fn for_each_var_leaf(
 ///
 /// Runs over ALL live non-fact rules — sort-scoped AND free namespace-level (a
 /// free rule's domain is its namespace, which has no `SortInfo`, so the driver's
-/// sort loop misses it). This subsumes the second `collect_rule_var_types`
+/// sort loop misses it). The sweep is two calls ([`RuleBodies`]): the laws whose
+/// proofs the operation bodies use, ahead of the bodies (WI-20261117-22S8N), and every
+/// other rule a seal does not hold after them; the oracle makes a third, over the sealed. This subsumes the second `collect_rule_var_types`
 /// recompute: `check_rule_typing` no longer collects (it contributed only the
 /// contradiction, now emitted here) and the dot pass no longer collects separately.
 pub(super) fn type_rule_bodies(
@@ -367,11 +369,8 @@ pub(super) fn type_rule_bodies(
 ) {
     // Read once: typing rewrites bodies and asserts no equation.
     let simp = simp_gate(kb);
-    for rid in kb.live_rule_ids() {
-        // WI-20261010-9BKZ4 — a sealed load's rule bodies were typed by that load.
-        if rule_body_is_typed_once(kb, rid) != (which == RuleBodies::SealedOnly) {
-            continue;
-        }
+    // WI-20261010-9BKZ4 — a sealed load's rule bodies were typed by that load.
+    for rid in which.rules(kb) {
         // A clause's refusals — a contradiction, a position that does not fit — at every
         // load that types it, as one load over everything reports them, but a refused
         // load's: that load reported them, and its corrected retry is not refused over its
@@ -562,7 +561,7 @@ pub(super) fn type_rule_bodies(
         }
         // A sealed load's clauses had theirs installed when that load typed them; the
         // oracle's pass over them must change nothing a seal holds.
-        if which == RuleBodies::NotSealed {
+        if which != RuleBodies::SealedOnly {
             install_inferred_column_bounds(kb, rid, &var_types);
         }
     }
@@ -968,7 +967,7 @@ pub fn is_typed_head_domain_goal(kb: &KnowledgeBase, goal: &NodeOccurrence) -> b
 /// a bound is a RELATIONAL head, including a body-less one — `rule p(?x: T) :- true` folds to
 /// an empty body (§6.1) and is still a clause that answers — or a GUARDED `=` LAW, whose body
 /// a proof from Γ runs when it takes the law as a premise (WI-20261117-V0RPW).
-pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
+pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase, clauses: Clauses) {
     let (Some(dom_sym), Some(guard_sym)) = (
         kb.try_resolve_symbol(TYPE_DOMAIN_GOAL),
         kb.try_resolve_symbol(TYPE_DOMAIN_GUARD),
@@ -976,7 +975,7 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         return; // builtins not registered — nothing to generate against
     };
     let pass = typed_head_domain_pass(kb);
-    for rid in kb.live_rule_ids() {
+    for rid in clauses.rules(kb) {
         if kb.rule_type_bounds(rid).is_empty() {
             continue;
         }
@@ -1405,4 +1404,27 @@ pub(crate) fn occ_holds_woven_call(occ: &Rc<NodeOccurrence>) -> bool {
         for_each_child(expr, |c| stack.push(Rc::clone(c)));
     }
     false
+}
+
+/// Which clauses one run of a pass that elaborates rule bodies covers — the domain goals a
+/// head's bound adds ([`install_typed_head_domain_goals`]) and the reads of a clause's declared
+/// requirements (`install_rule_provider_dictionaries`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Clauses<'a> {
+    /// Every live clause. Each pass stamps what it installs and passes over a clause it finds
+    /// its stamp in, so this run leaves alone what a run over [`Clauses::Ahead`] installed.
+    All,
+    /// The laws a typer run elaborates ahead of the operation bodies
+    /// ([`laws_elaborated_ahead`], WI-20261117-22S8N).
+    Ahead(&'a [RuleId]),
+}
+
+impl Clauses<'_> {
+    /// The clauses this run covers, in the order of their ids.
+    pub(super) fn rules(self, kb: &KnowledgeBase) -> Vec<RuleId> {
+        match self {
+            Clauses::All => kb.live_rule_ids(),
+            Clauses::Ahead(laws) => laws.to_vec(),
+        }
+    }
 }
