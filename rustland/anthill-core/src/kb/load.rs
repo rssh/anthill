@@ -3313,7 +3313,8 @@ fn typed_pattern_refusal_detail(rule: Option<&str>, reason: TypedPatternRefusal)
         TypedPatternRefusal::NotARewrite => format!(
             "WI-582: a typed rule pattern (`?x: T`) is enforced only where the \
              resolver fires a directional rewrite — an EQUATION tagged \
-             `@[simp]` (§8.3). {rule} is not one, so it would silently \
+             `@[simp]` (§8.3), or a guarded `=` law, a proof's premise whose body \
+             reads it (WI-20261117-V0RPW). {rule} is neither, so it would silently \
              ignore the bound. Tag it or drop the annotation. (A GUARD is not what \
              disqualifies a rule: since WI-20260820-8RJK8 a tagged \
              `f(?x: T) = g(?x) :- p(?x)` is a conditional rewrite and enforces the \
@@ -48760,10 +48761,17 @@ impl<'a> Loader<'a> {
                         } else {
                             None
                         }
-                    } else if is_equational_head(self.kb, kb_head) {
+                    } else if is_equational_head(self.kb, kb_head)
+                        && !self.kb.is_guarded_eq_law(rid)
+                    {
                         // An UNTAGGED EQUATION. Not a directional rewrite (nothing
                         // fires it as one) and not a relational head either, so
                         // neither reader exists — the WI-582 refusal, unchanged.
+                        //
+                        // A GUARDED `=` LAW HAS ONE (WI-20261117-V0RPW): a proof from Γ
+                        // takes it as a premise and runs its body as goals, so the typer
+                        // prepends its bounds' `domain(?x, T)` goals there, as it does a
+                        // relational head's (`typing::install_typed_head_domain_goals`).
                         Some(TypedPatternRefusal::NotARewrite)
                     } else {
                         // WI-742 (proposal 060 §2): a RELATIONAL head. The bound is

@@ -160,6 +160,10 @@ pub struct TypingEnv {
     /// ([`KnowledgeBase::rule_provider_requirements`]) — each a contract the clause holds,
     /// read by [`held_spec_views`]. Empty outside the rule-body sweep.
     rule_held_specs: Rc<Vec<Value>>,
+    /// Whether the rule being typed has its calls woven through the dictionaries it holds
+    /// (`install_rule_provider_dictionaries`): a clause whose body runs as goals, and not a
+    /// directional equation, of which only the right-hand side is woven.
+    rule_reads_woven: bool,
     /// The rule's type variables as its body's typing names them, one per introduced
     /// parameter, beside [`Self::rule_held_specs`].
     rule_type_vars: Rc<Vec<VarId>>,
@@ -332,6 +336,7 @@ impl TypingEnv {
             enclosing_sort: None,
             rule_scope: None,
             rule_held_specs: Rc::new(Vec::new()),
+            rule_reads_woven: false,
             rule_type_vars: Rc::new(Vec::new()),
             enclosing_chain: DictChain::empty(),
             enclosing_op_chain: None,
@@ -789,6 +794,16 @@ impl TypingEnv {
     pub(super) fn set_rule_held_specs(&mut self, specs: Vec<Value>, type_vars: Vec<VarId>) {
         self.rule_held_specs = Rc::new(specs);
         self.rule_type_vars = Rc::new(type_vars);
+    }
+
+    /// See [`Self::rule_reads_woven`]. Set once per rule by the rule-body sweep.
+    pub(super) fn set_rule_reads_woven(&mut self, woven: bool) {
+        self.rule_reads_woven = woven;
+    }
+
+    /// Are the rule's calls woven through the dictionaries it holds? See the field.
+    pub(super) fn rule_reads_woven(&self) -> bool {
+        self.rule_reads_woven
     }
 
     pub(super) fn rule_type_vars(&self) -> Rc<Vec<VarId>> {

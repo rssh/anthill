@@ -50,7 +50,8 @@ fn drive(src: &str, qn: &str) -> String {
 /// THE WART, CLOSED — and the row that fails hardest on a back-out.
 ///
 /// No `import anthill.prelude.Float.{div}` anywhere: a minted `/` resolves to
-/// `Divisible.div`, and `Float` provides it (through `Field`), so the typer dispatches to
+/// `Divisible.div`, and `Float` provides it (directly, since WI-20261117-V0RPW made `Float` no
+/// `Field`), so the typer dispatches to
 /// `Float.div`. Backed out, this is a LOAD error naming `Int64`, not a wrong number —
 /// which is why it is asserted through a value rather than through "it loads".
 #[test]
@@ -263,7 +264,7 @@ fn the_tower_is_wired_as_two_branches_over_one_base() {
 /// `%` OVER FLOATS IS UNAVAILABLE, and WHEN you find out is a DIVERGENCE THIS TICKET
 /// MOVED — recorded here rather than left to be rediscovered.
 ///
-/// `Float` provides `Field`, not `EuclideanDomain`, so `mod` is not part of its surface
+/// `Float` provides `Divisible`, not `EuclideanDomain`, so `mod` is not part of its surface
 /// and `7.5 % 2.0` has no implementation to reach. It used to be a LOAD error
 /// (`type mismatch in mod.a (op-arg): expected Int64, got Float`, because the tier
 /// pointed at `Int64.mod`); it is now a RUN-TIME raise naming the missing operation.
@@ -536,7 +537,9 @@ end
 ///                    Int64      Float
 ///     Divisible      loads      loads       <- the `/` slot, reached through either branch
 ///     EuclideanDomain loads     REFUSED     <- Float has no `mod`; it is not one
-///     Field          REFUSED    loads       <- truncated division has no inverse
+///     Field          REFUSED    REFUSED     <- neither division is the inverse of `mul`
+///                                              (`Float` provides `Divisible` since
+///                                              WI-20261117-V0RPW)
 ///
 /// The two refusals are what make it evidence. A `provides` chain that leaked in either
 /// direction — or a `requires` that discharged by symbol rather than over the call's
@@ -568,7 +571,6 @@ end
         ("Divisible", "Int64", "7", "2"),
         ("EuclideanDomain", "Int64", "7", "2"),
         ("Divisible", "Float", "10.0", "4.0"),
-        ("Field", "Float", "10.0", "4.0"),
     ] {
         assert!(
             loads(spec, ty, a, b),
@@ -576,6 +578,12 @@ end
              provides"
         );
     }
+    // `Float` is `Divisible` and no `Field` since WI-20261117-V0RPW: IEEE division is not the
+    // inverse of multiplication, and `Field`'s laws said it was.
+    assert!(
+        !loads("Field", "Float", "10.0", "4.0"),
+        "`requires Field[T]` must NOT discharge over Float"
+    );
     assert!(
         !loads("Field", "Int64", "7", "2"),
         "`Field[Int64]` must NOT discharge: truncated division has no multiplicative \

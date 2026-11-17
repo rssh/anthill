@@ -104,6 +104,11 @@ const WAYS_OUT: &[&str] = &[
 /// also at the site.
 const PINNED: &[(&str, usize, &str)] = &[
     (
+        "include/wi_v0rpw_law_over_type_variable_test.rs",
+        1,
+        "a guard proof uses a law of an EARLIER load — within one load the operation bodies are typed before the rule sweep types the laws (kernel-language §5.3, WI-20261117-22S8N) — so the rows measuring a lemma USED load the program after the library, the product's order",
+    ),
+    (
         "include/induction_axiom_witness_test.rs",
         2,
         "presents every loaded file to the KB again: a registration is not made twice — on a KB nothing sealed, built by name",

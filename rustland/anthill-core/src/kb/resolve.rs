@@ -5938,6 +5938,22 @@ impl SearchStream {
         } else {
             // Rule with body
             let rid = opt_rid.unwrap();
+            // WI-20261117-V0RPW: a guarded `=` law used as a lemma is instantiated at the
+            // expression it is used for — its type variable at the type of what its bounded
+            // variable matched — so its bound and its sort's requirement are asked at that type.
+            // Only a proof from Γ takes a law as a premise (`guarded_laws_answer`).
+            let tree_subst = if self.config.gamma.is_some()
+                && kb.is_guarded_eq_law(rid)
+                && !kb.rule_type_bounds(rid).is_empty()
+            {
+                super::typing::law_type_instantiation(kb, rid, &tree_subst)
+            } else {
+                tree_subst
+            };
+            // A lemma at a type that does not provide its sort is not used there.
+            if tree_subst.is_contradiction() {
+                return Some(StepResult::Continue);
+            }
             // `fresh_nodes` is the occurrence body pushed as `Value::Node`
             // goals; it also drives the caller-var delay pre-check below
             // (WI-246 — the term body is no longer built or consulted here).

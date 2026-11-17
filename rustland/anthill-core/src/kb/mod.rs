@@ -10707,6 +10707,14 @@ impl KnowledgeBase {
         vars
     }
 
+    /// The clause slots holding the dictionaries clause `id` declares — its head introducer's
+    /// guards (`rule cmp[A](…) :- WeakOrd[T = A]`, a law over `[A]`, WI-20261117-V0RPW) — which
+    /// its calls are woven through. What a test of the weave reads to tell a declared
+    /// requirement's read from an inferred one.
+    pub fn rule_declared_dictionary_slots(&self, id: RuleId) -> Vec<u32> {
+        self.rule_provider_requirements(id).iter().map(|r| r.dictionary).collect()
+    }
+
     pub(crate) fn rule_provider_requirements(&self, id: RuleId) -> &[RuleProviderRequirement] {
         &self.rules[id.index()].provider_requirements
     }

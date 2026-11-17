@@ -133,8 +133,10 @@ fn unannotated_dot_rule_still_loads_and_fires() {
 /// site's predicate rather than restating it, the refusal narrowed with NO EDIT AT THE
 /// LOADER. A `@[simp]`-tagged guarded equation is a directional rewrite, so
 /// `fire_simp_equation` runs `typed_pattern_bounds_hold` on it and the bound has its
-/// reader — it is KEPT below. The UNTAGGED spelling is still refused, and for the
-/// reason it always had: nothing fires it (`@[simp]` is the enablement, WI-881).
+/// reader — it is KEPT below. Untagged, a guarded `=` law keeps it too since
+/// WI-20261117-V0RPW: a proof from Γ takes it as a premise and its body reads the bound. A
+/// guarded `<=>` untagged is still refused, for the reason it always had: nothing fires it
+/// (`@[simp]` is the enablement, WI-881) and it is no premise.
 ///
 /// Both rows over ONE program text, so nothing but the tag differs.
 #[test]
@@ -176,10 +178,18 @@ end
          typed-pattern bounds — so the bound is kept, not refused",
     );
 
-    // UNTAGGED: nothing fires it, so the bound would be ignored — still refused.
-    let errs = try_load_kb_with(&SRC.replace("TAG", ""))
+    // UNTAGGED, `=`: a guarded `=` law is a premise of a proof from Γ, whose body reads the
+    // bound (WI-20261117-V0RPW) — kept, not refused.
+    let kb = load_kb_with(&SRC.replace("TAG", ""));
+    let rid = kb
+        .rule_id_by_qn("test.wi903guarded.Lib.pk")
+        .expect("the untagged guarded law loads");
+    assert_eq!(kb.rule_type_bounds(rid).len(), 1, "the guarded law keeps its bound");
+
+    // UNTAGGED, `<=>`: no premise and no rewrite, so nothing reads the bound — refused.
+    let errs = try_load_kb_with(&SRC.replace("= ?y :- gt(?y, 0) TAG", "<=> ?y :- gt(?y, 0)"))
         .err()
-        .expect("an untagged equation cannot enforce a bound");
+        .expect("an untagged `<=>` equation cannot enforce a bound");
     let found = mentioning(&errs, "WI-582");
     let [msg] = found[..] else {
         panic!("expected exactly one typed-pattern refusal, got: {errs:?}");

@@ -504,17 +504,29 @@ fn the_numeric_identities_are_reached_through_a_requirement() {
     assert_eq!(run_int64(src, "m8id.drive"), Ok(1));
 }
 
-/// `Float.recip` was a `@[simp]` equation, which no dispatch through `Field` can run; and
-/// `Float.nonEqRefl` an untagged one, inert.
+/// `Float.recip` was a `@[simp]` equation, which no dispatch through `Field` could run; and
+/// `Float.nonEqRefl` an untagged one, inert. `Float` is no `Field` since WI-20261117-V0RPW
+/// (IEEE division is not the inverse of multiplication), so `recip` is reached as `Float`'s
+/// own and a `requires Field` at `Float` is refused; the witness is still reached through
+/// its requirement.
 #[test]
 fn float_recip_and_non_eq_witness_are_reached_through_a_requirement() {
     let src = "namespace m8fl\n  \
-               import anthill.prelude.{Int64, Float, Field, NonEq, Error, DivisionByZero}\n  \
-               operation r[A](x: A) -> A effects {Error[T = DivisionByZero]} \
-               requires Field[T = A] = Field.recip(x)\n  \
+               import anthill.prelude.{Int64, Float, NonEq}\n  \
                operation w[A](x: A) -> A requires NonEq[T = A] = NonEq.nonEqRefl()\n  \
-               operation drive() -> Int64 effects {Error[T = DivisionByZero]} =\n    \
-               Float.floor(Float.mul(r(4.0), 100.0)) + (if Float.isNaN(w(1.0)) then 1 else 0)\n\
+               operation drive() -> Int64 =\n    \
+               Float.floor(Float.mul(Float.recip(4.0), 100.0)) + (if Float.isNaN(w(1.0)) then 1 else 0)\n\
                end\n";
     assert_eq!(run_int64(src, "m8fl.drive"), Ok(26));
+    let field = "namespace m8flf\n  \
+                 import anthill.prelude.{Float, Field, Error, DivisionByZero}\n  \
+                 operation r[A](x: A) -> A effects {Error[T = DivisionByZero]} \
+                 requires Field[T = A] = Field.recip(x)\n  \
+                 operation drive() -> Float effects {Error[T = DivisionByZero]} = r(4.0)\n\
+                 end\n";
+    let errs = crate::common::load_errors_of(field);
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.prelude.Field[T = anthill.prelude.Float]")),
+        "`Float` provides no `Field`: {errs:?}"
+    );
 }

@@ -198,7 +198,10 @@ fn holds_woven_call(occ: &Rc<NodeOccurrence>) -> bool {
 /// POPULATION — every equational rule the stdlib and this fixture load — rather than one
 /// fixture, because the equation that drove the exclusion is a stdlib law: String's
 /// untagged `rule isEmpty(?s) <=> eq(length(?s), 0)`, whose `length` is a spec operation at
-/// a carrier not known at load. FAILS with the exclusion backed out.
+/// a carrier not known at load. FAILS with the exclusion backed out. An equation that
+/// DECLARES its requirements — a law over `[A]` with `:- Additive[T = A]`, WI-20261117-V0RPW
+/// — has its calls woven through them, as any clause's declared ones are: each woven call
+/// reads one of its declared slots, and none an inferred one, which is what this asks.
 #[test]
 fn an_equation_gets_no_inferred_condition() {
     let kb = crate::common::load_kb_with(ORD_PROGRAM);
@@ -206,10 +209,34 @@ fn an_equation_gets_no_inferred_condition() {
         .live_rule_ids()
         .into_iter()
         .filter(|&rid| kb.has_equational_head(rid))
-        .filter(|&rid| kb.rule_body_nodes(rid).iter().any(holds_woven_call))
+        .filter(|&rid| {
+            let declared = kb.rule_declared_dictionary_slots(rid);
+            kb.rule_body_nodes(rid)
+                .iter()
+                .any(|n| holds_woven_call_reading_other_than(n, &declared))
+        })
         .map(|rid| format!("{rid:?}"))
         .collect();
-    assert!(woven.is_empty(), "equations with a woven call: {woven:?}");
+    assert!(woven.is_empty(), "equations with an inferred woven call: {woven:?}");
+}
+
+/// Does this stored body hold a woven call that reads a dictionary other than a declared
+/// slot of its clause (`declared`)?
+fn holds_woven_call_reading_other_than(occ: &Rc<NodeOccurrence>, declared: &[u32]) -> bool {
+    let mut stack = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else { continue };
+        if let Expr::ApplyWithin { requirements, .. } = expr {
+            let reads_declared = requirements.iter().all(|r| {
+                matches!(r.as_expr(), Some(Expr::Var(anthill_core::kb::term::Var::DeBruijn(d))) if declared.contains(d))
+            });
+            if !reads_declared {
+                return true;
+            }
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
 }
 
 /// A CARRIER NOTHING BINDS. `rule answer(?r) :- Desc.describe(?x, ?r)` leaves `?x` free, at a

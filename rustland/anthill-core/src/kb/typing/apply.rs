@@ -5272,6 +5272,17 @@ fn check_apply_call(
                                 });
                             }
                             DispatchOutcome::Ambiguous(tie) => {
+                                // The instance the rule clause holds, as at the tie below.
+                                if held_instance_reads_carrierless_call(
+                                    kb, env, &held_views, fn_sym, spec_sort,
+                                ) {
+                                    return Ok(TypeResult {
+                                        ty: resolved_ret.clone(),
+                                        env: env.clone(),
+                                        effects,
+                                        node: Rc::clone(occ),
+                                    });
+                                }
                                 return Err(TypeError::DispatchAmbiguous {
                                     span,
                                     op: fn_sym,
@@ -6026,6 +6037,22 @@ fn check_apply_call(
                         op_short_sym,
                         pinned_spec,
                     ) {
+                        return Ok(TypeResult {
+                            ty: resolved_ret.clone(),
+                            env: env.clone(),
+                            effects,
+                            node: Rc::clone(occ),
+                        });
+                    }
+                    // WI-20261117-V0RPW — A RULE BODY'S TWIN of that deferral: a call no argument
+                    // directs (`zero() -> T`), of a spec the clause HOLDS one instance of (its
+                    // guard's `Additive[T = A]`), is that instance's member — scoping, decided
+                    // here: the clause names the instance, so nothing is ambiguous. Left unpinned,
+                    // it is woven through the guard's dictionary
+                    // (`install_rule_provider_dictionaries`) — which a directional equation's
+                    // guard is not, so it is not deferred there. `neq(?b, zero)` in a law over `A`
+                    // was refused as an ambiguous dispatch among every provider of `Additive`.
+                    if held_instance_reads_carrierless_call(kb, env, &held_views, fn_sym, spec_sort) {
                         return Ok(TypeResult {
                             ty: resolved_ret.clone(),
                             env: env.clone(),
@@ -7825,3 +7852,30 @@ fn resolve_at_open_goal(
     )
 }
 
+
+/// Does a call `fn_sym` of `spec_sort` with no carrier argument (`zero() -> T`) read the one
+/// instance of `spec_sort` a rule clause holds (WI-20261117-V0RPW)? In a rule body whose calls
+/// are woven through what the clause holds, where it holds exactly one such instance, and over
+/// exactly one type variable — so the instance is at the one type every value of the clause's
+/// comparisons can be of. With two (`rule r[A, B](?a: A, ?b: B) :- Additive[T = A], …,
+/// neq(?b, zero)`), a rule's type variables still unify while its body is typed, and `zero`
+/// would read `A`'s instance compared with a `B`: the call is decided as before, and refused.
+fn held_instance_reads_carrierless_call(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    held_views: &[HeldSpecView],
+    fn_sym: Symbol,
+    spec_sort: Symbol,
+) -> bool {
+    if !env.in_rule_body() || !env.rule_reads_woven() || op_has_spec_carrier_param(kb, fn_sym, spec_sort) {
+        return false;
+    }
+    let vars: HashSet<VarId> = env.rule_type_vars().iter().copied().collect();
+    let spec = kb.canonical_sort_sym(spec_sort);
+    vars.len() == 1
+        && held_views
+            .iter()
+            .filter(|h| kb.canonical_sort_sym(h.spec_sort) == spec)
+            .count()
+            == 1
+}

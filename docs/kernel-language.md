@@ -3211,6 +3211,24 @@ Where the typer proves a goal from what holds at a point of an operation body �
 discharge, a precondition, an in-body `proof`, a guarded row (§5.5) — it does, tagged or
 not: `isEmpty(s)` is shown where `splitFirst(s) === none` holds.
 
+**A law over a type variable is a lemma, used at a type that provides its sort**
+(WI-20261117-V0RPW, user decisions 2026-11-17). A guarded law may write the type variable it
+is about and the instances it needs, as a rule does: `rule euclid_div: add[A](mul(?b: A,
+div(?a, ?b)), rem(?a, ?b)) = ?a :- EuclideanDomain[T = A], Additive[T = A], neq(?b, zero)`.
+Using it in a proof instantiates it: `A` is the type of what its bounded variable `?b`
+matches — a literal's by its spelling (§2.4), any other expression's as the typer typed it —
+and each guard is the typer's instance at that type, as a typed citation passes a rule's.
+Where nothing provides it, the lemma is not used: `euclid_div` holds at an `Int64` and a
+`BigInt` divisor, and the `Field` laws hold at no carrier that only divides (`Int64` and
+`BigInt` round toward zero, `Float` rounds, so `(1.0 / 49.0) * 49.0` is not `1.0`). A
+member written with no argument resolves through the instance the clause holds: `zero`
+above is `Additive[T = A]`'s, and at a `BigInt` divisor it is `0n`. A law written with no
+type variable is used at every type whose operations its terms name, which for an
+arithmetic identity is wrong somewhere — so the library's are written over theirs. A law is
+a premise for the proofs of a LATER load: within one load the operation bodies, and the
+proofs of their guards and preconditions, are typed before the rule sweep types the laws,
+so a law of the same load is not yet usable there, and is not used (WI-20261117-22S8N).
+
 **Every firing site answers alike** — the resolver's rewriter, the typer's operation-body pass and the typer's dot-rule pass all share one guard evaluator — so a tagged rule means the same thing at a resolution goal, in the operation body that spells the same call, and at a method call. At the typer the redex is compile-time syntax, so most guards are simply under-determined and decline; the ones that fire are the ones already decidable from the program text (`nth(xs, -1)` under `nth(?_, ?i) = none :- lt(?i, 0)`), which is constant folding.
 
 A tagged equation may not put a call of a potentially effectful operation where it fires: one whose declared effect row is not empty, or is a row variable an effectful carrier can fill. Rewriting such a call duplicates, reorders or drops it, and an effectful operation is not equational. An operation the rule names, on either side or in its guard, is refused where the rule is loaded. The operation a dot reaches is the receiver's, known only where the rule fires, so three calls are refused at each call the rule rewrites, naming the rule: one a dot in the rule's text reaches, the one a dot rule replaces (what its member reaches on that receiver without the rule), and one the macro at the head of the right-hand side builds. The macro itself is not such a call, since it runs when the rule fires and leaves only what it builds. With `rule dr: dot_apply(?e, bump, ?x) <=> ?e.inner().risky(?x) @[simp]` in `Holder`, where `inner` returns an `Other` whose `risky` declares `effects Error[Boom]`, the rule loads and `h.bump(5)` is refused where it is written. A rule no call fires on is refused for none of the three.
@@ -3305,6 +3323,13 @@ now share ONE predicate rather than agreeing by inspection: the rewrite reader
 collapses its three outcomes to fire/don't-fire, which is all a rewrite has.
 Body-goal placement, column typing, and the future output mode are different
 execution duties, not a different meaning for the annotation.
+
+A GUARDED `=` law reads its bounds too (WI-20261117-V0RPW): it is a premise a proof takes
+(above), its bounds become goals of its body, and a proof using the law instantiates the
+law's type variable before its body is asked (§5.3), so the bounds are asked at that type.
+An untagged equation that is no guarded `=` law — `lhs <=> rhs :- g` untagged, or one with no
+guard — is neither a premise nor a rewrite, nothing reads a bound on it, and `?x: T` there is
+still refused.
 
 A variable's type is read as a parameter's is (§8.2). A sort with a dictionary (§8.2) is no
 type of the values of the sorts that provide it, so a variable typed at one matches
@@ -5385,9 +5410,11 @@ single base spec just as much, and for the same reason.) **The single base spec 
 the alternative to carrier-dependent name resolution.** The laws live on the two branches,
 each of which reaches `div` by `provides Divisible[T = T]` rather than by declaring a
 second one: `EuclideanDomain` adds `mod`/`rem` and the division identity (`Int64`,
-`BigInt`), `Field` adds `recip` and the inverse law (`Float`). A carrier providing either
-branch thereby provides the base, so `10.0 / 4.0` and `7 / 2` both resolve with no import
-and dispatch to their own carrier's operation.
+`BigInt`), `Field` adds `recip` and the inverse law (no carrier of the library: `Float`
+provides `Divisible` itself, its division not being the inverse of multiplication,
+WI-20261117-V0RPW). A carrier providing either branch thereby provides the base, so
+`10.0 / 4.0` and `7 / 2` both resolve with no import and dispatch to their own carrier's
+operation.
 
 `^` has no such spec: `pow` is declared on `Float` alone, nothing owns it parametrically,
 and a bare `^` is a diagnostic naming the carrier and the repair. That is deliberate —

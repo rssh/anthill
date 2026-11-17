@@ -491,6 +491,7 @@ pub(super) fn type_rule_bodies(
             env.set_rule_scope(kb.rule_domain(rid));
             let (held, type_vars) = rule_held_specs(kb, rid, &var_types);
             env.set_rule_held_specs(held, type_vars);
+            env.set_rule_reads_woven(!kb.is_directional_equation(rid));
             // WI-557 / WI-602: mark this as rule-body context so `check_apply_iter`
             // treats the WI-539 value-precondition `requires`-check as refutation-
             // aware — a rule body is SLD/relational with no call-site Γ, so a
@@ -965,7 +966,8 @@ pub fn is_typed_head_domain_goal(kb: &KnowledgeBase, goal: &NodeOccurrence) -> b
 /// THE POPULATION IS EXACTLY THE CLAUSES THE LOADER LET KEEP A BOUND: a directional equation
 /// keeps WI-582's match-time reader (`apply_eq_rules`) and is skipped; everything else with
 /// a bound is a RELATIONAL head, including a body-less one — `rule p(?x: T) :- true` folds to
-/// an empty body (§6.1) and is still a clause that answers.
+/// an empty body (§6.1) and is still a clause that answers — or a GUARDED `=` LAW, whose body
+/// a proof from Γ runs when it takes the law as a premise (WI-20261117-V0RPW).
 pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
     let (Some(dom_sym), Some(guard_sym)) = (
         kb.try_resolve_symbol(TYPE_DOMAIN_GOAL),
@@ -981,16 +983,19 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         if kb.is_directional_equation(rid) {
             continue;
         }
-        // WI-20260908-PW9A0 — THE POPULATION ABOVE IS A COUPLING, SO ASSERT IT: a GUARDED
-        // equation is neither a directional equation nor a relational head, and a goal
+        // WI-20260908-PW9A0 — THE POPULATION ABOVE IS A COUPLING, SO ASSERT IT: an
+        // equation that is not a directional one is no relational head, and a goal
         // generated for it would never run (WI-20260820-8RJK8: nothing evaluates a matched
         // equation's body). A backstop, unreachable while `load_rule`'s typed-pattern
-        // refusal stands.
+        // refusal stands. Except a GUARDED `=` LAW (WI-20261117-V0RPW): a proof from Γ takes
+        // it as a premise and runs its body, the bound's goal with it.
         debug_assert!(
-            !kb.rule_head_value(rid)
-                .head(kb)
-                .functor_sym()
-                .is_some_and(|f| kb.is_equality_connective_functor(f)),
+            kb.is_guarded_eq_law(rid)
+                || !kb
+                    .rule_head_value(rid)
+                    .head(kb)
+                    .functor_sym()
+                    .is_some_and(|f| kb.is_equality_connective_functor(f)),
             "install_typed_head_domain_goals reached an EQUATIONAL head: the loader's \
              typed-pattern refusal admitted a bound whose generated goal cannot run, \
              because nothing evaluates a matched equation's body (WI-20260820-8RJK8)",

@@ -126,13 +126,14 @@
 -- carrier here computes, and asserting it would owe every field a `mod` answering 0
 -- where `Float.fmod` answers the IEEE remainder.
 sort anthill.prelude.Field
-  import anthill.prelude.{PartialEq, Divisible}
+  import anthill.prelude.{PartialEq, Divisible, Additive, Multiplicative}
   import anthill.prelude.algebra.{Ring}
   -- WI-20260825-KD9SW: a WRITTEN bare `neq` (a law's guard) names the operation by
   -- import now; a minted `=`/`!=` carries its own address and needs nothing.
   import anthill.prelude.PartialEq.{neq}
   -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
-  import anthill.prelude.Multiplicative.{mul}
+  import anthill.prelude.Multiplicative.{mul, one}
+  import anthill.prelude.Additive.{zero}
 
   sort T = ?
   requires Ring[T]
@@ -159,7 +160,18 @@ sort anthill.prelude.Field
   -- consequence of a firing gap closing. The other two are reducing and could be tagged;
   -- whether this file wants a normal form at all is the question, and it is not this
   -- ticket's to answer. They are here for the verifier until it is.
-  rule mul(div(?a, ?b), ?b) = ?a :- neq(?b, 0)
-  rule div(?a, ?b) = mul(?a, recip(?b)) :- neq(?b, 0)
-  rule mul(recip(?a), ?a) = 1 :- neq(?a, 0)
+  --
+  -- LEMMAS OVER `A`, AND ONLY AT AN `A` THAT IS A FIELD (WI-20261117-V0RPW), as
+  -- `EuclideanDomain`'s `euclid_div` is: a proof takes each at the type of the divisor it
+  -- matches, with the guards' instances there, `zero` and `one` those of `Additive[T = A]`
+  -- and `Multiplicative[T = A]`. Written over `mul`/`div` with no type, the first held at
+  -- every carrier whose division is `Divisible.div` — `Int64`'s and `BigInt`'s, which
+  -- round toward zero, and `Float`'s, which rounds (`(1.0 / 49.0) * 49.0` is
+  -- 0.9999999999999999): a guard `neq((a / b) * b, a)` was refuted at `risky(x, 2)`
+  -- over `Int64` and at `risky(x, 49.0)` over `Float`, where the call raises (MEASURED).
+  rule mul[A](div(?a, ?b: A), ?b) = ?a :- Field[T = A], Additive[T = A], neq(?b, zero)
+  rule div[A](?a, ?b: A) = mul(?a, recip(?b)) :- Field[T = A], Additive[T = A], neq(?b, zero)
+  -- `one` is read in the body, through `Multiplicative[T = A]`: a name in the head is the
+  -- term written, and the law would equate the product with the datum `one`.
+  rule mul[A](recip(?a: A), ?a) = ?o :- Field[T = A], Additive[T = A], Multiplicative[T = A], neq(?a, zero), ?o <=> one
 end
