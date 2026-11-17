@@ -375,9 +375,16 @@ untyped one, and its components would start to error.
    at a tuple catches an `Error[(a: Int64, b: String)]` payload.
 2. **Whether a program may name `NamedTuple`** as a type (`x: NamedTuple`, any tuple) or write a
    provision at it. Decided for provisions (2026-11-17): no sort provides `NamedTuple`, and a
-   provision at a tuple type is written as rule 2 says. Open: what `x: NamedTuple` means — read
-   today as `()`, the tuple of no components, where a bare sort leaves its parameters open
-   (proposal 070) — and which operations a tuple of unknown shape has.
+   provision at a tuple type is written as rule 2 says. Decided for the type (user, 2026-11-17):
+   a bare `NamedTuple` is the base sort of tuples, an abstract sort with values of its own
+   (kernel-language §8.2): every tuple type is below it, so `x: NamedTuple` takes any tuple.
+   Measured on 9c6ca1cd, the sort is below nothing and above no tuple: `operation f(x:
+   NamedTuple) -> Int64 = 1` refuses `f((1, 2))` and `f(())`, `-> NamedTuple = (1, 2)` and `rule
+   r(?x: NamedTuple) :- ?x <=> (1, 2)` are refused, and `TypePattern.admits[T = NamedTuple]` at
+   `(Int64, Int64)` answers `false`; `same(x: NamedTuple, y: NamedTuple) = PartialEq.eq(x, y)`
+   loads, through `NamedTuple`'s own `PartialEq`. The refusals print the sort as `Unit`: the type
+   printer recognises a tuple type by the short name `NamedTuple`. Open: which operations a tuple
+   of unknown shape has beyond its equality.
 
 ### Stages
 
