@@ -690,40 +690,41 @@ fn a_failed_match_is_caught_at_its_sort() {
     }
 }
 
-/// A RAISE AT A STRUCTURAL FORMER IS REFUSED AT THE RAISE, naming the former — and at a sort
-/// holding one among its type arguments: neither has a `TypeValue`, which `Error.raise`
-/// requires. (Until stage (d) the raise loaded and the boundary around it was refused.)
+/// A RAISE AT AN ARROW IS REFUSED AT THE RAISE, naming the arrow — and at a sort holding one
+/// among its type arguments: neither has a `TypeValue`, which `Error.raise` requires. (Until
+/// stage (d) the raise loaded and the boundary around it was refused.) A raise at a tuple, or
+/// at a sort holding one, loads: a tuple's `TypeValue` is its components' (WI-20261116-411A7).
 #[test]
 fn a_raise_at_a_former_is_refused_at_the_raise() {
     for (shape, src, wants) in [
         (
-            "a tuple",
+            "an arrow",
             r#"
 namespace test.c5f
   import anthill.prelude.{Int64, String, Error}
-  operation raisesTuple(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)]} =
-    Error.raise((a: n, b: "s"))
+  operation raisesArrow(n: Int64) -> Int64 effects {Error[(Int64) -> Int64]} =
+    Error.raise(lambda (x: Int64) -> x)
 end
 "#,
             &[
-                "anthill.reflect.TypeValue[T = (a: Int64, b: String)]",
+                "anthill.reflect.TypeValue[T = Int64 -> Int64]",
                 "cannot be supplied for call to `anthill.prelude.Error.raise`",
                 "a STRUCTURAL FORMER",
             ][..],
         ),
         (
-            "a sort holding a tuple",
+            "a sort holding an arrow",
             r#"
 namespace test.c5f
   import anthill.prelude.{Int64, String, Error, Option}
   import anthill.prelude.Option.{some}
-  operation raisesOpt() -> Int64 effects {Error[Option[T = (a: Int64, b: String)]]} =
-    Error.raise(some((a: 1, b: "s")))
+  operation raisesOpt() -> Int64 effects {Error[Option[T = (Int64) -> Int64]]} =
+    Error.raise(some(lambda (x: Int64) -> x))
 end
 "#,
             &[
-                "anthill.reflect.TypeValue[T = anthill.prelude.Option[T = (a: Int64, b: String)]]",
-                "has a STRUCTURAL FORMER — a tuple or an arrow — among its type arguments",
+                "anthill.reflect.TypeValue[T = anthill.prelude.Option[T = Int64 -> Int64]]",
+                "has a STRUCTURAL FORMER — an arrow — among its type arguments",
             ][..],
         ),
     ] {
@@ -731,6 +732,19 @@ end
         assert_eq!(errs.len(), 1, "{shape}: exactly one refusal, got {errs:#?}");
         crate::common::assert_refused_naming(&errs, wants, shape);
     }
+    let errs = crate::common::load_errors_of(
+        r#"
+namespace test.c5f
+  import anthill.prelude.{Int64, String, Error, Option}
+  import anthill.prelude.Option.{some}
+  operation raisesTuple(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)]} =
+    Error.raise((a: n, b: "s"))
+  operation raisesOpt() -> Int64 effects {Error[Option[T = (a: Int64, b: String)]]} =
+    Error.raise(some((a: 1, b: "s")))
+end
+"#,
+    );
+    assert!(errs.is_empty(), "a raise at a tuple loads: {errs:#?}");
 }
 
 /// A RAISED `Term` IS REFUSED AT LOAD: `Term` has no `TypeValue` (it is no sort a type

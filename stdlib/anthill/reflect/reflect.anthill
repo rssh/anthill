@@ -170,9 +170,9 @@ namespace anthill.reflect
      `spec_carrier_param_or_sole` — the SOLE type parameter, which is the carrier by
      construction. `Eq` and `NonEq` are the same shape and reach the same rung.
 
-     STRUCTURAL FORMERS (named tuples, arrows) get no instance yet: they have no sort
-     to carry a provision, so they need a structural reading rather than a provision
-     row — the same open shape as the named-tuple key in kernel-language.md §8.3. >}
+     A tuple's instance is `NamedTuple`'s, derived where each component's type has one,
+     no row standing for it: its dictionary holds one sub-dictionary per component, in
+     the type's order, and the labels beside them. An arrow has none yet. >}
   sort TypeValue
     sort T = ?
     {< Body-less, and backed by a builtin on this spec operation.
@@ -185,7 +185,9 @@ namespace anthill.reflect
 
        The builtin reconstructs the `Type` from the dictionary that selected it:
        `Dictionary(sub₀ … subₙ₋₁, impl: S)` names the head in `impl` and carries one sub per
-       type parameter, so the type is a walk of its own evidence — GHC's `Typeable`. >}
+       type parameter, so the type is a walk of its own evidence — GHC's `Typeable`. A
+       tuple's, `Dictionary(sub₁ … subₙ, impl: NamedTuple, labels: (l₁, …, lₙ))`, is the
+       tuple of its subs' types under its labels. >}
     operation type_value() -> Type @[host_implemented]
   end
 
@@ -204,7 +206,10 @@ namespace anthill.reflect
      `admits` would make the answer a claim instead of a fact.
 
      No argument or result of `admits` stands at `T`, so a call names its instance in its
-     bracket: `TypePattern.admits[T = X](t)`. >}
+     bracket: `TypePattern.admits[T = X](t)`.
+
+     A tuple has no type pattern, though it has a `TypeValue`: a pattern at a tuple, or at
+     a type that holds one, is refused at load. >}
   sort TypePattern
     sort T = ?
     operation admits(t: Type) -> Bool

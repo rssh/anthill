@@ -1282,10 +1282,10 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // That is the third carrier of the one representation
         // (`requirement-channel.md` §9) — a `TermId`, a `Value` and a
         // `NodeOccurrence` spelling one dictionary must not present three heads.
-        Some(Expr::Dictionary { subs, .. }) => ViewHead::Functor {
+        Some(Expr::Dictionary { subs, labels, .. }) => ViewHead::Functor {
             functor: dictionary_ctor_sym(kb),
             pos_arity: subs.len(),
-            named_arity: 1,
+            named_arity: 1 + usize::from(labels.is_some()),
         },
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
         // WI-714: a `Spliced` occurrence carries a structured `Value` (which
@@ -1624,9 +1624,17 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
             }
             keys
         }
-        // WI-1045 — the ONE key the head counted, same symbol the value's
-        // `named_keys` answers.
-        Some(Expr::Dictionary { .. }) => vec![dictionary_impl_key(kb)],
+        // WI-1045 — the keys the head counted, the symbols the value's `named_keys`
+        // answers: `impl`, and a tuple's `labels`.
+        Some(Expr::Dictionary { labels, .. }) => {
+            let mut keys = vec![(dictionary_impl_key(kb), ())];
+            if labels.is_some() {
+                keys.push((dictionary_labels_key(kb).expect("a dictionary node holds labels"), ()));
+                // In the order the value's are (`Dictionary::build_labelled`).
+                kb.canonicalize_record_named_args(dictionary_ctor_sym(kb), &mut keys);
+            }
+            keys.into_iter().map(|(k, ())| k).collect()
+        }
         // The canonical entity form's keys, in declaration order whatever order they
         // are written in — the order `try_occurrence_to_term` builds, and the one a
         // discrimination walk descends.
@@ -2781,6 +2789,43 @@ pub(crate) fn dictionary_view_syms(kb: &KnowledgeBase) -> Option<(Symbol, Symbol
     Some((ctor, key))
 }
 
+/// The `labels` key of a tuple's `TypeValue` dictionary
+/// ([`crate::eval::dictionary::Dictionary::build_labelled`]): the declared accessor
+/// `Dictionary.labels`. `None` in a KB that never loaded it.
+pub(crate) fn dictionary_labels_key(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.realization.runtime.Dictionary.labels")
+}
+
+/// The labels a tuple's dictionary holds under its `labels` key, on any carrier: a tuple of
+/// symbols, which views as `TupleLiteral(_1: a, _2: b)`. `None` for anything else.
+pub(crate) fn labels_of_view<V: TermView + ?Sized>(kb: &KnowledgeBase, v: &V) -> Option<Vec<Symbol>> {
+    let ViewHead::Functor {
+        functor,
+        pos_arity: 0,
+        named_arity,
+    } = v.head(kb)
+    else {
+        return None;
+    };
+    if Some(functor) != tuple_literal_functor(kb) {
+        return None;
+    }
+    (0..named_arity)
+        .map(|i| {
+            let key = kb.positional_label_symbol(i)?;
+            match v.named_arg(kb, key)?.head(kb) {
+                ViewHead::Functor {
+                    functor: label,
+                    pos_arity: 0,
+                    named_arity: 0,
+                }
+                | ViewHead::Ident(label) => Some(label),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// An `OpRef`'s named keys, in accessor-declaration order.
 ///
 /// CONDITIONAL on the optional halves being present — the `Expr::Proof`
@@ -3197,9 +3242,14 @@ fn occ_view_named_arg<'a>(
     // the `Rc<NodeOccurrence>` channel `occ_named_child` returns. Answered as an
     // owned `Value::SymbolRef`, which views as `ViewHead::Ref` — the same head the
     // term twin's `Term::Ref(impl)` child gives.
-    if let Some(Expr::Dictionary { impl_sort, .. }) = occ.as_expr() {
-        return (dictionary_impl_key(kb) == sym)
-            .then(|| ViewItem::Owned(Value::SymbolRef(*impl_sort)));
+    if let Some(Expr::Dictionary { impl_sort, labels, .. }) = occ.as_expr() {
+        if dictionary_impl_key(kb) == sym {
+            return Some(ViewItem::Owned(Value::SymbolRef(*impl_sort)));
+        }
+        return labels
+            .as_ref()
+            .filter(|_| dictionary_labels_key(kb) == Some(sym))
+            .map(|labels| ViewItem::Owned(crate::eval::dictionary::labels_value(labels)));
     }
     occ_type_named(occ, kb, sym).or_else(|| occ_named_child(occ, kb, sym).map(ViewItem::Node))
 }

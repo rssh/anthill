@@ -266,6 +266,9 @@ pub enum ResolvedRequiresNode {
         spec_sort: Symbol,
         bindings: SmallVec<[(Symbol, Value); 2]>,
         sub_resolutions: Vec<ResolvedRequiresNode>,
+        /// A tuple's `TypeValue` instance's labels, one per sub-resolution, in the tuple
+        /// type's order ([`tuple_instance`]); `None` for every other instance.
+        labels: Option<Rc<[Symbol]>>,
     },
     /// Matched an entry in `scope.available_requires`. No new
     /// construction needed — the caller's `frame.requirements[slot]`
@@ -299,12 +302,14 @@ impl ResolvedRequiresNode {
                 impl_sort,
                 bindings,
                 sub_resolutions,
+                labels,
                 ..
             } => ResolvedRequiresNode::Conditional {
                 impl_sort,
                 spec_sort: spec,
                 bindings,
                 sub_resolutions,
+                labels,
             },
             from_scope @ ResolvedRequiresNode::FromScope { .. } => from_scope,
         }
@@ -1031,6 +1036,213 @@ fn pattern_goal_opened(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<SortGo
     })
 }
 
+/// The specs a tuple provides, each derived from its components' (proposal 004's extension).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum TupleSpec {
+    PartialEq,
+    Eq,
+    TypeValue,
+}
+
+/// A goal of a spec a tuple provides ([`TupleSpec`]) at a tuple type: the spec and the tuple's
+/// components, in the type's order, which [`tuple_instance`] answers it from. No provision row
+/// stands for a tuple.
+pub(super) fn tuple_instance_goal(kb: &KnowledgeBase, goal: &SortGoal) -> Option<(TupleSpec, Vec<(Symbol, Value)>)> {
+    let spec = tuple_spec_of(kb, goal.spec_sort)?;
+    let [(_, ty)] = goal.bindings.as_slice() else {
+        return None;
+    };
+    Some((spec, schema_fields(kb, ty)?))
+}
+
+/// Is `spec` one a tuple provides where each of its components does ([`TupleSpec`])?
+pub(super) fn tuple_spec_of(kb: &KnowledgeBase, spec: Symbol) -> Option<TupleSpec> {
+    // The name first: this is asked of every goal resolved.
+    let (tuple_spec, name) = match kb.local_name_of(spec) {
+        "PartialEq" => (TupleSpec::PartialEq, "anthill.prelude.PartialEq"),
+        "Eq" => (TupleSpec::Eq, "anthill.prelude.Eq"),
+        "TypeValue" => (TupleSpec::TypeValue, "anthill.reflect.TypeValue"),
+        _ => return None,
+    };
+    kb.try_resolve_symbol(name)
+        .is_some_and(|s| kb.canonical_sort_sym(s) == kb.canonical_sort_sym(spec))
+        .then_some(tuple_spec)
+}
+
+/// The instance of a spec a tuple provides at a tuple type, built from its components'
+/// instances at the same spec: `NamedTuple`'s, whose dictionary holds one sub-dictionary per
+/// component. `PartialEq`'s and `Eq`'s list them in [`KnowledgeBase::tuple_component_order`],
+/// the order their member compares in; `TypeValue`'s in the type's own order, beside the
+/// labels, which its answer is read from. `None` for any other goal; the failure of a
+/// component's goal is the tuple's.
+fn tuple_instance(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope<'_>,
+    stack: &mut Vec<SortGoal>,
+    rung: DefaultRung,
+) -> Option<ResolutionResult> {
+    let named_tuple = kb.named_tuple_sort()?;
+    let (tuple_spec, fields) = tuple_instance_goal(kb, goal)?;
+    if stack.iter().any(|g| goals_equal(kb, g, goal)) {
+        let mut path: Vec<String> = stack.iter().map(|g| format_goal(kb, g)).collect();
+        path.push(format_goal(kb, goal));
+        return Some(ResolutionResult::Cyclic {
+            path,
+            spec: goal.spec_sort,
+            forwarded: false,
+        });
+    }
+    if tuple_spec == TupleSpec::TypeValue {
+        stack.push(goal.clone());
+        let mut sub_resolutions = Vec::with_capacity(fields.len());
+        for (_, component) in &fields {
+            let Some(sub) = spec_goal_at(kb, goal.spec_sort, component) else {
+                stack.pop();
+                return Some(component_goal_unbuilt(kb, goal, goal.spec_sort, component));
+            };
+            match resolve_inner(kb, &sub, scope, stack, None, None, rung, &mut None) {
+                ResolutionResult::Resolved(node) => sub_resolutions.push(node),
+                failure => {
+                    stack.pop();
+                    return Some(failure);
+                }
+            }
+        }
+        stack.pop();
+        // The labels' tuple is viewed by `_N` keys (`term_view::labels_of_view`).
+        kb.intern_positional_labels(fields.len());
+        return Some(ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {
+            impl_sort: named_tuple,
+            spec_sort: goal.spec_sort,
+            bindings: goal.bindings.clone(),
+            sub_resolutions,
+            labels: Some(fields.iter().map(|(label, _)| *label).collect()),
+        }));
+    }
+    let fields = kb.tuple_type_components(fields);
+    // The tuple's `PartialEq` instance holds its components' `PartialEq` dictionaries, the ones
+    // its member reads. Its `Eq` instance holds where each component's `Eq` does, and is laid out
+    // as every `Eq` dictionary is: its chain's `PartialEq` slot, which here is the tuple's own.
+    let partial_eq = kb.try_resolve_symbol("anthill.prelude.PartialEq")?;
+    let asks_eq = kb.canonical_sort_sym(goal.spec_sort) != kb.canonical_sort_sym(partial_eq);
+    let mut specs: SmallVec<[Symbol; 2]> = smallvec::smallvec![partial_eq];
+    if asks_eq {
+        specs.insert(0, goal.spec_sort);
+    }
+    stack.push(goal.clone());
+    let mut sub_resolutions = Vec::with_capacity(fields.len());
+    for (_, component) in fields {
+        for &spec in &specs {
+            // Each goal binds its own spec's parameter (`Eq`'s `T` is not `PartialEq`'s).
+            let Some(sub) = spec_goal_at(kb, spec, &component) else {
+                stack.pop();
+                return Some(component_goal_unbuilt(kb, goal, spec, &component));
+            };
+            match resolve_inner(kb, &sub, scope, stack, None, None, rung, &mut None) {
+                ResolutionResult::Resolved(node) if spec == partial_eq => sub_resolutions.push(node),
+                ResolutionResult::Resolved(_) => {}
+                failure => {
+                    stack.pop();
+                    return Some(failure);
+                }
+            }
+        }
+    }
+    stack.pop();
+    let ty = goal.bindings.first().map(|(_, t)| t.clone())?;
+    let partial = ResolvedRequiresNode::Conditional {
+        impl_sort: named_tuple,
+        spec_sort: partial_eq,
+        bindings: spec_goal_at(kb, partial_eq, &ty)?.bindings,
+        sub_resolutions,
+        labels: None,
+    };
+    if !asks_eq {
+        return Some(ResolutionResult::Resolved(partial));
+    }
+    let chain = direct_requires(kb, goal.spec_sort);
+    let [slot] = chain.as_slice() else {
+        return Some(ResolutionResult::NoMatch {
+            goal_text: format_goal(kb, goal),
+            hint: format!(
+                "a tuple's `{}` is laid out as `PartialEq`'s slot, and `{}` requires {} specs",
+                kb.qualified_name_of(goal.spec_sort),
+                kb.qualified_name_of(goal.spec_sort),
+                chain.len()
+            ),
+            spec: goal.spec_sort,
+            forwarded: false,
+        });
+    };
+    if kb.canonical_sort_sym(slot.required_sort) != kb.canonical_sort_sym(partial_eq) {
+        return Some(ResolutionResult::NoMatch {
+            goal_text: format_goal(kb, goal),
+            hint: format!(
+                "a tuple's `{}` is laid out as `PartialEq`'s slot, and its chain holds `{}`",
+                kb.qualified_name_of(goal.spec_sort),
+                kb.qualified_name_of(slot.required_sort)
+            ),
+            spec: goal.spec_sort,
+            forwarded: false,
+        });
+    }
+    Some(ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {
+        impl_sort: named_tuple,
+        spec_sort: goal.spec_sort,
+        bindings: goal.bindings.clone(),
+        sub_resolutions: vec![partial],
+        labels: None,
+    }))
+}
+
+/// The refusal of a tuple's instance where the goal of `spec` at one of its components cannot be
+/// built ([`spec_goal_at`]: `spec` names no parameter to bind).
+fn component_goal_unbuilt(
+    kb: &KnowledgeBase,
+    goal: &SortGoal,
+    spec: Symbol,
+    component: &Value,
+) -> ResolutionResult {
+    ResolutionResult::NoMatch {
+        goal_text: format_goal(kb, goal),
+        hint: format!(
+            "a tuple's `{}` is its components', and no goal of `{}` can be built at its component `{}`",
+            kb.qualified_name_of(goal.spec_sort),
+            kb.qualified_name_of(spec),
+            format_value_for_goal(kb, component)
+        ),
+        spec: goal.spec_sort,
+        forwarded: false,
+    }
+}
+
+/// The refusal of a `TypePattern` goal whose type is or holds a tuple. A tuple has no type
+/// pattern: how a tuple pattern admits a type (its labels, their order, its width) is not
+/// decided, and `type_admits` compares no two tuples. `TypePattern`'s one row is
+/// `TypeValuePattern`'s, conditioned on a `TypeValue` a tuple has, so the pattern is refused
+/// here, by its own type: a sort whose own `requires` asks something at a tuple is no tuple.
+fn tuple_pattern_refusal(kb: &KnowledgeBase, goal: &SortGoal) -> Option<ResolutionResult> {
+    let pattern = kb.type_pattern_sym()?;
+    if kb.canonical_sort_sym(goal.spec_sort) != kb.canonical_sort_sym(pattern) {
+        return None;
+    }
+    // Through sort applications, the positions a sort's `TypeValue` is conditioned on.
+    let holds_tuple = |v: &Value| {
+        type_any_part(kb, v, &|te| match te {
+            TypeExtractor::NamedTuple(_) => Some(true),
+            TypeExtractor::Parameterized { .. } => None,
+            _ => Some(false),
+        })
+    };
+    goal.bindings.iter().any(|(_, v)| holds_tuple(v)).then(|| ResolutionResult::NoMatch {
+        goal_text: format_goal(kb, goal),
+        hint: "a tuple has no type pattern, at a tuple or inside a type that holds one".to_string(),
+        spec: goal.spec_sort,
+        forwarded: false,
+    })
+}
+
 pub(super) fn resolve_inner<'a>(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -1263,6 +1475,16 @@ pub(super) fn resolve_inner<'a>(
         }
     }
 
+    // A tuple provides `PartialEq`, `Eq` and `TypeValue` where each of its components' types
+    // does (proposal 004's extension, a tuple is a `NamedTuple`): no provision row stands for
+    // a tuple, so the instance is built here, one sub-dictionary per component.
+    if let Some(answer) = tuple_instance(kb, goal, scope, stack, rung) {
+        return answer;
+    }
+    if let Some(refused) = tuple_pattern_refusal(kb, goal) {
+        return refused;
+    }
+
     // A SPEC WHOSE CONTRACT ASKS FOR ITSELF AT A LARGER TYPE is answered by no provision:
     // each answer would ask again at a larger type, a goal no stack holds twice, so the walk
     // did not end. Its declaration is refused for it (`load_phase_inner`).
@@ -1407,8 +1629,8 @@ pub(super) fn resolve_inner<'a>(
                 let ground = goal.bindings.iter().all(|(_, v)| type_is_ground(kb, v));
                 format!(
                     "no impl provides {0}: its instances are derived, for a sort that is no \
-                     spec, a parametric one's only where each type argument has one, and a \
-                     tuple or an arrow has none; none may be written{1}",
+                     spec, a parametric one's or a tuple's only where each type argument or \
+                     component has one, and an arrow has none; none may be written{1}",
                     kb.qualified_name_of(goal.spec_sort),
                     if ground {
                         String::new()
@@ -1949,6 +2171,7 @@ pub(super) fn resolve_inner<'a>(
             spec_sort: goal.spec_sort,
             bindings: chosen_bindings,
             sub_resolutions,
+            labels: None,
         }
     };
     ResolutionResult::Resolved(tree)

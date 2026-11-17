@@ -46,6 +46,9 @@
 //!   `an_entity_an_operation_built_with_unit_equals_the_one_a_rule_writes`;
 //! * a query's construction holding a call read off its value (`holds_an_operation_call`):
 //!   WI-616's `buried_override_suspends_instead_of_structural_verdict`.
+//! * the refusals proposing no `===` (`structural_equality_hint`):
+//!   [`an_equality_at_an_open_type_is_refused`] (its rule rows and its operation-body rows) and
+//!   [`a_querys_equality_is_typed_where_it_is_read`].
 //!
 //! [`a_term_compares_by_its_structure`] passes under each, by design: its subject is the
 //! library's provision, and without it each of its rules is refused at load, `Term` providing
@@ -80,7 +83,9 @@ fn answers(kb: &mut KnowledgeBase, pattern: &str) -> (usize, usize) {
 
 /// AT A TYPE THE CLAUSE LEAVES OPEN, AND DECLARES NOTHING FOR, AN EQUALITY IS REFUSED: as a goal,
 /// as `!=`, under `not`, at a variable only the body binds, and at the `T` of a sort that
-/// requires nothing. Each loaded and was decided by the value's sort when the goal ran.
+/// requires nothing. Each loaded and was decided by the value's sort when the goal ran. The
+/// refusal proposes `===`, as an operation body's `=` at a type parameter it requires nothing
+/// for does; a call of another spec's member at an open type is not told it.
 #[test]
 fn an_equality_at_an_open_type_is_refused() {
     for (rule, why) in [
@@ -97,11 +102,36 @@ fn an_equality_at_an_open_type_is_refused() {
         let src = program("test.cbrd2eq.open", &format!("  import anthill.prelude.PartialEq.{{eq}}\n  {rule}\n"));
         crate::common::assert_refused_naming(
             &crate::common::load_errors_of(&src),
-            &["same.body", "PartialEq", why],
+            &["same.body", "PartialEq", why, STRUCTURAL],
             rule,
         );
     }
+    // An operation body's `=` at a type parameter it requires nothing for proposes it too.
+    for (n, body) in ["a = b", "a != b"].into_iter().enumerate() {
+        let src = program(
+            &format!("test.cbrd2eq.op{n}"),
+            &format!("  operation same[T](a: T, b: T) -> Bool = {body}\n"),
+        );
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src),
+            &["same", "PartialEq", STRUCTURAL],
+            body,
+        );
+    }
+    let other = program(
+        "test.cbrd2eq.other",
+        "  sort Desc\n    sort T = ?\n    operation describe(x: T) -> Int64\n  end\n  \
+         sort Leaf\n    entity leaf\n    provides Desc[T = Leaf]\n    \
+         operation describe(x: Leaf) -> Int64 = 7\n  end\n  \
+         rule d(?x, ?r) :- Desc.describe(?x, ?r)\n",
+    );
+    let errs = crate::common::load_errors_of(&other);
+    crate::common::assert_refused_naming(&errs, &["d.body", "Desc", "a rule takes no dictionary"], "describe");
+    assert!(errs.iter().all(|e| !e.contains("===")), "{errs:?}");
 }
+
+/// What a refusal of an equality no type reaches proposes.
+const STRUCTURAL: &str = "`===` compares any two values structurally";
 
 /// …AND DECLARED AT THE HEAD'S TYPE PARAMETER IT READS THE CITATION'S DICTIONARY: `eqG(pt(1, 2),
 /// pt(1, 9))` holds through `Pt`'s own `eq`, which structure does not; `!=` is its negation; a
@@ -156,7 +186,7 @@ fn an_equality_under_a_declared_requirement_reads_the_citations_dictionary() {
 /// A QUERY'S EQUALITY IS TYPED WHERE IT IS READ: at the type its operands fix it is the
 /// carrier's member (`pt(1, 2) = pt(1, 9)` through `Pt`'s `eq`, `!=` its negation), and a
 /// variable is at the type the query's goals give it (`?x = 3` waits on `?x` at `Int64`). One
-/// nothing types is refused where the query is read: `?a = ?b`, `?a != ?b`.
+/// nothing types is refused where the query is read, proposing `===`: `?a = ?b`, `?a != ?b`.
 #[test]
 fn a_querys_equality_is_typed_where_it_is_read() {
     let mut kb = crate::common::load_kb_with(&program("test.cbrd2eq.query", ""));
@@ -169,7 +199,7 @@ fn a_querys_equality_is_typed_where_it_is_read() {
     for open in ["?a = ?b", "?a != ?b"] {
         crate::common::assert_refused_naming(
             &crate::common::query_pattern_refusals(&mut kb, open),
-            &["anthill.prelude.PartialEq", "a query has no caller"],
+            &["anthill.prelude.PartialEq", "a query has no caller", STRUCTURAL],
             open,
         );
     }

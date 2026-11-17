@@ -307,8 +307,10 @@ pub(crate) fn provider_requirement_goal_with_provider(
 /// reads its answer off (`eval::builtins::type_of_dictionary`) and a dictionary handed to a
 /// rule's guard binds its carrier by. `impl` names the head, and the subs after the head's own
 /// sort-level requirements carry one argument each, in declaration order. A pattern's open slot
-/// (proposal 071 §1.6) is `open_slot`, which only the evaluator's error layer names. `Err` with
-/// why where the layout does not fit, or a slot is met with no `open_slot` to give it.
+/// (proposal 071 §1.6) is `open_slot`, which only the evaluator's error layer names. A tuple's
+/// dictionary holds its labels beside its subs, one per component, in the type's order, and
+/// reads as the tuple type they name. `Err` with why where the layout does not fit, or a slot
+/// is met with no `open_slot` to give it.
 pub(crate) fn type_of_type_value_dictionary(
     kb: &mut KnowledgeBase,
     dict: &crate::eval::dictionary::Dictionary,
@@ -317,6 +319,16 @@ pub(crate) fn type_of_type_value_dictionary(
     let head = dict.impl_sort();
     if kb.minted_param(head) == Some(crate::kb::MintedParam::PatternSlot) {
         return open_slot.ok_or_else(|| "a pattern's open slot read with no error layer".to_string());
+    }
+    if let Some(labels) = dict.labels() {
+        let mut fields: Vec<(Symbol, TermId)> = Vec::with_capacity(labels.len());
+        for (i, label) in labels.into_iter().enumerate() {
+            let sub = dict
+                .sub(i)
+                .ok_or_else(|| format!("a tuple's dictionary has no sub-dictionary for its label {i}"))?;
+            fields.push((label, type_of_type_value_dictionary(kb, &sub, open_slot)?));
+        }
+        return Ok(kb.make_named_tuple_type(&fields));
     }
     let arity = dict.arity();
     if arity == 0 {

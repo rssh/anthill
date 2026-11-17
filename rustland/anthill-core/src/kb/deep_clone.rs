@@ -670,9 +670,14 @@ impl Copier {
                 chain: self.node(chain),
                 slot: plain(slot),
             },
-            Expr::Dictionary { impl_sort, subs } => Expr::Dictionary {
+            Expr::Dictionary {
+                impl_sort,
+                subs,
+                labels,
+            } => Expr::Dictionary {
                 impl_sort: plain(impl_sort),
                 subs: self.nodes(subs),
+                labels: labels.as_deref().map(std::rc::Rc::from),
             },
             Expr::VarRef { name } => Expr::VarRef { name: plain(name) },
             Expr::Var(var) => Expr::Var(plain(var)),
@@ -889,6 +894,7 @@ impl Copier {
                 spec_sort,
                 bindings,
                 sub_resolutions,
+                labels,
             } => ResolvedRequiresNode::Conditional {
                 impl_sort: plain(impl_sort),
                 spec_sort: plain(spec_sort),
@@ -897,6 +903,7 @@ impl Copier {
                     .iter()
                     .map(|sub| self.resolved_requires(sub))
                     .collect(),
+                labels: labels.as_deref().map(std::rc::Rc::from),
             },
             ResolvedRequiresNode::FromScope {
                 scope_index,
@@ -1211,7 +1218,7 @@ impl KnowledgeBase {
             ranking_rigids: plain(&self.ranking_rigids),
             rigid_projection_formations: plain(&self.rigid_projection_formations),
             existential_return_ops: plain(&self.existential_return_ops),
-            conditional_eq_params: plain(&self.conditional_eq_params),
+            conditional_eq_conditions: plain(&self.conditional_eq_conditions),
             derived_eq_members: plain(&self.derived_eq_members),
             derived_type_value_carriers: plain(&self.derived_type_value_carriers),
             entity_field_types: self.entity_field_types.iter().map(|(entity, fields)| (plain(entity), c.keyed_values(fields))).collect(),

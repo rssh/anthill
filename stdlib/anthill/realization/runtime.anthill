@@ -12,7 +12,7 @@
 -- A pure structural VIEW, not new storage. WI-1045 went further and removed
 -- the storage entirely: a dictionary IS an ordinary value in this shape --
 -- `Dictionary(sub0 .. subN, impl: S)`, positional sub-dictionaries and one
--- named `impl` -- carried by sigma, by an eval frame and by a closure alike,
+-- named `impl` (and a tuple's `TypeValue` instance's `labels` beside it) -- carried by sigma, by an eval frame and by a closure alike,
 -- with no arena behind it and no conversion at a crossing. Each operation
 -- below is a native Rust builtin reading that value's own children. No
 -- pattern-match face (anthill has no user-defined extractors) — the accessor
@@ -62,6 +62,11 @@ namespace anthill.realization.runtime
 
     -- The resolved impl identity (the `impl` named child).
     operation impl(d: Self) -> Symbol @[host_implemented]
+
+    -- The labels of a tuple's components, where the dictionary is a tuple's `TypeValue`
+    -- instance: `Dictionary(sub0 .. subN, impl: NamedTuple, labels: (a, b))`, one label per
+    -- sub-dictionary, in the tuple type's order. none() for every other dictionary.
+    operation labels(d: Self) -> Option[T = List[T = Symbol]] @[host_implemented]
 
     -- Number of sub-requirement dicts.
     operation arity(d: Self) -> Int64 @[host_implemented]

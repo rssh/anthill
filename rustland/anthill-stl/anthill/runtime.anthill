@@ -10,6 +10,7 @@ namespace anthill.realization.runtime
     artifact "rustland/anthill-core/src/eval/builtins.rs"
     operation_map {
       impl: "dict_impl",
+      labels: "dict_labels",
       arity: "dict_arity",
       sub: "dict_sub",
       resolveOp: "dict_resolve_op",

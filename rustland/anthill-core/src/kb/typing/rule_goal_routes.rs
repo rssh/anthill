@@ -373,9 +373,11 @@ fn calls_left_to_a_clause(kb: &KnowledgeBase, typed: &Rc<NodeOccurrence>) -> Vec
                     "a requirement, {requirement}, fixed where the call of `{}` is written",
                     kb.qualified_name_of(*functor)
                 ),
-                actual: "the query puts it at a type nothing fixes, and a query has no caller to \
-                         pass the dictionary: give the argument a known type"
-                    .to_string(),
+                actual: format!(
+                    "the query puts it at a type nothing fixes, and a query has no caller to \
+                     pass the dictionary: give the argument a known type{}",
+                    structural_equality_hint(kb, *functor)
+                ),
             });
         }
         for_each_child(expr, |c| stack.push(Rc::clone(c)));

@@ -5028,7 +5028,8 @@ pub(super) fn resolve_at_goal(
     // coarse-cover an empty-candidate goal, and the compound sole-cover gate the
     // caller applied is not re-widened here.
     let candidates = collect_provides_candidates(kb, &goal, disambig);
-    if candidates.is_empty() {
+    // A tuple's instance has no provision row: the resolver builds it.
+    if candidates.is_empty() && tuple_instance_goal(kb, goal).is_none() {
         for ar in scope.available_requires {
             if ar.required_sort == goal.spec_sort
                 && requires_entry_covers_goal(kb, ar, &goal, disambig)

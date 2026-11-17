@@ -4089,8 +4089,9 @@ fn check_apply_call(
         // the rustland binding emits a SortProvidesInfo whose binding
         // value resolves to the same Int sort as the per-call subst sees.
         if let Some(spec_sort) = lookup_spec_op_dispatch(kb, fn_sym) {
-            // A tuple has no sort to carry a provision, so its equality is its components'
-            // (kernel-language §8.3): no instance at the tuple, and one at each component.
+            // A tuple's equality is `NamedTuple`'s, through the instance its components' build
+            // (proposal 004's extension): a component with no `PartialEq` is refused here,
+            // naming it, and the call is then dispatched as any call of a spec's member is.
             if is_semantic_equality(kb, fn_sym) {
                 let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
                 if let Some(tuple) = goal_carrier_binding(kb, &goal)
@@ -4100,12 +4101,6 @@ fn check_apply_call(
                     if let Some(refusal) = tuple_component_without_equality(kb, spec_sort, &tuple, fn_sym, span) {
                         return Err(refusal);
                     }
-                    return Ok(TypeResult {
-                        ty: resolved_ret.clone(),
-                        env: env.clone(),
-                        effects,
-                        node: Rc::clone(occ),
-                    });
                 }
             }
             // The op's short name (e.g. "add" for "anthill.prelude.Additive.add")

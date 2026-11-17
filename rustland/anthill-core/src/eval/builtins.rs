@@ -115,6 +115,9 @@ const HOST_FNS: &[(
     ("float_eq", 2, float_eq),
     // Equality of a `Term`: IEEE for two floats, the structure otherwise.
     ("term_eq", 2, term_eq),
+    // A tuple's derived `eq` (proposal 004's extension): its components, each through its
+    // sub-dictionary.
+    ("named_tuple_eq", 2, named_tuple_eq),
     // The TOTAL scalar order (`Ord`): `Int64`, `BigInt`, `String`.
     ("ordered_compare", 2, ordered_compare),
     ("ordered_gt", 2, ordered_gt),
@@ -374,6 +377,7 @@ const HOST_FNS: &[(
     // WI-577 — the readers over the first-class runtime dispatch values: a requirement
     // dictionary and a resolved operation reference (WI-1045) (`runtime.anthill`).
     ("dict_impl", 1, dict_impl),
+    ("dict_labels", 1, dict_labels),
     ("dict_arity", 1, dict_arity),
     ("dict_sub", 2, dict_sub),
     ("dict_resolve_op", 2, dict_resolve_op),
@@ -1508,6 +1512,54 @@ fn float_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Float.eq", args)?;
     let (x, y) = float_operands(i, &a, &b)?;
     Ok(Value::Bool(x == y))
+}
+
+/// `NamedTuple.namedTupleEq`, a tuple's derived `eq` (proposal 004's extension): two tuples
+/// are equal when each pair of components is, compared at the member the component's
+/// sub-dictionary names, in the order the tuple's dictionary lists them
+/// (`KnowledgeBase::tuple_component_order`). Entered through the tuple's dictionary, which it
+/// reads; a component that cannot be decided is undecided for the tuple.
+fn named_tuple_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("namedTupleEq", args)?;
+    let dict = i.builtin_dispatch_dict.clone().ok_or_else(|| {
+        EvalError::Internal(
+            "`namedTupleEq` was entered with no dictionary: a tuple's equality is read through \
+             the tuple's instance"
+                .to_string(),
+        )
+    })?;
+    let pairs = match i.kb().tuple_component_pairs_in_order(&a, &b) {
+        Some(crate::kb::eq_derive::TuplePairs::Pairs(pairs)) => pairs,
+        Some(crate::kb::eq_derive::TuplePairs::Mismatch) => return Ok(Value::Bool(false)),
+        None => {
+            return Err(EvalError::Internal(format!(
+                "`namedTupleEq` compares two tuples, got {a:?} and {b:?}"
+            )))
+        }
+    };
+    if pairs.len() != dict.arity() {
+        return Err(EvalError::Internal(format!(
+            "`namedTupleEq`: the tuples have {} components and the dictionary {}",
+            pairs.len(),
+            dict.arity()
+        )));
+    }
+    for (k, (x, y)) in pairs.into_iter().enumerate() {
+        let sub = dict.sub(k).expect("k < arity");
+        match i.kb_mut().bridge_eq_through_dictionary(&sub, x, y)? {
+            crate::kb::resolve::BridgeEqOutcome::Decided(true) => {}
+            crate::kb::resolve::BridgeEqOutcome::Decided(false) => return Ok(Value::Bool(false)),
+            crate::kb::resolve::BridgeEqOutcome::Undecided { truncated } => {
+                let detail = "a component of a tuple's equality could not be decided".to_string();
+                return Err(if i.bridge_mode() {
+                    EvalError::Suspended { detail, truncated }
+                } else {
+                    EvalError::Internal(detail)
+                });
+            }
+        }
+    }
+    Ok(Value::Bool(true))
 }
 
 /// `termEq`, `Term`'s `eq`: two terms are equal when they are the same structure, and two
@@ -6232,6 +6284,25 @@ fn dict_impl(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
     Ok(symbol_value(expect_dictionary(interp, &d)?.impl_sort()))
 }
 
+/// `Dictionary.labels(d) -> Option[List[Symbol]]` — a tuple's `TypeValue` instance's labels,
+/// one per sub-dictionary; none() for every other dictionary. The structural view holds them
+/// as a tuple of symbols, as `OpRef.spreadLabels`' does ([`opref_spread_labels`] says why the
+/// two spellings are one field).
+fn dict_labels(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [d] = expect_args::<1>("Dictionary.labels", args)?;
+    let labels = expect_dictionary(interp, &d)?.labels();
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+    match labels {
+        Some(labels) => {
+            let list = build_value_list(interp, labels.into_iter().map(symbol_value).collect())?;
+            Ok(option_some(some_sym, value_key, list))
+        }
+        None => Ok(option_none(none_sym)),
+    }
+}
+
 /// WI-20260919-HXGXF (proposal 065 §2) — `anthill.reflect.type_value_of_self() -> Type`:
 /// the `Type` named by the dispatching dictionary of the `TypeValue.type_value` call
 /// currently running. The sole implementation of `TypeValue`, reached from that spec op's
@@ -6246,7 +6317,9 @@ fn dict_impl(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 /// reach here are hand-written ones.
 /// Rebuilding the type is therefore a walk, not a lookup: `Ref(S)` at arity 0, and
 /// `S[p₀ = <sub₀'s type>, …]` otherwise. That is GHC's `Typeable` representation, and it
-/// is why no per-carrier implementation is needed.
+/// is why no per-carrier implementation is needed. A tuple's dictionary,
+/// `Dictionary(sub₁ … subₙ, impl: NamedTuple, labels: (l₁, …, lₙ))`, is read as the tuple
+/// `(l₁: <sub₁'s type>, …)` (`typing::type_of_type_value_dictionary`).
 ///
 /// READS THE RUNNING FRAME, not an argument. A builtin is dispatched with no frame of its
 /// own (`dispatch_resolved_operation` calls it and pushes nothing), so `stack.top()` is

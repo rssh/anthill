@@ -377,10 +377,9 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
             // them into the `NonEq` half. BOTH specs: the mirror needs the `Eq` list for
             // its disjuncts and the `PartialEq` list for the conditions `NonEq requires
             // PartialEq` obliges it to carry.
-            let params: Vec<Symbol> = conds.iter().map(|&(_, p)| p).collect();
-            if !params.is_empty() {
+            if !conds.is_empty() {
                 let cs = kb.canonical_sort_sym(s);
-                kb.conditional_eq_params.insert((cs, spec), params);
+                kb.conditional_eq_conditions.insert((cs, spec), conds);
             }
         }
     }
@@ -632,8 +631,8 @@ fn field_conditions(
     derived: &std::collections::HashMap<Symbol, Vec<Condition>>,
     unbacked_eq: &HashSet<Symbol>,
 ) -> Option<Vec<Condition>> {
-    // A field typed by a tuple: a tuple has no sort to carry a provision, so its equality is its
-    // components' (§8.3), and the unit's holds outright.
+    // A field typed by a tuple: its conditions are its components', from which the tuple's
+    // instance is built (proposal 004's extension), and the unit's holds outright.
     if let Some(components) = super::typing::schema_fields(kb, ty) {
         let mut out: Vec<Condition> = Vec::new();
         for (_, component) in components {
@@ -753,11 +752,8 @@ fn field_conditions(
             .find(|k| kb.local_name_of(*k) == q_name)
             .and_then(|k| ty.named_arg(kb, k))
             .map(|it| it.to_value())?;
-        // A tuple as a type argument: its equality is its components', and the condition is
-        // a dictionary at the tuple, which nothing provides.
-        if super::typing::schema_fields(kb, &arg).is_some() {
-            return None;
-        }
+        // A tuple as a type argument is read as a field typed by it is: its components'
+        // conditions, the tuple's instance built from theirs (proposal 004's extension).
         let needs = field_conditions(kb, &arg, cspec, params, derived, unbacked_eq)?;
         if !may_rest_on_a_parameter && !needs.is_empty() {
             return None;
@@ -1215,7 +1211,7 @@ pub(crate) fn assert_derived_provision(
 /// to be spelled as separate clauses). `Pair[A = Float, B = Int64]` needs the `A` clause
 /// alone to answer.
 ///
-/// Mirrors only what THIS module derived ([`KnowledgeBase::conditional_eq_params`], whose
+/// Mirrors only what THIS module derived ([`KnowledgeBase::conditional_eq_conditions`], whose
 /// comment carries why a WRITTEN conditional `Eq` is not mirrored).
 ///
 /// The row is MARKED like every other row this pass asserts: a derived `NonEq` carries
@@ -1228,21 +1224,26 @@ pub(crate) fn assert_derived_provision(
 fn derive_conditional_noneq(kb: &mut KnowledgeBase, noneq: Symbol, partial_eq: Symbol, eq: Symbol) {
     // Registration order, so the clause indices a program gets do not depend on a hash
     // iteration order (they appear in `ProvidesConditionInfo` facts a test can read).
-    let carriers: Vec<(Symbol, Vec<Symbol>, Vec<Symbol>)> = composite_sorts(kb)
+    let carriers: Vec<(Symbol, Vec<Symbol>, Vec<Condition>)> = composite_sorts(kb)
         .into_iter()
         .filter_map(|s| {
             let cs = kb.canonical_sort_sym(s);
-            let disjuncts = kb.conditional_eq_params.get(&(cs, eq))?.clone();
+            let mut disjuncts: Vec<Symbol> = Vec::new();
+            for &(_, p) in kb.conditional_eq_conditions.get(&(cs, eq))? {
+                if !disjuncts.contains(&p) {
+                    disjuncts.push(p);
+                }
+            }
             // The `PartialEq` row's OWN parameters, not the `Eq` row's reused: see the
             // field's comment. Absent ⇒ this carrier derived no conditional `PartialEq`,
             // so a `NonEq` row could not discharge its `requires PartialEq` and is not
             // derived at all.
-            let base = kb.conditional_eq_params.get(&(cs, partial_eq))?.clone();
+            let base = kb.conditional_eq_conditions.get(&(cs, partial_eq))?.clone();
             Some((s, disjuncts, base))
         })
         .collect();
     let mut done: HashSet<Symbol> = HashSet::new();
-    for (s, params, partial_params) in carriers {
+    for (s, params, partial_conds) in carriers {
         // Idempotent across load phases, the same guard the loop above uses: phase 2
         // re-runs this pass with phase 1's row already in the relation, and a second
         // `record_derived_conditions` would file a SECOND clause at a fresh index — a
@@ -1269,9 +1270,9 @@ fn derive_conditional_noneq(kb: &mut KnowledgeBase, noneq: Symbol, partial_eq: S
             // claim is "every component has a partial equality AND at least one of them
             // is non-reflexive", which is what these conditions say.
             let mut conds: Vec<Condition> = vec![(noneq, p)];
-            for &q in &partial_params {
-                if !conds.contains(&(partial_eq, q)) {
-                    conds.push((partial_eq, q));
+            for &c in &partial_conds {
+                if !conds.contains(&c) {
+                    conds.push(c);
                 }
             }
             record_derived_conditions(kb, s, noneq, &conds);
@@ -1633,9 +1634,10 @@ pub(crate) enum TuplePairs {
 }
 
 impl KnowledgeBase {
-    /// The components of two tuples, pairwise — `None` unless both operands are tuples. A
-    /// tuple is no sort's value, so no `eq` member compares it: semantic equality compares
-    /// its components, each by the steps it takes for any operand.
+    /// The components of two tuples, pairwise — `None` unless both operands are tuples, the
+    /// named ones by the first operand's labels. An equality at two tuples no type reached
+    /// compares them, each by the steps it takes for any operand; a typed one is `NamedTuple`'s
+    /// member ([`Self::tuple_component_pairs_in_order`]).
     pub(crate) fn tuple_component_pairs(&self, a: &Value, b: &Value) -> Option<TuplePairs> {
         let (
             ViewHead::Functor {
@@ -1672,6 +1674,45 @@ impl KnowledgeBase {
             }
         }
         Some(TuplePairs::Pairs(pairs))
+    }
+
+    /// The order a tuple's dictionary lists its components' sub-dictionaries in, and its
+    /// derived `eq` compares them in: positional components by their index, named ones by
+    /// label. A value may list its labels in another order than its type does (`<:` admits a
+    /// permutation, kernel-language §4.5), so both read this order rather than either's own.
+    pub(crate) fn tuple_component_order(&self, label: Symbol) -> (usize, String) {
+        let name = self.local_name_of(label).to_string();
+        match crate::intern::positional_label_index(&name) {
+            Some(index) => (index, String::new()),
+            None => (usize::MAX, name),
+        }
+    }
+
+    /// The components of a tuple type, in [`Self::tuple_component_order`].
+    pub(crate) fn tuple_type_components(&self, fields: Vec<(Symbol, Value)>) -> Vec<(Symbol, Value)> {
+        let mut fields = fields;
+        fields.sort_by_cached_key(|(label, _)| self.tuple_component_order(*label));
+        fields
+    }
+
+    /// [`Self::tuple_component_pairs`] in [`Self::tuple_component_order`]: the order the tuple's
+    /// dictionary lists its sub-dictionaries in.
+    pub(crate) fn tuple_component_pairs_in_order(&self, a: &Value, b: &Value) -> Option<TuplePairs> {
+        let pairs = match self.tuple_component_pairs(a, b)? {
+            TuplePairs::Mismatch => return Some(TuplePairs::Mismatch),
+            TuplePairs::Pairs(pairs) => pairs,
+        };
+        let ViewHead::Functor { pos_arity, .. } = a.head(self) else {
+            return Some(TuplePairs::Mismatch);
+        };
+        // `tuple_component_pairs` lists the positional components, then the named ones in the
+        // first operand's order.
+        let keys = (0..pos_arity)
+            .map(|i| (i, String::new()))
+            .chain(a.named_keys(self).into_iter().map(|l| self.tuple_component_order(l)));
+        let mut labelled: Vec<((usize, String), (Value, Value))> = keys.zip(pairs).collect();
+        labelled.sort_by(|x, y| x.0.cmp(&y.0));
+        Some(TuplePairs::Pairs(labelled.into_iter().map(|(_, p)| p).collect()))
     }
 
     /// Does `v` hold a `Float` anywhere? A structural compare reads `nan` as equal to

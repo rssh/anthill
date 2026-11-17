@@ -361,7 +361,7 @@ const REFLECT_SET: [&str; 24] = [
 /// 44 since WI-200 retired `ModifyRuntime.get` and `.set` with their sort, 43 since
 /// WI-20261109-5BP39 left `PartialEq.eq` with no host implementation (each scalar carrier
 /// maps its own `eq`), 42 since WI-20261109-JEE0E made `PartialEq.neq` a body in the spec.
-const MIGRATED: [&str; 42] = [
+const MIGRATED: [&str; 43] = [
     "anthill.kernel.struct_eq",
     "anthill.prelude.Map.empty",
     "anthill.prelude.Map.put",
@@ -395,6 +395,7 @@ const MIGRATED: [&str; 42] = [
     "anthill.prelude.Cell.set",
     "anthill.reflect.TypeValue.type_value",
     "anthill.realization.runtime.Dictionary.impl",
+    "anthill.realization.runtime.Dictionary.labels",
     "anthill.realization.runtime.Dictionary.arity",
     "anthill.realization.runtime.Dictionary.sub",
     "anthill.realization.runtime.Dictionary.resolveOp",

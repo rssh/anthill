@@ -1,6 +1,6 @@
 # Proposal 004: Tuple Sorts
 
-**Status:** Implemented
+**Status:** Implemented. Extended 2026-11-16, draft: a tuple is a `NamedTuple`, a sort that carries derived provisions (§"Extension (2026-11-16)").
 **Depends on:** None
 **Affects:** Kernel Language Specification §4, §11
 
@@ -267,3 +267,110 @@ The fix: add `paren_expr: $ => seq('(', $._term, ')')` to `_atom_term`. This giv
 - **Parse IR**: `TypeExpr::Tuple(Vec<(Symbol, TypeExpr)>)` — uses `Vec` (not `SmallVec`) because tuples can contain tuples, creating a recursive type
 - **Term representation**: `Term::Fn { functor: "TupleLiteral", pos_args: [], named_args: [...] }` — same pattern as `SetLiteral`
 - **Stdlib**: `entity TupleLiteral` in `anthill.reflect`, registered in `register_stdlib_scopes` with global import
+
+## Extension (2026-11-16): a tuple is a `NamedTuple`
+
+### The problem
+
+A tuple type is structural, and no sort stands behind it, so nothing can provide a spec at a
+tuple. An arrow had the same gap and was given a sort, `Function` (proposal 002, "Correction
+(2026-11-03)"). Where a spec is needed at a tuple today, each reader has its own special case or
+refuses. Measured on `f9cd2403`, over a `Pt` whose own `eq` compares `x` alone:
+
+```anthill
+sort Pt
+  entity pt(x: Int64, y: Int64)
+  provides PartialEq[T = Pt]
+  provides Eq[T = Pt]
+  operation eq(a: Pt, b: Pt) -> Bool =
+    match a case pt(ax, ay) -> match b case pt(bx, by) -> PartialEq.eq(ax, bx)
+end
+```
+
+| | Program | Today |
+|---|---|---|
+| T1 | `rule t1() :- (pt(1, 2), 3) = (pt(1, 9), 3)` | holds, with no member: each component is compared through the equality index, which reads `pt`'s constructor (kernel-language §8.3: "A tuple has no `eq` member") |
+| T2 | `operation same[A](a: A, b: A) -> Bool requires PartialEq[T = A] = PartialEq.eq(a, b)`, called as `same((pt(1, 2), 3), (pt(1, 9), 3))` | refused at load: "its carrier is `(_1: Pt, _2: Int64)`, a STRUCTURAL FORMER — a tuple or an arrow — and nothing provides `PartialEq`" |
+| T3 | `rule t3() :- [(pt(1, 2), 3)] = [(pt(1, 9), 3)]` | refused at load: no impl provides `PartialEq` at the tuple, so `List`'s derived equality has nothing to derive from |
+| T4 | `TypeValue.type_value[T = (a: Int64, b: String)]()` | refused at load: a tuple carries no provision (proposal 065 §7 step 2, "FORMERS deferred") |
+| T5 | `Map[K = (Int64, Bool), V = Int64]` | loads, by a special case in the key check (`typing/coherence.rs`, which reads a tuple by its components); `Map[K = (a: Float), V = Int64]` is refused |
+
+WI-20261105-CBRD2 makes an untyped equality at a carrier with its own `eq` an error at run time
+(decided 2026-11-16). T1 is typed, but its goal carries no member, so it cannot be told from an
+untyped one, and its components would start to error.
+
+### The rule
+
+1. **A tuple type is the sort `NamedTuple` applied to its components.** `(l₁: T₁, …, lₙ: Tₙ)` is
+   `NamedTuple` with one parameter per component, the label its name, in order; `(A, B)` is
+   `(_1: A, _2: B)` as before, and `()` is `NamedTuple` with none. The sort lives in
+   `anthill.prelude`. It is written only as tuple syntax; `NamedTuple` names the sort where a
+   sort is named (a derived provision, a message). The rules above are unchanged: identity is
+   the labels, the component types and their order (rule 4a), `<:` is by label with width and
+   permutation, and a component's label is distinct (rule 8).
+2. **Its provisions are derived, as a composite's classification is** (kernel-language §8.3).
+   A tuple provides `PartialEq` when each component's type provides it, and `Eq` when each
+   provides `Eq`; `()` provides both. It provides `TypeValue` when each component's type does
+   (065 §2, now for the tuple former too). No program writes a provision at `NamedTuple`.
+3. **The derived member compares the components through their own members**, in order, as a
+   composite's derived `eq` compares its fields. Its law is the components': `Eq` at the tuple
+   holds where it holds at each component.
+4. **The instance is a dictionary**, of the shape every dictionary has
+   (`eval/dictionary.rs`): `Dictionary(d₁ … dₙ, impl: NamedTuple)`, one sub-dictionary per
+   component, in component order. A component at a type parameter takes the caller's dictionary
+   for that parameter. A tuple's `TypeValue` instance also holds the tuple's labels, in the
+   type's own order: `Dictionary(d₁ … dₙ, impl: NamedTuple, labels: (l₁, …, lₙ))`, from which
+   `type_value` reads the type back. It is passed as any dictionary is: T2's `same` is handed it, and `List`'s
+   derived equality at `List[T = (Pt, Int64)]` enters with it.
+5. **A typed `=` at a tuple is a call of the tuple's `eq` through its instance.** It carries the
+   member, so no component is compared without one, and the equality index is not read.
+
+### Target programs, as they answer under the rule
+
+| | Answer |
+|---|---|
+| T1 | holds, through `NamedTuple`'s `eq` entered with `Dictionary(‹Pt's›, ‹Int64's›, impl: NamedTuple)`; `(pt(1, 2), 3) = (pt(2, 2), 3)` does not |
+| T2 | loads, and answers `true` |
+| T3 | loads, and holds |
+| T4 | answers the type `(a: Int64, b: String)` |
+| T5 | unchanged; the key check reads the derived `Eq` provision instead of its special case |
+| T7 | `(Int64, Relation[T = (x: Int64), E = {}])` provides no `PartialEq` (a `Relation` provides none), and `PartialEq.eq` at it is refused at load, as today (measured: "`PartialEq[T = Relation[…]]` cannot be supplied") |
+| T8 | `(Int64, Float)` provides `PartialEq` and not `Eq`: `Map[K = (Int64, Float), V = Int64]` is refused, as today (measured, at the `Float` component) |
+
+### What it replaces
+
+- kernel-language §4.5: one sentence, a tuple type is `NamedTuple` applied to its components.
+- kernel-language §8.3: "A tuple has no `eq` member: its equality is its components'" and "a
+  tuple as a type argument (`List[T = (String, String)]`) … derives nothing" go; the key check's
+  "A tuple provides `Eq` when each of its components' types does" is read as the derived
+  provision.
+- 065 §7 step 2: the tuple half of "FORMERS deferred".
+
+### Not in this extension
+
+- The arrow half of the formers (`Function` is a sort since 002's correction; a closure carrying
+  the arrow type it was typed at, and `domain` at an arrow): WI-20261021-VF8GT.
+- A tuple type written as a value in a rule body's data slot (VF8GT's (3)).
+
+### Open questions
+
+1. **Which specs derive at a tuple.** Proposed: `PartialEq`, `Eq` and `TypeValue`. `SortDomain`
+   and type patterns (VF8GT, proposal 071) follow the same rule and could be added here; with a
+   type pattern at a tuple, an `Error.reify` boundary could catch an `Error[(Int64, Int64)]`
+   payload, which today waits on a tuple's instance (065, the open question withdrawn
+   2026-10-16). `Ord` (lexicographic, by component order) is not proposed.
+2. **Whether a program may name `NamedTuple`** as a type (`x: NamedTuple`, any tuple) or write a
+   provision at it. Proposed: neither, in this extension: one written form for a tuple type, and
+   derived provisions only.
+
+### Stages
+
+Tracked by the `proposal-004` sequence, one ticket per stage (filed 2026-11-16).
+
+1. The sort, and its derived `PartialEq` and `Eq` with their dictionary: WI-20261116-JWCNN.
+   WI-20261105-CBRD2's run-time equality error depends on it.
+2. `TypeValue` at a tuple (065 §7 step 2's tuple half): WI-20261116-411A7.
+3. What open question 1 adds, parked until it is decided: WI-20261116-HWD8A.
+
+The arrow half of the formers stays with WI-20261021-VF8GT.
+

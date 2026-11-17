@@ -861,7 +861,11 @@ impl Interpreter {
             Expr::RequirementAtSort { chain, slot } => {
                 self.reduce_requirement_at_sort_node(chain, *slot)
             }
-            Expr::Dictionary { impl_sort, subs } => self.reduce_dictionary_node(*impl_sort, subs),
+            Expr::Dictionary {
+                impl_sort,
+                subs,
+                labels,
+            } => self.reduce_dictionary_node(*impl_sort, subs, labels.as_deref()),
             // `ListLit` / `SetLit` / `TupleLit` are the literal nodes of a rule's own
             // term. In an operation body, and in a lambda a rule body writes, the typer
             // has read one as the constructor written there
@@ -1792,13 +1796,14 @@ impl Interpreter {
         &mut self,
         impl_sort: Symbol,
         sub_occs: &[Rc<NodeOccurrence>],
+        labels: Option<&[Symbol]>,
     ) -> Result<StepOutcome, EvalError> {
         let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
         for occ in sub_occs.iter() {
             subs.push(self.eval_requirement_chain_node(occ)?);
         }
         Ok(StepOutcome::Deliver(
-            self.build_dictionary(impl_sort, subs)?.into_value(),
+            self.build_dictionary_labelled(impl_sort, subs, labels)?.into_value(),
         ))
     }
 
@@ -1835,12 +1840,13 @@ impl Interpreter {
             Expr::Dictionary {
                 impl_sort,
                 subs: sub_occs,
+                labels,
             } => {
                 let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
                 for r in sub_occs.iter() {
                     subs.push(self.eval_requirement_chain_node(r)?);
                 }
-                self.build_dictionary(*impl_sort, subs)
+                self.build_dictionary_labelled(*impl_sort, subs, labels.as_deref())
             }
             Expr::VarRef { name } => {
                 let top = self.stack.top().ok_or_else(|| {
@@ -1951,6 +1957,7 @@ impl Interpreter {
             Expr::Dictionary {
                 impl_sort,
                 subs: sub_occs,
+                labels,
             } => {
                 let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
                 for r in sub_occs.iter() {
@@ -1961,7 +1968,7 @@ impl Interpreter {
                     };
                     subs.push(s);
                 }
-                self.build_dictionary(*impl_sort, subs).map(Some)
+                self.build_dictionary_labelled(*impl_sort, subs, labels.as_deref()).map(Some)
             }
             // No frame binds nothing: the bridge reads a call's stamps before it pushes
             // one, and a stamp that forwards the caller's own slot names a frame it has not
@@ -3085,6 +3092,11 @@ impl Interpreter {
         dict: &super::value::Dictionary,
     ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
         let provider = dict.impl_sort();
+        // A tuple's dictionary holds one sub-dictionary per component, however many the tuple
+        // has, and its member reads them off the dictionary itself.
+        if self.kb.is_named_tuple_sort(provider) {
+            return Ok(smallvec::smallvec![(self.fields.req_self, dict.clone())]);
+        }
         // WI-866 — the dictionary's SPEC, DECIDED. The `impl_parent_of_op(..)
         // .unwrap_or(provider)` this replaced folded three answers into one, and the
         // comment over it named the one shape that never reached it: a NAMESPACE-level
@@ -3291,13 +3303,14 @@ impl Interpreter {
             ResolvedRequiresNode::Conditional {
                 impl_sort,
                 sub_resolutions,
+                labels,
                 ..
             } => {
                 let subs = sub_resolutions
                     .iter()
                     .map(|s| self.dictionary_of_tree_in(s, dict, base))
                     .collect::<Option<Vec<_>>>()?;
-                super::value::Dictionary::build(&mut self.kb, *impl_sort, subs)
+                super::value::Dictionary::build_labelled(&self.kb, *impl_sort, subs, labels.as_deref())
             }
         }
     }

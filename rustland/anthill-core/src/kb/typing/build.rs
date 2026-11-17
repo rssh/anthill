@@ -2312,7 +2312,16 @@ pub(crate) fn classify_pin_or_apply_within(
             frame: CalleeFrame::Dict(dict),
             enclosing_op: op_supply.and_then(|c| c.enclosing_op),
         }
-    } else if needs_reqs || has_op_slots || threads_instance {
+    } else if needs_reqs
+        || has_op_slots
+        || threads_instance
+        // A tuple's member reads its components' sub-dictionaries off the tuple's dictionary,
+        // though `NamedTuple` requires nothing itself.
+        || resolved_tree
+            .as_ref()
+            .and_then(|t| t.impl_sort())
+            .is_some_and(|p| kb.is_named_tuple_sort(p))
+    {
         // WI-829: a CROSS-SORT spec-op dispatch that CONSTRUCTS its callee's
         // requirement dictionary (a `resolved_tree` with a `FromScope` — the
         // deeper dict built around the enclosing frame's own requirement) cannot

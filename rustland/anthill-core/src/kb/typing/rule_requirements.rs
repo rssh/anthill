@@ -678,7 +678,8 @@ fn call_requirement_refusal(
                 field: RuleField::Body,
             },
             expected,
-            actual,
+            // An equality no type reaches is one `===` could have written.
+            actual: format!("{actual}{}", structural_equality_hint(kb, call.functor)),
         },
         Some(call.call.span.source),
     )

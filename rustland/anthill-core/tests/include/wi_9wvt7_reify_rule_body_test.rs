@@ -418,7 +418,7 @@ end
 /// the refusal is the boundary's: no one pattern admits `Error[T = ?P]` and `Error[T = Other]`;
 /// FAILS with the typer leaving a call to the clause only outside a form
 /// (`clause_supplies_requirements`): the raise is refused first, naming its `TypeValue`. A tuple
-/// is refused at both. Where the thunk raises nothing open — a spec as
+/// is refused at the boundary: it has a `TypeValue`, so its raise loads, and no type pattern. Where the thunk raises nothing open — a spec as
 /// the payload, no `Error` label — the refusal is the pattern's. The boundary catches by that evidence, and with none it refuses to run, so the
 /// call can never answer: with (d)'s load refusal backed out the programs load and
 /// `either(7, 7, ?r)` is undecided at every query. Before the boundary refused to run with
@@ -441,7 +441,6 @@ fn an_unfilled_pattern_slot_is_refused_where_it_is_written() {
         assert!(!errs.is_empty(), "{shape}: refused, got a clean load");
         let wants: &[&str] = if shape == "a tuple" {
             &[
-                "anthill.reflect.TypeValue[T = (_1: Int64, _2: Int64)]",
                 "anthill.reflect.TypePattern[T = (_1: Int64, _2: Int64)]",
                 "a STRUCTURAL FORMER",
                 "Name a sort with no tuple or arrow among its type arguments",

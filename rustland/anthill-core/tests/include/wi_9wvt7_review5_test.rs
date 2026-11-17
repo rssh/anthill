@@ -450,7 +450,7 @@ end
 
 /// A PROGRAM SPEC'S CONTRACT IS READ THROUGH THE PROGRAM'S SPECS IT NAMES, and on a spec
 /// operation's call as on a generic one's: `Desc requires Mid[T = T]`, `Mid requires TypeValue[T =
-/// T]`, at `Option[T = (Int64, Int64)]`. Each was advised a row of `Desc` there, refused for its
+/// T]`, at `Option[T = (Int64) -> Int64]`. Each was advised a row of `Desc` there, refused for its
 /// contract in turn.
 #[test]
 fn a_programs_spec_with_a_contract_that_holds_nowhere_is_told_so() {
@@ -476,8 +476,8 @@ namespace test.r5.contract
   operation dOf[B](x: B) -> Type requires Desc[T = B] = Desc.d()
 "#;
     for (shape, call) in [
-        ("through a program spec", "  operation ask() -> Type = dOf(some((1, 2)))\nend\n"),
-        ("a spec operation's call", "  operation ask() -> Int64 = Desc.e(some((1, 2)))\nend\n"),
+        ("through a program spec", "  operation ask() -> Type = dOf(some(lambda (y: Int64) -> y))\nend\n"),
+        ("a spec operation's call", "  operation ask() -> Int64 = Desc.e(some(lambda (y: Int64) -> y))\nend\n"),
     ] {
         let errs = load_errors_of(&format!("{two_hops}{call}"));
         assert_refused_naming(
@@ -648,30 +648,41 @@ end
     );
 }
 
-/// A TUPLE BESIDE THE CALLER'S PARAMETER IS THE FORMER'S REFUSAL, with the clause declared or
-/// not: `tyOf(pair(x, (1, 2)))`. It was told to declare `requires TypeValue[T = C]`, and with it
-/// declared got the same refusal.
+/// AN ARROW BESIDE THE CALLER'S PARAMETER IS THE FORMER'S REFUSAL, with the clause declared or
+/// not: `tyOf(pair(x, lambda (y: Int64) -> y))`. It was told to declare `requires TypeValue[T =
+/// C]`, and with it declared got the same refusal. A tuple there is no former: the clause is
+/// what the call lacks, and with it declared the call loads (WI-20261116-411A7).
 #[test]
 fn a_former_beside_the_callers_parameter_is_the_formers_refusal() {
-    for clause in ["", " requires TypeValue[T = C]"] {
-        let errs = load_errors_of(&format!(
+    let program = |clause: &str, other: &str| {
+        format!(
             r#"
 namespace test.r5.former
   import anthill.prelude.{{Int64, Pair, Type}}
   import anthill.prelude.Pair.{{pair}}
   import anthill.reflect.{{TypeValue}}
   operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
-  operation f[C](x: C) -> Type{clause} = tyOf(pair(x, (1, 2)))
+  operation f[C](x: C) -> Type{clause} = tyOf(pair(x, {other}))
 end
 "#
-        ));
+        )
+    };
+    for clause in ["", " requires TypeValue[T = C]"] {
+        let errs = load_errors_of(&program(clause, "lambda (y: Int64) -> y"));
         assert_refused_naming(
             &errs,
-            &["has a STRUCTURAL FORMER", "Pass a value whose type is a sort with no tuple or arrow"],
+            &["has a STRUCTURAL FORMER — an arrow —", "Pass a value whose type holds no arrow"],
             &format!("`{clause}`"),
         );
         assert!(errs.iter().all(|e| !e.contains("Declare `requires")), "{errs:#?}");
     }
+    assert_refused_naming(
+        &load_errors_of(&program("", "(1, 2)")),
+        &["Declare `requires anthill.reflect.TypeValue[T = C]` on `test.r5.former.f`"],
+        "a tuple, no clause",
+    );
+    let errs = load_errors_of(&program(" requires TypeValue[T = C]", "(1, 2)"));
+    assert!(errs.is_empty(), "a tuple, the clause declared: {errs:#?}");
 }
 
 /// THE REFUSAL NAMES THE PARAMETER THE CALLER LACKS EVIDENCE FOR, where it stands, and the

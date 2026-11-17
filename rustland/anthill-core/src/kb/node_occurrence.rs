@@ -2124,6 +2124,9 @@ pub enum Expr {
     Dictionary {
         impl_sort: Symbol,
         subs: Vec<Rc<NodeOccurrence>>,
+        /// A tuple's `TypeValue` instance's labels, one per sub, in the tuple type's order
+        /// (`eval::dictionary::Dictionary::build_labelled`); `None` for every other.
+        labels: Option<Rc<[Symbol]>>,
     },
     /// `var_ref(name)` — a body reading a `__req_*` requirement param.
     VarRef {
@@ -8315,6 +8318,7 @@ pub(crate) enum BuildFrame {
         span: SourceSpan,
         impl_sort: Symbol,
         sub_count: usize,
+        labels: Option<Rc<[Symbol]>>,
     },
     ListLit {
         span: SourceSpan,
@@ -8723,11 +8727,13 @@ fn visit_fn(
                 .field(kb, "impl")
                 .and_then(|v| v.symbol(kb))
                 .expect("is_dictionary_src just read `impl` off this node");
+            let labels = dictionary_src_labels(kb, src).map(Rc::from);
             let visits: Vec<WorkOp> = src.pos_args(kb).into_iter().map(WorkOp::Visit).collect();
             work.push(WorkOp::Build(BuildFrame::Dictionary {
                 span,
                 impl_sort,
                 sub_count: visits.len(),
+                labels,
             }));
             for v in visits.into_iter().rev() {
                 work.push(v);
@@ -9222,13 +9228,18 @@ pub(crate) fn build_frame(
             span,
             impl_sort,
             sub_count,
+            labels,
         } => {
             let mut subs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(sub_count);
             for _ in 0..sub_count {
                 subs.push(results.pop().expect("Dictionary: missing sub-dictionary"));
             }
             subs.reverse();
-            let expr = Expr::Dictionary { impl_sort, subs };
+            let expr = Expr::Dictionary {
+                impl_sort,
+                subs,
+                labels,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::ListLit { span, count } => {
@@ -9460,7 +9471,8 @@ fn visit_fn_keys_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 ///
 /// Both halves are load-bearing. The SYMBOL, because a user may name a sort or a
 /// relation `Dictionary` and `construct_requirement` was a name nobody would.
-/// The SHAPE — exactly one named arg, `impl`, naming a symbol — because
+/// The SHAPE — a named arg `impl` naming a symbol, and beside it only a tuple's `labels`
+/// ([`dictionary_src_labels`]) — because
 /// `anthill.realization.runtime.Dictionary` is itself a public parameterized sort,
 /// so `Dictionary[S = …]` is a legal TYPE spelled under the same functor; see the
 /// `"Dictionary"` arm of [`visit_fn`].
@@ -9485,8 +9497,22 @@ fn is_dictionary_src(kb: &KnowledgeBase, functor: Symbol, src: &Src) -> bool {
     // symbol lookups below are two hash probes.
     kb.qualified_name_of(functor) == super::term_view::DICT_QNAME
         && super::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, _)| ctor == functor)
-        && src.named_keys(kb).len() == 1
         && src.field(kb, "impl").and_then(|v| v.symbol(kb)).is_some()
+        && match src.named_keys(kb).len() {
+            1 => true,
+            2 => dictionary_src_labels(kb, src).is_some(),
+            _ => false,
+        }
+}
+
+/// The labels a tuple's dictionary construction holds under its `labels` key
+/// (`eval::dictionary::Dictionary::build_labelled`); `None` where it holds none.
+fn dictionary_src_labels(kb: &KnowledgeBase, src: &Src) -> Option<Vec<Symbol>> {
+    let labels = src.named_arg(kb, super::term_view::dictionary_labels_key(kb)?)?;
+    match &labels {
+        Src::Term(t) => super::term_view::labels_of_view(kb, t),
+        Src::Node(n) => super::term_view::labels_of_view(kb, n),
+    }
 }
 
 /// Extract the `Symbol` of a `Ref(sym)` or `Ident(sym)` from a named-arg slot.

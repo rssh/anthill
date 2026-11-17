@@ -1304,8 +1304,21 @@ fn ill_typed_comparison_text(kb: &KnowledgeBase, comparison: &Value, cause: &Typ
     };
     (
         format!("`{}` to compare two values of one type", format_precondition_clause(kb, comparison)),
-        format!("{why}; `===` compares any two values structurally"),
+        format!("{why}; {STRUCTURAL_EQUALITY}"),
     )
+}
+
+/// What a refusal of an equality no type reaches proposes instead.
+pub(super) const STRUCTURAL_EQUALITY: &str = "`===` compares any two values structurally";
+
+/// [`STRUCTURAL_EQUALITY`] as a refusal's last clause, where the call it refuses is `eq` or
+/// `neq`; empty for any other call.
+pub(super) fn structural_equality_hint(kb: &KnowledgeBase, functor: Symbol) -> String {
+    if is_equality_comparison(kb, functor) {
+        format!("; {STRUCTURAL_EQUALITY}")
+    } else {
+        String::new()
+    }
 }
 
 /// WI-20260824-JM6ZW — what [`TypeError::UnknownApplyFunctor`] adds after its terse
@@ -2429,8 +2442,9 @@ impl TypeError {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
                 let clause = missing_requires_clause(kb, *spec_sort_sym, abstract_params);
                 format!(
-                    "spec op `{op_qn}` called at abstract type — {}, or specialize to a concrete carrier",
+                    "spec op `{op_qn}` called at abstract type — {}, or specialize to a concrete carrier{}",
                     missing_requires_repair(kb, &clause, *spec_sort_sym, *spec_op_sym, *site),
+                    structural_equality_hint(kb, *spec_op_sym),
                 )
             }
             TypeError::LicensedCallWithoutRoute { spec_op_sym, .. } => format!(
@@ -3367,8 +3381,11 @@ impl TypeError {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
                 let spec_short = short_name_of(kb.qualified_name_of(*spec_sort_sym));
                 let clause = missing_requires_clause(kb, *spec_sort_sym, abstract_params);
-                let suggestion =
-                    format!("missing {}", missing_requires_place(kb, &clause, *spec_sort_sym, *spec_op_sym, *site));
+                let suggestion = format!(
+                    "missing {}{}",
+                    missing_requires_place(kb, &clause, *spec_sort_sym, *spec_op_sym, *site),
+                    structural_equality_hint(kb, *spec_op_sym),
+                );
                 LoadError::TypeMismatch {
                     origin: None,
                     entity_name: op_qn.to_string(),
