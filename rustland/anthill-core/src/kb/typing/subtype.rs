@@ -1343,7 +1343,7 @@ pub(super) fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<V
 /// A NAMED flexible variable is not open here, as it is not for [`closed_where_named`]: it
 /// can be an un-annotated lambda binder's, which the body shares, and taking the other
 /// side's type for it would claim what nothing bound.
-fn open_slots_said_by(kb: &mut KnowledgeBase, ty: &Value, other: &Value) -> Option<Value> {
+pub(super) fn open_slots_said_by(kb: &mut KnowledgeBase, ty: &Value, other: &Value) -> Option<Value> {
     let (base, written) = match extract_type(kb, ty) {
         TypeExtractor::SortRef(s) => (s, Vec::new()),
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),

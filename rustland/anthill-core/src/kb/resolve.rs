@@ -6779,7 +6779,7 @@ impl KnowledgeBase {
             // mentions is part of the answer, not a by-product, so the RHS is built
             // with whatever σ the verdict hands back.
             let extended;
-            let build = match super::simp_rewrite::guard_verdict(self, rid, rhs, &fresh, &msubst) {
+            let build = match super::simp_rewrite::guard_verdict(self, rid, rhs, &fresh, &msubst, None) {
                 super::simp_rewrite::GuardVerdict::NotHeld => continue,
                 super::simp_rewrite::GuardVerdict::HoldsUnchanged => &msubst,
                 super::simp_rewrite::GuardVerdict::HoldsWith(s) => {

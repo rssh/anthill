@@ -291,6 +291,9 @@ pub(super) fn guard_verdict(
     rhs: TermId,
     fresh: &[VarId],
     msubst: &Substitution,
+    // The equation's opened left-hand side and the redex it matched, where the redex is
+    // typed: its guard is then typed there ([`super::typing::guard_goals_typed_at`]).
+    typed_at: Option<(TermId, &NodeOccurrence)>,
 ) -> GuardVerdict {
     // Emptiness FIRST, off the borrowed slice: every unconditional `@[simp]` fire in the
     // KB reaches this line, and the overwhelming majority of them leave here — so the
@@ -302,12 +305,20 @@ pub(super) fn guard_verdict(
         return GuardVerdict::NotHeld;
     }
     let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-    let goals: Vec<Value> = body
+    let opened: Vec<Rc<NodeOccurrence>> = match typed_at {
+        Some((lhs, redex)) => match super::typing::guard_goals_typed_at(kb, &body, lhs, fresh, redex) {
+            Some(typed) => typed,
+            // A guard that does not type where the equation fires does not hold there.
+            None => return GuardVerdict::NotHeld,
+        },
+        None => body
+            .iter()
+            .map(|atom| node_occurrence::open_debruijn_node(kb, atom, fresh))
+            .collect(),
+    };
+    let goals: Vec<Value> = opened
         .iter()
-        .map(|atom| {
-            let opened = node_occurrence::open_debruijn_node(kb, atom, fresh);
-            Value::Node(node_occurrence::substitute_occurrence(kb, &opened, msubst))
-        })
+        .map(|goal| Value::Node(node_occurrence::substitute_occurrence(kb, goal, msubst)))
         .collect();
     // The open-world test, before any search: see the doc.
     if goals.iter().any(|g| kb.value_has_open_world_ref(g, msubst)) {
@@ -1072,7 +1083,7 @@ pub(super) fn try_fire(
             // `nth(?_, ?i) = none :- lt(?i, 0)`. That is constant folding, which is
             // what a compile-time rewriter is for.
             let extended;
-            let build = match self::guard_verdict(kb, rid, rhs, &fresh, &subst) {
+            let build = match self::guard_verdict(kb, rid, rhs, &fresh, &subst, Some((lhs, target))) {
                 GuardVerdict::NotHeld => continue,
                 GuardVerdict::HoldsUnchanged => &subst,
                 GuardVerdict::HoldsWith(s) => {

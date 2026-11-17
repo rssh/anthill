@@ -18,7 +18,7 @@ use crate::common::load_errors_of;
 use crate::wi_vnqtr_inline_param_forward_test::answers;
 
 const HEAD: &str = r#"
-  import anthill.prelude.{Map, Int64, String, Cell, Type}
+  import anthill.prelude.{Map, Int64, String, Cell, Type, Eq}
   import anthill.prelude.Map.{put, size}
   import anthill.reflect.{TypeValue}
   rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]
@@ -31,13 +31,14 @@ fn program(ns: &str, body: &str) -> String {
 }
 
 /// Moved into a type position — a map's key type — the read is the parameter: the map is at
-/// the caller's key type and takes a key of it. A bracket's `K` and a signature's `?k` alike.
+/// the caller's key type and takes a key of it, built under the `Eq` the caller requires. A
+/// bracket's `K` and a signature's `?k` alike.
 #[test]
 fn a_read_moved_into_a_type_position_is_the_parameter() {
     let src = program(
         "typepos",
-        r#"  operation dqb[K](x: K) -> Int64 requires TypeValue[T = K] = size(put(mkq(K), x, 1))
-  operation dqi(x: ?k) -> Int64 requires TypeValue[T = ?k] = size(put(mkq(?k), x, 1))
+        r#"  operation dqb[K](x: K) -> Int64 requires TypeValue[T = K], Eq[T = K] = size(put(mkq(K), x, 1))
+  operation dqi(x: ?k) -> Int64 requires TypeValue[T = ?k], Eq[T = ?k] = size(put(mkq(?k), x, 1))
   operation b() -> Int64 = dqb("a")
   operation i() -> Int64 = dqi("a")"#,
     );

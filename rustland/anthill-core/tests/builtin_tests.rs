@@ -16,6 +16,8 @@ mod wi667_store_monotonicity_test;
 
 #[path = "include/map_builtins_test.rs"]
 mod map_builtins_test;
+#[path = "include/map_keys_through_eq_test.rs"]
+mod map_keys_through_eq_test;
 
 #[path = "include/time_now_test.rs"]
 mod time_now_test;

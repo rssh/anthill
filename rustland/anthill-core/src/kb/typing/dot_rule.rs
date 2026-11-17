@@ -106,7 +106,7 @@ pub(super) fn try_fire_dot_rule(
             // removing this call turns no test red. It is here so that the first author
             // who writes one gets the guard rather than a coincidence.
             let extended;
-            let build = match crate::kb::simp_rewrite::guard_verdict(kb, rid, rhs, &fresh, &subst) {
+            let build = match crate::kb::simp_rewrite::guard_verdict(kb, rid, rhs, &fresh, &subst, None) {
                 crate::kb::simp_rewrite::GuardVerdict::NotHeld => continue,
                 crate::kb::simp_rewrite::GuardVerdict::HoldsUnchanged => &subst,
                 crate::kb::simp_rewrite::GuardVerdict::HoldsWith(s) => {

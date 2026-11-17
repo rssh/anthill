@@ -1701,28 +1701,30 @@ impl KnowledgeBase {
     /// order, is read at the type's labels alone. `None` where either is no tuple;
     /// [`TuplePairs::Mismatch`] where one lacks a label.
     pub(crate) fn tuple_component_pairs_by_labels(&self, a: &Value, b: &Value, labels: &[Symbol]) -> Option<TuplePairs> {
-        let is_tuple = |v: &Value| {
-            matches!(v.head(self), ViewHead::Functor { functor, pos_arity: 0, .. } if self.is_ordered_product_functor(functor))
-        };
-        if !is_tuple(a) || !is_tuple(b) {
+        let (xs, ys) = (self.tuple_components_by_labels(a, labels)?, self.tuple_components_by_labels(b, labels)?);
+        Some(match (xs, ys) {
+            (Some(xs), Some(ys)) => TuplePairs::Pairs(xs.into_iter().zip(ys).collect()),
+            _ => TuplePairs::Mismatch,
+        })
+    }
+
+    /// `v`'s components at each of `labels`, in that order, read by label
+    /// ([`Self::tuple_component_pairs_by_labels`]). `None` where `v` is no tuple; `Some(None)`
+    /// where it lacks a label.
+    pub(crate) fn tuple_components_by_labels(&self, v: &Value, labels: &[Symbol]) -> Option<Option<Vec<Value>>> {
+        if !matches!(v.head(self), ViewHead::Functor { functor, pos_arity: 0, .. } if self.is_ordered_product_functor(functor)) {
             return None;
         }
-        let (a_keys, b_keys) = (a.named_keys(self), b.named_keys(self));
-        let component = |v: &Value, keys: &[Symbol], label: Symbol| -> Option<Value> {
-            let key = keys
+        let keys = v.named_keys(self);
+        Some(
+            labels
                 .iter()
-                .copied()
-                .find(|&k| crate::kb::typing::same_label(self, k, label))?;
-            v.named_arg(self, key).map(|c| c.to_value())
-        };
-        let mut pairs = Vec::with_capacity(labels.len());
-        for &label in labels {
-            match (component(a, &a_keys, label), component(b, &b_keys, label)) {
-                (Some(x), Some(y)) => pairs.push((x, y)),
-                _ => return Some(TuplePairs::Mismatch),
-            }
-        }
-        Some(TuplePairs::Pairs(pairs))
+                .map(|&label| {
+                    let key = keys.iter().copied().find(|&k| crate::kb::typing::same_label(self, k, label))?;
+                    v.named_arg(self, key).map(|c| c.to_value())
+                })
+                .collect(),
+        )
     }
 
     /// Does `v` hold a `Float` anywhere? A structural compare reads `nan` as equal to

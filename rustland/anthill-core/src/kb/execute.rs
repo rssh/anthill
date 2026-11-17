@@ -967,7 +967,9 @@ mod tests {
                 op_reqs: None,
             },
             Value::Substitution(interp.alloc_subst(crate::kb::subst::Substitution::new())),
-            Value::Map(interp.alloc_map(crate::eval::map_arena::MapBody::new())),
+            Value::Map(interp.alloc_map(crate::eval::map_arena::MapBody::keyed_by(
+                crate::eval::value::Dictionary::wrapping_for_test(Value::Unit),
+            ))),
             Value::Cell(interp.alloc_cell(Value::Int(0))),
             Value::Relation {
                 query: Rc::new(Value::Unit),

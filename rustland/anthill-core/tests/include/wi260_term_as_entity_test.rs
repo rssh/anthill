@@ -158,7 +158,9 @@ fn term_as_entity_reads_a_native_literal_as_its_term_twin() {
     let src = r#"
 namespace test.wi260_native
   import anthill.prelude.Option.{none}
+  import anthill.prelude.{Map, Int64}
   operation main() -> Int64 = 0
+  operation emptyM() -> Map[K = Int64, V = Int64] = Map.empty()
 end
 "#;
     let mut interp = interp_for(src);
@@ -178,8 +180,8 @@ end
     }
 
     let handle = interp
-        .call("anthill.prelude.Map.empty", &[])
-        .expect("Map.empty");
+        .call("test.wi260_native.emptyM", &[])
+        .expect("emptyM");
     assert!(
         interp
             .call("anthill.reflect.term_as_entity", &[handle])

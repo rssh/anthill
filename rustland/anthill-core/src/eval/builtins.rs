@@ -6749,10 +6749,93 @@ fn map_key(
     })
 }
 
+/// `Map.empty`, which keeps the `Eq[T = K]` instance its call was handed: every key of the
+/// map, and of each map `put` and `remove` derive from it, is read through it ([`map_slot`]).
 fn map_empty(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [] = expect_args::<0>("Map.empty", args)?;
-    let handle = interp.alloc_map(super::map_arena::MapBody::new());
+    let key_eq = map_key_eq(interp)?;
+    let handle = interp.alloc_map(super::map_arena::MapBody::keyed_by(key_eq));
     Ok(Value::Map(handle))
+}
+
+/// The `Eq[T = K]` instance the running `Map.empty` call was handed: the requirement its
+/// declaration states, in the channel its call passed (`Interpreter::running_builtin`), as a
+/// raising host operation reads its `TypeValue`. `Map`'s own `requires Eq[T = K]`, the bound
+/// every written `Map[K = …]` is checked against, is a slot of the chain too, and no call
+/// passes it: the slot read is the one the call filled.
+fn map_key_eq(interp: &mut Interpreter) -> Result<Dictionary, EvalError> {
+    let missing = |why: &str| EvalError::Internal(format!("`Map.empty` has no `Eq` instance of its key type: {why}"));
+    let Some((op, requirements)) = interp
+        .running_builtin
+        .as_ref()
+        .map(|b| (b.op, b.requirements.clone()))
+    else {
+        return Err(missing("it was not called as an operation"));
+    };
+    let eq = interp
+        .kb
+        .try_resolve_symbol("anthill.prelude.Eq")
+        .ok_or_else(|| missing("this KB declares no `Eq`"))?;
+    let chain = crate::kb::typing::op_dict_entries(&mut interp.kb, op);
+    let slots: Vec<usize> = chain
+        .entries()
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| interp.kb.canonical_sort_sym(entry.required_sort) == interp.kb.canonical_sort_sym(eq))
+        .map(|(i, _)| i)
+        .collect();
+    if slots.is_empty() {
+        return Err(missing("its declaration requires none"));
+    }
+    slots
+        .into_iter()
+        .filter_map(|i| chain.name_at(&mut interp.kb, i))
+        .find_map(|name| super::eval::find_requirement(&requirements, name).cloned())
+        .ok_or_else(|| missing("its caller handed none — a map is made where its key type is known, or under a `requires Eq[T = K]`"))
+}
+
+/// The key `key` is stored and found at in a map keyed through `eq`, `K`'s `Eq` instance
+/// ([`canonical_map_key`]).
+fn map_key_through(
+    kb: &crate::kb::KnowledgeBase,
+    key: &Value,
+    eq: &Dictionary,
+) -> Result<super::map_arena::MapKey, EvalError> {
+    map_key(kb, &canonical_map_key(kb, key, eq)?)
+}
+
+/// `key` as the structure a map keyed through `eq`, `K`'s `Eq` instance, stores it at: a tuple
+/// at the labels its type names, each component so through its own instance — a value wider
+/// than its type, or listing its labels in another order, is one key (kernel-language §4.5) —
+/// and any other value as it stands. A key whose sort writes an `eq` of its own is keyed by its
+/// structure too: hashing it through its type's instance is library proposal 001-map's phase
+/// 2a, and comparing it with every stored key would make each operation O(N).
+fn canonical_map_key(kb: &crate::kb::KnowledgeBase, key: &Value, eq: &Dictionary) -> Result<Value, EvalError> {
+    if !kb.is_named_tuple_sort(eq.impl_sort()) {
+        return Ok(key.clone());
+    }
+    let broken = |why: &str| EvalError::Internal(format!("a tuple key's `Eq` instance {why}"));
+    // A tuple's `PartialEq` holds its labels; its `Eq` holds that `PartialEq` first.
+    let partial = if eq.labels().is_some() {
+        eq.clone()
+    } else {
+        eq.sub(0).ok_or_else(|| broken("holds no `PartialEq`"))?
+    };
+    let labels = partial.labels().ok_or_else(|| broken("holds no labels"))?;
+    let components = match kb.tuple_components_by_labels(key, &labels) {
+        Some(Some(components)) => components,
+        Some(None) => return Err(type_mismatch("a tuple with every label of the map's key type", key, None)),
+        None => return Err(type_mismatch("a tuple", key, None)),
+    };
+    let mut named = Vec::with_capacity(labels.len());
+    for (k, (label, component)) in labels.iter().zip(components).enumerate() {
+        let sub = partial.sub(k).ok_or_else(|| broken("holds no instance for a component"))?;
+        named.push((*label, canonical_map_key(kb, &component, &sub)?));
+    }
+    Ok(Value::Tuple {
+        pos: Vec::new().into(),
+        named: named.into(),
+    })
 }
 
 fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -6761,8 +6844,8 @@ fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
     let mut body = handle.clone_body();
+    let key = map_key_through(&interp.kb, &k_arg, body.key_eq())?;
     body.insert(key, v_arg);
     let new_handle = interp.alloc_map(body);
     Ok(Value::Map(new_handle))
@@ -6777,7 +6860,9 @@ fn map_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
+    // The key is built outside the body's borrow: a key that is itself a map reads its own.
+    let key_eq = handle.with_body(|b| b.key_eq().clone());
+    let key = map_key_through(&interp.kb, &k_arg, &key_eq)?;
     let found: Option<Value> = handle.with_body(|b| b.get(&key).cloned());
     Ok(match found {
         Some(v) => option_some(some_sym, value_key, v),
@@ -6791,7 +6876,8 @@ fn map_contains(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
+    let key_eq = handle.with_body(|b| b.key_eq().clone());
+    let key = map_key_through(&interp.kb, &k_arg, &key_eq)?;
     let present = handle.with_body(|b| b.contains_key(&key));
     Ok(Value::Bool(present))
 }
@@ -6802,11 +6888,11 @@ fn map_remove(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
     let mut body = handle.clone_body();
     // `shift_remove` preserves the order of the remaining entries — matches
     // anthill's user-visible semantics that iteration order reflects insertion
     // order (and stays stable across removals).
+    let key = map_key_through(&interp.kb, &k_arg, body.key_eq())?;
     body.shift_remove(&key);
     let new_handle = interp.alloc_map(body);
     Ok(Value::Map(new_handle))

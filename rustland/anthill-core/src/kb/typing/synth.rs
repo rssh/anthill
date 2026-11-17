@@ -3003,6 +3003,8 @@ fn format_binding_type_for_goal(kb: &KnowledgeBase, v: &Value, as_written: bool)
             type_var_display_name(kb, vid)
         }
         ViewHead::Var(_) => "?".to_owned(),
+        // A binding that denotes no type is `⊥`, and is said so.
+        ViewHead::Bottom => type_display_name_value(kb, v),
         _ => match v {
             Value::Term { id, .. } => format!("<term#{}>", id.raw()),
             other => type_display_name_value(kb, other),

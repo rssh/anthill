@@ -982,6 +982,109 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
     )
 }
 
+/// The goals of a `@[simp]` equation's guard, typed where the equation fires: each variable of
+/// the left-hand side `lhs` has the type of the parameter the match placed it at, read at the
+/// bindings the redex's arguments give the callee's sort. A comparison in the guard is then the
+/// one at that type, through its instance: `neq(?k, ?k2)` in `Map`'s law compares at the map's
+/// `K`, as the map does. `fresh` is the frame `lhs` was opened in; each goal is typed on a copy
+/// opened in a frame of its own, and handed back in `fresh`'s. `None` where a goal does not type
+/// there, which a guard that typed where it was written can do only at the types of this redex.
+pub(crate) fn guard_goals_typed_at(
+    kb: &mut KnowledgeBase,
+    body: &[Rc<NodeOccurrence>],
+    lhs: TermId,
+    fresh: &[VarId],
+    redex: &NodeOccurrence,
+) -> Option<Vec<Rc<NodeOccurrence>>> {
+    let mut sigma = Substitution::new();
+    let mut declared: Vec<(VarId, Value)> = Vec::new();
+    lhs_declared_types(kb, lhs, redex, &mut sigma, &mut declared);
+    let mine: Vec<VarId> = (0..fresh.len())
+        .map(|i| {
+            let name = kb.intern(&format!("?guard_{i}"));
+            kb.fresh_var(name)
+        })
+        .collect();
+    let mut env = TypingEnv::empty();
+    env.mark_rule_body_dispatch();
+    for (v, ty) in declared {
+        if let Some(i) = fresh.iter().position(|f| *f == v) {
+            let at = resolve_type_deep_value(kb, &sigma, &ty);
+            env.bind_var(mine[i].name(), at);
+        }
+    }
+    let mut back = Substitution::new();
+    for (m, f) in mine.iter().zip(fresh) {
+        back.bind_value(kb, *m, Value::Var(Var::Global(*f)));
+    }
+    // As a rule body's goals are typed at load ([`type_rule_bodies`]), and with no rewriting:
+    // a guard is proved as goals.
+    let mut errors: Vec<TypeError> = Vec::new();
+    let typed: Vec<Rc<NodeOccurrence>> = body
+        .iter()
+        .map(|atom| {
+            let opened = crate::kb::node_occurrence::open_debruijn_node(kb, atom, &mine);
+            let typed = dispatch_calls_in_occ(
+                kb,
+                &env,
+                &(false, Vec::new()),
+                &opened,
+                BodyPos::Goal(GoalCommit::Top),
+                None,
+                None,
+                None,
+                &mut errors,
+            );
+            crate::kb::node_occurrence::substitute_occurrence(kb, &typed, &back)
+        })
+        .collect();
+    errors.is_empty().then_some(typed)
+}
+
+/// The declared parameter type of each variable of the pattern `pattern` matched at `redex`,
+/// pushed onto `out`, with `sigma` binding the callee sorts' parameters where an argument that
+/// is no variable has a type: `put(?m, ?k2, ?v)` at `Map.put(m0, k, 7)` with `m0: Map[K =
+/// (a: Int64), …]` binds `K`, which `?k2`'s declared `K` then reads.
+fn lhs_declared_types(
+    kb: &mut KnowledgeBase,
+    pattern: TermId,
+    redex: &NodeOccurrence,
+    sigma: &mut Substitution,
+    out: &mut Vec<(VarId, Value)>,
+) {
+    let (functor, children) = match kb.get_term(pattern) {
+        Term::Fn { functor, pos_args, .. } => (*functor, pos_args.clone()),
+        _ => return,
+    };
+    let args: Vec<Rc<NodeOccurrence>> = match redex.as_expr() {
+        Some(Expr::Apply { pos_args, .. }) | Some(Expr::Constructor { pos_args, .. }) => pos_args.clone(),
+        _ => return,
+    };
+    let Some(info) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
+        return;
+    };
+    let params: Vec<Value> = info
+        .params
+        .iter()
+        .map(|(_, ty)| expand_sort_application(kb, ty).unwrap_or_else(|| ty.clone()))
+        .collect();
+    for (i, child) in children.iter().enumerate() {
+        let (Some(param), Some(arg)) = (params.get(i), args.get(i)) else {
+            continue;
+        };
+        match kb.get_term(*child) {
+            Term::Var(Var::Global(v)) => out.push((*v, param.clone())),
+            Term::Fn { .. } => {
+                if let Some(ty) = arg.inferred_type() {
+                    unify_types(kb, sigma, param, &ty);
+                }
+                lhs_declared_types(kb, *child, arg, sigma, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// WI-20261003-4DYR6 — does `functor`'s signature leave a call no ARGUMENT, result or
 /// effect for a carrier other than `sort` to stand at: no parameter and no result typed
 /// at `sort`, and none of `sort`'s type parameters named in a parameter, the result or the

@@ -8,10 +8,13 @@
 //! persistent (structurally-shared) map, so deriving a new entry is O(1) +
 //! the single-key edit rather than an O(N) full copy.
 //!
-//! Type erasure: at runtime K and V are gone — the entry's key is a `MapKey`, a
-//! literal or a structural fingerprint of the key value. The type checker is
-//! responsible for ruling out heterogeneous keys; if user code somehow obtains a
-//! value whose key type doesn't match the map's, the lookup just misses.
+//! A map keeps `K`'s `Eq` instance, handed to its construction (`Map.empty` requires
+//! `Eq[T = K]`), and every map derived from it by `put` or `remove` keeps the same one.
+//! The entry's key is a `MapKey`, a literal or a structural fingerprint of the key
+//! value read through that instance (the reader is `builtins`' map keying): a tuple at
+//! the labels `K` names, anything else by its structure. A key whose sort writes an `eq`
+//! of its own is keyed by its structure too, until library proposal 001-map's `Hash`
+//! (phase 2a) gives it a hash its `eq` agrees with.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -128,15 +131,27 @@ impl MapKey {
 /// sharing. That makes the arena's copy-on-write `put` / `remove` cheap:
 /// `clone_body` no longer copies the whole map, so building an N-entry map
 /// by folding `put` drops from O(N²) to O(N log N).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MapBody {
     lookup: ImHashMap<MapKey, Value>,
     order: ImVector<MapKey>,
+    /// `K`'s `Eq` instance, handed to the map's construction: every key is read through it.
+    key_eq: super::dictionary::Dictionary,
 }
 
 impl MapBody {
-    pub fn new() -> Self {
-        Self::default()
+    /// An empty map whose keys are compared through `key_eq`, `K`'s `Eq` instance.
+    pub fn keyed_by(key_eq: super::dictionary::Dictionary) -> Self {
+        Self {
+            lookup: ImHashMap::new(),
+            order: ImVector::new(),
+            key_eq,
+        }
+    }
+
+    /// `K`'s `Eq` instance, which every key of this map is read through.
+    pub fn key_eq(&self) -> &super::dictionary::Dictionary {
+        &self.key_eq
     }
 
     /// Insert or update. A new key is appended to `order`; re-inserting an
@@ -357,6 +372,7 @@ impl std::hash::Hash for MapHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval::value::Dictionary;
     use crate::intern::Symbol;
     use crate::kb::term::{Term, TermId};
 
@@ -376,7 +392,7 @@ mod tests {
     #[test]
     fn alloc_and_drop_reclaims() {
         let arena = MapArenaRef::new();
-        let h = arena.alloc(MapBody::new());
+        let h = arena.alloc(MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit)));
         assert_eq!(arena.live(), 1);
         drop(h);
         assert_eq!(arena.live(), 0);
@@ -385,7 +401,7 @@ mod tests {
     #[test]
     fn clone_bumps_refcount() {
         let arena = MapArenaRef::new();
-        let h = arena.alloc(MapBody::new());
+        let h = arena.alloc(MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit)));
         let h2 = h.clone();
         drop(h);
         assert_eq!(arena.live(), 1);
@@ -427,7 +443,7 @@ mod tests {
         );
 
         // And the round-trip out of `keys` addresses that slot again.
-        let mut body = MapBody::new();
+        let mut body = MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit));
         body.insert(via_symbolref.clone(), Value::Int(1));
         let back = body.keys().next().cloned().expect("one key");
         assert_eq!(
@@ -478,7 +494,7 @@ mod tests {
         );
 
         // One slot, reachable through each spelling.
-        let mut body = MapBody::new();
+        let mut body = MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit));
         body.insert(via_ref.clone(), Value::Int(4));
         assert_eq!(
             body.get(&name_key(&kb, c)).and_then(|v| match v {

@@ -137,6 +137,22 @@ fn errs(extra: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// `extra`'s refusals but the one its `Map[K = {key}].empty()` owes for want of `Eq` at that
+/// key, which must be among them: a map is built under its key type's `Eq`, and neither a
+/// value nor `⊥` has one.
+fn errs_beside_key_eq(extra: &str, key: &str) -> Vec<String> {
+    let mut e = errs(extra);
+    let eq = format!(
+        "`anthill.prelude.Eq[T = {key}]` cannot be supplied for call to `anthill.prelude.Map.empty`"
+    );
+    let at = e
+        .iter()
+        .position(|m| m.contains(&eq))
+        .unwrap_or_else(|| panic!("no refusal of `Eq` at `{key}` among {e:#?}"));
+    e.remove(at);
+    e
+}
+
 /// A load error with its `line:col` prefix stripped, so two spellings of ONE mistake can be
 /// compared by what they SAY without asserting that they are written in the same place.
 fn sentence(msg: &str) -> &str {
@@ -302,7 +318,7 @@ fn the_matching_key_is_accepted_and_computes() {
 fn a_value_in_type_binding_is_the_value_it_denotes() {
     const EXTRA: &str = "  rule mkb(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
                          operation db() -> Int64 = size(put(mkb(7), \"a\", 1))\n";
-    let e = errs(EXTRA);
+    let e = errs_beside_key_eq(EXTRA, "7");
     assert_eq!(
         e.len(),
         1,
@@ -374,7 +390,7 @@ fn a_binding_that_denotes_no_type_is_bottom_and_says_so() {
             "{decl}  rule mkl(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
              operation dl() -> Int64 = size(put(mkl({redex_arg}), \"a\", 1))\n"
         );
-        let e = errs(&extra);
+        let e = errs_beside_key_eq(&extra, "bottom");
         assert_eq!(
             e.len(),
             1,
@@ -393,9 +409,10 @@ fn a_binding_that_denotes_no_type_is_bottom_and_says_so() {
 
     // A VALUE PARAMETER, which needs the driver to take one — the shape whose
     // goal-lowering leaked `var_ref[name = s]`, the reflect encoding, into the message.
-    let e = errs(
+    let e = errs_beside_key_eq(
         "  rule mkp(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
                   operation dp(s: String) -> Int64 = size(put(mkp(s), \"a\", 1))\n",
+        "bottom",
     );
     assert_eq!(e.len(), 1, "a value parameter denotes no type: {e:#?}");
     assert_eq!(
@@ -413,7 +430,8 @@ fn a_binding_that_denotes_no_type_is_bottom_and_says_so() {
     assert!(
         errs(
             "  rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
-              operation dq[K]() -> Int64 = size(put(mkq(K), \"a\", 1))\n"
+              operation dq[K]() -> Int64 requires anthill.prelude.Eq[T = K] = \
+              size(put(mkq(K), \"a\", 1))\n"
         )
         .is_empty(),
         "a type PARAMETER in the type position is a type, and an undetermined one — the \

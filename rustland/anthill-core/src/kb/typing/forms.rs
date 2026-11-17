@@ -552,6 +552,359 @@ pub(crate) struct WalkSolutions {
     /// The operations taken as function values at a slot that holds a variable — see
     /// [`HeldFunctionValue`].
     held_values: Vec<HeldFunctionValue>,
+    /// The calls typed with a slot of their result left open that a requirement reads — see
+    /// [`HeldCall`].
+    held_calls: Vec<HeldCall>,
+}
+
+/// A call whose result leaves a slot of its type open (nothing at the call fixed the
+/// callee's parameter there) and whose callee owes a requirement: `Map.empty()` in
+/// `Map.put(Map.empty(), "a", 1)`, or in the first arm of `if c then Map.empty() else
+/// fill(Map.empty())`. The slot is said by what the value meets — the parameter of the call
+/// it is an argument of, the other arm of a join ([`open_slots_said_by`]) — and there the
+/// call is typed again with that type as its expected one, as a written annotation would
+/// have typed it, so its dictionaries are built at it ([`say_held_call`]). Where nothing
+/// says the slot, the call keeps what its first typing gave, the refusals that typing
+/// parked included ([`WalkSolutions::release_held_calls`]).
+pub(super) struct HeldCall {
+    pub(super) node: Rc<NodeOccurrence>,
+    pub(super) fn_sym: Symbol,
+    pub(super) pos_args: Vec<Rc<NodeOccurrence>>,
+    pub(super) named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    pub(super) pos_results: Vec<TypeResult>,
+    pub(super) named_results: Vec<TypeResult>,
+    pub(super) env: Env,
+    pub(super) pos: NodePos,
+    pub(super) openings: PathOpenings,
+    /// The call's type as its first typing gave it, the slot open.
+    pub(super) ty: Value,
+    /// The refusals the first typing parked for this call, reported where nothing says the
+    /// slot and dropped where the call is typed again.
+    pub(super) parked: Vec<UnsuppliableRequirement>,
+}
+
+/// Every expression node of the tree under `root`, by address.
+fn nodes_of_tree(root: &Rc<NodeOccurrence>) -> HashSet<*const NodeOccurrence> {
+    let mut seen: HashSet<*const NodeOccurrence> = HashSet::new();
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
+    while let Some(node) = stack.pop() {
+        if !seen.insert(Rc::as_ptr(&node)) {
+            continue;
+        }
+        if let Some(expr) = node.as_expr() {
+            crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    seen
+}
+
+/// The refusals of `held`'s own requirements no dictionary was stamped for, each naming the
+/// elements it states at type parameters of the callee — nothing at the call fixed them, and
+/// nothing the value met said them.
+fn unsaid_requirements(kb: &mut KnowledgeBase, held: &HeldCall) -> Vec<UnsuppliableRequirement> {
+    let stamped = held.node.op_dicts();
+    let chain = op_dict_entries(kb, held.fn_sym);
+    let mut out = Vec::new();
+    for (j, dep) in chain.op_entries().iter().enumerate() {
+        if stamped.get(j).is_some_and(|d| d.is_some()) {
+            continue;
+        }
+        let unconstrained: Vec<String> = goal_from_requires_entry(kb, dep)
+            .map(|goal| {
+                goal.bindings
+                    .iter()
+                    .filter(|(_, v)| is_type_param_view(kb, v))
+                    .map(|(k, v)| format!("`{} = {}`", kb.local_name_of(*k), format_value_for_goal(kb, v)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if unconstrained.is_empty() {
+            continue;
+        }
+        out.push(UnsuppliableRequirement {
+            span: Some(held.node.span.span),
+            source: held.node.span.source,
+            callee_op: held.fn_sym,
+            callee_sort: held.fn_sym,
+            usage: RequirementUse::Call,
+            refusal: Box::new(RequirementRefusal {
+                account_names_every_repair: false,
+                no_scope_route: false,
+                construction_carries_repair: false,
+                dep_text: render_requires_entry(kb, dep),
+                unconstrained,
+                refused_covers: Vec::new(),
+                construction: String::new(),
+                pinned: None,
+                unprovided: None,
+                untied: None,
+            }),
+        });
+    }
+    out
+}
+
+/// Does a call of `fn_sym` typed at `ty`, with the typed arguments `args`, wait for what its
+/// value meets: `ty` leaves a slot open ([`leaves_a_slot_open`]), and its callee owes a
+/// requirement or an argument holds a call that waits — `idm(Map.empty())` passes the slot on,
+/// and the call typed where it is said says its argument ([`say_held_call`]).
+pub(super) fn call_waits_for_its_slot<'a>(
+    kb: &mut KnowledgeBase,
+    solving: &WalkSolutions,
+    fn_sym: Symbol,
+    ty: &Value,
+    mut args: impl Iterator<Item = &'a Rc<NodeOccurrence>>,
+) -> bool {
+    leaves_a_slot_open(kb, ty)
+        && (!op_dict_entries(kb, fn_sym).entries().is_empty() || args.any(|a| holds_a_call_within(solving, a)))
+}
+
+/// The nodes whose value is `node`'s: the body of a `let` or an in-body proof, each branch of an
+/// `if`, each arm of a `match`, through any depth of them; `node` itself otherwise.
+pub(super) fn tail_nodes(node: &Rc<NodeOccurrence>) -> Vec<Rc<NodeOccurrence>> {
+    let mut out = Vec::new();
+    let mut stack = vec![Rc::clone(node)];
+    while let Some(n) = stack.pop() {
+        match n.as_expr() {
+            Some(Expr::Let { body, .. }) | Some(Expr::Proof { body, .. }) => stack.push(Rc::clone(body)),
+            Some(Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            }) => {
+                stack.push(Rc::clone(then_branch));
+                stack.push(Rc::clone(else_branch));
+            }
+            Some(Expr::Match { branches, .. }) => {
+                stack.extend(branches.iter().map(|b| Rc::clone(&b.body)));
+            }
+            _ => out.push(n),
+        }
+    }
+    out
+}
+
+/// Each call held in tail position of a node of `args`, said by the type of `ats` that node's
+/// value meets ([`say_held_call`]) — and read through the constructions the type reaches it
+/// through: a field of an entity (`some(Map.empty())` at `Option[T = Map[…]]`, a list literal's
+/// `cons`), a component of a tuple.
+pub(super) fn say_held_in_tails(
+    kb: &mut KnowledgeBase,
+    solving: &mut WalkSolutions,
+    args: &[(Rc<NodeOccurrence>, Vec<Value>)],
+) -> Result<(), TypeError> {
+    let mut work: Vec<(Rc<NodeOccurrence>, Vec<Value>)> = args.to_vec();
+    while let Some((node, ats)) = work.pop() {
+        for tail in tail_nodes(&node) {
+            if let Some(held) = solving.take_held_call(&tail) {
+                say_held_call(kb, solving, held, &ats)?;
+                continue;
+            }
+            for at in &ats {
+                work.extend(said_inside(kb, &tail, at).into_iter().map(|(n, t)| (n, vec![t])));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Does a call held in tail position of `node`, or of a construction's field there, wait for
+/// its slot ([`say_held_in_tails`] reads the said type down to it)?
+pub(super) fn holds_a_call_within(solving: &WalkSolutions, node: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(node)];
+    while let Some(n) = stack.pop() {
+        for tail in tail_nodes(&n) {
+            if solving.holds_call(&tail) {
+                return true;
+            }
+            match tail.as_expr() {
+                Some(Expr::Constructor {
+                    pos_args, named_args, ..
+                }) => {
+                    stack.extend(pos_args.iter().cloned());
+                    stack.extend(named_args.iter().map(|(_, a)| Rc::clone(a)));
+                }
+                Some(Expr::TupleLit { positional, named }) => {
+                    stack.extend(positional.iter().cloned());
+                    stack.extend(named.iter().map(|(_, a)| Rc::clone(a)));
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// The components of a tuple written `pos` and `named`, each with the type of the component of
+/// the tuple type `at` its position or label meets.
+fn said_in_tuple(
+    kb: &mut KnowledgeBase,
+    pos: &[Rc<NodeOccurrence>],
+    named: &[(Symbol, Rc<NodeOccurrence>)],
+    at: &Value,
+) -> Vec<(Rc<NodeOccurrence>, Value)> {
+    let Some(fields) = named_tuple_field_pairs(kb, at) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(Rc<NodeOccurrence>, Value)> =
+        pos.iter().zip(&fields).map(|(e, (_, ty))| (Rc::clone(e), ty.clone())).collect();
+    for (label, e) in named {
+        if let Some((_, ty)) = fields.iter().find(|(l, _)| same_label(kb, *l, *label)) {
+            out.push((Rc::clone(e), ty.clone()));
+        }
+    }
+    out
+}
+
+/// The children of a construction `node`, each with the type `at` says of it: an entity's field
+/// at the instance of its sort `at` names, a tuple's component at the component its label (or
+/// position) meets.
+fn said_inside(kb: &mut KnowledgeBase, node: &Rc<NodeOccurrence>, at: &Value) -> Vec<(Rc<NodeOccurrence>, Value)> {
+    match node.as_expr() {
+        Some(Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        }) => {
+            let (name, pos_args, named_args) = (*name, pos_args.clone(), named_args.clone());
+            if kb.is_ordered_product_functor(name) {
+                return said_in_tuple(kb, &pos_args, &named_args, at);
+            }
+            let Some(sort) = kb.sort_of_constructor(name) else {
+                return Vec::new();
+            };
+            let mut sigma = Substitution::new();
+            let own = own_application(kb, sort);
+            if !unify_types(kb, &mut sigma, &TermIdView(own), at) {
+                return Vec::new();
+            }
+            let fields: Vec<(Symbol, Value)> = kb.entity_field_types(name).map(<[_]>::to_vec).unwrap_or_default();
+            let positions = positional_param_indices(kb, &fields, pos_args.len(), &named_args);
+            let mut out = Vec::new();
+            for (i, arg) in pos_args.iter().enumerate() {
+                if let Some((_, ty)) = positions.get(i).copied().flatten().and_then(|p| fields.get(p)) {
+                    out.push((Rc::clone(arg), resolve_type_deep_value(kb, &sigma, ty)));
+                }
+            }
+            for (label, arg) in &named_args {
+                if let Some((_, ty)) = match_named_arg_param(kb, &fields, *label) {
+                    out.push((Rc::clone(arg), resolve_type_deep_value(kb, &sigma, ty)));
+                }
+            }
+            out
+        }
+        Some(Expr::TupleLit { positional, named }) => {
+            let (positional, named) = (positional.clone(), named.clone());
+            said_in_tuple(kb, &positional, &named, at)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Does `ty` leave a slot open: a sort's parameter left unwritten, or written as what
+/// [`slot_is_open`] names, at any depth [`open_slots_said_by`] reads into?
+fn leaves_a_slot_open(kb: &mut KnowledgeBase, ty: &Value) -> bool {
+    match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) => !sort_type_params_as_pairs(kb, s).is_empty(),
+        TypeExtractor::Parameterized { base, bindings } => {
+            bindings.len() < sort_type_params_as_pairs(kb, base).len()
+                || bindings
+                    .iter()
+                    .any(|(_, v)| slot_is_open(kb, v) || leaves_a_slot_open(kb, v))
+        }
+        TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| leaves_a_slot_open(kb, v)),
+        TypeExtractor::Arrow { result, .. } => leaves_a_slot_open(kb, &result),
+        _ => false,
+    }
+}
+
+/// `held` typed again where its value met a type of `ats` — the first that says an open slot
+/// of its type with no type parameter of another call left unfixed in it — with the type that
+/// one makes of its own, the open slots filled, as its expected type. Held again where none
+/// does. The new typing's refusal is the call's, at the call.
+pub(super) fn say_held_call(
+    kb: &mut KnowledgeBase,
+    solving: &mut WalkSolutions,
+    held: HeldCall,
+    ats: &[Value],
+) -> Result<(), TypeError> {
+    let mut said = None;
+    for at in ats {
+        if let Some(filled) = open_slots_said_by(kb, &held.ty, at) {
+            if !names_a_type_parameter_variable(kb, &filled) {
+                said = Some(filled);
+                break;
+            }
+        }
+    }
+    let Some(filled) = said else {
+        solving.hold_call(held);
+        return Ok(());
+    };
+    let pos_results: Vec<Result<TypeResult, TypeError>> = held.pos_results.iter().cloned().map(Ok).collect();
+    let named_results: Vec<Result<TypeResult, TypeError>> =
+        held.named_results.iter().cloned().map(Ok).collect();
+    let span = Some(held.node.span.span);
+    // What the said result says of the callee's parameters, read off its declaration: the
+    // typing below binds a parameter an open argument shares with the result to that argument
+    // first (`idm(Map.empty())`, whose `A` the said result is).
+    let mut by_result = Substitution::new();
+    let declared_params: Vec<(Symbol, Value)> =
+        match crate::kb::op_info::lookup_operation_info(kb, held.fn_sym) {
+            Some(info) => {
+                unify_types(kb, &mut by_result, &info.return_type, &filled);
+                info.params
+            }
+            None => Vec::new(),
+        };
+    let typed = check_apply_iter(
+        kb,
+        &held.env,
+        &held.env.flow,
+        &held.node,
+        held.fn_sym,
+        &held.pos_args,
+        &held.named_args,
+        &pos_results,
+        &named_results,
+        span,
+        Some(filled),
+        held.pos,
+        None,
+        &held.openings,
+    )?;
+    // The node the call's parent holds carries what this typing decided: a typing that
+    // builds the call again (an argument it wraps in `some(…)` once more) answers with a copy.
+    if !Rc::ptr_eq(&typed.node, &held.node) {
+        held.node.carry_typer_stamps_from(&typed.node);
+    }
+    held.node.set_inferred_type(typed.ty);
+    // Its own arguments that wait are said by the parameters this typing completed, and by what
+    // the said result says of them.
+    let Some(params) = held.node.call_params() else {
+        return Ok(());
+    };
+    let positions = positional_param_indices(kb, &params, held.pos_results.len(), &held.named_args);
+    let mut at_param = |kb: &mut KnowledgeBase, p: usize| -> Vec<Value> {
+        let mut ats: Vec<Value> = params.get(p).map(|(_, t)| t.clone()).into_iter().collect();
+        if let Some((_, declared)) = declared_params.get(p) {
+            ats.push(resolve_type_deep_value(kb, &by_result, declared));
+        }
+        ats
+    };
+    let mut args: Vec<(Rc<NodeOccurrence>, Vec<Value>)> = Vec::new();
+    for (i, r) in held.pos_results.iter().enumerate() {
+        if let Some(p) = positions.get(i).copied().flatten() {
+            args.push((Rc::clone(&r.node), at_param(kb, p)));
+        }
+    }
+    for ((name, _), r) in held.named_args.iter().zip(&held.named_results) {
+        if let Some(p) = params.iter().position(|(p, _)| same_label(kb, *p, *name)) {
+            args.push((Rc::clone(&r.node), at_param(kb, p)));
+        }
+    }
+    say_held_in_tails(kb, solving, &args)
 }
 
 /// An operation taken as a function value at a slot whose type holds a variable where the
@@ -771,6 +1124,54 @@ impl WalkSolutions {
             shapes: Vec::new(),
             agreed_labels: Vec::new(),
             held_values: Vec::new(),
+            held_calls: Vec::new(),
+        }
+    }
+
+    /// Hold `call` until what its value meets says its open slot ([`HeldCall`]).
+    pub(super) fn hold_call(&mut self, call: HeldCall) {
+        self.held_calls.retain(|h| !Rc::ptr_eq(&h.node, &call.node));
+        self.held_calls.push(call);
+    }
+
+    /// The call `node` is, held, taken out to be said; `None` where it holds none.
+    pub(super) fn take_held_call(&mut self, node: &Rc<NodeOccurrence>) -> Option<HeldCall> {
+        let at = self.held_calls.iter().position(|h| Rc::ptr_eq(&h.node, node))?;
+        Some(self.held_calls.swap_remove(at))
+    }
+
+    /// Does this walk hold a call nothing has said the slot of yet?
+    pub(super) fn holds_calls(&self) -> bool {
+        !self.held_calls.is_empty()
+    }
+
+    /// Is the call `node` is held?
+    pub(super) fn holds_call(&self, node: &Rc<NodeOccurrence>) -> bool {
+        self.held_calls.iter().any(|h| Rc::ptr_eq(&h.node, node))
+    }
+
+    /// Where the walk ends, every call nothing said keeps its first typing: the refusals it
+    /// parked are reported, and in a body the evaluator runs a requirement of its own it was handed no
+    /// dictionary for is refused, naming the element nothing at the call or after it said —
+    /// a free type variable that owes a dictionary after typing. Only a call still in `typed`,
+    /// the tree the walk typed: one a `@[simp]` rewrite took out of it (`Map.size(Map.empty())`
+    /// is `0`) is no call of the program.
+    pub(super) fn release_held_calls(&mut self, kb: &mut KnowledgeBase, typed: Option<&Rc<NodeOccurrence>>) {
+        let held_calls = std::mem::take(&mut self.held_calls);
+        if held_calls.is_empty() {
+            return;
+        }
+        let in_tree = typed.map(nodes_of_tree).unwrap_or_default();
+        for held in held_calls {
+            if held.parked.is_empty()
+                && held.env.in_evaluated_body()
+                && in_tree.contains(&Rc::as_ptr(&held.node))
+            {
+                for refusal in unsaid_requirements(kb, &held) {
+                    kb.unsuppliable_requirements.push(refusal);
+                }
+            }
+            kb.unsuppliable_requirements.extend(held.parked);
         }
     }
 

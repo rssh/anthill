@@ -421,14 +421,14 @@ end
 
 /// A container over the enclosing operation's own TYPE PARAMETER is abstract, not a
 /// concrete carrier — the check must defer, in a signature exactly as it does in a
-/// field.
+/// field. The body's `Map.empty()` owes `Eq` at `A`, which the operation requires.
 #[test]
 fn a_container_over_an_operation_type_param_loads() {
     assert_loads_clean(
         r#"
 namespace test.wi835.abstract
-  import anthill.prelude.{Map, Int64}
-  operation m[A]() -> Map[K = A, V = Int64] = Map.empty()
+  import anthill.prelude.{Map, Int64, Eq}
+  operation m[A]() -> Map[K = A, V = Int64] requires Eq[T = A] = Map.empty()
 end
 "#,
     );

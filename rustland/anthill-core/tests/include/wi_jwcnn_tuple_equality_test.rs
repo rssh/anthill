@@ -321,3 +321,31 @@ fn a_value_wider_than_its_tuple_type_is_compared_at_its_labels() {
     assert_eq!(ask(&mut kb, &format!("{ns}.ruleSame()")).0, (1, 1), "ruleSame");
     assert_eq!(ask(&mut kb, &format!("{ns}.ruleApart()")).0, (0, 0), "ruleApart");
 }
+
+/// `neq` at a tuple type is `PartialEq`'s body run with the tuple's instance, `NamedTuple`'s
+/// built from its components': `false` for two values equal at the type's labels, `true` for two
+/// that differ there, in an operation body and as a rule-body goal. A tuple has no sort to read
+/// a carrier off, so the call was given no instance: it died when run, `var_ref(__req_self)
+/// unbound`, and the goal was undecided. FAILS with the carrier of a tuple-typed argument read
+/// as nothing again (`carrier_param_receiver`).
+#[test]
+fn neq_at_a_tuple_type_runs_at_the_tuples_instance() {
+    let ns = "test.jwcnn.neq";
+    let program = src(
+        ns,
+        "  import anthill.prelude.PartialEq.{neq}\n  \
+         operation wideA() -> (a: Int64) = (a: 1, b: 2)\n  \
+         operation wideB() -> (a: Int64) = (a: 1, b: 3)\n  \
+         operation wideC() -> (a: Int64) = (a: 2, b: 2)\n  \
+         operation nq(x: (a: Int64), y: (a: Int64)) -> Bool = PartialEq.neq(x, y)\n  \
+         operation sameNq() -> Bool = nq(wideA(), wideB())\n  \
+         operation apartNq() -> Bool = nq(wideA(), wideC())\n  \
+         rule ruleSame() :- neq(wideA(), wideB())\n  \
+         rule ruleApart() :- neq(wideA(), wideC())",
+    );
+    assert_eq!(run(&program, &format!("{ns}.sameNq")).0, false, "sameNq");
+    assert_eq!(run(&program, &format!("{ns}.apartNq")).0, true, "apartNq");
+    let mut kb = load_kb_with(&program);
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleSame()")).0, (0, 0), "ruleSame");
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleApart()")).0, (1, 1), "ruleApart");
+}

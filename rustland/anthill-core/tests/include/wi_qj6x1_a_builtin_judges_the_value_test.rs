@@ -85,7 +85,7 @@ use crate::common::{interp_for, load_kb_with, query_unary, run_int64};
 fn ns(name: &str, body: &str) -> String {
     format!(
         "namespace test.{name}
-  import anthill.prelude.{{Int64, String, List, Map, Option, Unit}}
+  import anthill.prelude.{{Int64, String, List, Map, Option, Unit, Eq}}
   import anthill.prelude.List.{{cons, nil}}
   import anthill.prelude.Option.{{some, none}}
   import anthill.reflect.{{Term, make_fn, replace_named_arg, term_as_entity, as_term, term_to_string}}
@@ -97,6 +97,7 @@ fn ns(name: &str, body: &str) -> String {
   end
   operation mkb(n: Int64) -> Box = Box.bx(n)
   operation mp(n: Int64) -> (Int64, Int64) = (n, 2)
+  operation emptyOf[K](k: K) -> Map[K = K, V = Int64] requires Eq[T = K] = Map.empty()
   operation look(m: Map[K = (Int64, Int64), V = Int64], k: (Int64, Int64)) -> Int64 =
     match m.get(k)
       case some(v) -> v
@@ -149,13 +150,15 @@ fn carriers(interp: &mut Interpreter, v: &Value) -> [(&'static str, Value); 3] {
     ]
 }
 
-fn empty_map(interp: &mut Interpreter) -> Value {
-    interp.call("anthill.prelude.Map.empty", &[]).expect("Map.empty")
+/// An empty map keyed at `key`'s type, made by the program's `emptyOf` in `test.{name}`: a map
+/// is made under its key type's `Eq`, which a host call with no caller is handed by nobody.
+fn empty_map(interp: &mut Interpreter, name: &str, key: &Value) -> Value {
+    interp.call(&format!("test.{name}.emptyOf"), &[key.clone()]).expect("emptyOf")
 }
 
 /// `Map.get(Map.put(empty, put_key, 4), get_key)`, as the `Int64` it holds, or `None`.
-fn put_then_get(interp: &mut Interpreter, put_key: &Value, get_key: &Value) -> Option<i64> {
-    let m = empty_map(interp);
+fn put_then_get(interp: &mut Interpreter, name: &str, put_key: &Value, get_key: &Value) -> Option<i64> {
+    let m = empty_map(interp, name, put_key);
     let m = interp
         .call("anthill.prelude.Map.put", &[m, put_key.clone(), Value::Int(4)])
         .expect("Map.put");
@@ -356,7 +359,7 @@ fn one_value_is_one_key_on_every_carrier() {
         for (put_on, put_key) in &on {
             for (get_on, get_key) in &on {
                 assert_eq!(
-                    put_then_get(&mut interp, put_key, get_key),
+                    put_then_get(&mut interp, "qjcarriers", put_key, get_key),
                     Some(4),
                     "{v:?}: put as {put_on}, got as {get_on}"
                 );
@@ -383,7 +386,7 @@ fn two_values_are_two_keys_on_every_carrier() {
         for (put_on, put_key) in &xs {
             for (get_on, get_key) in &ys {
                 assert_eq!(
-                    put_then_get(&mut interp, put_key, get_key),
+                    put_then_get(&mut interp, "qjdistinct", put_key, get_key),
                     None,
                     "{x:?} as {put_on} and {y:?} as {get_on}"
                 );
@@ -401,7 +404,7 @@ fn a_map_lookup_interns_nothing() {
         .call("test.qjnointern.mkb", &[Value::Int(987_654)])
         .expect("mkb");
     let node = Value::Node(value_as_occurrence(interp.kb_mut(), &absent));
-    let m = empty_map(&mut interp);
+    let m = empty_map(&mut interp, "qjnointern", &absent);
     let before = interp.kb().term_store_len();
     let got = interp
         .call("anthill.prelude.Map.get", &[m, node])
@@ -416,7 +419,7 @@ fn a_key_read_back_addresses_its_slot() {
     let mut interp = interp_for(&ns("qjkeysback", ""));
     let entity = interp.call("test.qjkeysback.mkb", &[Value::Int(1)]).expect("mkb");
     let node = Value::Node(value_as_occurrence(interp.kb_mut(), &entity));
-    let m = empty_map(&mut interp);
+    let m = empty_map(&mut interp, "qjkeysback", &entity);
     let m = interp
         .call("anthill.prelude.Map.put", &[m, node, Value::Int(4)])
         .expect("Map.put");
@@ -447,7 +450,7 @@ fn a_variable_is_no_key() {
     let var = anthill_core::kb::term::Var::Global(vid);
     let tid = interp.kb_mut().alloc(anthill_core::kb::term::Term::Var(var));
     for key in [Value::Var(var), Value::term(tid)] {
-        let m = empty_map(&mut interp);
+        let m = empty_map(&mut interp, "qjvarkey", &Value::Int(0));
         assert_type_error(&mut interp, "anthill.prelude.Map.put", &[m, key, Value::Int(4)]);
     }
 }
@@ -456,7 +459,7 @@ fn a_variable_is_no_key() {
 #[test]
 fn a_runtime_handle_is_no_key() {
     let mut interp = interp_for(&ns("qjhandlekey", ""));
-    let handle = empty_map(&mut interp);
+    let handle = empty_map(&mut interp, "qjhandlekey", &Value::Int(0));
     let bx = interp
         .kb()
         .try_resolve_symbol("test.qjhandlekey.Box.bx")
@@ -468,7 +471,7 @@ fn a_runtime_handle_is_no_key() {
         named: vec![(v, handle.clone())].into(),
     };
     for key in [handle, holding] {
-        let m = empty_map(&mut interp);
+        let m = empty_map(&mut interp, "qjhandlekey", &Value::Int(0));
         assert_type_error(&mut interp, "anthill.prelude.Map.put", &[m.clone(), key.clone(), Value::Int(4)]);
         assert_type_error(&mut interp, "anthill.prelude.Map.get", &[m, key]);
     }
@@ -527,7 +530,7 @@ fn make_fn_of_a_constructor_is_the_constructors_value() {
     for (put_on, put_key) in &built_on {
         for (get_on, get_key) in &entity_on {
             assert_eq!(
-                put_then_get(&mut interp, put_key, get_key),
+                put_then_get(&mut interp, "qjmfctor", put_key, get_key),
                 Some(4),
                 "make_fn's value as {put_on}, the constructor's as {get_on}"
             );
@@ -675,7 +678,7 @@ fn a_runtime_handle_is_no_term() {
             "{DECODE}\n  operation mfOf(x: Term) -> Term = make_fn(\"test.qjhandleterm.Pk.pk\", cons(x, nil()))\n  operation rnOf(t: Term, x: Term) -> Term = replace_named_arg(t, \"v\", x)"
         ),
     ));
-    let handle = empty_map(&mut interp);
+    let handle = empty_map(&mut interp, "qjhandleterm", &Value::Int(0));
     let entity = interp.call("test.qjhandleterm.mkb", &[Value::Int(1)]).expect("mkb");
     assert_type_error(&mut interp, "test.qjhandleterm.mfOf", &[handle.clone()]);
     assert_type_error(&mut interp, "test.qjhandleterm.rnOf", &[handle.clone(), Value::Int(7)]);
@@ -691,7 +694,7 @@ fn a_runtime_handle_inside_a_builders_argument_is_no_term() {
         "qjhandledeep",
         "  operation mfOf(x: Term) -> Term = make_fn(\"test.qjhandledeep.Pk.pk\", cons(x, nil()))\n  operation rnOf(t: Term, x: Term) -> Term = replace_named_arg(t, \"v\", x)",
     ));
-    let handle = empty_map(&mut interp);
+    let handle = empty_map(&mut interp, "qjhandledeep", &Value::Int(0));
     let bx = interp
         .kb()
         .try_resolve_symbol("test.qjhandledeep.Box.bx")

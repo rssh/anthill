@@ -739,6 +739,8 @@ pub(super) fn type_check_node_gated_at(
     // A function value whose instance no call fixed is given its dictionaries at the slot
     // its reference met ([`HeldFunctionValue`]).
     let attached = solving.attach_held_values(kb);
+    let typed_tree = results.last().and_then(|r| r.as_ref().ok()).map(|r| Rc::clone(&r.node));
+    solving.release_held_calls(kb, typed_tree.as_ref());
     let discharged = attached.and_then(|()| solving.discharge(kb));
     debug_assert_eq!(
         results.len(),

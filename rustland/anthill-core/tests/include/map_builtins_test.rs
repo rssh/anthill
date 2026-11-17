@@ -20,11 +20,16 @@ use anthill_core::eval::{Interpreter, Value};
 use crate::common::interp_for;
 use anthill_core::kb::term_view::TermView;
 
-fn empty_map(interp: &mut Interpreter) -> Value {
+/// An empty `Map[K = String, V = Int64]`, made by the program's `emptyS` (`EMPTY_S`): a map is
+/// made under its key type's `Eq`, which a host call with no caller is handed by nobody.
+fn empty_map(interp: &mut Interpreter, ns: &str) -> Value {
     interp
-        .call("anthill.prelude.Map.empty", &[])
-        .expect("Map.empty")
+        .call(&format!("test.{ns}.emptyS"), &[])
+        .expect("emptyS")
 }
+
+/// The operation [`empty_map`] calls, written into each program that uses it.
+const EMPTY_S: &str = "  operation emptyS() -> Map[K = String, V = Int64] = Map.empty()\n";
 
 fn unwrap_some(interp: &Interpreter, v: Value) -> Value {
     match v {
@@ -61,14 +66,17 @@ fn is_none(interp: &Interpreter, v: &Value) -> bool {
 
 #[test]
 fn map_empty_via_builtin_call() {
-    let src = r#"
+    let src = format!(
+        r#"
 namespace test.map_empty
+  import anthill.prelude.{{Int64, String, Map}}
   operation main() -> Int64
     = 0
-end
-"#;
-    let mut interp = interp_for(src);
-    let m = empty_map(&mut interp);
+{EMPTY_S}end
+"#
+    );
+    let mut interp = interp_for(&src);
+    let m = empty_map(&mut interp, "map_empty");
     match m {
         Value::Map(_) => {}
         other => panic!("expected Map, got {:?}", other),
@@ -77,14 +85,17 @@ end
 
 #[test]
 fn map_put_get_round_trip() {
-    let src = r#"
+    let src = format!(
+        r#"
 namespace test.map_put_get
+  import anthill.prelude.{{Int64, String, Map}}
   operation main() -> Int64
     = 0
-end
-"#;
-    let mut interp = interp_for(src);
-    let m = empty_map(&mut interp);
+{EMPTY_S}end
+"#
+    );
+    let mut interp = interp_for(&src);
+    let m = empty_map(&mut interp, "map_put_get");
     let m = interp
         .call(
             "anthill.prelude.Map.put",
@@ -112,14 +123,17 @@ end
 
 #[test]
 fn map_contains_size_remove() {
-    let src = r#"
+    let src = format!(
+        r#"
 namespace test.map_extras
+  import anthill.prelude.{{Int64, String, Map}}
   operation main() -> Int64
     = 0
-end
-"#;
-    let mut interp = interp_for(src);
-    let m = empty_map(&mut interp);
+{EMPTY_S}end
+"#
+    );
+    let mut interp = interp_for(&src);
+    let m = empty_map(&mut interp, "map_extras");
     assert_eq!(
         interp
             .call("anthill.prelude.Map.size", &[m.clone()])
@@ -298,13 +312,16 @@ end
 
 #[test]
 fn map_keys_values_entries_preserve_insertion_order() {
-    let src = r#"
+    let src = format!(
+        r#"
 namespace test.map_iter_order
+  import anthill.prelude.{{Int64, String, Map}}
   operation main() -> Int64 = 0
-end
-"#;
-    let mut interp = interp_for(src);
-    let m = empty_map(&mut interp);
+{EMPTY_S}end
+"#
+    );
+    let mut interp = interp_for(&src);
+    let m = empty_map(&mut interp, "map_iter_order");
     let m = interp
         .call(
             "anthill.prelude.Map.put",

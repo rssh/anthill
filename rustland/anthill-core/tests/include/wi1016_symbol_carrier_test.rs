@@ -22,8 +22,13 @@ use anthill_core::kb::{ClauseKind, KnowledgeBase};
 const DICT: &str = "anthill.realization.runtime.Dictionary";
 const MAP: &str = "anthill.prelude.Map";
 
+/// `emptyOf(k)` makes an empty map keyed at `k`'s type, under that type's `Eq`, which a map is
+/// made under.
 fn interp() -> Interpreter {
-    crate::common::interp_for("namespace test.wi1016\nend\n")
+    crate::common::interp_for(
+        "namespace test.wi1016\n  import anthill.prelude.{Int64, Map, Eq}\n  \
+         operation emptyOf[K](k: K) -> Map[K = K, V = Int64] requires Eq[T = K] = Map.empty()\nend\n",
+    )
 }
 
 fn resolve(interp: &Interpreter, qn: &str) -> Symbol {
@@ -75,8 +80,8 @@ fn a_map_keyed_by_a_symbol_finds_it_through_either_carrier() {
     let interned = interned_symbol(&mut interp, "anthill.prelude.Int64");
 
     let empty = interp
-        .call(&format!("{MAP}.empty"), &[])
-        .expect("Map.empty");
+        .call("test.wi1016.emptyOf", &[minted.clone()])
+        .expect("emptyOf");
     let m = interp
         .call(
             &format!("{MAP}.put"),
@@ -115,8 +120,8 @@ fn a_symbol_key_read_back_out_of_a_map_addresses_its_own_slot() {
     let mut interp = interp();
     let minted = minted_symbol(&mut interp, "anthill.prelude.Int64");
     let empty = interp
-        .call(&format!("{MAP}.empty"), &[])
-        .expect("Map.empty");
+        .call("test.wi1016.emptyOf", &[minted.clone()])
+        .expect("emptyOf");
     let m = interp
         .call(&format!("{MAP}.put"), &[empty, minted, Value::Int(7)])
         .expect("Map.put");
