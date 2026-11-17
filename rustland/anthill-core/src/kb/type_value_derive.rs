@@ -31,9 +31,9 @@
 //! (measured: the body ran with an empty requirements frame).
 //! See the spec's own comment in `stdlib/anthill/reflect/reflect.anthill`.
 //!
-//! SCOPE: sorts. Structural FORMERS (named tuples, arrows) have no sort to carry a
-//! provision and are deliberately out — they need a structural reading, the same open
-//! shape as the named-tuple key in `docs/kernel-language.md` §8.3.
+//! SCOPE: sorts. A tuple's instance is not a row: the resolver builds it from its
+//! components' (`typing::synth`'s `tuple_instance`), as `NamedTuple`'s, with the tuple's
+//! labels beside the sub-dictionaries. An arrow has none.
 
 use std::collections::HashSet;
 

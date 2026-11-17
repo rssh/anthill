@@ -1669,13 +1669,17 @@ pub(super) fn emit_tree_as_projection(
         ResolvedRequiresNode::Conditional {
             impl_sort,
             sub_resolutions,
+            labels,
             ..
         } => {
             let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
             for sub in sub_resolutions {
                 sub_terms.push(emit_tree_as_projection(kb, caller, sub, syms)?);
             }
-            Some(build_dictionary_term(kb, syms, *impl_sort, &sub_terms))
+            match labels {
+                None => Some(build_dictionary_term(kb, syms, *impl_sort, &sub_terms)),
+                Some(labels) => labelled_dictionary_term(kb, (syms.dict_ctor, syms.dict_impl), *impl_sort, &sub_terms, labels),
+            }
         }
     }
 }
@@ -1754,4 +1758,29 @@ pub(crate) fn dictionary_term(
         pos_args: SmallVec::from_slice(subs),
         named_args: SmallVec::from_slice(&[(impl_key, impl_ref)]),
     })
+}
+
+/// [`dictionary_term`] for a tuple's `TypeValue` instance, which holds its labels beside
+/// `impl` (`eval::dictionary::Dictionary::build_labelled`): `Dictionary(subs…, impl:
+/// NamedTuple, labels: (a, b))`, the labels the term a tuple of symbols is. `None` in a KB
+/// with no `Dictionary.labels`.
+fn labelled_dictionary_term(
+    kb: &mut KnowledgeBase,
+    (ctor, impl_key): (Symbol, Symbol),
+    impl_sym: Symbol,
+    subs: &[TermId],
+    labels: &[Symbol],
+) -> Option<TermId> {
+    let labels_key = crate::kb::term_view::dictionary_labels_key(kb)?;
+    let impl_ref = kb.alloc(Term::Ref(impl_sym));
+    let labels_term =
+        crate::kb::node_occurrence::value_to_term(kb, &crate::eval::dictionary::labels_value(labels)).ok()?;
+    let mut named_args: SmallVec<[(Symbol, TermId); 2]> =
+        SmallVec::from_slice(&[(impl_key, impl_ref), (labels_key, labels_term)]);
+    kb.canonicalize_record_named_args(ctor, &mut named_args);
+    Some(kb.alloc(Term::Fn {
+        functor: ctor,
+        pos_args: SmallVec::from_slice(subs),
+        named_args,
+    }))
 }

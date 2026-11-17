@@ -206,34 +206,41 @@ const DESC_AT: &str = "  sort Desc\n    sort T = ?\n    operation d(x: T) -> Typ
                        Box) -> Type = TypeValue.type_value[T = {at}]()\n  end\n  operation dOf[X](x: \
                        X) -> Type requires Desc[T = X] = Desc.d(x)\n";
 
-/// A TUPLE OR AN ARROW HAS NO INSTANCE, so `type_value` at one is refused at load, in a free
-/// operation and in a provision's member alike, advising a sort in the bracket. The
+/// AN ARROW HAS NO INSTANCE, so `type_value` at one is refused at load, in a free operation
+/// and in a provision's member alike, advising a type with no arrow in the bracket. The
 /// builtin's `@[host_implemented]` claim exempted the call from the refusal a callee nobody
 /// implements gets; the call loaded with no dictionary to hand it, and in `Box.d`, entered
 /// through `Desc`, it answered `Box`, through the dictionary `d`'s own frame was entered
-/// with. A sort at the same place runs.
+/// with. A sort at the same place runs, and so does a tuple, whose instance is its
+/// components' (WI-20261116-411A7).
 ///
-/// FAILS with the builtin counted as serving every carrier: the three calls load, and
+/// FAILS with the builtin counted as serving every carrier: the two calls load, and
 /// `dOf(box(1))` answers `Box`.
 #[test]
-fn a_tuple_or_an_arrow_has_no_instance() {
+fn an_arrow_has_no_instance() {
     let decls = format!(
-        "  operation tup() -> Type = TypeValue.type_value[T = (Int64, String)]()\n  operation \
-         arr() -> Type = TypeValue.type_value[T = (x: Int64) -> Int64]()\n{}",
-        DESC_AT.replace("{at}", "(Int64, String)")
+        "  operation arr() -> Type = TypeValue.type_value[T = (x: Int64) -> Int64]()\n{}",
+        DESC_AT.replace("{at}", "(x: Int64) -> Int64")
     );
     let errs = load_errors_of(&program("tvformer", &decls, "0"));
     assert_refused_naming(
         &errs,
         &[
-            "its carrier is `(_1: Int64, _2: String)`, a tuple or an arrow",
             "its carrier is `Int64 -> Int64`, a tuple or an arrow",
-            "the derived instances cover sorts only",
-            "Name a sort in the call's bracket",
+            "the derived instances cover sorts and tuples only",
+            "Name a type in the call's bracket that holds no arrow",
         ],
         "a type-argument at a former",
     );
-    assert_eq!(errs.len(), 3, "one refusal per call: {errs:#?}");
+    assert_eq!(errs.len(), 2, "one refusal per call: {errs:#?}");
+    assert_eq!(
+        run(
+            "tvformertuple",
+            &DESC_AT.replace("{at}", "(Int64, String)"),
+            "bit(PartialEq.eq(dOf(box(1)), TypeValue.type_value[T = (Int64, String)]()))"
+        ),
+        Ok(1)
+    );
     assert_eq!(
         run(
             "tvformersort",

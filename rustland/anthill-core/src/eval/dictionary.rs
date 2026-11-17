@@ -53,9 +53,10 @@ use super::value::Value;
 ///
 /// The wrapped `Value` is always a `Value::Entity` whose functor is the
 /// `anthill.realization.runtime.Dictionary` sort symbol, whose positional
-/// children are themselves dictionaries, and whose one named child is
-/// `impl → Value::SymbolRef(S)`. Every constructor here establishes that, so
-/// the accessors below are total.
+/// children are themselves dictionaries, and whose named children are
+/// `impl → Value::SymbolRef(S)` and, for a tuple's `TypeValue` instance only, `labels`, one
+/// label per positional child ([`Dictionary::build_labelled`]). Every constructor here
+/// establishes that, so the accessors below are total.
 #[derive(Clone, Debug)]
 pub struct Dictionary(Value);
 
@@ -95,19 +96,44 @@ impl Dictionary {
         impl_sort: Symbol,
         subs: impl IntoIterator<Item = Dictionary>,
     ) -> Option<Dictionary> {
+        Self::build_labelled(kb, impl_sort, subs, None)
+    }
+
+    /// [`Self::build`], with the labels of a tuple's components where the dictionary is a
+    /// tuple's `TypeValue` instance (proposal 004's extension):
+    /// `Dictionary(‹Int64's›, ‹String's›, impl: NamedTuple, labels: (a, b))`, one label per
+    /// sub-dictionary, in the tuple type's order. `labels` is `None` for every other
+    /// dictionary.
+    pub(crate) fn build_labelled(
+        kb: &KnowledgeBase,
+        impl_sort: Symbol,
+        subs: impl IntoIterator<Item = Dictionary>,
+        labels: Option<&[Symbol]>,
+    ) -> Option<Dictionary> {
         let (ctor, impl_key) = crate::kb::term_view::dictionary_view_syms(kb)?;
         let pos: Vec<Value> = subs.into_iter().map(|d| d.0).collect();
+        let mut named = vec![(impl_key, Value::SymbolRef(impl_sort))];
+        if let Some(labels) = labels {
+            assert_eq!(
+                labels.len(),
+                pos.len(),
+                "a tuple's dictionary holds one label per sub-dictionary"
+            );
+            let labels_key = crate::kb::term_view::dictionary_labels_key(kb)?;
+            named.push((labels_key, labels_value(labels)));
+            kb.canonicalize_record_named_args(ctor, &mut named);
+        }
         Some(Dictionary(Value::Entity {
             functor: ctor,
             pos: pos.into(),
-            named: vec![(impl_key, Value::SymbolRef(impl_sort))].into(),
+            named: named.into(),
         }))
     }
 
     /// Recognize a dictionary in a `Value` of unknown provenance — the ONE
     /// boundary check, and the only place the shape is tested.
     ///
-    /// Validates the WHOLE tree (functor, the single `impl` named child, and
+    /// Validates the WHOLE tree (functor, the `impl` named child and a tuple's `labels`, and
     /// every positional child recursively), which is what makes [`Self::sub`]
     /// total rather than fallible-per-read. A dictionary is tiny — arity 0–2,
     /// depth 1–3 — so the walk costs less than threading an `Option` through
@@ -118,10 +144,10 @@ impl Dictionary {
     /// admitting it would move the failure to a read that has no way to report.
     pub fn from_value(kb: &KnowledgeBase, v: &Value) -> Option<Dictionary> {
         let (ctor, impl_key) = crate::kb::term_view::dictionary_view_syms(kb)?;
-        Self::from_value_with(ctor, impl_key, v)
+        Self::from_value_with(kb, ctor, impl_key, v)
     }
 
-    fn from_value_with(ctor: Symbol, impl_key: Symbol, v: &Value) -> Option<Dictionary> {
+    fn from_value_with(kb: &KnowledgeBase, ctor: Symbol, impl_key: Symbol, v: &Value) -> Option<Dictionary> {
         let Value::Entity {
             functor,
             pos,
@@ -133,12 +159,23 @@ impl Dictionary {
         if *functor != ctor {
             return None;
         }
+        // One `impl` naming a symbol, and a tuple's `labels`, one symbol per sub, beside it.
+        let impl_ok = |(k, v): &(Symbol, Value)| *k == impl_key && matches!(v, Value::SymbolRef(_));
         match named.as_ref() {
-            [(k, Value::SymbolRef(_))] if *k == impl_key => {}
+            [i] if impl_ok(i) => {}
+            [a, b] => {
+                let labels_key = crate::kb::term_view::dictionary_labels_key(kb)?;
+                let labels_ok = |(k, v): &(Symbol, Value)| {
+                    *k == labels_key && labels_of_value(v).is_some_and(|l| l.len() == pos.len())
+                };
+                if !((impl_ok(a) && labels_ok(b)) || (labels_ok(a) && impl_ok(b))) {
+                    return None;
+                }
+            }
             _ => return None,
         }
         for sub in pos.iter() {
-            Self::from_value_with(ctor, impl_key, sub)?;
+            Self::from_value_with(kb, ctor, impl_key, sub)?;
         }
         Some(Dictionary(v.clone()))
     }
@@ -168,7 +205,8 @@ impl Dictionary {
     /// provenance goes through that function, not `from_value` alone. So the two are
     /// kept apart, and what stops them drifting is
     /// that they answer the same question about the same three carriers: any change to
-    /// the SHAPE — the functor, the single `impl` child, sub-dictionaries positional —
+    /// the SHAPE — the functor, the `impl` child and a tuple's `labels`, sub-dictionaries
+    /// positional —
     /// must land in both, and each names the other.
     ///
     /// `None` for anything that is not a whole dictionary, on the same rule
@@ -182,7 +220,7 @@ impl Dictionary {
         let ViewHead::Functor {
             functor: f,
             pos_arity,
-            named_arity: 1,
+            named_arity: named_arity @ (1 | 2),
         } = v.head(kb)
         else {
             return None;
@@ -190,6 +228,15 @@ impl Dictionary {
         if f != ctor {
             return None;
         }
+        // A tuple's `labels` (see [`Self::build_labelled`]), the one other key there is.
+        let labels = match named_arity {
+            1 => None,
+            _ => {
+                let key = crate::kb::term_view::dictionary_labels_key(kb)?;
+                let labels = crate::kb::term_view::labels_of_view(kb, &v.named_arg(kb, key)?)?;
+                (labels.len() == pos_arity).then_some(labels)?.into()
+            }
+        };
         // The `impl` child is a SYMBOL on every carrier — `Value::SymbolRef` on the
         // value one, `Term::Ref` on the term one, an owned `SymbolRef` synthesized by
         // `occ_view_named` on the occurrence one — so it is read as a nullary head
@@ -207,21 +254,41 @@ impl Dictionary {
         for i in 0..pos_arity {
             subs.push(Self::from_view(kb, &v.pos_arg(kb, i)?)?);
         }
-        Self::build(kb, impl_sort, subs)
+        Self::build_labelled(kb, impl_sort, subs, labels.as_deref())
     }
 
     /// The impl this dictionary pins — the `impl` named child.
     ///
-    /// Total: every constructor above established the single `impl →
-    /// SymbolRef` named child. This is what `RequirementHandle::functor` was.
+    /// Total: every constructor above established the `impl → SymbolRef` named child. This is what `RequirementHandle::functor` was.
     pub fn impl_sort(&self) -> Symbol {
         match &self.0 {
-            Value::Entity { named, .. } => match named.as_ref() {
-                [(_, Value::SymbolRef(s))] => *s,
-                other => unreachable!(
-                    "a Dictionary's named children are exactly `impl -> SymbolRef`, got {other:?}"
-                ),
-            },
+            // The one child naming a symbol: a tuple's `labels` is a tuple of them.
+            Value::Entity { named, .. } => named
+                .iter()
+                .find_map(|(_, v)| match v {
+                    Value::SymbolRef(s) => Some(*s),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    unreachable!("a Dictionary's named children hold `impl -> SymbolRef`, got {named:?}")
+                }),
+            other => unreachable!("a Dictionary wraps a Value::Entity, got {other:?}"),
+        }
+    }
+
+    /// The labels of a tuple's components, where this is a tuple's `TypeValue` instance
+    /// ([`Self::build_labelled`]), one per sub-dictionary; `None` for every other dictionary.
+    pub fn labels(&self) -> Option<Vec<Symbol>> {
+        labels_of_value(self.labels_child()?)
+    }
+
+    /// The `labels` child, the one named child that is no symbol ([`Self::build_labelled`]).
+    fn labels_child(&self) -> Option<&Value> {
+        match &self.0 {
+            Value::Entity { named, .. } => named
+                .iter()
+                .map(|(_, v)| v)
+                .find(|v| !matches!(v, Value::SymbolRef(_))),
             other => unreachable!("a Dictionary wraps a Value::Entity, got {other:?}"),
         }
     }
@@ -266,11 +333,61 @@ impl Dictionary {
 impl PartialEq for Dictionary {
     fn eq(&self, other: &Self) -> bool {
         self.impl_sort() == other.impl_sort()
+            && same_labels(self.labels_child(), other.labels_child())
             && self.arity() == other.arity()
             && (0..self.arity()).all(|k| self.sub(k) == other.sub(k))
     }
 }
 impl Eq for Dictionary {}
+
+/// A tuple's labels as a dictionary holds them: a positional tuple of symbols, as an `OpRef`
+/// holds its spread labels (`term_view`'s `"spread"` arm), so their order is their identity.
+pub(crate) fn labels_value(labels: &[Symbol]) -> Value {
+    if labels.is_empty() {
+        // `()`'s labels: the tuple of no components is `Unit`.
+        return Value::Unit;
+    }
+    Value::Tuple {
+        pos: labels.iter().copied().map(Value::SymbolRef).collect(),
+        named: Vec::new().into(),
+    }
+}
+
+/// Do two `labels` children ([`Dictionary::labels_child`]) hold the same labels, in order? Read
+/// in place: dictionaries are compared where frames and stamps are.
+fn same_labels(a: Option<&Value>, b: Option<&Value>) -> bool {
+    let items = |v: &Value| match v {
+        Value::Tuple { pos, .. } => pos
+            .iter()
+            .map(|l| match l {
+                Value::SymbolRef(s) => Some(*s),
+                _ => None,
+            })
+            .collect::<smallvec::SmallVec<[Option<Symbol>; 4]>>(),
+        _ => smallvec::SmallVec::new(),
+    };
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => items(a) == items(b),
+        _ => false,
+    }
+}
+
+/// The labels [`labels_value`] holds; `None` for any other value.
+fn labels_of_value(v: &Value) -> Option<Vec<Symbol>> {
+    match v {
+        Value::Tuple { pos, named } if named.is_empty() => pos
+            .iter()
+            .map(|l| match l {
+                Value::SymbolRef(s) => Some(*s),
+                _ => None,
+            })
+            .collect(),
+        // The tuple of no components.
+        Value::Unit => Some(Vec::new()),
+        _ => None,
+    }
+}
 
 /// A dictionary held inside a `Value` — the `Value::OpRef` `dict` slot.
 ///

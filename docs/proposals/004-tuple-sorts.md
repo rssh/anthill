@@ -318,7 +318,9 @@ untyped one, and its components would start to error.
 4. **The instance is a dictionary**, of the shape every dictionary has
    (`eval/dictionary.rs`): `Dictionary(d₁ … dₙ, impl: NamedTuple)`, one sub-dictionary per
    component, in component order. A component at a type parameter takes the caller's dictionary
-   for that parameter. It is passed as any dictionary is: T2's `same` is handed it, and `List`'s
+   for that parameter. A tuple's `TypeValue` instance also holds the tuple's labels, in the
+   type's own order: `Dictionary(d₁ … dₙ, impl: NamedTuple, labels: (l₁, …, lₙ))`, from which
+   `type_value` reads the type back. It is passed as any dictionary is: T2's `same` is handed it, and `List`'s
    derived equality at `List[T = (Pt, Int64)]` enters with it.
 5. **A typed `=` at a tuple is a call of the tuple's `eq` through its instance.** It carries the
    member, so no component is compared without one, and the equality index is not read.

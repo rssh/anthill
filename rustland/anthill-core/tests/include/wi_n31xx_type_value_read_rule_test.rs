@@ -878,7 +878,7 @@ namespace test.n31xx.former
 
   operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
 
-  operation ask() -> Type = tyOf((1, 2))
+  operation ask() -> Type = tyOf(lambda (x: Int64) -> x)
 end
 "#,
     );
@@ -896,8 +896,7 @@ end
         // and these two strings are exactly what the first cut got wrong.
         "nothing provides `anthill.reflect.TypeValue` at it",
         // AND THE REPAIR THAT WORKS for `TypeValue`, none of whose instances may be written.
-        "Pass a value whose type is a sort with no tuple or arrow among its type arguments: \
-         every `TypeValue` instance is derived",
+        "Pass a value whose type holds no arrow: every `TypeValue` instance is derived",
     ] {
         assert!(e.contains(want), "expected {want:?} in the refusal; got {e:?}");
     }
@@ -965,7 +964,7 @@ namespace test.n31xx.formersort
     operation tyb() -> Type = Cell[V = U]
   end
 
-  operation ask() -> Type = Holder[U = (Int64, Int64)].tyb()
+  operation ask() -> Type = Holder[U = (Int64) -> Int64].tyb()
 end
 "#,
     );
@@ -1113,8 +1112,9 @@ end
 
 /// A REQUIREMENT OF THE LIBRARY'S TWO SPECS AT A SORT HOLDING A FORMER is refused as one
 /// at the former itself, naming the same repair. A sort's `TypeValue` instance holds only
-/// where each of its type arguments has one, so `Option[T = (a: Int64, b: String)]` has
-/// none, and `TypePattern`'s one row, conditioned on it, does not answer there either. The
+/// where each of its type arguments has one, so `Option[T = (Int64) -> Int64]` has none, and
+/// `TypePattern`'s one row, conditioned on it, does not answer at an `Option` holding an arrow
+/// or a tuple, which has no type pattern. The
 /// refusal advised a `provides TypeValue[…]` row, which is refused at load, and (when the
 /// boundary required `ErrorTag`, before WI-20261016-YM8HD) a `provides ErrorTag[…]` row,
 /// which loaded and which no boundary read.
@@ -1124,7 +1124,7 @@ end
 /// With that text taken out as well, both carry the row advice again, and fail on it too.
 #[test]
 fn a_library_spec_at_a_former_inside_a_sort_is_refused_naming_a_value() {
-    for (shape, src, repair) in [
+    for (shape, src, kind, repair) in [
         (
             "TypeValue",
             r#"
@@ -1135,10 +1135,11 @@ namespace test.n31xx.within
 
   operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
 
-  operation ask() -> Type = tyOf(some((1, 2)))
+  operation ask() -> Type = tyOf(some(lambda (x: Int64) -> x))
 end
 "#,
-            "Pass a value whose type is a sort with no tuple or arrow among its type arguments",
+            "has a STRUCTURAL FORMER — an arrow — among its type arguments",
+            "Pass a value whose type holds no arrow",
         ),
         (
             "TypePattern",
@@ -1153,16 +1154,14 @@ namespace test.n31xx.withintag
     Error.reify(lambda () -> raisesOpt())
 end
 "#,
+            "has a STRUCTURAL FORMER — a tuple or an arrow — among its type arguments",
             "Name a sort with no tuple or arrow among its type arguments — for an \
              `Error.reify`, raise a value of one in the thunk",
         ),
     ] {
         let errs = load_errors(src);
         assert_eq!(errs.len(), 1, "{shape}: exactly one refusal, got {errs:#?}");
-        for want in [
-            "has a STRUCTURAL FORMER — a tuple or an arrow — among its type arguments",
-            repair,
-        ] {
+        for want in [kind, repair] {
             assert!(errs[0].contains(want), "{shape}: expected {want:?}; got {:?}", errs[0]);
         }
         assert_names_no_row_advice(shape, &errs[0]);
@@ -1319,7 +1318,7 @@ fn a_construction_at_a_former_is_refused_as_a_call_is() {
     let errs = load_errors(
         r#"
 namespace test.n31xx.construct
-  import anthill.prelude.{Option, Type}
+  import anthill.prelude.{Int64, Option, Type}
   import anthill.prelude.Option.{some}
   import anthill.reflect.{TypeValue}
 
@@ -1332,8 +1331,8 @@ namespace test.n31xx.construct
     operation tyOf(b: Self) -> Type = TypeValue.type_value[T = T]()
   end
 
-  operation inside() -> Type = Box.tyOf(box(some((1, 2))))
-  operation bare() -> Type = Box.tyOf(box((1, 2)))
+  operation inside() -> Type = Box.tyOf(box(some(lambda (x: Int64) -> x)))
+  operation bare() -> Type = Box.tyOf(box(lambda (x: Int64) -> x))
 end
 "#,
     );
@@ -1341,12 +1340,12 @@ end
     for (shape, want) in [
         (
             "within a sort",
-            "its carrier `anthill.prelude.Option[T = (_1: Int64, _2: Int64)]` has a STRUCTURAL \
-             FORMER — a tuple or an arrow — among its type arguments",
+            "its carrier `anthill.prelude.Option[T = Int64 -> Int64]` has a STRUCTURAL FORMER — \
+             an arrow — among its type arguments",
         ),
         (
             "a bare former",
-            "its carrier is `(_1: Int64, _2: Int64)`, a STRUCTURAL FORMER",
+            "its carrier is `Int64 -> Int64`, a STRUCTURAL FORMER",
         ),
     ] {
         let err = errs
@@ -1354,18 +1353,14 @@ end
             .find(|e| e.contains(want))
             .unwrap_or_else(|| panic!("{shape}: expected {want:?}; got {errs:#?}"));
         assert!(err.contains("for the construction `test.n31xx.construct.Box.box`"), "{shape}: {err}");
-        assert!(
-            err.contains("Pass a value whose type is a sort with no tuple or arrow among its type \
-                          arguments"),
-            "{shape}: {err}"
-        );
+        assert!(err.contains("Pass a value whose type holds no arrow"), "{shape}: {err}");
         assert!(!err.contains("declare a requirement slot"), "{shape}: {err}");
         assert_names_no_row_advice(shape, err);
     }
 }
 
 /// THE SEARCH'S OWN ACCOUNT ADVISES NO `TypeValue` ROW EITHER. A provision whose contract asks
-/// for `TypeValue` where none holds — `W provides Desc[T = Option[T = (Int64, Int64)]]`, `Desc`
+/// for `TypeValue` where none holds — `W provides Desc[T = Option[T = (Int64) -> Int64]]`, `Desc`
 /// requiring `TypeValue[T = T]` — is refused saying the instances are derived, where it was
 /// told to declare `provides TypeValue[…]` on the carrier, which is refused at load, and then
 /// to add `requires TypeValue[…]` in scope, which a ground goal has no caller to take from:
@@ -1392,7 +1387,7 @@ namespace test.n31xx.contract
   sort W
     import anthill.prelude.{Int64, Option, Type}
     import anthill.reflect.{TypeValue}
-    provides Desc[T = Option[T = (Int64, Int64)]]
+    provides Desc[T = Option[T = (Int64) -> Int64]]
     operation d() -> Type = TypeValue.type_value()
   end
 end
@@ -1405,8 +1400,8 @@ end
     assert!(
         contract.contains(
             "no impl provides anthill.reflect.TypeValue: its instances are derived, for a sort \
-             that is no spec, a parametric one's only where each type argument has one, and a \
-             tuple or an arrow has none; none may be written"
+             that is no spec, a parametric one's or a tuple's only where each type argument or \
+             component has one, and an arrow has none; none may be written"
         ),
         "the account says why: {contract}"
     );
@@ -1415,7 +1410,7 @@ end
 }
 
 /// A SPEC OF THE PROGRAM'S OWN WHOSE CONTRACT HOLDS NOWHERE AT THE CALL is not advised a row
-/// either: `Desc requires TypeValue[T = T]`, and at `Option[T = (Int64, Int64)]` a row of
+/// either: `Desc requires TypeValue[T = T]`, and at `Option[T = (Int64) -> Int64]` a row of
 /// `Desc` would be refused for `TypeValue[T = Option[T = (…)]]`, as a provision's contract is
 /// checked. It was told to declare `provides Desc[T = Option[T = (…)]]`, which is then
 /// refused; the refusal names the contract and the library's repair.
@@ -1441,7 +1436,7 @@ namespace test.n31xx.contract2
 
   operation dOf[B](x: B) -> Type requires Desc[T = B] = Desc.d()
 
-  operation ask() -> Type = dOf(some((1, 2)))
+  operation ask() -> Type = dOf(some(lambda (x: Int64) -> x))
 end
 "#,
     );
@@ -1449,9 +1444,9 @@ end
     assert!(
         errs[0].contains(
             "no row of `test.n31xx.contract2.Desc` at these bindings can answer, its own \
-             contract asking `anthill.reflect.TypeValue[T = anthill.prelude.Option[T = (_1: \
-             Int64, _2: Int64)]]`: no row of `anthill.reflect.TypeValue` answers here, and none \
-             may be written"
+             contract asking `anthill.reflect.TypeValue[T = anthill.prelude.Option[T = Int64 -> \
+             Int64]]`: no row of `anthill.reflect.TypeValue` answers here, and none may be \
+             written"
         ),
         "the contract and its repair: {:?}",
         errs[0]

@@ -157,10 +157,19 @@ pub trait PrintView: TermSource {
 /// than the type `Dictionary[S = …]` the same functor heads? It prints as the value it is,
 /// `Dictionary(impl: Int64)`, its sub-dictionaries positional before `impl` — where the
 /// type's bracket made it `Dictionary[impl = Int64]`, the type of a sort applied. Told
-/// apart by the one `impl` key, which the type has not.
+/// apart by the `impl` key, which the type has not; a tuple's `TypeValue` instance holds its
+/// `labels` beside it.
 fn is_dictionary_value(kb: &KnowledgeBase, item: &ViewItem<'static>, sym: Symbol) -> bool {
     crate::kb::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, impl_key)| {
-        ctor == sym && item.named_keys(kb) == [impl_key]
+        let labels_key = crate::kb::term_view::dictionary_labels_key(kb);
+        ctor == sym
+            && match item.named_keys(kb).as_slice() {
+                [k] => *k == impl_key,
+                [a, b] => {
+                    (*a == impl_key && Some(*b) == labels_key) || (Some(*a) == labels_key && *b == impl_key)
+                }
+                _ => false,
+            }
     })
 }
 
@@ -925,7 +934,11 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             // WI-1045 — printed the way the VALUE reads: `Dictionary(sub₀ … subₙ₋₁,
             // impl: S)`. One spelling, so a printed IR node and a printed dictionary
             // are the same text (`requirement-channel.md` §9).
-            Expr::Dictionary { impl_sort, subs } => {
+            Expr::Dictionary {
+                impl_sort,
+                subs,
+                labels,
+            } => {
                 buf.push_str("Dictionary(");
                 for sub in subs.iter() {
                     self.write_occurrence(sub, buf);
@@ -933,6 +946,18 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 }
                 buf.push_str("impl: ");
                 buf.push_str(self.view.sym_name(*impl_sort));
+                if let Some(labels) = labels {
+                    // As the tuple value prints: `(x)` alone is grouping, so a lone label
+                    // keeps its key (`write_occ_tuple`).
+                    let names: Vec<&str> = labels.iter().map(|l| self.view.sym_name(*l)).collect();
+                    match names.as_slice() {
+                        [only] => buf.push_str(&format!(
+                            ", labels: ({}: {only})",
+                            crate::intern::positional_label(0)
+                        )),
+                        _ => buf.push_str(&format!(", labels: ({})", names.join(", "))),
+                    }
+                }
                 buf.push(')');
             }
         }

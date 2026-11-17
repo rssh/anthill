@@ -15250,7 +15250,11 @@ impl KnowledgeBase {
             Some(Expr::Spliced(v)) => {
                 Dictionary::from_view(self, v).map_or(UnfoldSlot::Unknown, UnfoldSlot::Supplied)
             }
-            Some(Expr::Dictionary { impl_sort, subs }) => {
+            Some(Expr::Dictionary {
+                impl_sort,
+                subs,
+                labels,
+            }) => {
                 let mut built = Vec::with_capacity(subs.len());
                 for sub in subs {
                     match self.stamp_slot(sub, frame) {
@@ -15258,7 +15262,7 @@ impl KnowledgeBase {
                         _ => return UnfoldSlot::Unknown,
                     }
                 }
-                Dictionary::build(self, *impl_sort, built)
+                Dictionary::build_labelled(self, *impl_sort, built, labels.as_deref())
                     .map_or(UnfoldSlot::Unknown, UnfoldSlot::Supplied)
             }
             Some(Expr::RequirementAtSort { chain, slot }) => match self.stamp_slot(chain, frame) {

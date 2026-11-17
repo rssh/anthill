@@ -670,9 +670,14 @@ impl Copier {
                 chain: self.node(chain),
                 slot: plain(slot),
             },
-            Expr::Dictionary { impl_sort, subs } => Expr::Dictionary {
+            Expr::Dictionary {
+                impl_sort,
+                subs,
+                labels,
+            } => Expr::Dictionary {
                 impl_sort: plain(impl_sort),
                 subs: self.nodes(subs),
+                labels: labels.as_deref().map(std::rc::Rc::from),
             },
             Expr::VarRef { name } => Expr::VarRef { name: plain(name) },
             Expr::Var(var) => Expr::Var(plain(var)),
@@ -889,6 +894,7 @@ impl Copier {
                 spec_sort,
                 bindings,
                 sub_resolutions,
+                labels,
             } => ResolvedRequiresNode::Conditional {
                 impl_sort: plain(impl_sort),
                 spec_sort: plain(spec_sort),
@@ -897,6 +903,7 @@ impl Copier {
                     .iter()
                     .map(|sub| self.resolved_requires(sub))
                     .collect(),
+                labels: labels.as_deref().map(std::rc::Rc::from),
             },
             ResolvedRequiresNode::FromScope {
                 scope_index,
