@@ -311,7 +311,9 @@ untyped one, and its components would start to error.
 2. **Its provisions are derived, as a composite's classification is** (kernel-language §8.3).
    A tuple provides `PartialEq` when each component's type provides it, and `Eq` when each
    provides `Eq`; `()` provides both. It provides `TypeValue` when each component's type does
-   (065 §2, now for the tuple former too). No sort provides `NamedTuple`. A provision of another
+   (065 §2, now for the tuple former too), and `SortDomain` (with the `Fillable` it provides)
+   when each does: its domain is the tuples of its components' domains, in the type's order. A
+   type pattern at a tuple (071) admits by `<:`, by label with width and permutation. No sort provides `NamedTuple`. A provision of another
    spec at a tuple type is a sort's like any other (`W provides Show[T = (Int64, String)]`),
    and a written `PartialEq` at a tuple type answers in place of the derived one, as a sort's
    written equality does; the tuple's `Eq` is then not derived, and is written beside it.
@@ -323,7 +325,11 @@ untyped one, and its components would start to error.
    component, in component order. A component at a type parameter takes the caller's dictionary
    for that parameter. A tuple's `TypeValue` instance also holds the tuple's labels, in the
    type's own order: `Dictionary(d₁ … dₙ, impl: NamedTuple, labels: (l₁, …, lₙ))`, from which
-   `type_value` reads the type back. It is passed as any dictionary is: T2's `same` is handed it, and `List`'s
+   `type_value` reads the type back. So does its `Fillable` instance, whose subs are the
+   components' `SortDomain` instances and whose labels the fill builds the tuple with; its
+   `SortDomain` instance is laid out as every `SortDomain` dictionary is, its chain's slot first,
+   which holds that `Fillable`: `Dictionary(‹the tuple's Fillable›, impl: NamedTuple)`, as `Eq`'s
+   holds its `PartialEq`. It is passed as any dictionary is: T2's `same` is handed it, and `List`'s
    derived equality at `List[T = (Pt, Int64)]` enters with it.
 5. **A typed `=` at a tuple is a call of the tuple's `eq` through its instance.** It carries the
    member, so no component is compared without one, and the equality index is not read.

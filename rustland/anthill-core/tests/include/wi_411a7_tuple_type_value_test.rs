@@ -4,8 +4,8 @@
 //! sub-dictionary per component in the type's own order, and the labels beside them, so
 //! `type_value` reads the type back off its evidence. Before, a tuple had no instance:
 //! `type_value[T = (a: Int64, b: String)]()` and `tyOf((1, "s"))` were refused at load as "a
-//! STRUCTURAL FORMER". An arrow still has none (WI-20261021-VF8GT), and a tuple has no type
-//! pattern (WI-20261116-HWD8A decides one).
+//! STRUCTURAL FORMER". An arrow still has none (WI-20261021-VF8GT). A type pattern at a tuple,
+//! refused at this stage, admits by label since WI-20261116-HWD8A, whose rows hold it.
 //!
 //! The ticket's `PartialEq.eq(type_value[T = (a: Int64, b: String)](), (a: Int64, b: String))`
 //! is not written here: a tuple written as a value is a tuple of `Type` values, `(a: Type, b:
@@ -24,11 +24,6 @@
 //! * `resolve_at_goal`'s exit on no provision row kept for a tuple (`typing::carrier`): the
 //!   first three of those fail, and [`a_component_without_an_instance_is_named`] at its
 //!   bracket, a call of `type_value` at a tuple refused at its dispatch.
-//! * No refusal of a pattern at a tuple (`typing::synth`'s `tuple_pattern_refusal`):
-//!   [`a_tuple_has_no_type_pattern`] fails, `admits` at a tuple loading. Its `Foo` and `Bar`
-//!   rows failed with the guard first written, keyed on the resolution path: they were
-//!   refused, the derived `TypeValue` of each reaching a tuple through the sort's own
-//!   `requires`.
 //! * A tuple not read through in the caller-evidence refusal (`caller_writeable_application`):
 //!   [`a_tuple_over_a_callers_parameter_needs_its_evidence`] fails, `tyOf((x, 1))` over an `E`
 //!   with no evidence loading (it then panics when run).
@@ -47,7 +42,7 @@
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::kb::KnowledgeBase;
 
-use crate::common::{assert_refused_naming, interp_for, load_errors_of, load_kb_with, pattern_answer_counts, print_type};
+use crate::common::{assert_refused_naming, interp_for, load_errors_of, print_type};
 
 fn src(ns: &str, body: &str) -> String {
     format!(
@@ -229,58 +224,6 @@ fn a_tuple_over_a_callers_parameter_needs_its_evidence() {
     let mut interp = interp_for(&program);
     assert_eq!(type_of(&mut interp, &format!("{ns}.h")), "(a: Bool, b: List[T = (Bool, Int64)])");
     assert_eq!(type_of(&mut interp, &format!("{ns}.w")), "(String, Int64)");
-}
-
-/// A tuple has no type pattern: `admits` at a tuple, at a type holding one, through a generic
-/// caller, and an `Error.reify` over a tuple payload are refused at load. `Error.raise((1, 2))`
-/// loads, since `raise` asks only `TypeValue`. A pattern at a sort still answers, a sort whose
-/// own `requires` asks a tuple's `TypeValue` included, and a rule body's goal of `TypeValue` at
-/// a tuple holds where `TypePattern`'s does not.
-#[test]
-fn a_tuple_has_no_type_pattern() {
-    let ns = "test.r411a7.t6";
-    let no_pattern = "a tuple has no type pattern, at a tuple or inside a type that holds one";
-    for (body, token) in [
-        (
-            "  operation g() -> Bool = TypePattern.admits[T = (Int64, Int64)](TypeValue.type_value[T = Int64]())",
-            no_pattern,
-        ),
-        (
-            "  operation g() -> Bool = TypePattern.admits[T = List[T = (Int64, Int64)]](TypeValue.type_value[T = Int64]())",
-            no_pattern,
-        ),
-        (
-            "  operation g[E](x: E) -> Bool requires TypeValue[T = E] = TypePattern.admits[T = (E, Int64)](TypeValue.type_value[T = Int64]())",
-            no_pattern,
-        ),
-        (
-            "  operation boom() -> Int64 effects Error[T = (Int64, Int64)] = Error.raise((1, 2))\n  \
-             rule caught(?x) :- Error.reify(lambda () -> boom(), ?x)",
-            "nothing provides `anthill.reflect.TypePattern` at it",
-        ),
-    ] {
-        let errs = load_errors_of(&src(ns, body));
-        assert_eq!(errs.len(), 1, "{body}: {errs:#?}");
-        assert_refused_naming(&errs, &[token], body);
-    }
-    let program = src(
-        ns,
-        "  operation boom() -> Int64 effects Error[T = (Int64, Int64)] = Error.raise((1, 2))\n  \
-         operation atSort() -> Bool = TypePattern.admits[T = Int64](TypeValue.type_value[T = Int64]())\n  \
-         sort Foo\n    requires TypeValue[T = (Int64, Int64)]\n    entity foo\n  end\n  \
-         sort Bar\n    sort V = ?\n    requires TypeValue[T = (V, Int64)]\n    entity bar(v: V)\n  end\n  \
-         operation atFoo() -> Bool = TypePattern.admits[T = Foo](TypeValue.type_value[T = Foo]())\n  \
-         operation atBar() -> Bool = TypePattern.admits[T = Bar[V = Bool]](TypeValue.type_value[T = Bar[V = Bool]]())\n  \
-         rule pattern() :- TypePattern[T = (Int64, Int64)]\n  \
-         rule value() :- TypeValue[T = (Int64, Int64)]",
-    );
-    let mut interp = interp_for(&program);
-    for entry in ["atSort", "atFoo", "atBar"] {
-        assert!(bool_of(&mut interp, &format!("{ns}.{entry}")), "`{entry}`");
-    }
-    let mut kb = load_kb_with(&program);
-    assert_eq!(pattern_answer_counts(&mut kb, &format!("{ns}.value()")), (1, 1));
-    assert_eq!(pattern_answer_counts(&mut kb, &format!("{ns}.pattern()")), (0, 0));
 }
 
 /// The local names of `Dictionary.labels(d)`'s answer: `None` for `none()`, the list's symbols

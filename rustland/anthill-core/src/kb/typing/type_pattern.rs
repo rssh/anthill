@@ -15,7 +15,10 @@
 //! ([`KnowledgeBase::type_arg_owner`]): two applications of one variant compare as the
 //! sort's do, and a variant is below its own sort at the same arguments. An arrow is the
 //! `Function` it is (`kernel-language.md` §4.4: `(A) -> B` is `Function[A, B, E = {}]`), and
-//! is compared as that application ([`arrow_as_function`]). The provider leg the typer's
+//! is compared as that application ([`arrow_as_function`]). A tuple is compared by label, as
+//! `<:` compares it (§4.5): below another where it has each of the other's labels, its
+//! component there below the other's — width and permutation ([`tuple_below`]) — and equal to
+//! another as one type, the same labels in the same order. No sort is a tuple. The provider leg the typer's
 //! `bare_sort_compatible` adds (`List` where `Stream` is expected) is not one of them: the
 //! run-time boundary never read it (`payload_matches` was `sort_sym_compatible` on the head
 //! until WI-20261016-YM8HD made the boundary ask `TypePattern.admits`, which runs this
@@ -43,8 +46,8 @@
 //! pattern at `Wide[W = Int64]` and not by one at `Wide[W = String]`, its own arguments put
 //! for the parameters a clause names.
 //!
-//! WHAT IT DOES NOT JUDGE IS AN ERROR ([`UnjudgedType`]), never an answer: two named tuples,
-//! two effect rows that are not one row, an effect row beside anything else, a type
+//! WHAT IT DOES NOT JUDGE IS AN ERROR ([`UnjudgedType`]), never an answer: two effect rows
+//! that are not one row, an effect row beside anything else, a type
 //! variable, a polymorphic type, a type read off a value, and a data value standing where a
 //! type is asked for. [`form`] is the list. The pattern `TypePattern`'s one row answers
 //! (`TypeValuePattern`'s, at a type with a `TypeValue`) holds none of them, a former having
@@ -74,8 +77,6 @@ pub(super) const TYPE_NESTING_LIMIT: usize = NESTING_LIMIT;
 pub(crate) enum UnjudgedType {
     /// `value` is no form the walk compares; `what` is which.
     Form { value: Value, what: &'static str },
-    /// Two named tuples.
-    TwoTuples { a: Value, b: Value },
     /// Two effect rows that are not one row.
     TwoRows { a: Value, b: Value },
     /// `pattern` writes `param` of `sort`, which `t` refines with no `requires` clause naming
@@ -97,12 +98,6 @@ impl UnjudgedType {
                 "`{}` is {what}, and a type pattern is judged over sorts, their applications \
                  and `Nothing`",
                 type_display_name_value(kb, value)
-            ),
-            UnjudgedType::TwoTuples { a, b } => format!(
-                "`{}` and `{}` are both named tuples, and a type pattern does not compare two \
-                 of them",
-                type_display_name_value(kb, a),
-                type_display_name_value(kb, b)
             ),
             UnjudgedType::TwoRows { a, b } => format!(
                 "`{}` and `{}` are two effect rows, and a type pattern compares a row only with \
@@ -243,10 +238,11 @@ fn decided_before_forms<A: TermView, B: TermView>(
 /// admits both `a` and `b`, two types a boundary's argument raises at: the one type where
 /// they are one; one sort's application where both are of that sort, an argument the two
 /// disagree on open where its parameter is invariant and their least pattern where it is
-/// covariant; and the wider sort where one refines the other through `requires`, the
-/// narrower read as the instance its clause gives it. `None` where no one sort heads them —
-/// two sorts neither refines, a tuple or an arrow beside another type. An argument a side
-/// leaves out is a type not known, and the pattern is open there.
+/// covariant; the wider sort where one refines the other through `requires`, the narrower
+/// read as the instance its clause gives it; and for two tuples the labels both have
+/// ([`joined_tuple`]). `None` where no one pattern heads them — two sorts neither refines, a
+/// tuple or an arrow beside another type. An argument a side leaves out is a type not known,
+/// and the pattern is open there.
 pub(crate) fn least_pattern(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> Option<Value> {
     least_pattern_at(kb, a, b, 0)
 }
@@ -264,6 +260,7 @@ fn least_pattern_at(kb: &mut KnowledgeBase, a: &Value, b: &Value, depth: usize) 
     match (type_head(kb, a), type_head(kb, b)) {
         (TypeHead::Nothing, _) => return Some(b.clone()),
         (_, TypeHead::Nothing) => return Some(a.clone()),
+        (TypeHead::NamedTuple, TypeHead::NamedTuple) => return Some(joined_tuple(kb, a, b, depth)),
         _ => {}
     }
     let (sa, sb) = (sort_head(kb, a)?, sort_head(kb, b)?);
@@ -350,6 +347,31 @@ fn joined_application(
     parameterized_value(kb, base, &bindings, span, site)
 }
 
+/// The least pattern of two tuples ([`least_pattern`]): the labels both have, in `a`'s order,
+/// each at what [`least_pattern`] makes of the two components there — open where no one pattern
+/// heads them — every slot no default fills written ([`fill_open_slots`]). A tuple is admitted
+/// by label with width (`kernel-language.md` §4.5), so a label one of them lacks is not read.
+fn joined_tuple(kb: &mut KnowledgeBase, a: &Value, b: &Value, depth: usize) -> Value {
+    let (TypeExtractor::NamedTuple(fa), TypeExtractor::NamedTuple(fb)) =
+        (extract_type(kb, a), extract_type(kb, b))
+    else {
+        unreachable!("joined_tuple is asked of two tuples");
+    };
+    let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(fa.len());
+    for (label, ta) in &fa {
+        let Some((_, tb)) = fb.iter().find(|(l, _)| same_label(kb, *l, *label)) else {
+            continue;
+        };
+        let joined = match least_pattern_at(kb, ta, tb, depth + 1) {
+            Some(joined) => fill_open_slots(kb, &joined),
+            None => Value::term(kb.pattern_slot()),
+        };
+        fields.push((*label, joined));
+    }
+    let (span, site) = site_of(a);
+    named_tuple_value(kb, &fields, span, site)
+}
+
 /// Is a parameter of `owner` that an application leaves out the slot's own value rather
 /// than a type not known: one that declares a default, which the slot then holds, and an
 /// effect row's, which a pattern does not judge?
@@ -358,7 +380,7 @@ fn slot_left_out(kb: &mut KnowledgeBase, owner: Symbol, param: Symbol) -> bool {
 }
 
 /// `v` with each slot it leaves out a type pattern's open slot ([`KnowledgeBase::pattern_slot`]),
-/// at every depth: a slot no default fills, of a type a boundary's pattern is read from — a
+/// at every depth, through a tuple's components too: a slot no default fills, of a type a boundary's pattern is read from — a
 /// slot left out is a type not known, which only an open pattern admits. `v` itself where it
 /// leaves none out.
 pub(crate) fn fill_open_slots(kb: &mut KnowledgeBase, v: &Value) -> Value {
@@ -366,7 +388,27 @@ pub(crate) fn fill_open_slots(kb: &mut KnowledgeBase, v: &Value) -> Value {
 }
 
 fn fill_open_slots_at(kb: &mut KnowledgeBase, v: &Value, depth: usize) -> Value {
-    let Some(head) = sort_head(kb, v).filter(|_| depth <= NESTING_LIMIT) else {
+    if depth > NESTING_LIMIT {
+        return v.clone();
+    }
+    // A tuple's components are filled each as a type of its own (`(a: Option)` is `(a:
+    // Option[T = ?])`).
+    if let TypeExtractor::NamedTuple(fields) = extract_type(kb, v) {
+        let filled: Vec<(Symbol, Value)> = fields
+            .iter()
+            .map(|(label, t)| (*label, fill_open_slots_at(kb, t, depth + 1)))
+            .collect();
+        if fields
+            .iter()
+            .zip(&filled)
+            .all(|((_, t), (_, f))| views_structurally_equal(kb, t, f))
+        {
+            return v.clone();
+        }
+        let (span, site) = site_of(v);
+        return named_tuple_value(kb, &filled, span, site);
+    }
+    let Some(head) = sort_head(kb, v) else {
         return v.clone();
     };
     let owner = kb.type_arg_owner(head).unwrap_or(head);
@@ -410,8 +452,8 @@ enum Form {
     /// A sort reference, an application of one, or a variant's: its head, and the sort whose
     /// parameters its arguments bind.
     Sort { head: Symbol, owner: Symbol },
-    /// A named tuple.
-    Tuple,
+    /// A named tuple: its components, label and type, in the type's order.
+    Tuple(Vec<(Symbol, Value)>),
     /// An arrow, as the `Function` application it is ([`arrow_as_function`]).
     Arrow(Value),
 }
@@ -426,7 +468,7 @@ fn form<V: TermView>(kb: &KnowledgeBase, v: &V, depth: usize) -> Result<Form, Un
                 None => "a data value, not a type",
             }
         }
-        TypeHead::NamedTuple => return Ok(Form::Tuple),
+        TypeHead::NamedTuple => return Ok(Form::Tuple(named_tuple_fields(kb, v))),
         TypeHead::Arrow => match arrow_as_function(kb, v) {
             Some(function) => return Ok(Form::Arrow(function)),
             None => "an arrow whose parts are not read",
@@ -548,13 +590,38 @@ fn below<A: TermView, B: TermView>(
         (Form::Sort { head: sa, .. }, Form::Sort { head: sb, owner }) => {
             sort_below(kb, a, sa, b, sb, owner, mode, depth)
         }
-        (Form::Tuple, Form::Tuple) => Err(UnjudgedType::TwoTuples {
-            a: value_of(a),
-            b: value_of(b),
-        }),
+        (Form::Tuple(fa), Form::Tuple(fb)) => tuple_below(kb, &fa, &fb, mode, depth),
         // Nominal: a sort is no tuple, and no tuple is a sort.
-        (Form::Sort { .. }, Form::Tuple) | (Form::Tuple, Form::Sort { .. }) => Ok(false),
+        (Form::Sort { .. }, Form::Tuple(_)) | (Form::Tuple(_), Form::Sort { .. }) => Ok(false),
     }
+}
+
+/// [`below`] for two tuples, `a`'s components `fa` and `b`'s `fb`: by label, with width and
+/// permutation (`kernel-language.md` §4.5) — each label of `b` is one of `a`'s, and `a`'s
+/// component there is below `b`'s. `a`'s other labels are not read, and neither side's order
+/// is. A component that is not below decides `false`, as an argument does
+/// ([`arguments_relate`]).
+fn tuple_below(
+    kb: &KnowledgeBase,
+    fa: &[(Symbol, Value)],
+    fb: &[(Symbol, Value)],
+    mode: Mode,
+    depth: usize,
+) -> Result<bool, UnjudgedType> {
+    let mut unjudged: Option<UnjudgedType> = None;
+    for (label, tb) in fb {
+        let Some((_, ta)) = fa.iter().find(|(l, _)| same_label(kb, *l, *label)) else {
+            return Ok(false);
+        };
+        match below(kb, ta, tb, mode, depth + 1) {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(e) => {
+                unjudged.get_or_insert(e);
+            }
+        }
+    }
+    unjudged.map_or(Ok(true), Err)
 }
 
 /// Where both sides are effect rows: one row is admitted by itself, and any other pair is
@@ -879,10 +946,26 @@ fn equal<A: TermView, B: TermView>(
             }
             arguments_relate(kb, a, b, owner, Relation::Equal, mode, depth)
         }
-        (Form::Tuple, Form::Tuple) => Err(UnjudgedType::TwoTuples {
-            a: value_of(a),
-            b: value_of(b),
-        }),
+        // One tuple type is the same labels in the same order, each component the same type
+        // (`kernel-language.md` §4.5: order is identity, `<:` is not).
+        (Form::Tuple(fa), Form::Tuple(fb)) => {
+            if fa.len() != fb.len()
+                || fa.iter().zip(&fb).any(|((la, _), (lb, _))| !same_label(kb, *la, *lb))
+            {
+                return Ok(false);
+            }
+            let mut unjudged: Option<UnjudgedType> = None;
+            for ((_, ta), (_, tb)) in fa.iter().zip(&fb) {
+                match equal(kb, ta, tb, mode, depth + 1) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(false),
+                    Err(e) => {
+                        unjudged.get_or_insert(e);
+                    }
+                }
+            }
+            unjudged.map_or(Ok(true), Err)
+        }
         _ => Ok(false),
     }
 }

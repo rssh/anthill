@@ -1760,11 +1760,11 @@ pub(crate) fn dictionary_term(
     })
 }
 
-/// [`dictionary_term`] for a tuple's `TypeValue` instance, which holds its labels beside
-/// `impl` (`eval::dictionary::Dictionary::build_labelled`): `Dictionary(subs…, impl:
+/// [`dictionary_term`] for a tuple's `TypeValue` or `Fillable` instance, which holds its labels
+/// beside `impl` (`eval::dictionary::Dictionary::build_labelled`): `Dictionary(subs…, impl:
 /// NamedTuple, labels: (a, b))`, the labels the term a tuple of symbols is. `None` in a KB
 /// with no `Dictionary.labels`.
-fn labelled_dictionary_term(
+pub(crate) fn labelled_dictionary_term(
     kb: &mut KnowledgeBase,
     (ctor, impl_key): (Symbol, Symbol),
     impl_sym: Symbol,

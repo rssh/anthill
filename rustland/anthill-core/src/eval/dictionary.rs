@@ -100,7 +100,7 @@ impl Dictionary {
     }
 
     /// [`Self::build`], with the labels of a tuple's components where the dictionary is a
-    /// tuple's `TypeValue` instance (proposal 004's extension):
+    /// tuple's `TypeValue` or `Fillable` instance (proposal 004's extension):
     /// `Dictionary(‹Int64's›, ‹String's›, impl: NamedTuple, labels: (a, b))`, one label per
     /// sub-dictionary, in the tuple type's order. `labels` is `None` for every other
     /// dictionary.
@@ -276,7 +276,7 @@ impl Dictionary {
         }
     }
 
-    /// The labels of a tuple's components, where this is a tuple's `TypeValue` instance
+    /// The labels of a tuple's components, where this is a tuple's `TypeValue` or `Fillable` instance
     /// ([`Self::build_labelled`]), one per sub-dictionary; `None` for every other dictionary.
     pub fn labels(&self) -> Option<Vec<Symbol>> {
         labels_of_value(self.labels_child()?)

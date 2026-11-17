@@ -1048,13 +1048,14 @@ end
 /// WI-20261016-YM8HD) and has NO anthill body on purpose: the boundary is a frame the
 /// interpreter installs by symbol. It was exempt, its host catching WIDE where the evidence
 /// was missing, on the reading that the row guarantees what it may catch. MEASURED false for
-/// a row holding a second `Error` label: `tupOp(7)` below caught `other(n: 7)` as the
-/// tuple's `err`, past a boundary at `Other` around it. So a reify at a tuple payload is
-/// refused at the call, as a requirement at any former is, and the repair it names is a
-/// sort: no row of `TypePattern` may be written.
+/// a row holding a second `Error` label: `tupOp(7)`, then over a tuple, caught `other(n: 7)`
+/// as the tuple's `err`, past a boundary at `Other` around it. So a reify at a payload with no
+/// pattern is refused at the call, as a requirement at any former is, and the repair it names
+/// is a type that holds no arrow: no row of `TypePattern` may be written. A tuple has a pattern
+/// since WI-20261116-HWD8A, and the rows are written at an arrow.
 ///
-/// The thunks DECLARE the tuple label and raise none: since proposal 071 stage (d) a raise
-/// at a tuple is refused at the raise (`wi_5cdn5_raise_carries_its_type_test`), and this row
+/// The thunks DECLARE the arrow label and raise none: since proposal 071 stage (d) a raise
+/// at an arrow is refused at the raise (`wi_5cdn5_raise_carries_its_type_test`), and this row
 /// is the boundary's refusal, alone.
 ///
 /// BACK-OUT: `former_carrier`'s `op_body_node` guard put back, and both programs load
@@ -1068,12 +1069,12 @@ fn a_body_less_callee_is_held_to_the_former_refusal() {
 namespace test.n31xx.formerhost
   import anthill.prelude.{Error, Int64, Result, String}
 
-  -- DECLARES the tuple label and raises nothing: a raise at a tuple is refused at the
+  -- DECLARES the arrow label and raises nothing: a raise at an arrow is refused at the
   -- raise since proposal 071 stage (d), and this row is about the boundary.
-  operation raisesTuple(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)]} = n
+  operation raisesArrow(n: Int64) -> Int64 effects {Error[(Int64) -> Int64]} = n
 
-  operation caughtTuple() -> Result[E = (a: Int64, b: String), T = Int64] =
-    Error.reify(lambda () -> raisesTuple(0 - 1))
+  operation caughtArrow() -> Result[E = (Int64) -> Int64, T = Int64] =
+    Error.reify(lambda () -> raisesArrow(0 - 1))
 end
 "#,
         ),
@@ -1087,12 +1088,12 @@ namespace test.n31xx.formerhost2
     entity other(n: Int64)
   end
 
-  operation raiseTup(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)], Error[Other]} =
+  operation raiseArrow(n: Int64) -> Int64 effects {Error[(Int64) -> Int64], Error[Other]} =
     Error.raise(other(n))
 
-  operation tupOp(n: Int64) -> Result[E = (a: Int64, b: String), T = Int64]
+  operation arrowOp(n: Int64) -> Result[E = (Int64) -> Int64, T = Int64]
       effects {Error[Other]} =
-    Error.reify[T1 = (a: Int64, b: String)](lambda () -> raiseTup(n))
+    Error.reify[T1 = (Int64) -> Int64](lambda () -> raiseArrow(n))
 end
 "#,
         ),
@@ -1100,10 +1101,10 @@ end
         let errs = load_errors(src);
         assert_eq!(errs.len(), 1, "{shape}: exactly one refusal, got {errs:#?}");
         for want in [
-            "anthill.reflect.TypePattern[T = (a: Int64, b: String)]",
+            "anthill.reflect.TypePattern[T = Int64 -> Int64]",
             "a STRUCTURAL FORMER",
-            "Name a sort with no tuple or arrow among its type arguments — for an \
-             `Error.reify`, raise a value of one in the thunk",
+            "Name a type that holds no arrow — for an `Error.reify`, raise a value of one in \
+             the thunk",
         ] {
             assert!(errs[0].contains(want), "{shape}: expected {want:?}; got {:?}", errs[0]);
         }
@@ -1113,8 +1114,8 @@ end
 /// A REQUIREMENT OF THE LIBRARY'S TWO SPECS AT A SORT HOLDING A FORMER is refused as one
 /// at the former itself, naming the same repair. A sort's `TypeValue` instance holds only
 /// where each of its type arguments has one, so `Option[T = (Int64) -> Int64]` has none, and
-/// `TypePattern`'s one row, conditioned on it, does not answer at an `Option` holding an arrow
-/// or a tuple, which has no type pattern. The
+/// `TypePattern`'s one row, conditioned on it, does not answer at an `Option` holding an arrow.
+/// The
 /// refusal advised a `provides TypeValue[…]` row, which is refused at load, and (when the
 /// boundary required `ErrorTag`, before WI-20261016-YM8HD) a `provides ErrorTag[…]` row,
 /// which loaded and which no boundary read.
@@ -1148,15 +1149,15 @@ namespace test.n31xx.withintag
   import anthill.prelude.{Error, Int64, Option, Result, String}
   import anthill.prelude.Option.{some}
 
-  operation raisesOpt() -> Int64 effects {Error[Option[T = (a: Int64, b: String)]]} = 1
+  operation raisesOpt() -> Int64 effects {Error[Option[T = (Int64) -> Int64]]} = 1
 
-  operation caught() -> Result[E = Option[T = (a: Int64, b: String)], T = Int64] =
+  operation caught() -> Result[E = Option[T = (Int64) -> Int64], T = Int64] =
     Error.reify(lambda () -> raisesOpt())
 end
 "#,
-            "has a STRUCTURAL FORMER — a tuple or an arrow — among its type arguments",
-            "Name a sort with no tuple or arrow among its type arguments — for an \
-             `Error.reify`, raise a value of one in the thunk",
+            "has a STRUCTURAL FORMER — an arrow — among its type arguments",
+            "Name a type that holds no arrow — for an `Error.reify`, raise a value of one in \
+             the thunk",
         ),
     ] {
         let errs = load_errors(src);

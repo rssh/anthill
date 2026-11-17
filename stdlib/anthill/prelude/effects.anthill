@@ -160,10 +160,10 @@ namespace anthill.prelude
     -- SO A GENERIC BOUNDARY DECLARES IT. An operation reifying at its OWN type
     -- parameter writes `requires TypePattern[T = P]`, and its callers supply the
     -- evidence — the ordinary requirement route, one hop per generic level. The
-    -- one row of `TypePattern` answers wherever `T1` has a `TypeValue` and holds no
-    -- tuple: a tuple has no type pattern, so a call at a tuple payload, or at a sort
-    -- with one among its type arguments, is refused, as a requirement at a structural
-    -- former with no provider is.
+    -- one row of `TypePattern` answers wherever `T1` has a `TypeValue`, a tuple
+    -- included, whose pattern admits by label with width and permutation; a call at
+    -- an arrow payload, or at a type holding one, is refused, as a requirement at a
+    -- structural former with no provider is.
     -- No row of `TypePattern` may be written, so no boundary catches by a forged
     -- `admits`. 027.4 and 071 carry the measurements.
     operation reify[Rho, X, T1](body: () -> X @ {Error[T1], Rho}) -> Result[E = T1, T = X]

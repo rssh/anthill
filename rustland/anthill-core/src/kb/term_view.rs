@@ -2789,7 +2789,7 @@ pub(crate) fn dictionary_view_syms(kb: &KnowledgeBase) -> Option<(Symbol, Symbol
     Some((ctor, key))
 }
 
-/// The `labels` key of a tuple's `TypeValue` dictionary
+/// The `labels` key of a tuple's `TypeValue` or `Fillable` dictionary
 /// ([`crate::eval::dictionary::Dictionary::build_labelled`]): the declared accessor
 /// `Dictionary.labels`. `None` in a KB that never loaded it.
 pub(crate) fn dictionary_labels_key(kb: &KnowledgeBase) -> Option<Symbol> {
