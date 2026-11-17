@@ -265,8 +265,8 @@ fn labels_of(interp: &mut Interpreter, d: Value) -> Option<Vec<String>> {
 }
 
 /// A tuple's `TypeValue` dictionary carries the tuple's labels, in its type's order, the
-/// positional ones as `_1`, `_2`; a sort's dictionary and a tuple's `PartialEq` dictionary
-/// carry none.
+/// positional ones as `_1`, `_2`; a tuple's `PartialEq` dictionary carries them in its
+/// components' order, by which its member reads each value's component (width, `wi_jwcnn_tuple_equality_test`); a sort's dictionary carries none.
 #[test]
 fn the_dictionary_carries_the_tuples_labels() {
     let ns = "test.r411a7.t7";
@@ -282,7 +282,7 @@ fn the_dictionary_carries_the_tuples_labels() {
         ("named", Some(vec!["b", "a"])),
         ("positional", Some(vec!["_1", "_2"])),
         ("atSort", None),
-        ("equality", None),
+        ("equality", Some(vec!["a", "b"])),
     ] {
         let d = interp
             .call(&format!("{ns}.{entry}"), &[])

@@ -1518,7 +1518,9 @@ fn float_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 /// are equal when each pair of components is, compared at the member the component's
 /// sub-dictionary names, in the order the tuple's dictionary lists them
 /// (`KnowledgeBase::tuple_component_order`). Entered through the tuple's dictionary, which it
-/// reads; a component that cannot be decided is undecided for the tuple.
+/// reads, each value's component found by the dictionary's label: a value wider than its type
+/// is compared at the type's components alone (kernel-language §4.5). A component that cannot
+/// be decided is undecided for the tuple.
 fn named_tuple_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("namedTupleEq", args)?;
     let dict = i.builtin_dispatch_dict.clone().ok_or_else(|| {
@@ -1528,22 +1530,34 @@ fn named_tuple_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
                 .to_string(),
         )
     })?;
-    let pairs = match i.kb().tuple_component_pairs_in_order(&a, &b) {
+    let Some(labels) = dict.labels() else {
+        return Err(EvalError::Internal(
+            "`namedTupleEq` was entered with a dictionary holding no labels: a tuple's \
+             equality reads each value's component by the label its type gives it"
+                .to_string(),
+        ));
+    };
+    if labels.len() != dict.arity() {
+        return Err(EvalError::Internal(format!(
+            "`namedTupleEq`: the dictionary holds {} labels and {} sub-dictionaries",
+            labels.len(),
+            dict.arity()
+        )));
+    }
+    let pairs = match i.kb().tuple_component_pairs_by_labels(&a, &b, &labels) {
         Some(crate::kb::eq_derive::TuplePairs::Pairs(pairs)) => pairs,
-        Some(crate::kb::eq_derive::TuplePairs::Mismatch) => return Ok(Value::Bool(false)),
+        Some(crate::kb::eq_derive::TuplePairs::Mismatch) => {
+            return Err(EvalError::Internal(format!(
+                "`namedTupleEq`: a tuple lacks a component its type names, comparing {a:?} \
+                 and {b:?}"
+            )))
+        }
         None => {
             return Err(EvalError::Internal(format!(
                 "`namedTupleEq` compares two tuples, got {a:?} and {b:?}"
             )))
         }
     };
-    if pairs.len() != dict.arity() {
-        return Err(EvalError::Internal(format!(
-            "`namedTupleEq`: the tuples have {} components and the dictionary {}",
-            pairs.len(),
-            dict.arity()
-        )));
-    }
     for (k, (x, y)) in pairs.into_iter().enumerate() {
         let sub = dict.sub(k).expect("k < arity");
         match i.kb_mut().bridge_eq_through_dictionary(&sub, x, y)? {

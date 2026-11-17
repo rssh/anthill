@@ -1637,7 +1637,7 @@ impl KnowledgeBase {
     /// The components of two tuples, pairwise — `None` unless both operands are tuples, the
     /// named ones by the first operand's labels. An equality at two tuples no type reached
     /// compares them, each by the steps it takes for any operand; a typed one is `NamedTuple`'s
-    /// member ([`Self::tuple_component_pairs_in_order`]).
+    /// member, which reads them by its type's labels ([`Self::tuple_component_pairs_by_labels`]).
     pub(crate) fn tuple_component_pairs(&self, a: &Value, b: &Value) -> Option<TuplePairs> {
         let (
             ViewHead::Functor {
@@ -1695,24 +1695,34 @@ impl KnowledgeBase {
         fields
     }
 
-    /// [`Self::tuple_component_pairs`] in [`Self::tuple_component_order`]: the order the tuple's
-    /// dictionary lists its sub-dictionaries in.
-    pub(crate) fn tuple_component_pairs_in_order(&self, a: &Value, b: &Value) -> Option<TuplePairs> {
-        let pairs = match self.tuple_component_pairs(a, b)? {
-            TuplePairs::Mismatch => return Some(TuplePairs::Mismatch),
-            TuplePairs::Pairs(pairs) => pairs,
+    /// The pairs of `a`'s and `b`'s components at each of `labels`, in that order — a tuple's
+    /// components as its type names them, read by label as every reader of a tuple reads them
+    /// (kernel-language §4.5): a value wider than the type, or listing its labels in another
+    /// order, is read at the type's labels alone. `None` where either is no tuple;
+    /// [`TuplePairs::Mismatch`] where one lacks a label.
+    pub(crate) fn tuple_component_pairs_by_labels(&self, a: &Value, b: &Value, labels: &[Symbol]) -> Option<TuplePairs> {
+        let is_tuple = |v: &Value| {
+            matches!(v.head(self), ViewHead::Functor { functor, pos_arity: 0, .. } if self.is_ordered_product_functor(functor))
         };
-        let ViewHead::Functor { pos_arity, .. } = a.head(self) else {
-            return Some(TuplePairs::Mismatch);
+        if !is_tuple(a) || !is_tuple(b) {
+            return None;
+        }
+        let (a_keys, b_keys) = (a.named_keys(self), b.named_keys(self));
+        let component = |v: &Value, keys: &[Symbol], label: Symbol| -> Option<Value> {
+            let key = keys
+                .iter()
+                .copied()
+                .find(|&k| crate::kb::typing::same_label(self, k, label))?;
+            v.named_arg(self, key).map(|c| c.to_value())
         };
-        // `tuple_component_pairs` lists the positional components, then the named ones in the
-        // first operand's order.
-        let keys = (0..pos_arity)
-            .map(|i| (i, String::new()))
-            .chain(a.named_keys(self).into_iter().map(|l| self.tuple_component_order(l)));
-        let mut labelled: Vec<((usize, String), (Value, Value))> = keys.zip(pairs).collect();
-        labelled.sort_by(|x, y| x.0.cmp(&y.0));
-        Some(TuplePairs::Pairs(labelled.into_iter().map(|(_, p)| p).collect()))
+        let mut pairs = Vec::with_capacity(labels.len());
+        for &label in labels {
+            match (component(a, &a_keys, label), component(b, &b_keys, label)) {
+                (Some(x), Some(y)) => pairs.push((x, y)),
+                _ => return Some(TuplePairs::Mismatch),
+            }
+        }
+        Some(TuplePairs::Pairs(pairs))
     }
 
     /// Does `v` hold a `Float` anywhere? A structural compare reads `nan` as equal to

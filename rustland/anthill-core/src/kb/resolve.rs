@@ -9794,8 +9794,8 @@ impl KnowledgeBase {
                     return self.tuple_components_sem_eq(pairs, None, subst);
                 }
             }
-            Some(Some(pins)) => {
-                if let Some(pairs) = self.tuple_component_pairs_in_order(&a, &b) {
+            Some(Some((pins, labels))) => {
+                if let Some(pairs) = self.tuple_component_pairs_by_labels(&a, &b, &labels) {
                     return self.tuple_components_sem_eq(pairs, Some(pins), subst);
                 }
             }
@@ -9915,11 +9915,13 @@ impl KnowledgeBase {
 
     /// The pins of a tuple equality's components: at each, the member of `PartialEq.eq` its
     /// sub-dictionary of the tuple's dictionary names, entered through it, in
-    /// [`KnowledgeBase::tuple_component_order`]. `None` where the dictionary the call was entered
-    /// with is no dictionary term (a forward into a caller's frame).
-    fn tuple_component_pins(&mut self, pinned: &PinnedEq) -> Option<Vec<PinnedEq>> {
+    /// [`KnowledgeBase::tuple_component_order`] — and the labels the dictionary holds, by which
+    /// each value's component is read. `None` where the dictionary the call was entered with is
+    /// no dictionary term (a forward into a caller's frame).
+    fn tuple_component_pins(&mut self, pinned: &PinnedEq) -> Option<(Vec<PinnedEq>, Vec<Symbol>)> {
         let (spec_op, dict) = pinned.entry?;
         let whole = crate::eval::value::Dictionary::from_view(self, &Value::term(dict))?;
+        let labels = whole.labels()?;
         let Term::Fn { pos_args, .. } = self.get_term(dict).clone() else {
             return None;
         };
@@ -9937,7 +9939,7 @@ impl KnowledgeBase {
                 lawful: self.dictionary_is_lawful(&d),
             });
         }
-        Some(pins)
+        (labels.len() == pins.len()).then_some((pins, labels))
     }
 
     /// `goal` as an equality the weave gave its clause's dictionary — an `ApplyWithin` of

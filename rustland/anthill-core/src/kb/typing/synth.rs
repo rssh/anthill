@@ -266,8 +266,9 @@ pub enum ResolvedRequiresNode {
         spec_sort: Symbol,
         bindings: SmallVec<[(Symbol, Value); 2]>,
         sub_resolutions: Vec<ResolvedRequiresNode>,
-        /// A tuple's `TypeValue` or `Fillable` instance's labels, one per sub-resolution, in
-        /// the tuple type's order ([`tuple_instance`]); `None` for every other instance.
+        /// A tuple's `TypeValue` or `Fillable` instance's labels, in the tuple type's order, or
+        /// its `PartialEq` instance's, in its components' order — one per sub-resolution
+        /// ([`tuple_instance`]); `None` for every other instance.
         labels: Option<Rc<[Symbol]>>,
     },
     /// Matched an entry in `scope.available_requires`. No new
@@ -1174,8 +1175,12 @@ fn tuple_instance(
     }
     let fields = kb.tuple_type_components(fields);
     // The tuple's `PartialEq` instance holds its components' `PartialEq` dictionaries, the ones
-    // its member reads. Its `Eq` instance holds where each component's `Eq` does, and is laid out
-    // as every `Eq` dictionary is: its chain's `PartialEq` slot, which here is the tuple's own.
+    // its member reads, and their labels, by which the member reads each value's component: a
+    // value may be wider than its type, or list its labels in another order (`<:` by width and
+    // permutation, kernel-language §4.5). Its `Eq` instance holds where each component's `Eq`
+    // does, and is laid out as every `Eq` dictionary is: its chain's `PartialEq` slot, which
+    // here is the tuple's own.
+    let labels: Rc<[Symbol]> = fields.iter().map(|(label, _)| *label).collect();
     let asks_eq = kb.canonical_sort_sym(goal.spec_sort) != kb.canonical_sort_sym(partial_eq);
     let mut specs: SmallVec<[Symbol; 2]> = smallvec::smallvec![partial_eq];
     if asks_eq {
@@ -1201,12 +1206,14 @@ fn tuple_instance(
         }
     }
     stack.pop();
+    // The labels' tuple is viewed by `_N` keys (`term_view::labels_of_view`).
+    kb.intern_positional_labels(labels.len());
     let partial = ResolvedRequiresNode::Conditional {
         impl_sort: named_tuple,
         spec_sort: partial_eq,
         bindings: spec_goal_at(kb, partial_eq, &ty)?.bindings,
         sub_resolutions,
-        labels: None,
+        labels: Some(labels),
     };
     if !asks_eq {
         return Some(ResolutionResult::Resolved(partial));
