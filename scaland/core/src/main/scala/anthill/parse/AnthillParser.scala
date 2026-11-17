@@ -196,6 +196,12 @@ private object Tokens:
   def intToken[$: P]: P[String] =
     P(("-".? ~ CharsWhileIn("0-9", 1)).!)
 
+  /** WI-20261109-5VM2G: a BigInt literal, digits and the suffix `n` (`0n`, `-7n`) — the
+    * digits are what is captured. Mirrors `grammar.js`'s `bigint_literal`; tried before
+    * [[intToken]], which would take the digits and leave the `n`. */
+  def bigintToken[$: P]: P[String] =
+    P(("-".? ~ CharsWhileIn("0-9", 1)).! ~ "n")
+
   def boolToken[$: P]: P[String] =
     P(identToken.filter(s => s == "true" || s == "false"))
 
@@ -595,13 +601,13 @@ private class AnthillParserImpl(
 
   // ── Literals ─────────────────────────────────────────────────
 
-  // ALL FOUR ARE `located` (WI-989). A `Term.Const` is `Term.Nameless`, so `alloc`
+  // ALL FIVE ARE `located` (WI-989). A `Term.Const` is `Term.Nameless`, so `alloc`
   // accepts it and `nameBearingWithoutSpan` never looks at it — which is why these went
   // spanless for years. But `typeExprToRef`/`allocNamedArg` read their children's spans
   // back, so a spanless leaf drags a NAME-BEARING parent to `Span.empty`. Measured in
   // `DerivedSpanTest`.
   //
-  // FOUR COPIES OF ONE LINE, not a shared `literalAt(token)(lit)` combinator: the
+  // FIVE COPIES OF ONE LINE, not a shared `literalAt(token)(lit)` combinator: the
   // shadowed `P` (WI-950) takes its name from the enclosing def, so one wrapped helper
   // would relabel every literal's refusal scope and fastparse failure name. Same trade
   // `spanOfToken`/`located` make for being two functions.
@@ -614,16 +620,28 @@ private class AnthillParserImpl(
     P(located(Tokens.floatToken)).map { case (s, span) =>
       terms.allocAt(Term.Const(Literal.FloatLit(OrderedDouble(s.toDouble))), span) }
 
+  // WI-20261109-5VM2G: a literal's type is its spelling. An unsuffixed integer is an
+  // `Int64`, and one too large for it is refused (rustland's `integer_literal` arm, the
+  // same text); a `BigInt` is written with the suffix `n`.
   private def integerLiteral[$: P]: P[ParseTermId] =
     P(located(Tokens.intToken)).map { case (s, span) =>
-      terms.allocAt(Term.Const(Literal.IntLit(s.toLong)), span) }
+      val v = s.toLongOption.getOrElse {
+        val err = ParseError(s"integer literal $s overflows Int64; write ${s}n for a BigInt", span)
+        if !errors.contains(err) then errors += err
+        0L
+      }
+      terms.allocAt(Term.Const(Literal.IntLit(v)), span) }
+
+  private def bigintLiteral[$: P]: P[ParseTermId] =
+    P(located(Tokens.bigintToken)).map { case (s, span) =>
+      terms.allocAt(Term.Const(Literal.BigIntLit(BigInt(s))), span) }
 
   private def boolLiteral[$: P]: P[ParseTermId] =
     P(located(Tokens.boolToken)).map { case (s, span) =>
       terms.allocAt(Term.Const(Literal.BoolLit(s == "true")), span) }
 
   private def literal[$: P]: P[ParseTermId] =
-    P(stringLiteral | floatLiteral | integerLiteral | boolLiteral)
+    P(stringLiteral | floatLiteral | bigintLiteral | integerLiteral | boolLiteral)
 
   // ── Variables ────────────────────────────────────────────────
 

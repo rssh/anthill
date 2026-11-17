@@ -16,7 +16,7 @@ use crate::kb::KnowledgeBase;
 use crate::parse::ir::{ParseTermId, ParsedFile};
 
 /// A literal in `.anthill` SURFACE spelling — a quoted `String`, a `Float` that keeps
-/// its decimal point, `true`/`false`.
+/// its decimal point, a `BigInt` with its suffix `n`, `true`/`false`.
 ///
 /// Free rather than a `TermPrinter` method (which delegates here) because it reads no
 /// `view`: a literal is already the whole term. The second caller is a DIAGNOSTIC —
@@ -29,8 +29,11 @@ pub fn write_literal(lit: &Literal, buf: &mut String) {
         Literal::Int(n) => {
             buf.push_str(&n.to_string());
         }
+        // WI-20261109-5VM2G: with its suffix, whatever its size, so it reloads as the
+        // `BigInt` it is — a small one printed bare reloaded as an `Int64`.
         Literal::BigInt(n) => {
             buf.push_str(&n.to_string());
+            buf.push('n');
         }
         // The IEEE specials have NO literal (`float_literal` is digits-dot-digits); the
         // language names them as the consts `Float.infinity` / `negativeInfinity` / `nan`

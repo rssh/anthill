@@ -1195,7 +1195,15 @@ impl<'a> RustCodegen<'a> {
             return None;
         };
         match self.terms.get(tid) {
-            Term::Const(lit) => Some(lower_literal_rust(lit, rust_ty)),
+            Term::Const(lit) => match lower_literal_rust(lit, rust_ty) {
+                Ok(expr) => Some(expr),
+                Err(why) => {
+                    self.errors.borrow_mut().push(CodegenError {
+                        message: format!("const `{name}`: {why}"),
+                    });
+                    None
+                }
+            },
             other => {
                 self.errors.borrow_mut().push(CodegenError {
                     message: format!(
@@ -2920,7 +2928,11 @@ fn host_float_const_rust(name: &str) -> Option<&'static str> {
 /// gets a `.0` suffix so it keeps the float type (anthill admits an integer
 /// literal for a `Float` const; Rust does not coerce). String literals use
 /// Rust's debug escaping.
-fn lower_literal_rust(lit: &Literal, rust_ty: &str) -> String {
+///
+/// A `BigInt` has no Rust constant expression — `num_bigint::BigInt` is built at run
+/// time — so its literal is refused with the reason (WI-20261109-5VM2G: `0n` made a small
+/// one writable, and its bare digits were emitted as Rust that does not compile).
+fn lower_literal_rust(lit: &Literal, rust_ty: &str) -> Result<String, String> {
     let float_target = rust_ty == "f64" || rust_ty == "f32";
     let with_point = |s: String| -> String {
         if float_target && !(s.contains('.') || s.contains('e') || s.contains('E')) {
@@ -2929,13 +2941,18 @@ fn lower_literal_rust(lit: &Literal, rust_ty: &str) -> String {
             s
         }
     };
-    match lit {
+    Ok(match lit {
         Literal::Int(n) => with_point(n.to_string()),
-        Literal::BigInt(n) => with_point(n.to_string()),
+        Literal::BigInt(n) => {
+            return Err(format!(
+                "the BigInt `{n}n` has no Rust `const` form (`num_bigint::BigInt` is not \
+                 const-constructible)"
+            ))
+        }
         Literal::Float(f) => with_point(f.into_inner().to_string()),
         Literal::Bool(b) => b.to_string(),
         Literal::String(s) => format!("{s:?}"),
-    }
+    })
 }
 
 fn to_snake_case(s: &str) -> String {

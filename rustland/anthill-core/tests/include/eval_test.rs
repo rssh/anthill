@@ -1905,14 +1905,14 @@ end
 
 #[test]
 fn m3_bigint_arithmetic() {
-    // BigInt literals parse as `Literal::BigInt` (when they exceed i64);
+    // BigInt literals (the suffix `n`) parse as `Literal::BigInt`;
     // the evaluator unboxes them into `Value::BigInt`. Arithmetic uses
     // num_bigint — no overflow, arbitrary precision.
     let src = r#"
 namespace test.m3_bigint
   import anthill.prelude.{BigInt}
   operation main() -> BigInt =
-    100000000000000000000 + 100000000000000000000
+    100000000000000000000n + 100000000000000000000n
 end
 "#;
     let mut interp = interp_for(src);
@@ -1932,7 +1932,7 @@ namespace test.m3_bigint_cmp
   import anthill.prelude.{BigInt}
   import anthill.prelude.Ord.{gt}
   operation main() -> Bool =
-    gt(200000000000000000000, 100000000000000000000)
+    gt(200000000000000000000n, 100000000000000000000n)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1973,7 +1973,7 @@ namespace test.m3_bigint_to_float
   import anthill.prelude.BigInt.{to_float, to_bigint}
 
   operation main() -> Float =
-    to_float(to_bigint(42)) + to_float(100000000000000000000)
+    to_float(to_bigint(42)) + to_float(100000000000000000000n)
 end
 "#;
     let mut interp = interp_for(src);

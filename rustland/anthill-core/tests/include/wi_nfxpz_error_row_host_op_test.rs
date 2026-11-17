@@ -140,7 +140,7 @@ fn div_by_zero_propagates_its_error() {
 #[test]
 fn a_bigint_zero_divisor_propagates_its_error() {
     let mut kb = load_kb_with(SRC);
-    definite(&mut kb, "bigDiv", "3");
+    definite(&mut kb, "bigDiv", "3n");
     for rel in ["bigDiv0", "bigMod0"] {
         propagated(&mut kb, rel);
     }

@@ -574,6 +574,23 @@ fn value_to_term_typed(
             let inner_term = value_to_term_typed(kb, value, inner.as_ref(), var_map)?;
             return Ok(some_wrap(kb, inner_term));
         }
+        // WI-20261109-5VM2G: a `BigInt` field reads back as a `BigInt` — written as a JSON
+        // number where it fits one, and as its digits past that ([`literal_to_json`]). Read
+        // by the number's shape, one that fits an `Int64` came back as an `Int64`, and the
+        // digits as a `String`.
+        if head.is_some() && head == kb.try_resolve_symbol("anthill.prelude.BigInt") {
+            let digits = match value {
+                serde_json::Value::Number(n) if n.is_i64() || n.is_u64() => Some(n.to_string()),
+                serde_json::Value::String(s) => Some(s.clone()),
+                _ => None,
+            };
+            return match digits.and_then(|d| d.parse::<num_bigint::BigInt>().ok()) {
+                Some(n) => Ok(kb.alloc(Term::Const(Literal::BigInt(n)))),
+                None => Err(SerError::InvalidValue(format!(
+                    "{value} under a BigInt field: expected an integer or its digits"
+                ))),
+            };
+        }
     }
     match value {
         // A null is `none()` only for an Option field (handled by the peel above)

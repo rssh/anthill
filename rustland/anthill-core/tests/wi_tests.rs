@@ -2530,3 +2530,5 @@ mod wi_4kxpd_waiting_clause_test;
 mod wi_fsnz5_reflect_form_identity_test;
 #[path = "include/positional_sort_goal_test.rs"]
 mod positional_sort_goal_test;
+#[path = "include/wi_5vm2g_bigint_zero_divisor_test.rs"]
+mod wi_5vm2g_bigint_zero_divisor_test;

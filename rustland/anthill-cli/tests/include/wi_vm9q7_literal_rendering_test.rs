@@ -53,7 +53,7 @@ const SRC: &str = "namespace vm9q7\n  \
      entity s(v: String)\n  \
    end\n  \
    fact i(v: 7)\n  \
-   fact b(v: 123456789012345678901234567890)\n  \
+   fact b(v: 123456789012345678901234567890n)\n  \
    fact f(v: 3.0)\n  \
    fact t(v: true)\n  \
    fact s(v: \"a\\u{1b}b\")\n  \
@@ -63,7 +63,7 @@ const SRC: &str = "namespace vm9q7\n  \
    rule fact_t(?r) :- t(v: ?r)\n  \
    rule fact_s(?r) :- s(v: ?r)\n  \
    rule eq_i(?r) :- ?r <=> 7\n  \
-   rule eq_b(?r) :- ?r <=> 123456789012345678901234567890\n  \
+   rule eq_b(?r) :- ?r <=> 123456789012345678901234567890n\n  \
    rule eq_f(?r) :- ?r <=> 3.0\n  \
    rule eq_t(?r) :- ?r <=> true\n  \
    rule eq_s(?r) :- ?r <=> \"a\\u{1b}b\"\n  \
@@ -146,6 +146,6 @@ fn a_non_finite_float_prints_its_const_name() {
 #[test]
 fn int_bigint_and_bool_agree() {
     both_spellings_print("i", "7");
-    both_spellings_print("b", "123456789012345678901234567890");
+    both_spellings_print("b", "123456789012345678901234567890n");
     both_spellings_print("t", "true");
 }

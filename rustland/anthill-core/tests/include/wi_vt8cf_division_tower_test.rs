@@ -380,7 +380,7 @@ end
     );
 }
 
-/// A USER CARRIER GETS `+` FROM ONE `fact`, AND CANNOT YET GET `/` AT ALL — the
+/// A USER CARRIER GETS `+` FROM ONE `fact`, AND `/` FROM AN UNCONDITIONAL ROW — the
 /// extensibility claim, driven from both sides, because the stdlib carriers cannot test
 /// it: they are host-backed and exempt from checks a user sort must pass.
 ///
@@ -393,29 +393,25 @@ end
 /// — and this row is unchanged in what it asserts, which is the point: the bundle still
 /// bundles.
 ///
-/// THE DIVISION HALF DOES NOT, and this row RECORDS that rather than leaving it to be
-/// discovered. A user carrier cannot provide `EuclideanDomain` when its implementation
-/// divides, because the effect declaration is a PINCER — measured, all four spellings:
+/// THE DIVISION HALF WORKS SINCE WI-20261109-5VM2G, which closed the PINCER this row
+/// recorded. The coverage check compared a member's guard STRUCTURALLY against
+/// `Divisible.div`'s `eq(b, 0)`, whose `0` is an `Int64` literal, so no spelling over a
+/// `Money` operand matched it and an unguarded row was "wider than the spec's guarded
+/// row": every way of declaring the division was refused, and the tower was stdlib-only in
+/// practice. The spec rows are unconditional now, and an unconditional atom covers a
+/// guarded one (§8.7), so — measured, each spelling:
 ///
-///   effects Error[DivisionByZero]                      "must not widen" (unguarded is
-///                                                       wider than the spec's guarded row)
-///   effects { … :- eq(b, zero()) }                     "must not widen"
-///   effects { … :- eq(b, zero) }                       "must not widen"
-///   effects { … :- eq(b, Money(cents: 0)) }            "must not widen"
+///   effects Error[DivisionByZero]                      LOADS; `/` reaches `Money.div`
+///   effects { … :- eq(b, zero()) }                     refused: the body's `a.cents /
+///   effects { … :- eq(b, Money(cents: 0)) }             b.cents` raises where `b.cents`
+///                                                       is 0, which the guard over `b`
+///                                                       does not show (§5.5)
 ///   (no effects row at all)                            "undeclared effect" from the body
 ///
-/// The coverage check compares the guard STRUCTURALLY against `Divisible.div`'s
-/// `eq(b, 0)`, whose `0` is an `Int64` literal — and no spelling over a `Money` operand
-/// can match it. So the tower is stdlib-only in practice: `Int64`, `BigInt` and `Float`
-/// reach it because they are host carriers, not because a carrier in general can.
-/// `each_branch_reaches_the_base_and_neither_reaches_the_other` below exercises only
-/// those three, and this row is why that is not the same claim.
-///
-/// NOTHING REGRESSED — a user carrier could not divide before this ticket either, when
-/// `/` meant `Int64.div` outright. What is new is that the tower now LOOKS extensible,
-/// so the gap needs saying.
+/// The guarded spellings are no longer refused by the coverage check; what refuses them is
+/// the body, held to its row's guard, and that is the body's to show.
 #[test]
-fn a_user_carrier_gets_plus_but_cannot_yet_provide_the_division_tower() {
+fn a_user_carrier_gets_plus_and_provides_the_division_tower() {
     let money_ops = r#"
     operation add(a: Money, b: Money) -> Money = Money(cents: a.cents + b.cents)
     operation sub(a: Money, b: Money) -> Money = Money(cents: a.cents - b.cents)
@@ -464,19 +460,14 @@ end
          field, where a fall-through to the host builtin would type-error on an Entity"
     );
 
-    // …and every way of declaring the division half is refused. Each arm differs from the
-    // others ONLY in the effects row, so the pincer is the measurement rather than one
-    // unlucky spelling.
-    for effects in [
-        "effects Error[DivisionByZero]",
-        "effects { Error[DivisionByZero] :- eq(b, zero()) }",
-        "effects { Error[DivisionByZero] :- eq(b, Money(cents: 0)) }",
-        "",
-    ] {
-        let src = format!(
+    // …and the division half under each effects row. Each arm differs from the others ONLY
+    // in the effects row.
+    let division = |effects: &str, ns: &str| {
+        format!(
             r#"
-namespace test.vt8cf.moneydiv
+namespace test.vt8cf.{ns}
   import anthill.prelude.{{Int64, Numeric, PartialOrd, EuclideanDomain}}
+  import anthill.prelude.PartialEq.{{eq}}
   sort Money
     entity Money(cents: Int64){money_ops}
     operation div(a: Money, b: Money) -> Money {effects} = Money(cents: a.cents / b.cents)
@@ -490,15 +481,48 @@ namespace test.vt8cf.moneydiv
   namespace Money
     provides EuclideanDomain[T = Money]
   end
+  operation quot() -> Int64 effects Error = (Money(cents: 700) / Money(cents: 25)).cents
 end
 "#
-        );
-        let errs = crate::common::try_load_kb_with(&src).err().unwrap_or_default();
+        )
+    };
+    assert_eq!(
+        drive(&division("effects Error[DivisionByZero]", "moneydiv"), "test.vt8cf.moneydiv.quot"),
+        "Int(28)",
+        "an unconditional row is covered by the spec's, so `Money` provides `EuclideanDomain` \
+         and a minted `/` reaches `Money.div`: 700 / 25 off the carrier's own field"
+    );
+    // A caller declaring no effect is charged the unconditional row.
+    let pure = division("effects Error[DivisionByZero]", "moneypure").replace(
+        "operation quot() -> Int64 effects Error =",
+        "operation quot() -> Int64 =",
+    );
+    let errs = crate::common::try_load_kb_with(&pure).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("quot.effects") && e.contains("undeclared effect: Error[T = DivisionByZero]")),
+        "{errs:?}"
+    );
+    for (i, (effects, refusal)) in [
+        ("effects { Error[DivisionByZero] :- eq(b, zero()) }", "where nothing shows `eq(b, zero)`"),
+        (
+            "effects { Error[DivisionByZero] :- eq(b, Money(cents: 0)) }",
+            "where nothing shows `eq(b, Money(cents: 0))`",
+        ),
+        ("", "undeclared effect: Error[T = DivisionByZero]"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let errs = crate::common::try_load_kb_with(&division(effects, &format!("moneyarm{i}")))
+            .err()
+            .unwrap_or_default();
         assert!(
-            !errs.is_empty(),
-            "RECORDING THE GAP: a user carrier cannot provide `EuclideanDomain` under \
-             `effects {effects:?}` either — if this now LOADS, the pincer is closed and \
-             this row should become the positive test it wants to be"
+            errs.iter().any(|e| e.contains("div.effects") && e.contains(refusal)),
+            "`{effects}` is refused by the body, naming {refusal:?}: {errs:?}"
+        );
+        assert!(
+            !errs.iter().any(|e| e.contains("does not refine")),
+            "`{effects}` is covered by the spec's row: {errs:?}"
         );
     }
 }

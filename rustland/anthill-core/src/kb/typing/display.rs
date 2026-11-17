@@ -91,11 +91,12 @@ fn value_display(kb: &KnowledgeBase, v: &Value, spelling: Spelling) -> String {
 
 /// A legible rendering of a `Literal` for type-error messages (mirrors
 /// `persistence::print`'s `write_literal`: a float keeps its decimal point, a
-/// string is quoted). Display-only — not a round-trip-faithful serialization.
+/// `BigInt` its suffix `n`, a string is quoted). Display-only — not a round-trip-faithful
+/// serialization.
 fn literal_display(lit: &Literal) -> String {
     match lit {
         Literal::Int(n) => n.to_string(),
-        Literal::BigInt(n) => n.to_string(),
+        Literal::BigInt(n) => format!("{n}n"),
         Literal::Float(f) => {
             let s = f.to_string();
             if s.contains('.') {

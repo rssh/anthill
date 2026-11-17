@@ -3559,7 +3559,8 @@ pub(super) struct RowAtPin<'a> {
 /// override's row instead ([`effects_of_pinned_call`]), whose atoms [`dispatched_impl_effects_of`]
 /// holds to the same two checks, and the spec's verdict goes with the spec's row. Raised
 /// immediate, the spec spelling was refused where the qualified one loads: `a / b` over `Float`
-/// held to a caller's `Error[DivisionByZero] :- eq(d, 0)` by `Divisible.div`'s `eq(b, 0)`, and
+/// held to a caller's `Error[DivisionByZero] :- eq(d, 0)` by `Divisible.div`'s `eq(b, 0)` (its
+/// guard then; its row is unconditional since WI-20261109-5VM2G), and
 /// `Sp.touch(car(…))` refused as a placeless `Modify[x]` its pure override does not incur
 /// (MEASURED).
 ///
@@ -3638,8 +3639,9 @@ impl SpecRowVerdict {
 /// `Modify[m]`, where `MutBox.peek(m)` is charged `Modify[m]` alone. A row the caller holds and
 /// the override incurs comes back through the override: its `EC`, read at the receiver, is `R`.
 /// A LABEL goes with the rest (SKWTH): the spec's row is the widest an override may declare, and
-/// the override's narrowing is what the call incurs. Kept, `Divisible.div`'s guarded
-/// `Error[DivisionByZero]` charged every bare `a / b` over `Float` — whose `div` declares no
+/// the override's narrowing is what the call incurs. Kept, `Divisible.div`'s
+/// `Error[DivisionByZero]` (guarded then, unconditional since WI-20261109-5VM2G) charged every
+/// bare `a / b` over `Float` — whose `div` declares no
 /// effect, IEEE division raising none — where `Float.div(a, b)` was pure; and a receiver's row the
 /// spec reads (`s.E`) was charged where it was ground and not where it was a row variable.
 ///
