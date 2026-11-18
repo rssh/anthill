@@ -204,7 +204,7 @@ fn index_rows_for(kb: &KnowledgeBase, carrier_qn: &str) -> Vec<String> {
         .rendered_rows_for_carrier(kb, carrier_qn)
         .into_iter()
         .filter(|r| {
-            !["PartialEq | ", "Eq | ", "NonEq | ", "TypeValue | "]
+            !["PartialEq | ", "Eq | ", "NonEq | ", "Hash | ", "TypeValue | "]
                 .iter()
                 .any(|spec| r.starts_with(spec))
         })

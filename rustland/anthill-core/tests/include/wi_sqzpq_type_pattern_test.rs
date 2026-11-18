@@ -648,8 +648,8 @@ fn a_refused_pattern_advises_no_row() {
     );
 }
 
-/// WHAT THE TEST DOES NOT JUDGE IS AN ERROR, never an answer: two tuples, two effect rows
-/// that are not one row, a data value handed in as a `Type` — a constructor's, a free-standing
+/// WHAT THE TEST DOES NOT JUDGE IS AN ERROR, never an answer: two effect rows that are not
+/// one row, a data value handed in as a `Type` — a constructor's, a free-standing
 /// entity's whose head is its own sort, and a constructor's whose field is keyed like its
 /// sort's parameter — and two types nested deeper than the walk descends. BACK-OUT: with the
 /// head read alone, `entityValue` answered `yes`, the value read as the type `Point`; with
@@ -658,9 +658,7 @@ fn a_refused_pattern_advises_no_row() {
 #[test]
 fn what_the_test_does_not_judge_is_an_error() {
     let src = program(
-        r#"    operation twoTuples(n: Int64) -> Bool =
-      type_admits(Box[V = (a: Int64)], Box[V = (a: Int64)])
-    operation twoRows(n: Int64) -> Bool =
+        r#"    operation twoRows(n: Int64) -> Bool =
       type_admits(Box[V = Stream[T = Int64, E = {}]], Box[V = Stream[T = Int64, E = {ConsoleOutput}]])
     operation dataValue(n: Int64) -> Bool =
       match term_as_sort(as_term(boom(reason: "s")))
@@ -682,7 +680,6 @@ fn what_the_test_does_not_judge_is_an_error() {
     assert_runs_fail(
         &src,
         &[
-            ("twoTuples", "are both named tuples"),
             ("twoRows", "are two effect rows"),
             ("dataValue", "is a data value, not a type"),
             ("entityValue", "is a data value, not a type"),

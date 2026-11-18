@@ -225,9 +225,9 @@ fn a_later_load_types_its_own_bodies_and_no_sealed_one() {
         return;
     }
     assert_eq!(
-        ops, 2,
-        "the later load types its own bodies: the ONE operation it declares, and the `eq` its \
-         composite `Item` derives (kernel-language §8.3)"
+        ops, 3,
+        "the later load types its own bodies: the ONE operation it declares, and the `eq` and \
+         `hash` its composite `Item` derives (kernel-language §8.3)"
     );
 
     let mut unsealed = crate::common::load_unsealed(&[LIB_DESC]);

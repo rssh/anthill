@@ -1454,7 +1454,12 @@ pub(super) fn carrier_param_receiver(
         let Some(recv_ty) = recv_ty_of(i, pname) else {
             continue;
         };
-        let Some(carrier_sym) = sort_functor_of_view(kb, &recv_ty) else {
+        // A tuple is at `NamedTuple`'s instance, built from its components' (proposal 004).
+        let carrier_sym = match type_head(kb, &recv_ty) {
+            TypeHead::NamedTuple => kb.named_tuple_sort(),
+            _ => sort_functor_of_view(kb, &recv_ty),
+        };
+        let Some(carrier_sym) = carrier_sym else {
             continue;
         };
         // WI-495: DIRECT provision (the explicit `provides Iterable` hot path) or a

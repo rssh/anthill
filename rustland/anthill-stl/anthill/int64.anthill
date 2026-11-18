@@ -50,6 +50,7 @@ namespace anthill.prelude
     -- (PartialEq/PartialOrd) AND the total markers (Eq/Ord).
     provides PartialEq[T = Int64]
     provides Eq[T = Int64]
+    provides Hash[T = Int64]
     provides PartialOrd[T = Int64]
     provides Ord[T = Int64]
     provides Numeric[T = Int64]

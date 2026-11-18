@@ -70,10 +70,11 @@ fn assert_key_refused(errs: &[String], container: &str, param: &str, carrier: &s
         errs.iter().any(|e| {
             e.contains(container)
                 && e.contains(carrier)
-                && e.contains("anthill.prelude.Eq")
+                && e.contains(&format!("anthill.prelude.{}", crate::common::key_spec_of(container)))
                 && e.contains(&format!("`{param}`"))
         }),
-        "expected a `{container}` requires-`Eq`-at-`{param}` refusal naming `{carrier}`; got:\n{}",
+        "expected a `{container}` requires-`{}`-at-`{param}` refusal naming `{carrier}`; got:\n{}",
+        crate::common::key_spec_of(container),
         errs.join("\n"),
     );
 }
@@ -225,7 +226,7 @@ fn a_parametric_carrier_holds_a_conditional_pair() {
 fn a_tuple_key_over_float_is_refused() {
     let errs = refusals(&key_program("tup", "Map[K = (a: Float), V = Int64]"));
     assert!(
-        errs.iter().any(|e| e.contains("does not provide `Eq`")),
+        errs.iter().any(|e| e.contains("does not provide `Hash`")),
         "a tuple key over Float must be refused: {errs:?}"
     );
 }

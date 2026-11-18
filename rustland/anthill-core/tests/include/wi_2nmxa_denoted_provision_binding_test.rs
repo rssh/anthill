@@ -989,9 +989,14 @@ end
             "Vec[T = anthill.prelude.Float, N = anthill.prelude.Bool]",
         ),
     ] {
+        let spec = crate::common::key_spec_of(written.split('[').next().unwrap_or(written));
         assert_refused_naming(
             &load_errors_of(&program(&format!("wi2nmxa.key.{tag}"), written)),
-            &["requires `anthill.prelude.Eq` at its parameter", key, "does not provide `Eq`"],
+            &[
+                &format!("requires `anthill.prelude.{spec}` at its parameter"),
+                key,
+                &format!("does not provide `{spec}`"),
+            ],
             &format!("`{written}`"),
         );
     }

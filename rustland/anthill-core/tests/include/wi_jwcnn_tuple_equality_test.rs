@@ -48,6 +48,15 @@
 //!   `PartialEq`, not the condition as derived (`eq_derive::derive_conditional_noneq`):
 //!   [`a_sort_needing_a_lawful_parameter_loads`] fails, refused at load.
 //!
+//! * The tuple's member pairing the values' components by position and count, not by the
+//!   dictionary's labels (`eval::builtins::named_tuple_eq`): [`a_value_wider_than_its_tuple_type_is_compared_at_its_labels`]
+//!   fails, `namedTupleEq: the tuples have 3 components and the dictionary 2`.
+//! * The resolver's pinned compare pairing them so (`resolve::tuple_component_pins`'s labels
+//!   unread): the same row fails at its rule body.
+//! * No labels on the tuple's `PartialEq` dictionary (`typing::synth`'s `tuple_instance`):
+//!   every row comparing a tuple at run time fails, `namedTupleEq` entered with a dictionary
+//!   holding no labels.
+//!
 //! [`a_tuple_with_a_component_without_equality_is_refused`] passes under every switch but the
 //! first, by design: the refusals it asserts held before.
 
@@ -185,7 +194,7 @@ fn a_tuple_with_a_component_without_equality_is_refused() {
         "test.jwcnn.t8",
         "  operation t8(m: Map[K = (Int64, Float), V = Int64]) -> Int64 = 0",
     ));
-    assert!(errs.len() == 1 && errs[0].contains("Eq") && errs[0].contains("Float"), "{errs:?}");
+    assert!(errs.len() == 1 && errs[0].contains("Hash") && errs[0].contains("Float"), "{errs:?}");
     let errs = load_errors_of(&src(
         "test.jwcnn.t5",
         "  operation t5(m: Map[K = (Int64, Bool), V = Int64]) -> Int64 = 0",
@@ -263,4 +272,80 @@ fn an_eq_requirement_at_a_tuple_is_handed_its_dictionary() {
         &format!("{decl}  operation floats() -> Bool = sameEq((1, 0.5), (1, 0.5))"),
     ));
     assert!(errs.len() == 1 && errs[0].contains("Eq") && errs[0].contains("Float"), "{errs:?}");
+}
+
+/// A VALUE WIDER THAN ITS TUPLE TYPE IS COMPARED AT THE TYPE'S LABELS (kernel-language §4.5:
+/// `<:` is by label with width and permutation, and every reader of a tuple reads by label). The
+/// tuple's `PartialEq` dictionary carries the type's labels, and its member reads each value's
+/// component by them: through `(Int64, String)`, `(1, "s", true)` and `(1, "s", false)` are
+/// equal, and `(2, "s", true)` is not; through `(a: Int64, b: String)` a permuted value and a
+/// wider one in another order are equal; and so inside a tuple, a list, an `=` in an operation
+/// body and one in a rule body. Before, the member paired the values' components by position
+/// and count, and each of these raised `namedTupleEq: the tuples have 3 components and the
+/// dictionary 2` (the rule body: undecided). The `Pt` component is compared by its own member.
+#[test]
+fn a_value_wider_than_its_tuple_type_is_compared_at_its_labels() {
+    let ns = "test.jwcnn.width";
+    let program = src(
+        ns,
+        "  operation pos(x: (Int64, String), y: (Int64, String)) -> Bool = PartialEq.eq(x, y)\n  \
+         operation eqWider() -> Bool = pos((1, \"s\", true), (1, \"s\", false))\n  \
+         operation eqVisibleDiffers() -> Bool = pos((1, \"s\", true), (2, \"s\", true))\n  \
+         operation named(x: (a: Pt, b: String), y: (a: Pt, b: String)) -> Bool = PartialEq.eq(x, y)\n  \
+         operation eqPermuted() -> Bool = named((b: \"s\", a: pt(1, 2)), (a: pt(1, 9), b: \"s\"))\n  \
+         operation eqNamedWider() -> Bool = named((a: pt(1, 2), b: \"s\", c: 3), (c: 4, b: \"s\", a: pt(1, 2)))\n  \
+         operation nested(x: ((Int64, String), Int64), y: ((Int64, String), Int64)) -> Bool = PartialEq.eq(x, y)\n  \
+         operation eqNestedWider() -> Bool = nested(((1, \"s\", true), 2), ((1, \"s\", false), 2))\n  \
+         operation list(x: List[T = (a: Int64)], y: List[T = (a: Int64)]) -> Bool = PartialEq.eq(x, y)\n  \
+         operation eqListWider() -> Bool = list([(a: 1, b: 2)], [(a: 1, b: 3)])\n  \
+         operation op(x: (a: Int64), y: (a: Int64)) -> Bool = x = y\n  \
+         operation eqOpWider() -> Bool = op((a: 1, b: 2), (a: 1, b: 3))\n  \
+         operation wideA() -> (a: Int64) = (a: 1, b: 2)\n  \
+         operation wideB() -> (a: Int64) = (b: 3, a: 1)\n  \
+         operation wideC() -> (a: Int64) = (a: 2, b: 2)\n  \
+         rule ruleSame() :- wideA() = wideB()\n  \
+         rule ruleApart() :- wideA() = wideC()",
+    );
+    for (entry, want) in [
+        ("eqWider", true),
+        ("eqVisibleDiffers", false),
+        ("eqPermuted", true),
+        ("eqNamedWider", true),
+        ("eqNestedWider", true),
+        ("eqListWider", true),
+        ("eqOpWider", true),
+    ] {
+        assert_eq!(run(&program, &format!("{ns}.{entry}")).0, want, "`{entry}`");
+    }
+    let mut kb = load_kb_with(&program);
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleSame()")).0, (1, 1), "ruleSame");
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleApart()")).0, (0, 0), "ruleApart");
+}
+
+/// `neq` at a tuple type is `PartialEq`'s body run with the tuple's instance, `NamedTuple`'s
+/// built from its components': `false` for two values equal at the type's labels, `true` for two
+/// that differ there, in an operation body and as a rule-body goal. A tuple has no sort to read
+/// a carrier off, so the call was given no instance: it died when run, `var_ref(__req_self)
+/// unbound`, and the goal was undecided. FAILS with the carrier of a tuple-typed argument read
+/// as nothing again (`carrier_param_receiver`).
+#[test]
+fn neq_at_a_tuple_type_runs_at_the_tuples_instance() {
+    let ns = "test.jwcnn.neq";
+    let program = src(
+        ns,
+        "  import anthill.prelude.PartialEq.{neq}\n  \
+         operation wideA() -> (a: Int64) = (a: 1, b: 2)\n  \
+         operation wideB() -> (a: Int64) = (a: 1, b: 3)\n  \
+         operation wideC() -> (a: Int64) = (a: 2, b: 2)\n  \
+         operation nq(x: (a: Int64), y: (a: Int64)) -> Bool = PartialEq.neq(x, y)\n  \
+         operation sameNq() -> Bool = nq(wideA(), wideB())\n  \
+         operation apartNq() -> Bool = nq(wideA(), wideC())\n  \
+         rule ruleSame() :- neq(wideA(), wideB())\n  \
+         rule ruleApart() :- neq(wideA(), wideC())",
+    );
+    assert_eq!(run(&program, &format!("{ns}.sameNq")).0, false, "sameNq");
+    assert_eq!(run(&program, &format!("{ns}.apartNq")).0, true, "apartNq");
+    let mut kb = load_kb_with(&program);
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleSame()")).0, (0, 0), "ruleSame");
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleApart()")).0, (1, 1), "ruleApart");
 }

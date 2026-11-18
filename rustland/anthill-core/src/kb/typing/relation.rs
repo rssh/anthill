@@ -3316,6 +3316,10 @@ fn op_slot_route(
 /// `Fillable` conversion, the sort's sort-level `requires` — hold an empty bundle, and each
 /// condition holds the route of the argument at it. So a citation needs no provision row.
 ///
+/// A TUPLE's holds its `Fillable` in that slot, `Dictionary(r₁ … rₙ, impl: NamedTuple, labels:
+/// (l₁, …, lₙ))`, each component's route in the type's order, and the labels its fill builds
+/// the tuple with.
+///
 /// A TYPE WITH NO ENTRY — a caller's RIGID `X` — is the caller's own evidence, resolved
 /// against its frame chain: the one way a rigid's domain reaches a clause (§7.3). `None`
 /// where there is none; the read then builds its own from the value at run time.
@@ -3331,6 +3335,33 @@ fn sort_domain_route(
     misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
     let ty = walk_type_deep_value(kb, subst, ty);
+    if let Some(fields) = schema_fields(kb, &ty) {
+        let named_tuple = kb.named_tuple_sort()?;
+        let mut subs: Vec<TermId> = Vec::with_capacity(fields.len());
+        for (_, component) in &fields {
+            subs.push(sort_domain_route(
+                kb,
+                chain,
+                param_rigids,
+                subst,
+                spec,
+                component,
+                syms,
+                misfits,
+            )?);
+        }
+        let labels: Vec<Symbol> = fields.iter().map(|(label, _)| *label).collect();
+        // The labels' tuple is viewed by `_N` keys (`term_view::labels_of_view`).
+        kb.intern_positional_labels(labels.len());
+        let fillable = labelled_dictionary_term(
+            kb,
+            (syms.dict_ctor, syms.dict_impl),
+            named_tuple,
+            &subs,
+            &labels,
+        )?;
+        return Some(build_dictionary_term(kb, syms, named_tuple, &[fillable]));
+    }
     let head = match ty.head(kb) {
         ViewHead::Functor {
             functor: f, ..

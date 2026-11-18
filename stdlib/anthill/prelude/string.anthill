@@ -13,6 +13,9 @@ sort anthill.prelude.String
   -- `String`'s equality, the member a call of `PartialEq.eq` at `String` runs. A bare
   -- `eq` written in this sort is this one.
   operation eq(a: String, b: String) -> Bool @[host_implemented]
+  -- Its hash is its structure's, which its equality is. The binding layer provides
+  -- `anthill.prelude.Hash` with `Eq`.
+  operation hash(x: String) -> Int64 = anthill.kernel.struct_hash(x)
 
   operation {
     compare(a: String, b: String) -> Int64 @[host_implemented]  -- -1 | 0 | 1

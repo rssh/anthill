@@ -6488,7 +6488,7 @@ impl HeadCheck {
                 .functor_sym()
                 .and_then(|s| kb.eq_dispatch_target(s))
             {
-                Some(target) if !kb.is_derived_eq_member(target) => HeadVerdict::Stop(true),
+                Some(target) if !kb.is_derived_member(target) => HeadVerdict::Stop(true),
                 _ => HeadVerdict::Recurse,
             },
             // A `Float` literal read carrier-neutrally through the view (a bare
@@ -6500,7 +6500,7 @@ impl HeadCheck {
             HeadCheck::SelfEqualByLaw => match head {
                 ViewHead::Const(Literal::Float(_)) => HeadVerdict::Stop(false),
                 _ => match head.functor_sym().and_then(|s| kb.eq_dispatch_target(s)) {
-                    Some(t) if kb.is_derived_eq_member(t) => HeadVerdict::Recurse,
+                    Some(t) if kb.is_derived_member(t) => HeadVerdict::Recurse,
                     Some(t) => {
                         HeadVerdict::Stop(matches!(kb.eq_law_of_member(t), super::EqLaw::Always))
                     }
@@ -6808,7 +6808,7 @@ impl KnowledgeBase {
             // mentions is part of the answer, not a by-product, so the RHS is built
             // with whatever σ the verdict hands back.
             let extended;
-            let build = match super::simp_rewrite::guard_verdict(self, rid, rhs, &fresh, &msubst) {
+            let build = match super::simp_rewrite::guard_verdict(self, rid, rhs, &fresh, &msubst, None) {
                 super::simp_rewrite::GuardVerdict::NotHeld => continue,
                 super::simp_rewrite::GuardVerdict::HoldsUnchanged => &msubst,
                 super::simp_rewrite::GuardVerdict::HoldsWith(s) => {
@@ -8253,6 +8253,21 @@ impl KnowledgeBase {
             }
         }
         match read {
+            // A TUPLE's domain is the tuples of its components' domains (proposal 004's
+            // extension): no relation stands for it, so the goal is built here.
+            DomainEvidence::Dict { impl_sort, value } if self.is_named_tuple_sort(impl_sort) => {
+                let Some(x_now) = self.walk_arg(goal.pos_arg(self, 1), scratch) else {
+                    return ApplyDomainLowering::Error(
+                        "apply_domain: the goal carries no value operand".to_string(),
+                    );
+                };
+                match self.tuple_fill_goal(x_now, value, scratch) {
+                    TupleFill::Goal(goal) => ApplyDomainLowering::Goal { goal, pin },
+                    TupleFill::Holds => ApplyDomainLowering::Holds { pin },
+                    TupleFill::Fail => ApplyDomainLowering::Fail,
+                    TupleFill::Error(why) => ApplyDomainLowering::Error(format!("apply_domain: {why}")),
+                }
+            }
             DomainEvidence::Dict { impl_sort, value } => {
                 // The provider's `fill`, from its `SortDomain` entry.
                 let Some((fill, kind, reads)) = self
@@ -8730,12 +8745,23 @@ impl KnowledgeBase {
                     };
                     subs.push(self.normalize_domain_sub(sub, subst));
                 }
+                let mut named = vec![(impl_key, Value::SymbolRef(impl_sort))];
+                // A tuple's dictionary holds its labels beside `impl`, which its fill builds the
+                // tuple with.
+                if let Some(key) = crate::kb::term_view::dictionary_labels_key(self)
+                    .filter(|_| self.is_named_tuple_sort(impl_sort))
+                {
+                    if let Some(labels) = v.named_arg(self, key) {
+                        named.push((key, labels.to_value()));
+                        self.canonicalize_record_named_args(ctor, &mut named);
+                    }
+                }
                 return DomainEvidence::Dict {
                     impl_sort,
                     value: Value::Entity {
                         functor: ctor,
                         pos: subs.into(),
-                        named: vec![(impl_key, Value::SymbolRef(impl_sort))].into(),
+                        named: named.into(),
                     },
                 };
             }
@@ -8856,6 +8882,167 @@ impl KnowledgeBase {
         }
     }
 
+    /// The `SortDomain` evidence of a tuple type whose components are `fields`, one level deep,
+    /// laid out as every `SortDomain` dictionary is: `Dictionary(‹its Fillable›, impl:
+    /// NamedTuple)`, the `Fillable` `Dictionary(T₁ … Tₙ, impl: NamedTuple, labels: (l₁, …, lₙ))`,
+    /// one sub per component in the type's order — a type, whose own dictionary is built when
+    /// the fill reads it — and the labels the fill builds the tuple with.
+    fn tuple_domain_evidence(&mut self, fields: &[(Symbol, Value)]) -> DomainEvidence {
+        let (Some(named_tuple), Some((ctor, impl_key)), Some(labels_key)) = (
+            self.named_tuple_sort(),
+            crate::kb::term_view::dictionary_view_syms(self),
+            crate::kb::term_view::dictionary_labels_key(self),
+        ) else {
+            return DomainEvidence::NoDomain(
+                "this KB never loaded `anthill.prelude.NamedTuple` or the runtime `Dictionary`'s \
+                 `labels`, which a tuple's domain is read through"
+                    .to_string(),
+            );
+        };
+        let impl_sort = self.canonical_sort_sym(named_tuple);
+        let labels: Vec<Symbol> = fields.iter().map(|(label, _)| *label).collect();
+        // The labels' tuple is viewed by `_N` keys (`term_view::labels_of_view`).
+        self.intern_positional_labels(labels.len());
+        let mut named = vec![
+            (impl_key, Value::SymbolRef(impl_sort)),
+            (labels_key, crate::eval::dictionary::labels_value(&labels)),
+        ];
+        self.canonicalize_record_named_args(ctor, &mut named);
+        let fillable = Value::Entity {
+            functor: ctor,
+            pos: fields.iter().map(|(_, t)| t.clone()).collect(),
+            named: named.into(),
+        };
+        DomainEvidence::Dict {
+            impl_sort,
+            value: Value::Entity {
+                functor: ctor,
+                pos: vec![fillable].into(),
+                named: vec![(impl_key, Value::SymbolRef(impl_sort))].into(),
+            },
+        }
+    }
+
+    /// The fill of `x` at a tuple, through `dict`, a `NamedTuple` dictionary: the tuples of its
+    /// components' domains. A tuple's `SortDomain` dictionary holds its `Fillable` in its chain's
+    /// slot, as every `SortDomain` dictionary does, and the components and their labels are that
+    /// one's ([`Self::tuple_fillable_dictionary`]).
+    ///
+    /// An unbound `x` is the tuple of fresh components in the type's order, each filled in turn.
+    /// A bound one is read BY LABEL, as a tuple is read (`kernel-language.md` §4.5): a value of
+    /// the type by width and permutation — `(b: "s", a: 1, c: true)` at `(a: Int64, b: String)`
+    /// — is a member, as a value of a sort that refines another is (`__refined_domain`). A value
+    /// that is no tuple, or lacks a label, is none.
+    fn tuple_fill_goal(&mut self, x: Value, dict: Value, subst: &Substitution) -> TupleFill {
+        let dict = match self.tuple_fillable_dictionary(dict, subst) {
+            Ok(dict) => dict,
+            Err(why) => return TupleFill::Error(why),
+        };
+        let Some(labels) = crate::kb::term_view::dictionary_labels_key(self)
+            .and_then(|key| dict.named_arg(self, key))
+            .and_then(|labels| match labels.to_value() {
+                Value::Unit => Some(Vec::new()),
+                labels => crate::kb::term_view::labels_of_view(self, &labels),
+            })
+        else {
+            return TupleFill::Error("a tuple's domain dictionary holds no labels".to_string());
+        };
+        let subs: Vec<Value> = (0..labels.len())
+            .map(|i| dict.pos_arg(self, i).map(|s| s.to_value()))
+            .collect::<Option<_>>()
+            .unwrap_or_default();
+        if subs.len() != labels.len() {
+            return TupleFill::Error(format!(
+                "a tuple's domain dictionary holds {} labels and fewer subs",
+                labels.len()
+            ));
+        }
+        let (Some(apply), Some(unify), Some(and), Some(tuple)) = (
+            self.try_resolve_symbol(super::typing::APPLY_DOMAIN_GOAL),
+            self.try_resolve_symbol("anthill.kernel.unify"),
+            self.try_resolve_symbol("anthill.kernel.push_and"),
+            self.try_resolve_symbol(crate::parse::desugar_target::qualified(
+                crate::parse::desugar_target::TUPLE_LITERAL,
+            )),
+        ) else {
+            return TupleFill::Error(
+                "the kernel goals a tuple's fill is built from are not registered".to_string(),
+            );
+        };
+        let mut goals: Vec<Value> = Vec::with_capacity(labels.len() + 1);
+        if self.value_is_unbound_var(&x) {
+            let components: Vec<(Symbol, Value)> = labels
+                .iter()
+                .map(|&label| {
+                    let name = self.intern("c");
+                    (label, Value::Var(Var::Global(self.fresh_var(name))))
+                })
+                .collect();
+            let value = Value::Entity {
+                functor: tuple,
+                pos: Vec::new().into(),
+                named: components.clone().into(),
+            };
+            goals.push(self.make_goal_value(unify, vec![x, value]));
+            for ((_, c), sub) in components.into_iter().zip(subs) {
+                goals.push(self.make_goal_value(apply, vec![sub, c]));
+            }
+        } else {
+            let is_tuple = matches!(
+                x.head(self),
+                ViewHead::Functor { functor, pos_arity: 0, .. } if self.is_ordered_product_functor(functor)
+            );
+            if !is_tuple {
+                return TupleFill::Fail;
+            }
+            let keys = x.named_keys(self);
+            for (label, sub) in labels.iter().zip(subs) {
+                let Some(key) = keys
+                    .iter()
+                    .copied()
+                    .find(|&k| super::typing::same_label(self, k, *label))
+                else {
+                    return TupleFill::Fail;
+                };
+                let Some(component) = x.named_arg(self, key).map(|c| c.to_value()) else {
+                    return TupleFill::Fail;
+                };
+                goals.push(self.make_goal_value(apply, vec![sub, component]));
+            }
+        }
+        match goals.pop() {
+            None => TupleFill::Holds,
+            Some(last) => TupleFill::Goal(
+                goals
+                    .into_iter()
+                    .rev()
+                    .fold(last, |rest, g| self.make_goal_value(and, vec![g, rest])),
+            ),
+        }
+    }
+
+    /// The `Fillable` dictionary of a tuple, the one holding its components and labels, out of
+    /// `dict`: its one sub where `dict` is a tuple's `SortDomain` dictionary, which holds its
+    /// `Fillable` there, its chain's slot; `dict` itself where it is that `Fillable`.
+    fn tuple_fillable_dictionary(&mut self, dict: Value, subst: &Substitution) -> Result<Value, String> {
+        let labels_key = crate::kb::term_view::dictionary_labels_key(self)
+            .ok_or_else(|| "this KB has no `Dictionary.labels`".to_string())?;
+        if dict.named_arg(self, labels_key).is_some() {
+            return Ok(dict);
+        }
+        let Some(chain) = self.walk_arg(dict.pos_arg(self, 0), subst) else {
+            return Err("a tuple's `SortDomain` dictionary holds no `Fillable`".to_string());
+        };
+        match self.domain_evidence(chain, subst) {
+            DomainEvidence::Dict { impl_sort, value }
+                if self.is_named_tuple_sort(impl_sort) && value.named_arg(self, labels_key).is_some() =>
+            {
+                Ok(value)
+            }
+            _ => Err("a tuple's `SortDomain` dictionary holds no tuple's `Fillable` in its chain's slot".to_string()),
+        }
+    }
+
     /// The `SortDomain` dictionary for the TYPE `ty`, one level deep.
     fn domain_evidence_of_type(&mut self, ty: Value, subst: &Substitution) -> DomainEvidence {
         let head = match ty.head(self) {
@@ -8867,6 +9054,11 @@ impl KnowledgeBase {
             _ => return DomainEvidence::NoDomainType(ty),
         };
         let Some(entry) = self.sort_domain(head).cloned() else {
+            // A tuple has no entry: its domain is its components' (asked here, past the
+            // entry every sort with a domain is found by).
+            if let Some(fields) = super::typing::schema_fields(self, &ty) {
+                return self.tuple_domain_evidence(&fields);
+            }
             // A TYPE ALIAS has its target's domain (`typing::dealias_type`); a bare name is
             // the only form one takes.
             let bare = self.alloc(Term::Ref(head));
@@ -9862,7 +10054,8 @@ impl KnowledgeBase {
         // components at the member its sub-dictionary names, so one decided pair decides; with a
         // dictionary that is no term to read (a forward into a caller's frame) it is the member's,
         // run through the bridge (step 4). One no type reached compares its components, each by
-        // these steps (eval's twin is in `semantic_equal`).
+        // these steps (eval's twin is in `semantic_equal`). One pinned to another member — a
+        // provision written at the tuple type — is that member's (step 4).
         let tuple_pins = match pinned {
             Some(p)
                 if super::typing::impl_parent_sort_of_op(self, p.member)
@@ -9873,7 +10066,7 @@ impl KnowledgeBase {
             _ => None,
         };
         match tuple_pins {
-            None => {
+            None if pinned.is_none() => {
                 if let Some(pairs) = self.tuple_component_pairs(&a, &b) {
                     if self.value_self_equal_by_law(&a, Some(subst)) && self.values_equal(&a, &b) {
                         return sem_verdict(true, true);
@@ -9881,12 +10074,12 @@ impl KnowledgeBase {
                     return self.tuple_components_sem_eq(pairs, None, subst);
                 }
             }
-            Some(Some(pins)) => {
-                if let Some(pairs) = self.tuple_component_pairs_in_order(&a, &b) {
+            Some(Some((pins, labels))) => {
+                if let Some(pairs) = self.tuple_component_pairs_by_labels(&a, &b, &labels) {
                     return self.tuple_components_sem_eq(pairs, Some(pins), subst);
                 }
             }
-            Some(None) => {}
+            None | Some(None) => {}
         }
         // (2) Reflexivity — structurally-identical operands, where `Eq`'s law decides them
         // (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). A goal the typer pinned reads
@@ -10002,11 +10195,13 @@ impl KnowledgeBase {
 
     /// The pins of a tuple equality's components: at each, the member of `PartialEq.eq` its
     /// sub-dictionary of the tuple's dictionary names, entered through it, in
-    /// [`KnowledgeBase::tuple_component_order`]. `None` where the dictionary the call was entered
-    /// with is no dictionary term (a forward into a caller's frame).
-    fn tuple_component_pins(&mut self, pinned: &PinnedEq) -> Option<Vec<PinnedEq>> {
+    /// [`KnowledgeBase::tuple_component_order`] — and the labels the dictionary holds, by which
+    /// each value's component is read. `None` where the dictionary the call was entered with is
+    /// no dictionary term (a forward into a caller's frame).
+    fn tuple_component_pins(&mut self, pinned: &PinnedEq) -> Option<(Vec<PinnedEq>, Vec<Symbol>)> {
         let (spec_op, dict) = pinned.entry?;
         let whole = crate::eval::value::Dictionary::from_view(self, &Value::term(dict))?;
+        let labels = whole.labels()?;
         let Term::Fn { pos_args, .. } = self.get_term(dict).clone() else {
             return None;
         };
@@ -10024,7 +10219,7 @@ impl KnowledgeBase {
                 lawful: self.dictionary_is_lawful(&d),
             });
         }
-        Some(pins)
+        (labels.len() == pins.len()).then_some((pins, labels))
     }
 
     /// `goal` as an equality the weave gave its clause's dictionary — an `ApplyWithin` of
@@ -14042,6 +14237,36 @@ impl KnowledgeBase {
         Some(outcome)
     }
 
+    /// The hash `x` has through `dict`, a `Hash` instance: its member for `hash`, run through
+    /// the SLD→eval bridge as [`Self::bridge_eq_through_dictionary`] runs `eq`. A member that
+    /// cannot be run to an `Int64` — the re-entry cap, a suspended read, a non-`Int64` answer —
+    /// is an error, never a hash made up.
+    pub(crate) fn bridge_hash_through_dictionary(
+        &mut self,
+        dict: &crate::eval::value::Dictionary,
+        x: Value,
+    ) -> Result<i64, EvalError> {
+        let spec_op = self.try_resolve_symbol("anthill.prelude.Hash.hash").ok_or_else(|| {
+            EvalError::Internal("a hash through a dictionary, in a KB that declares no `Hash`".to_string())
+        })?;
+        let member = super::typing::resolve_op_target_checked(self, dict.impl_sort(), spec_op)
+            .map_err(|refusal| EvalError::dispatch_refused(self, spec_op, dict.impl_sort(), refusal))?;
+        let Some(outcome) = self.run_in_bridge_interp(|interp| {
+            interp.call_op_bridged(member, &[x], Some((spec_op, dict)), &[])
+        }) else {
+            return Err(EvalError::Internal(
+                "a hash could not be computed: the bridge's re-entry cap was reached".to_string(),
+            ));
+        };
+        match outcome? {
+            Value::Int(h) => Ok(h),
+            other => Err(EvalError::Internal(format!(
+                "`{}` answered a non-Int64 hash: {other:?}",
+                self.qualified_name_of(member)
+            ))),
+        }
+    }
+
     /// `a` and `b` compared at the member of `PartialEq.eq` the dictionary `dict` names, entered
     /// through it, in an isolated scratch interpreter ([`Self::bridge_eq_op_to_eval`]): a
     /// tuple's component, compared through its sub-dictionary.
@@ -17282,6 +17507,18 @@ fn evidence_fault(e: DomainEvidence) -> String {
             "a dictionary that names no provider".to_string()
         }
     }
+}
+
+/// What [`KnowledgeBase::tuple_fill_goal`] makes of a fill at a tuple.
+enum TupleFill {
+    /// The goal that fills the value.
+    Goal(Value),
+    /// A tuple of no components, bound: nothing is left to run.
+    Holds,
+    /// The value is no tuple of the type.
+    Fail,
+    /// The dictionary is malformed.
+    Error(String),
 }
 
 /// WI-20260925-SHED7 — a `SortDomain` evidence value, read ([`KnowledgeBase::domain_evidence`]).

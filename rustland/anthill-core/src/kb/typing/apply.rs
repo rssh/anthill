@@ -2420,12 +2420,53 @@ fn check_apply_call(
         // Proposal 073 §2 — the parameters as this call's σ reads them, now complete: what the
         // instance pass converts each argument to (`List.append(cars, [s])` with `s: Sp` puts
         // each `Car` of `cars` at `Sp`).
-        occ.set_call_params(
-            op.params
-                .iter()
-                .map(|(name, ty)| (*name, resolve_type_deep_value(kb, &subst, ty)))
-                .collect(),
-        );
+        let call_params: Vec<(Symbol, Value)> = op
+            .params
+            .iter()
+            .map(|(name, ty)| (*name, resolve_type_deep_value(kb, &subst, ty)))
+            .collect();
+        // An argument whose call left a slot of its result open is said by the parameter it
+        // meets ([`HeldCall`]): as this call's σ reads it, and as the call's other arguments
+        // alone read it — the open value bound the parameter's variable first where it came
+        // first (`foldLeft(rows, Map.empty(), add)`, whose `Acc` the function's type says).
+        if let Some(w) = solving.as_deref_mut().filter(|w| w.holds_calls()) {
+            let mut args: Vec<(&TypeResult, &Value)> = Vec::new();
+            for (i, r) in pos_results.iter().enumerate() {
+                if let (Ok(r), Some((_, declared))) =
+                    (r, pos_call_params.get(i).copied().flatten().and_then(|p| op.params.get(p)))
+                {
+                    args.push((r, declared));
+                }
+            }
+            for ((name, _), r) in named_args.iter().zip(named_results) {
+                if let (Ok(r), Some((_, declared))) = (r, match_named_arg_param(kb, &op.params, *name)) {
+                    args.push((r, declared));
+                }
+            }
+            let waits = holds_a_call_within;
+            // Each argument that does not wait, unified with its parameter. The boolean is not
+            // read: an arrow argument's unify answers `false` on its binders' names
+            // (`add(acc, name)` at `(acc: Acc, x: T) -> Acc`) where its bindings say `Acc`. A
+            // type this misreads is held to the call typed again at it, which refuses it.
+            let mut others = Substitution::new();
+            for (r, declared) in &args {
+                if !waits(w, &r.node) {
+                    unify_types(kb, &mut others, *declared, &r.ty);
+                }
+            }
+            let mut said: Vec<(Rc<NodeOccurrence>, Vec<Value>)> = Vec::new();
+            for (r, declared) in &args {
+                if waits(w, &r.node) {
+                    let at = vec![
+                        resolve_type_deep_value(kb, &subst, declared),
+                        resolve_type_deep_value(kb, &others, declared),
+                    ];
+                    said.push((Rc::clone(&r.node), at));
+                }
+            }
+            say_held_in_tails(kb, w, &said)?;
+        }
+        occ.set_call_params(call_params.into());
 
         // Apply param-name substitution to op.effects (WI-209), then
         // walk each through `walk_type_deep` so type-var bindings from
@@ -4094,9 +4135,12 @@ fn check_apply_call(
             // naming it, and the call is then dispatched as any call of a spec's member is.
             if is_semantic_equality(kb, fn_sym) {
                 let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                // A `PartialEq` written at the tuple type is the instance there, and its
+                // components are not asked.
                 if let Some(tuple) = goal_carrier_binding(kb, &goal)
                     .filter(|t| equality_at_a_tuple(kb, fn_sym, t))
                     .cloned()
+                    .filter(|t| !tuple_equality_is_written(kb, t))
                 {
                     if let Some(refusal) = tuple_component_without_equality(kb, spec_sort, &tuple, fn_sym, span) {
                         return Err(refusal);

@@ -63,9 +63,10 @@ namespace anthill.realization.runtime
     -- The resolved impl identity (the `impl` named child).
     operation impl(d: Self) -> Symbol @[host_implemented]
 
-    -- The labels of a tuple's components, where the dictionary is a tuple's `TypeValue`
-    -- instance: `Dictionary(sub0 .. subN, impl: NamedTuple, labels: (a, b))`, one label per
-    -- sub-dictionary, in the tuple type's order. none() for every other dictionary.
+    -- The labels of a tuple's components, where the dictionary is a tuple's `TypeValue`,
+    -- `Fillable` or `PartialEq` instance: `Dictionary(sub0 .. subN, impl: NamedTuple, labels:
+    -- (a, b))`, one label per sub-dictionary, in the order the subs are listed. none() for every
+    -- other dictionary.
     operation labels(d: Self) -> Option[T = List[T = Symbol]] @[host_implemented]
 
     -- Number of sub-requirement dicts.

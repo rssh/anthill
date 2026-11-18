@@ -2848,6 +2848,7 @@ pub(super) fn build_op_scoped_dicts(
                 && !spec_is_a_marker(kb, dep.required_sort)
                 && !dep_completes_to_a_unique_provider(kb, &dep, callee_op)
                 && !read_where_applied(kb, usage, callee_op, &dep, &disambig)
+                && !open_at_a_slot_the_result_leaves(kb, &dep, &disambig, callee_op)
             {
                 kb.unsuppliable_requirements.truncate(parked_mark);
                 // WHERE THE CALL PINS EVERY ELEMENT, the cause is not an element it leaves
@@ -3228,6 +3229,59 @@ pub(super) fn build_op_scoped_dicts(
         out.push(projected);
     }
     Ok(out)
+}
+
+/// Is every element `dep` leaves open at this call a parameter of the callee's own sort, which
+/// the callee's result names — so the call's value leaves that slot open, and what the value
+/// meets may say it (the call is held, `typing::forms::HeldCall`)? `Map.empty()` in
+/// `Map.put(Map.empty(), "a", 1)` is: its `K` is the `String` `put`'s key gives. Where nothing
+/// says it, the held call is refused where the walk ends.
+fn open_at_a_slot_the_result_leaves(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    ctx: &SigmaCtx,
+    callee_op: Symbol,
+) -> bool {
+    let Some(sort) = impl_parent_of_op(kb, callee_op) else {
+        return false;
+    };
+    let Some(goal) = goal_from_requires_entry(kb, dep) else {
+        return false;
+    };
+    let own: Vec<VarId> = sort_type_params_as_pairs(kb, sort)
+        .iter()
+        .filter_map(|(_, var)| match kb.get_term(*var) {
+            Term::Var(Var::Global(vid)) => Some(*vid),
+            _ => None,
+        })
+        .collect();
+    let Some(info) = crate::kb::op_info::lookup_operation_info(kb, callee_op) else {
+        return false;
+    };
+    let mut named: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    crate::kb::node_occurrence::collect_value_type(kb, &info.return_type, &mut named, &mut seen);
+    let mut open: Vec<VarId> = Vec::new();
+    for (_, v) in &goal.bindings {
+        if !is_type_param_view(kb, v) {
+            continue;
+        }
+        if let Some((vid, false)) = sigma_class_terminal(kb, ctx, v) {
+            if !own.contains(&vid) {
+                return false;
+            }
+            open.push(vid);
+        }
+    }
+    // The result names each open slot: a declared `Self` reads as the sort at its own
+    // parameters.
+    !open.is_empty()
+        && (open.iter().all(|v| named.contains(v)) || return_is_own_sort(kb, &info.return_type, sort))
+}
+
+/// Is `ty` the sort `sort` itself, bare or applied — a `-> Self` read as written?
+fn return_is_own_sort(kb: &KnowledgeBase, ty: &Value, sort: Symbol) -> bool {
+    sort_functor_of_view(kb, ty).is_some_and(|s| same_sort_canonical(kb, s, sort))
 }
 
 /// Does `dep` fix its spec whole — write every type parameter of it, at a ground type? A
@@ -4970,7 +5024,7 @@ fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry) -> Option<FormerCarri
         // A tuple at a spec it provides where each of its components does is no former
         // there: the component that has no instance is.
         if matches!(type_head(kb, former), TypeHead::NamedTuple)
-            && tuple_spec_of(kb, dep.required_sort).is_some()
+            && reads_through_tuples(kb, dep.required_sort)
         {
             return tuple_component_former(kb, dep.required_sort, former).map(|component| {
                 FormerCarrier::InTuple {
@@ -4991,10 +5045,10 @@ fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry) -> Option<FormerCarri
 }
 
 /// Does `v` hold, through sort applications (the positions a sort's instance is conditioned
-/// on) and, for a spec a tuple provides ([`tuple_spec_of`]), through tuples, a structural
-/// former no instance of `spec` is derived at?
+/// on) and, for a spec whose instance at a tuple is its components' ([`reads_through_tuples`]),
+/// through tuples, a structural former no instance of `spec` is derived at?
 fn holds_former(kb: &KnowledgeBase, spec: Symbol, v: &Value) -> bool {
-    let through_tuples = tuple_spec_of(kb, spec).is_some();
+    let through_tuples = reads_through_tuples(kb, spec);
     type_any_part(kb, v, &|te| match te {
         TypeExtractor::NamedTuple(_) if through_tuples => None,
         TypeExtractor::Arrow { .. } | TypeExtractor::NamedTuple(_) => Some(true),
@@ -5187,7 +5241,7 @@ fn former_refusal(
                  its type arguments, and nothing provides `{spec}` at it: a sort's instance \
                  holds only where each of its type arguments has one, and a former has none. \
                  {repair}",
-                kind = if tuple_spec_of(kb, dep.required_sort).is_some() {
+                kind = if reads_through_tuples(kb, dep.required_sort) {
                     "an arrow"
                 } else {
                     "a tuple or an arrow"
@@ -5205,10 +5259,10 @@ enum FormerCarrier {
     /// A binding IS the former: `(a: Int64, b: String)`.
     At(String),
     /// A binding is a tuple, at a spec a tuple provides where each of its components does
-    /// ([`tuple_spec_of`]), and `component` is the former its instance fails at
+    /// ([`reads_through_tuples`]), and `component` is the former its instance fails at
     /// ([`tuple_component_former`]): `(Int64, Int64 -> Int64)`.
     InTuple { tuple: String, component: String },
-    /// A binding holds one among its type arguments: `Option[T = (a: Int64, b: String)]`.
+    /// A binding holds one among its type arguments: `Option[T = (Int64) -> Int64]`.
     /// Only for the specs whose instances the library supplies ([`library_instances`]):
     /// a sort's instance of any of them holds only where each type argument has one, so none
     /// reaches the type, and no row can stand in. For any other spec a row naming the
@@ -5243,10 +5297,10 @@ impl LibraryInstances {
             LibraryInstances::TypePattern => {
                 "no row of `anthill.reflect.TypePattern` answers here, and none may be \
                  written: its one row is `TypeValuePattern`'s, which answers wherever the type has \
-                 a `TypeValue` and holds no tuple, one derived for a sort that is no spec, for a \
-                 parametric sort only where each of its type arguments has one. Name such a sort, every type \
-                 argument of it written — for an `Error.reify`, raise a value of one in the \
-                 thunk"
+                 a `TypeValue`, one derived for a sort that is no spec, for a parametric sort or a \
+                 tuple only where each of its type arguments or components has one. Name such a \
+                 type, every type argument of it written — for an `Error.reify`, raise a value of \
+                 one in the thunk"
             }
         }
     }
@@ -5274,9 +5328,9 @@ impl LibraryInstances {
                  derived, and none may be written"
             }
             LibraryInstances::TypePattern => {
-                "Name a sort with no tuple or arrow among its type arguments — for an \
-                 `Error.reify`, raise a value of one in the thunk: the one `TypePattern` row \
-                 is `TypeValuePattern`'s, and none may be written"
+                "Name a type that holds no arrow — for an `Error.reify`, raise a value of one \
+                 in the thunk: the one `TypePattern` row is `TypeValuePattern`'s, and none may \
+                 be written"
             }
         }
     }
@@ -5315,13 +5369,20 @@ fn former_repair(kb: &KnowledgeBase, spec: Symbol, former: &FormerCarrier) -> St
 }
 
 /// What the derived instances of `spec` cover, for a refusal at a structural former: a
-/// tuple's too where the spec is one a tuple provides ([`tuple_spec_of`]).
+/// tuple's too where its instance at a tuple is its components' ([`reads_through_tuples`]).
 pub(super) fn derived_instances_cover(kb: &KnowledgeBase, spec: Symbol) -> &'static str {
-    if tuple_spec_of(kb, spec).is_some() {
+    if reads_through_tuples(kb, spec) {
         "sorts and tuples"
     } else {
         "sorts"
     }
+}
+
+/// Is `spec`'s instance at a tuple its components': a spec a tuple provides ([`tuple_spec_of`]),
+/// or `TypePattern`, whose one row asks the tuple's `TypeValue`?
+pub(super) fn reads_through_tuples(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    tuple_spec_of(kb, spec).is_some()
+        || matches!(library_instances(kb, spec), Some(LibraryInstances::TypePattern))
 }
 
 /// A tuple or an arrow, by its head and whatever stands inside it: a type no `provides`
@@ -5518,7 +5579,7 @@ fn caller_rigid_carrier(
         value_params: caller_value_params(kb, caller_op),
         // `TypeValue`, where the spec is one of the library's, whose instances it derives.
         library_type_value: library.and_then(|_| type_value_spec_sym(kb)),
-        through_tuples: tuple_spec_of(kb, dep.required_sort).is_some(),
+        through_tuples: reads_through_tuples(kb, dep.required_sort),
     };
     // Each unknown of the caller's a binding names, in binding order, with the application
     // it stands in where it stands in one.
@@ -5658,7 +5719,7 @@ struct CallerScope<'c, 's> {
     /// `TypeValue`, where the requirement's spec is one of the library's.
     library_type_value: Option<Symbol>,
     /// Is the requirement's spec one a tuple provides where each of its components does
-    /// ([`tuple_spec_of`])?
+    /// ([`reads_through_tuples`])?
     through_tuples: bool,
 }
 

@@ -364,15 +364,16 @@ end
 "#,
     ),
     (
-        "a tuple",
+        "an arrow",
         r#"
 namespace test.rrbo
   import anthill.prelude.{Int64, String, Error, Result}
   sort Other
     entity other(n: Int64)
   end
-  operation raiseTup(n: Int64) -> Int64 effects {Error[(Int64, Int64)]} = Error.raise((n, n))
-  rule tupWide(?r) :- Error.reify(lambda () -> raiseTup(7), ?r)
+  -- DECLARES the arrow label and raises nothing: a raise at an arrow is refused at the raise.
+  operation raiseArrow(n: Int64) -> Int64 effects {Error[(Int64) -> Int64]} = n
+  rule arrowWide(?r) :- Error.reify(lambda () -> raiseArrow(7), ?r)
 end
 "#,
     ),
@@ -417,8 +418,9 @@ end
 /// operation's `TypeValue` is its clause's condition, read off the value as the thunk runs, and
 /// the refusal is the boundary's: no one pattern admits `Error[T = ?P]` and `Error[T = Other]`;
 /// FAILS with the typer leaving a call to the clause only outside a form
-/// (`clause_supplies_requirements`): the raise is refused first, naming its `TypeValue`. A tuple
-/// is refused at the boundary: it has a `TypeValue`, so its raise loads, and no type pattern. Where the thunk raises nothing open — a spec as
+/// (`clause_supplies_requirements`): the raise is refused first, naming its `TypeValue`. An arrow
+/// is refused at the boundary, which has no pattern at it (a tuple's is caught, since
+/// WI-20261116-HWD8A). Where the thunk raises nothing open — a spec as
 /// the payload, no `Error` label — the refusal is the pattern's. The boundary catches by that evidence, and with none it refuses to run, so the
 /// call can never answer: with (d)'s load refusal backed out the programs load and
 /// `either(7, 7, ?r)` is undecided at every query. Before the boundary refused to run with
@@ -429,7 +431,7 @@ end
 /// leaves an element open (WI-20261016-YM8HD). "Pin the element at this call" is not a
 /// bracket — a rule-body goal reads none — but a payload whose type the clause knows, which
 /// `the_advised_repairs_answer` drives. Where the call pins every element it is the account
-/// an operation body gives: a tuple, the structural former's; a spec, which has no `TypeValue`,
+/// an operation body gives: an arrow, the structural former's; a spec, which has no `TypeValue`,
 /// that no row of `TypePattern` answers. A collection whose element is open is refused at its
 /// raise, the pattern open there answered since proposal 071 stage (e). FAILS
 /// with the rule-body gate's two pinned arms backed out: those three shapes are told "this
@@ -439,11 +441,11 @@ fn an_unfilled_pattern_slot_is_refused_where_it_is_written() {
     for (shape, src) in UNFILLED_PATTERN_PROGRAMS {
         let errs = crate::common::load_errors_of(src);
         assert!(!errs.is_empty(), "{shape}: refused, got a clean load");
-        let wants: &[&str] = if shape == "a tuple" {
+        let wants: &[&str] = if shape == "an arrow" {
             &[
-                "anthill.reflect.TypePattern[T = (_1: Int64, _2: Int64)]",
+                "anthill.reflect.TypePattern[T = Int64 -> Int64]",
                 "a STRUCTURAL FORMER",
-                "Name a sort with no tuple or arrow among its type arguments",
+                "Name a type that holds no arrow",
             ]
         } else if shape == "a rule variable's type beside a second label" {
             &[

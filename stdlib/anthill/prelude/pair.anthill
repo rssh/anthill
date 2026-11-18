@@ -105,6 +105,13 @@ enum anthill.prelude.Pair
               if PartialEq.eq(al, bl) then PartialEq.eq(ar, br) else false
   end
   provides Eq[Self]         :- Eq[A], Eq[B]
+  -- Its hash mixes its components' hashes, each through its own instance, which the
+  -- component-wise `eq` above agrees with.
+  provides anthill.prelude.Hash[Self] :- anthill.prelude.Hash[A], anthill.prelude.Hash[B] where
+    operation hash(p: Self) -> Int64 =
+      match p
+        case pair(l, r) -> anthill.kernel.hash_mix(anthill.prelude.Hash.hash(l), anthill.prelude.Hash.hash(r))
+  end
   -- Conditioned on `WeakOrd`, not `PartialOrd`: the provision takes `PartialOrd`'s bodies,
   -- which derive the order from `compare` and require `WeakOrd` at the pair.
   provides PartialOrd[Self] :- WeakOrd[A], WeakOrd[B]

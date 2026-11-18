@@ -688,13 +688,13 @@ class ParserIntegrationTest extends munit.FunSuite:
     val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }.get
     val block = ns.items.collectFirst { case Item.ProvidesBlockItem(pb) => pb }.get
     val nested = block.items.collect { case ProvidesItem.ProvidesClauseI(pc) => pc }
-    assertEquals(nested.length, 2)
+    assertEquals(nested.length, 3)
     assertEquals(
       nested.map(pc => pc.spec match {
         case TypeExpr.Parameterized(n, _) => pf.symbols.name(n.last)
         case other                        => fail(s"expected Parameterized spec, got $other")
       }).toList,
-      List("PartialEq", "Eq"))
+      List("PartialEq", "Eq", "Hash"))
     // The control for the modifier one production over: none of these is marked.
     assert(nested.forall(!_.isDefault), "no stl provision is marked `default`")
   }

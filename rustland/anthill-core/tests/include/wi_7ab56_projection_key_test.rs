@@ -131,8 +131,9 @@ fn assert_loads(src: &str, why: &str) {
 fn assert_unlawful(src: &str, container: &str, param: &str, printed: &str, why: &str) {
     let (keys, errs) = key_refusals(src);
     assert_eq!(keys.len(), 1, "{why}: one key refusal: {errs:#?}");
+    let spec = crate::common::key_spec_of(container);
     let expected = format!(
-        "'anthill.prelude.{container}' requires `anthill.prelude.Eq` at its parameter `{param}`, but `{param} = {printed}` binds a type that does not provide `Eq`"
+        "'anthill.prelude.{container}' requires `anthill.prelude.{spec}` at its parameter `{param}`, but `{param} = {printed}` binds a type that does not provide `{spec}`"
     );
     assert!(
         keys[0].contains(&expected),
@@ -373,7 +374,7 @@ fn a_key_not_judged_is_named_by_the_containers_parameter() {
     assert_eq!(keys.len(), 1, "one key refusal: {errs:#?}");
     assert!(
         keys[0].contains(
-            "'anthill.prelude.Map' requires `anthill.prelude.Eq` at its parameter `K`, and whether `K = y.E`"
+            "'anthill.prelude.Map' requires `anthill.prelude.Hash` at its parameter `K`, and whether `K = y.E`"
         ),
         "the refusal names `K`, got:\n{}",
         keys[0]

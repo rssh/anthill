@@ -136,6 +136,12 @@ pub(super) fn check_member_signature(
     if kb.is_builtin(spec_op) || op_has_runnable_body(kb, spec_op) {
         return MemberSignature::Alignable;
     }
+    // A member the derivation wrote (a composite's `hash`, as its `eq`) is the loader's, for
+    // that provision at the carrier's own instance: there is no author to tell that it takes
+    // less, and its `eq` twin is not compared either (`PartialEq.eq` is a builtin).
+    if kb.is_derived_member(impl_info.op_sym) {
+        return MemberSignature::Alignable;
+    }
     // The carrier / spec names are read ONLY on a refusal. This function runs for every
     // (spec op, member) pair of every provision on every load — the stdlib alone carries
     // ~146 provisions — and the overwhelmingly common outcome is that the signatures fit,

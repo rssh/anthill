@@ -19,7 +19,9 @@ namespace anthill.kernel
     artifact "rustland/anthill-core/src/eval/builtins.rs"
     operation_map {
       struct_eq: "kernel_struct_eq",
-      struct_neq: "kernel_struct_neq"
+      struct_neq: "kernel_struct_neq",
+      struct_hash: "kernel_struct_hash",
+      hash_mix: "kernel_hash_mix"
     }
   end
   provides anthill.kernel language rust

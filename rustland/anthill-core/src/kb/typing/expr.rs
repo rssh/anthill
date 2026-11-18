@@ -739,6 +739,23 @@ pub(super) fn type_check_node_gated_at(
     // A function value whose instance no call fixed is given its dictionaries at the slot
     // its reference met ([`HeldFunctionValue`]).
     let attached = solving.attach_held_values(kb);
+    let typed_tree = results.last().and_then(|r| r.as_ref().ok()).map(|r| Rc::clone(&r.node));
+    let unsaid: Vec<TypeError> = solving
+        .release_held_calls(kb, typed_tree.as_ref())
+        .into_iter()
+        .map(|u| TypeError::UnsatisfiableRequirement {
+            span: u.span,
+            op: u.callee_op,
+            callee_sort: u.callee_sort,
+            usage: u.usage,
+            refusal: u.refusal,
+        })
+        .collect();
+    let attached = if unsaid.is_empty() {
+        attached
+    } else {
+        Err(aggregate_errors(attached.err().into_iter().chain(unsaid).collect()))
+    };
     let discharged = attached.and_then(|()| solving.discharge(kb));
     debug_assert_eq!(
         results.len(),

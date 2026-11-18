@@ -33,6 +33,7 @@ namespace anthill.prelude
     -- WI-644 / proposal 004: BigInt is lawful — partial bases + total markers.
     provides PartialEq[T = BigInt]
     provides Eq[T = BigInt]
+    provides Hash[T = BigInt]
     provides PartialOrd[T = BigInt]
     provides Ord[T = BigInt]
     provides Numeric[T = BigInt]

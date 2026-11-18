@@ -311,7 +311,14 @@ untyped one, and its components would start to error.
 2. **Its provisions are derived, as a composite's classification is** (kernel-language §8.3).
    A tuple provides `PartialEq` when each component's type provides it, and `Eq` when each
    provides `Eq`; `()` provides both. It provides `TypeValue` when each component's type does
-   (065 §2, now for the tuple former too). No program writes a provision at `NamedTuple`.
+   (065 §2, now for the tuple former too), and `SortDomain` (with the `Fillable` it provides)
+   when each does: its domain is the tuples of its components' domains, in the type's order,
+   and no `SortDomain` is written at a tuple type (decided 2026-11-17: the derived one answers
+   there, so a written one would never be read). A type pattern at a tuple (071) admits by
+   `<:`, by label with width and permutation. No sort provides `NamedTuple`. A provision of another
+   spec at a tuple type is a sort's like any other (`W provides Show[T = (Int64, String)]`),
+   and a written `PartialEq` at a tuple type answers in place of the derived one, as a sort's
+   written equality does; the tuple's `Eq` is then not derived, and is written beside it.
 3. **The derived member compares the components through their own members**, in order, as a
    composite's derived `eq` compares its fields. Its law is the components': `Eq` at the tuple
    holds where it holds at each component.
@@ -320,7 +327,11 @@ untyped one, and its components would start to error.
    component, in component order. A component at a type parameter takes the caller's dictionary
    for that parameter. A tuple's `TypeValue` instance also holds the tuple's labels, in the
    type's own order: `Dictionary(d₁ … dₙ, impl: NamedTuple, labels: (l₁, …, lₙ))`, from which
-   `type_value` reads the type back. It is passed as any dictionary is: T2's `same` is handed it, and `List`'s
+   `type_value` reads the type back. So does its `Fillable` instance, whose subs are the
+   components' `SortDomain` instances and whose labels the fill builds the tuple with; its
+   `SortDomain` instance is laid out as every `SortDomain` dictionary is, its chain's slot first,
+   which holds that `Fillable`: `Dictionary(‹the tuple's Fillable›, impl: NamedTuple)`, as `Eq`'s
+   holds its `PartialEq`. It is passed as any dictionary is: T2's `same` is handed it, and `List`'s
    derived equality at `List[T = (Pt, Int64)]` enters with it.
 5. **A typed `=` at a tuple is a call of the tuple's `eq` through its instance.** It carries the
    member, so no component is compared without one, and the equality index is not read.
@@ -354,14 +365,26 @@ untyped one, and its components would start to error.
 
 ### Open questions
 
-1. **Which specs derive at a tuple.** Proposed: `PartialEq`, `Eq` and `TypeValue`. `SortDomain`
-   and type patterns (VF8GT, proposal 071) follow the same rule and could be added here; with a
-   type pattern at a tuple, an `Error.reify` boundary could catch an `Error[(Int64, Int64)]`
-   payload, which today waits on a tuple's instance (065, the open question withdrawn
-   2026-10-16). `Ord` (lexicographic, by component order) is not proposed.
+1. **Which specs derive at a tuple.** Decided (2026-11-17): `PartialEq`, `Eq` and `TypeValue`
+   (stages 1 and 2), and `SortDomain` and type patterns (proposal 071) (stage 3). `Ord`
+   (lexicographic, by component order) is not proposed. A tuple's domain is the tuples of its
+   components' domains. A type pattern at a tuple admits a type as every pattern does, when the
+   type is a subtype of an instance of it, and `<:` at a tuple is by label with width and
+   permutation (rule 1): `(a: Int64)` and `(b: String, a: Int64)` admit `(a: Int64, b: String)`,
+   and `(Int64, String)`, whose labels are `_1` and `_2`, does not. So an `Error.reify` boundary
+   at a tuple catches an `Error[(a: Int64, b: String)]` payload.
 2. **Whether a program may name `NamedTuple`** as a type (`x: NamedTuple`, any tuple) or write a
-   provision at it. Proposed: neither, in this extension: one written form for a tuple type, and
-   derived provisions only.
+   provision at it. Decided for provisions (2026-11-17): no sort provides `NamedTuple`, and a
+   provision at a tuple type is written as rule 2 says. Decided for the type (user, 2026-11-17):
+   a bare `NamedTuple` is the base sort of tuples, an abstract sort with values of its own
+   (kernel-language §8.2): every tuple type is below it, so `x: NamedTuple` takes any tuple.
+   Measured on 9c6ca1cd, the sort is below nothing and above no tuple: `operation f(x:
+   NamedTuple) -> Int64 = 1` refuses `f((1, 2))` and `f(())`, `-> NamedTuple = (1, 2)` and `rule
+   r(?x: NamedTuple) :- ?x <=> (1, 2)` are refused, and `TypePattern.admits[T = NamedTuple]` at
+   `(Int64, Int64)` answers `false`; `same(x: NamedTuple, y: NamedTuple) = PartialEq.eq(x, y)`
+   loads, through `NamedTuple`'s own `PartialEq`. The refusals print the sort as `Unit`: the type
+   printer recognises a tuple type by the short name `NamedTuple`. Open: which operations a tuple
+   of unknown shape has beyond its equality.
 
 ### Stages
 
@@ -370,7 +393,7 @@ Tracked by the `proposal-004` sequence, one ticket per stage (filed 2026-11-16).
 1. The sort, and its derived `PartialEq` and `Eq` with their dictionary: WI-20261116-JWCNN.
    WI-20261105-CBRD2's run-time equality error depends on it.
 2. `TypeValue` at a tuple (065 §7 step 2's tuple half): WI-20261116-411A7.
-3. What open question 1 adds, parked until it is decided: WI-20261116-HWD8A.
+3. `SortDomain` and type patterns at a tuple (open question 1): WI-20261116-HWD8A.
 
 The arrow half of the formers stays with WI-20261021-VF8GT.
 

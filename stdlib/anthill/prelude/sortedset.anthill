@@ -149,7 +149,7 @@
 -- half of that question — whether a signature that OMITS the slot may be handed the
 -- argument's own dictionary, so `O` and `s.O` mean one thing — is WI-20260921-EE0EP.)
 enum anthill.prelude.SortedSet
-  import anthill.prelude.{WeakOrd, PartialEq, Eq, List, Int64, Bool, Stream, Iterable,
+  import anthill.prelude.{WeakOrd, PartialEq, Eq, Hash, List, Int64, Bool, Stream, Iterable,
                           FiniteCollection, PersistentCollection}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.PartialOrd.{lt, gt, lte}
@@ -196,6 +196,11 @@ enum anthill.prelude.SortedSet
   end
 
   provides Eq[T = SortedSet[T = T, O = O]] :- Eq[T]
+
+  -- The hash `eq` agrees with: the elements' hashes, mixed in the order `eq` compares them.
+  provides Hash[T = SortedSet[T = T, O = O]] :- Hash[T] where
+    operation hash(s: SortedSet[T = T, O = O]) -> Int64 = hashElements(toList(s), size(s))
+  end
 
   -- A WEIGHT-BALANCED tree (Adams; the `Data.Set` parameters δ = 3, ratio = 2, which
   -- Hirai & Yamamoto proved are the one integer pair that keeps this `balance` sound).
@@ -279,6 +284,12 @@ enum anthill.prelude.SortedSet
         match ys
           case nil() -> false
           case cons(y, yt) -> if PartialEq.eq(x, y) then sameElements(xt, yt) else false
+
+  -- `hash`'s worker, carrying its evidence as `sameElements` does.
+  internal operation hashElements(xs: List[T = T], seed: Int64) -> Int64 requires Hash[T] =
+    match xs
+      case nil() -> seed
+      case cons(x, xt) -> hashElements(xt, anthill.kernel.hash_mix(seed, Hash.hash(x)))
 
   internal operation toListOnto(s: SortedSet[T = T, O = O], acc: List[T = T]) -> List[T = T] =
     match s

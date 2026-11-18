@@ -4,14 +4,25 @@
 --
 -- Its `PartialEq` and `Eq` are derived: a tuple provides each where every component's type
 -- does, and its dictionary holds one sub-dictionary per component, in component order. `eq`
--- compares the components through them. No program writes a provision at it: the row below
--- is the one the derived instance enters, and nothing provides `Eq` here, since the law at a
--- tuple is its components'.
+-- compares the components through them. No sort provides `NamedTuple`: the row below is the
+-- one the derived instance enters, and nothing provides `Eq` here, since the law at a tuple is
+-- its components'. A `PartialEq` a sort writes at a tuple type answers there in place of the
+-- derived one, and the tuple's `Eq` is then the writer's to state.
 --
 -- Its `TypeValue` is derived the same way, where every component's type has one. Its
 -- dictionary holds one sub-dictionary per component, in the type's own order, and the
 -- labels beside them (`labels: (a, b)`), which `type_value` reads the type back from.
+--
+-- Its `SortDomain` is derived where every component's type has one: its domain is the tuples
+-- of the components' domains, in the type's order, and none may be written at a tuple type.
+-- Its `Fillable` dictionary holds each component's `SortDomain` and the labels, which the fill
+-- builds the tuple with; its `SortDomain` dictionary holds that `Fillable` in its chain's slot.
 sort anthill.prelude.NamedTuple
   operation namedTupleEq(a: NamedTuple, b: NamedTuple) -> Bool @[host_implemented]
   provides anthill.prelude.PartialEq[T = NamedTuple, eq = namedTupleEq]
+  -- A tuple's hash mixes its components' hashes, each through its own instance, at the labels
+  -- its type names; the tuple's `Hash` dictionary holds them after its `Eq`. The member a
+  -- tuple's derived `Hash` instance is entered by, and no provision: a row of `Hash` at
+  -- `NamedTuple` would provide `Eq` at every tuple, a `Float`'s among them.
+  operation hash(a: NamedTuple) -> anthill.prelude.Int64 @[host_implemented]
 end

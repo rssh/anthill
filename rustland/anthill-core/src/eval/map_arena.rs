@@ -8,15 +8,18 @@
 //! persistent (structurally-shared) map, so deriving a new entry is O(1) +
 //! the single-key edit rather than an O(N) full copy.
 //!
-//! Type erasure: at runtime K and V are gone — the entry's key is a `MapKey`, a
-//! literal or a structural fingerprint of the key value. The type checker is
-//! responsible for ruling out heterogeneous keys; if user code somehow obtains a
-//! value whose key type doesn't match the map's, the lookup just misses.
+//! A map keeps `K`'s `Hash` instance, handed to its construction (`Map.empty` requires
+//! `Hash[T = K]`), and every map derived from it by `put` or `remove` keeps the same one.
+//! The entry's key is a `MapKey`, a literal or a structural fingerprint of the key value
+//! (the reader is `builtins`' map keying). A key no `eq` of its own reaches is keyed by its
+//! structure, a tuple at the labels `K` names. A key one reaches is hashed through the
+//! instance into `buckets`, and found by comparing it through `eq` with the keys of its
+//! bucket alone, under the fingerprint of the first key put there.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use imbl::{HashMap as ImHashMap, Vector as ImVector};
+use imbl::{HashMap as ImHashMap, OrdMap as ImOrdMap, Vector as ImVector};
 
 use crate::kb::subst::Substitution;
 use crate::kb::term::Literal;
@@ -117,74 +120,121 @@ impl MapKey {
 }
 
 /// Owned map content: a structurally-shared persistent map preserving
-/// insertion order. `lookup` answers get / contains / insert in O(log N);
-/// `order` records each key's first-insertion position so keys / values /
-/// entries iterate in insertion order — the documented `Map` contract,
-/// exercised by `map_keys_values_entries_preserve_insertion_order`. Stable
-/// order matters for byte-identical test fixtures and for diagnostics that
-/// reflect program order rather than hash-table order.
+/// insertion order. `lookup` answers get / contains / insert / remove in O(log N),
+/// holding each key's first-insertion number beside its value; `order` holds the keys
+/// by that number, so keys / values / entries iterate in insertion order — the
+/// documented `Map` contract, exercised by
+/// `map_keys_values_entries_preserve_insertion_order` — and a removal finds its key's
+/// place in O(log N). Stable order matters for byte-identical test fixtures and for
+/// diagnostics that reflect program order rather than hash-table order.
 ///
 /// Both halves are persistent (`imbl`), so `Clone` is O(1) structural
 /// sharing. That makes the arena's copy-on-write `put` / `remove` cheap:
 /// `clone_body` no longer copies the whole map, so building an N-entry map
 /// by folding `put` drops from O(N²) to O(N log N).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MapBody {
-    lookup: ImHashMap<MapKey, Value>,
-    order: ImVector<MapKey>,
+    lookup: ImHashMap<MapKey, (u64, Value)>,
+    order: ImOrdMap<u64, MapKey>,
+    /// The number the next new key is inserted under.
+    next: u64,
+    /// The stored keys an `eq` of their own reaches, by the hash `K`'s instance gives them.
+    buckets: ImHashMap<i64, ImVector<MapKey>>,
+    /// `K`'s `Hash` instance, handed to the map's construction: every key is read through it.
+    key_hash: super::dictionary::Dictionary,
 }
 
 impl MapBody {
-    pub fn new() -> Self {
-        Self::default()
+    /// An empty map whose keys are read through `key_hash`, `K`'s `Hash` instance.
+    pub fn keyed_by(key_hash: super::dictionary::Dictionary) -> Self {
+        Self {
+            lookup: ImHashMap::new(),
+            order: ImOrdMap::new(),
+            next: 0,
+            buckets: ImHashMap::new(),
+            key_hash,
+        }
+    }
+
+    /// `K`'s `Hash` instance, which every key of this map is read through.
+    pub fn key_hash(&self) -> &super::dictionary::Dictionary {
+        &self.key_hash
+    }
+
+    /// The stored keys whose hash is `hash`.
+    pub fn bucket(&self, hash: i64) -> impl Iterator<Item = &MapKey> {
+        self.buckets.get(&hash).into_iter().flat_map(|b| b.iter())
+    }
+
+    /// Insert `key`, a key hashed to `hash` that no stored key of its bucket equals.
+    pub fn insert_hashed(&mut self, hash: i64, key: MapKey, value: Value) {
+        if !self.lookup.contains_key(&key) {
+            self.buckets.entry(hash).or_default().push_back(key.clone());
+        }
+        self.insert(key, value);
+    }
+
+    /// Remove `key`, stored in the bucket of `hash`.
+    pub fn shift_remove_hashed(&mut self, hash: i64, key: &MapKey) {
+        self.shift_remove(key);
+        if let Some(bucket) = self.buckets.get_mut(&hash) {
+            if let Some(pos) = bucket.iter().position(|k| k == key) {
+                bucket.remove(pos);
+            }
+            if bucket.is_empty() {
+                self.buckets.remove(&hash);
+            }
+        }
     }
 
     /// Insert or update. A new key is appended to `order`; re-inserting an
     /// existing key keeps its original position and only updates the value
     /// (matching `IndexMap::insert` semantics the builtins relied on).
     pub fn insert(&mut self, key: MapKey, value: Value) {
-        if self.lookup.insert(key.clone(), value).is_none() {
-            self.order.push_back(key);
+        match self.lookup.get_mut(&key) {
+            Some((_, stored)) => *stored = value,
+            None => {
+                let at = self.next;
+                self.next += 1;
+                self.order.insert(at, key.clone());
+                self.lookup.insert(key, (at, value));
+            }
         }
     }
 
     pub fn get(&self, key: &MapKey) -> Option<&Value> {
-        self.lookup.get(key)
+        self.lookup.get(key).map(|(_, v)| v)
     }
 
     pub fn contains_key(&self, key: &MapKey) -> bool {
         self.lookup.contains_key(key)
     }
 
-    /// Remove a key, preserving the order of the remaining entries. The
-    /// `order` scan makes this O(N) (unlike the O(log N) `insert`/`get`);
-    /// acceptable because map removal is rare on the interpreter's paths.
+    /// Remove a key, preserving the order of the remaining entries, in O(log N).
     pub fn shift_remove(&mut self, key: &MapKey) {
-        if self.lookup.remove(key).is_some() {
-            if let Some(pos) = self.order.iter().position(|k| k == key) {
-                self.order.remove(pos);
-            }
+        if let Some((at, _)) = self.lookup.remove(key) {
+            self.order.remove(&at);
         }
     }
 
     pub fn len(&self) -> usize {
-        self.order.len()
+        self.lookup.len()
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &MapKey> {
-        self.order.iter()
+        self.order.values()
     }
 
     pub fn values(&self) -> impl Iterator<Item = &Value> {
         self.order
-            .iter()
-            .map(move |k| self.lookup.get(k).expect("order/lookup invariant"))
+            .values()
+            .map(move |k| &self.lookup.get(k).expect("order/lookup invariant").1)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&MapKey, &Value)> {
         self.order
-            .iter()
-            .map(move |k| (k, self.lookup.get(k).expect("order/lookup invariant")))
+            .values()
+            .map(move |k| (k, &self.lookup.get(k).expect("order/lookup invariant").1))
     }
 }
 
@@ -357,6 +407,7 @@ impl std::hash::Hash for MapHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval::value::Dictionary;
     use crate::intern::Symbol;
     use crate::kb::term::{Term, TermId};
 
@@ -376,7 +427,7 @@ mod tests {
     #[test]
     fn alloc_and_drop_reclaims() {
         let arena = MapArenaRef::new();
-        let h = arena.alloc(MapBody::new());
+        let h = arena.alloc(MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit)));
         assert_eq!(arena.live(), 1);
         drop(h);
         assert_eq!(arena.live(), 0);
@@ -385,7 +436,7 @@ mod tests {
     #[test]
     fn clone_bumps_refcount() {
         let arena = MapArenaRef::new();
-        let h = arena.alloc(MapBody::new());
+        let h = arena.alloc(MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit)));
         let h2 = h.clone();
         drop(h);
         assert_eq!(arena.live(), 1);
@@ -427,7 +478,7 @@ mod tests {
         );
 
         // And the round-trip out of `keys` addresses that slot again.
-        let mut body = MapBody::new();
+        let mut body = MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit));
         body.insert(via_symbolref.clone(), Value::Int(1));
         let back = body.keys().next().cloned().expect("one key");
         assert_eq!(
@@ -478,7 +529,7 @@ mod tests {
         );
 
         // One slot, reachable through each spelling.
-        let mut body = MapBody::new();
+        let mut body = MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit));
         body.insert(via_ref.clone(), Value::Int(4));
         assert_eq!(
             body.get(&name_key(&kb, c)).and_then(|v| match v {

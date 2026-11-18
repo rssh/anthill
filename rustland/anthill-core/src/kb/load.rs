@@ -1261,6 +1261,21 @@ pub enum LoadError {
         /// The carrier the provision was written at, qualified.
         carrier: String,
     },
+    /// A `provides anthill.prelude.NamedTuple` (`typing::written_tuple_provisions`): a
+    /// tuple type is `NamedTuple` applied to its components, written only as tuple syntax, and
+    /// no sort is one.
+    ProvidesNamedTuple {
+        /// The sort the provision is written on, qualified.
+        provider: String,
+    },
+    /// A `provides anthill.reflect.SortDomain[T = …]` at a tuple type
+    /// (`typing::written_tuple_provisions`): a tuple's domain is derived from its components'.
+    SortDomainWrittenAtTuple {
+        /// The sort the provision is written on, qualified.
+        provider: String,
+        /// The tuple type it is written at, displayed.
+        tuple: String,
+    },
     /// Proposal 071 §1.2 — a `provides anthill.reflect.TypePattern[…]` other than its one
     /// row, `TypeValuePattern`'s `provides TypePattern[T = T] :- TypeValue[T = T]` at its own
     /// `T` (`typing::written_type_pattern_provisions`). Refused wherever it is written, as
@@ -4038,6 +4053,12 @@ impl LoadError {
                 format!("'{}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: '{}' already has its derived instance.",
                     carrier, carrier)
             }
+            LoadError::ProvidesNamedTuple { provider } => {
+                format!("'{provider}' writes `provides anthill.prelude.NamedTuple`, but no sort provides `NamedTuple`: a tuple type is `NamedTuple` applied to its components and is written only as tuple syntax. Delete the clause.")
+            }
+            LoadError::SortDomainWrittenAtTuple { provider, tuple } => {
+                format!("'{provider}' writes `provides anthill.reflect.SortDomain[T = {tuple}]`, but a tuple's `SortDomain` is derived from its components' and none may be written at a tuple type: the derived one answers there, and a written one would never be read. Delete the clause.")
+            }
             LoadError::HandWrittenTypePattern { provider } => {
                 format!("a `provides anthill.reflect.TypePattern[…]` is written for '{}', but `TypePattern` has one row, `TypeValuePattern`'s, and no other may be written: a written `admits` would make what a type pattern admits a claim instead of a fact. Delete the clause: a type with a `TypeValue` instance is already a pattern.",
                     provider)
@@ -4054,8 +4075,14 @@ impl LoadError {
                     .as_ref()
                     .map(|p| format!(": its component `{p}` does not"))
                     .unwrap_or_default();
-                let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a type that does not provide `Eq`{} (its equality is not lawful — IEEE `nan != nan` — or there is none), so it is not a lawful key. Bind `{}` to a type that provides `Eq` (`TotalFloat` for floats) instead of '{}'.",
-                    container, spec, param, param, carrier, part, param, carrier);
+                let short = spec.rsplit('.').next().unwrap_or(spec);
+                let no_hash = if short == "Hash" {
+                    ", or no `hash` agrees with it: a sort that writes its own `eq` writes its `hash` beside it"
+                } else {
+                    ""
+                };
+                let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a type that does not provide `{}`{} (its equality is not lawful — IEEE `nan != nan` — or there is none{}), so it is not a lawful key. Bind `{}` to a type that provides `{}` (`TotalFloat` for floats) instead of '{}'.",
+                    container, spec, param, param, carrier, short, part, no_hash, param, short, carrier);
                 match span {
                     Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
                     None => msg,
@@ -5923,8 +5950,9 @@ impl std::fmt::Display for LoadError {
                     .as_ref()
                     .map(|p| format!(" (its component `{p}` does not)"))
                     .unwrap_or_default();
-                let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` does not provide `Eq`{} — not a lawful key; use `TotalFloat` for floats",
-                    container, spec, param, param, carrier, part);
+                let short = spec.rsplit('.').next().unwrap_or(spec);
+                let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` does not provide `{}`{} — not a lawful key; use `TotalFloat` for floats",
+                    container, spec, param, param, carrier, short, part);
                 match span {
                     Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
                     None => write!(f, "{}", msg),
@@ -6606,6 +6634,21 @@ impl std::fmt::Display for LoadError {
                     "'{}' writes `provides anthill.reflect.TypeValue[…]`, but every \
                      `TypeValue` instance is DERIVED and none may be written",
                     carrier,
+                )
+            }
+            LoadError::ProvidesNamedTuple { provider } => {
+                write!(
+                    f,
+                    "'{provider}' writes `provides anthill.prelude.NamedTuple`, but no sort \
+                     provides `NamedTuple`: a tuple type is written only as tuple syntax",
+                )
+            }
+            LoadError::SortDomainWrittenAtTuple { provider, tuple } => {
+                write!(
+                    f,
+                    "'{provider}' writes `provides anthill.reflect.SortDomain[T = {tuple}]`, \
+                     but a tuple's `SortDomain` is derived from its components' and none may \
+                     be written at a tuple type",
                 )
             }
             LoadError::HandWrittenTypePattern { provider } => {
@@ -18528,13 +18571,16 @@ fn refused_constraint_guards(kb: &KnowledgeBase, errors: &[LoadError]) -> Vec<su
 fn load_derived_eq_members(
     kb: &mut KnowledgeBase,
     carriers: &[Symbol],
+    // The composites given `Hash` (`eq_derive::derive_hash`), whose `hash` members are
+    // written beside the `eq` members.
+    hash_carriers: &[Symbol],
     resolver: &dyn SourceResolver,
     loaded_paths: &mut HashSet<String>,
     warnings: &mut Vec<LoadWarning>,
     derived_source: &mut Option<std::sync::Arc<str>>,
 ) -> Vec<LoadError> {
-    let (text, carriers) = match super::eq_derive::derived_eq_member_source(kb, carriers) {
-        Ok(None) => return Vec::new(),
+    let (mut text, carriers) = match super::eq_derive::derived_eq_member_source(kb, carriers) {
+        Ok(None) => (String::new(), Vec::new()),
         Ok(Some((text, carriers))) => (text, carriers),
         Err(why) => {
             return vec![LoadError::Other {
@@ -18542,6 +18588,19 @@ fn load_derived_eq_members(
             }]
         }
     };
+    // The `hash` members beside them, each in its carrier's `Hash` provision.
+    match super::eq_derive::derived_hash_member_source(kb, hash_carriers) {
+        Ok(None) => {}
+        Ok(Some(hashes)) => text.push_str(&hashes),
+        Err(why) => {
+            return vec![LoadError::Other {
+                message: format!("the derived `hash` members could not be written: {why}"),
+            }]
+        }
+    }
+    if text.is_empty() {
+        return Vec::new();
+    }
     let mut parsed = match crate::parse::parse(&text) {
         Ok(parsed) => parsed,
         Err(errors) => {
@@ -18552,24 +18611,33 @@ fn load_derived_eq_members(
             }]
         }
     };
-    // `..anthill.prelude.PartialEq`, in the text's own symbols.
-    let spec = TypeExpr::Simple(Name {
-        segments: ["..anthill", "prelude", "PartialEq"]
-            .into_iter()
-            .map(|s| parsed.symbols.intern(s))
-            .collect(),
-        span: crate::span::Span::default(),
-    });
-    fn place_in_provision(items: &mut [Item], spec: &TypeExpr) {
+    // `..anthill.prelude.PartialEq` and `..anthill.prelude.Hash`, in the text's own symbols:
+    // an `eq` member is its carrier's `PartialEq` provision's, a `hash` member its `Hash`'s.
+    let spec_named = |parsed: &mut ParsedFile, name: &str| {
+        TypeExpr::Simple(Name {
+            segments: ["..anthill", "prelude", name]
+                .into_iter()
+                .map(|s| parsed.symbols.intern(s))
+                .collect(),
+            span: crate::span::Span::default(),
+        })
+    };
+    let eq_spec = spec_named(&mut parsed, "PartialEq");
+    let hash_spec = spec_named(&mut parsed, "Hash");
+    let hash_name = parsed.symbols.intern("hash");
+    fn place_in_provision(items: &mut [Item], eq_spec: &TypeExpr, hash_spec: &TypeExpr, hash_name: crate::intern::Symbol) {
         for item in items {
             match item {
-                Item::Namespace(ns) => place_in_provision(&mut ns.items, spec),
-                Item::Operation(o) => o.provision = Some(spec.clone()),
-                _ => unreachable!("a derived entry holds its `eq` alone"),
+                Item::Namespace(ns) => place_in_provision(&mut ns.items, eq_spec, hash_spec, hash_name),
+                Item::Operation(o) => {
+                    let spec = if o.name.segments.last() == Some(&hash_name) { hash_spec } else { eq_spec };
+                    o.provision = Some(spec.clone());
+                }
+                _ => unreachable!("a derived entry holds its `eq` or its `hash` alone"),
             }
         }
     }
-    place_in_provision(&mut parsed.items, &spec);
+    place_in_provision(&mut parsed.items, &eq_spec, &hash_spec, hash_name);
     *derived_source = Some(parsed.source.clone());
     let source_id =
         kb.sources
@@ -18613,15 +18681,19 @@ fn load_derived_eq_members(
     // entries joined theirs in `resolve_instantiations`, which has run: the sort-ops
     // table is built off that record.
     merge_secondary_entry_operations(kb);
-    for &carrier in &carriers {
-        let member = format!("{}.eq", kb.qualified_name_of(carrier));
+    let members = carriers
+        .iter()
+        .map(|&c| format!("{}.eq", kb.qualified_name_of(c)))
+        .chain(hash_carriers.iter().map(|&c| format!("{}.hash", kb.qualified_name_of(c))))
+        .collect::<Vec<_>>();
+    for member in members {
         match kb.try_resolve_symbol(&member) {
             Some(op) => {
                 let canonical = kb.canonical_sym(op);
-                kb.derived_eq_members.extend([op, canonical]);
+                kb.derived_members.extend([op, canonical]);
             }
             None => errors.push(LoadError::Other {
-                message: format!("the derived `eq` member `{member}` was written and not declared"),
+                message: format!("the derived member `{member}` was written and not declared"),
             }),
         }
     }
@@ -18962,9 +19034,14 @@ fn load_phase_inner(
     // over them would report them again.
     let mut derived_source: Option<std::sync::Arc<str>> = None;
     if all_errors.is_empty() {
+        // `Hash` for the composites whose `Eq` is structural, where every field's type has
+        // one — only where its `hash` members are written beside the `eq` ones: a row with
+        // no member is one no call can run.
+        let given_hash = super::eq_derive::derive_hash(kb, &eq_classification, &given_partial_eq);
         all_errors.extend(load_derived_eq_members(
             kb,
             &given_partial_eq,
+            &given_hash,
             resolver,
             &mut loaded_paths,
             &mut all_warnings,
@@ -18981,6 +19058,10 @@ fn load_phase_inner(
     // introduce no unbacked operation, so `check_provider_operations` passes them.
     mark!("eq_derive::classify + derive_total_eq + derive_conditional_eq");
     all_errors.extend(super::type_value_derive::run(kb));
+    // No sort provides `NamedTuple`, and no `SortDomain` is written at a tuple (proposal 004's
+    // extension): read whether or not the reflect library that `TypeValue`'s pass needs is
+    // loaded.
+    all_errors.extend(super::typing::written_tuple_provisions(kb));
     mark!("type_value_derive::run");
     // WI-1109 — materialize forwarded provision rows (`Ord provides WeakOrd[T = T]` ⇒
     // every `Ord` carrier gets a `WeakOrd` row at its own bindings). HERE, beside the
@@ -23151,8 +23232,8 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         // A derived member is the `eq` of a composite no `eq` was written for: one written
         // since — a witness's, in a later load — is the carrier's, and that load's change
         // to a closed equality is `eq_derive::later_equality_refusals`' to refuse.
-        if cands.iter().any(|c| !kb.is_derived_eq_member(c.target)) {
-            cands.retain(|c| !kb.is_derived_eq_member(c.target));
+        if cands.iter().any(|c| !kb.is_derived_member(c.target)) {
+            cands.retain(|c| !kb.is_derived_member(c.target));
         }
         let target = match cands.as_slice() {
             // No eq override for this sort — structural equality IS its instance.
@@ -23179,7 +23260,7 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             .is_some_and(|rec| !rec.type_params.is_empty());
         kb.note_eq_member(
             target,
-            if partial && kb.is_derived_eq_member(target) {
+            if partial && kb.is_derived_member(target) {
                 super::EqLaw::ByItsFields
             } else if partial {
                 super::EqLaw::Never
@@ -24625,7 +24706,7 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
     let saved_asker = kb.symbols.set_asking_file(None);
     for decl in decls {
         // A derived `eq` member is the loader's, and no text reads it by its bare name.
-        if !decl.category.can_capture() || kb.is_derived_eq_member(decl.sym) {
+        if !decl.category.can_capture() || kb.is_derived_member(decl.sym) {
             continue;
         }
         // 059's classification, and the same reading WI-956/WI-979 settled for the
@@ -24667,7 +24748,7 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
                     continue;
                 }
                 if kb.is_namespace_only(other)
-                    || kb.is_derived_eq_member(other)
+                    || kb.is_derived_member(other)
                     || capture_is_excused(kb, sort, other)
                 {
                     continue;
@@ -49172,8 +49253,8 @@ impl<'a> Loader<'a> {
         // recorded as derived only after the derivation's own text has loaded
         // (`load_derived_eq_members`), so this takes out a member a later load declares.
         let canonical = self.kb.canonical_sym(functor);
-        self.kb.derived_eq_members.remove(&functor);
-        self.kb.derived_eq_members.remove(&canonical);
+        self.kb.derived_members.remove(&functor);
+        self.kb.derived_members.remove(&canonical);
 
         // WI-1070: the operation's own description blocks (§4.1) — see
         // `emit_own_descriptions`. Emitted here, before the signature conversion that

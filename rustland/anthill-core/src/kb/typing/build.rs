@@ -3,6 +3,22 @@
 
 use super::*;
 
+/// The calls in tail position of a join's arms that wait for their slot ([`HeldCall`]), said by
+/// the join's type.
+fn say_held_arms(
+    kb: &mut KnowledgeBase,
+    solving: &mut WalkSolutions,
+    arms: &[(Value, Option<Span>, Option<Rc<NodeOccurrence>>)],
+    joined: &Value,
+) -> Result<(), TypeError> {
+    let arms: Vec<(Rc<NodeOccurrence>, Vec<Value>)> = arms
+        .iter()
+        .filter_map(|(_, _, node)| node.as_ref())
+        .map(|node| (Rc::clone(node), vec![joined.clone()]))
+        .collect();
+    say_held_in_tails(kb, solving, &arms)
+}
+
 /// Assemble a Let / Match / Lambda result from its child results.
 pub(super) fn build_type(
     kb: &mut KnowledgeBase,
@@ -474,6 +490,7 @@ pub(super) fn build_type(
                 return;
             }
             let span = Some(node.span.span);
+            let parks_before = kb.unsuppliable_requirements.len();
             let r = check_apply_iter(
                 kb,
                 &*env,
@@ -490,6 +507,39 @@ pub(super) fn build_type(
                 Some(solving),
                 &openings,
             );
+            // A call that left a slot of its result open and owes a requirement waits for what
+            // its value meets to say the slot ([`HeldCall`]); the refusals its typing parked
+            // wait with it.
+            if let Ok(typed) = &r {
+                let arg_nodes = pos_results.iter().chain(named_results.iter()).flatten().map(|a| &a.node);
+                if call_waits_for_its_slot(kb, solving, fn_sym, &typed.ty, arg_nodes) {
+                    let mut parked = Vec::new();
+                    let mut k = parks_before;
+                    while k < kb.unsuppliable_requirements.len() {
+                        if kb.unsuppliable_requirements[k].span == span {
+                            parked.push(kb.unsuppliable_requirements.remove(k));
+                        } else {
+                            k += 1;
+                        }
+                    }
+                    let copy = |r: &Result<TypeResult, TypeError>| {
+                        r.as_ref().expect("a call typed Ok had every argument typed Ok").clone()
+                    };
+                    solving.hold_call(HeldCall {
+                        node: Rc::clone(&typed.node),
+                        fn_sym,
+                        pos_args: pos_args.clone(),
+                        named_args: named_args.clone(),
+                        pos_results: pos_results.iter().map(copy).collect(),
+                        named_results: named_results.iter().map(copy).collect(),
+                        env: env.clone(),
+                        pos,
+                        openings: openings.clone(),
+                        ty: typed.ty.clone(),
+                        parked,
+                    });
+                }
+            }
             // Proposal 050.1: a callee clause relating two of its parameters connects the
             // arguments' memory (`MutableStack.push(s, v)`).
             if let Ok(typed) = &r {
@@ -1688,6 +1738,11 @@ pub(super) fn build_type(
                         return;
                     }
                 };
+            // An arm whose call left a slot open is said by the join ([`HeldCall`]).
+            if let Err(e) = say_held_arms(kb, solving, &branch_tys, &result_ty) {
+                results.push(Err(e));
+                return;
+            }
 
             let mut result_env = (*outer_env).clone();
             if !has_wildcard {
@@ -1930,6 +1985,11 @@ pub(super) fn build_type(
                     return;
                 }
             };
+            // An arm whose call left a slot open is said by the join ([`HeldCall`]).
+            if let Err(e) = say_held_arms(kb, solving, &branch_tys, &ty) {
+                results.push(Err(e));
+                return;
+            }
             results.push(Ok(TypeResult {
                 ty,
                 env: unwrap_types(env),

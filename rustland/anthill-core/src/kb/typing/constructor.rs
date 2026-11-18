@@ -1698,9 +1698,28 @@ pub(super) fn check_constructor_iter(
         construction_meets_sort_requires(kb, env, &subst, ctor_sym, sort, span)?;
     }
     // A function value in a field, at the instance the construction has fixed
-    // (`boxed(f: useS, v: leaf)`), as at a call ([`attach_held_arguments`]).
+    // (`boxed(f: useS, v: leaf)`), as at a call ([`attach_held_arguments`]); and a call in a
+    // field that waits for its slot, said by the field's type as this σ reads it
+    // (`bx(m: Map.empty())`), as at a call's parameter ([`HeldCall`]).
     if let Some(w) = solving {
         attach_held_arguments(kb, w, &subst, [pos_results, named_results])?;
+        if w.holds_calls() {
+            let fields: Vec<(Symbol, Value)> =
+                kb.entity_field_types(ctor_sym).map(<[_]>::to_vec).unwrap_or_default();
+            let positions = positional_param_indices(kb, &fields, pos_results.len(), named_args);
+            let mut said: Vec<(Rc<NodeOccurrence>, Vec<Value>)> = Vec::new();
+            for (i, r) in pos_results.iter().enumerate() {
+                if let (Ok(r), Some((_, ty))) = (r, positions.get(i).copied().flatten().and_then(|p| fields.get(p))) {
+                    said.push((Rc::clone(&r.node), vec![resolve_type_deep_value(kb, &subst, ty)]));
+                }
+            }
+            for ((name, _), r) in named_args.iter().zip(named_results) {
+                if let (Ok(r), Some((_, ty))) = (r, match_named_arg_param(kb, &fields, *name)) {
+                    said.push((Rc::clone(&r.node), vec![resolve_type_deep_value(kb, &subst, ty)]));
+                }
+            }
+            say_held_in_tails(kb, w, &said)?;
+        }
     }
 
     // WI-578 — build the parameterized result type via the shared finish tail, so this

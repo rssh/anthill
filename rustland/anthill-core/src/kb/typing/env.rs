@@ -268,6 +268,10 @@ pub struct TypingEnv {
     /// expression there. [`Self::in_rule_body`] asks only whether it is a rule body, as
     /// every reader above does; [`Self::written_as_an_operation_body`] asks which text.
     pub(super) rule_body_dispatch: Option<RuleText>,
+    /// Does an enclosing walk type this text again, whole? A rule body's call is typed alone
+    /// before the call holding it is (`rule_dispatch::dispatch_calls_in_occ`), so a call held
+    /// there is said, or refused, by that later walk ([`HeldCall`]).
+    pub(super) typed_again_by_its_parent: bool,
     pub diagnostics: Vec<String>,
     /// WI-20260830-JM7A8 — WHERE A VALUE PRECONDITION'S FAILURE IS RECORDED INSTEAD OF
     /// RAISED, so the SAME call's effects are still attributed and an independent effect
@@ -345,6 +349,7 @@ impl TypingEnv {
             enclosing_const: None,
             debruijn_types: Rc::new(HashMap::new()),
             rule_body_dispatch: None,
+            typed_again_by_its_parent: false,
             diagnostics: Vec::new(),
             // WI-20260830-JM7A8: OFF by default — see the field doc. Only a caller that
             // drains installs a sink.
@@ -432,6 +437,13 @@ impl TypingEnv {
             self.rule_body_dispatch,
             Some(RuleText::Fragment | RuleText::Expression)
         )
+    }
+
+    /// This env, for text an enclosing walk types again ([`Self::typed_again_by_its_parent`]).
+    pub(super) fn typed_again(&self) -> TypingEnv {
+        let mut env = self.clone();
+        env.typed_again_by_its_parent = true;
+        env
     }
 
     /// The env a call of a rule body's own term is typed in ([`RuleText::Fragment`]).

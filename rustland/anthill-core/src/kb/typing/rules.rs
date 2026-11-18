@@ -1112,8 +1112,9 @@ fn ground_fill_goals(
     goal: &dyn Fn(Symbol, Vec<Rc<NodeOccurrence>>) -> Rc<NodeOccurrence>,
 ) -> Option<Vec<Rc<NodeOccurrence>>> {
     debug_assert!(
-        type_term_head_sym(kb, bound).is_some_and(|h| kb.has_sort_domain(h)),
-        "a fillable bound has a head with a domain",
+        schema_fields(kb, &Value::term(bound)).is_some()
+            || type_term_head_sym(kb, bound).is_some_and(|h| kb.has_sort_domain(h)),
+        "a fillable bound is a tuple or has a head with a domain",
     );
     kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)
         .map(|apply| vec![goal(apply, vec![ty(), var()])])
@@ -1276,12 +1277,17 @@ fn with_written_binding_keys(kb: &mut KnowledgeBase, t: TermId) -> TermId {
 }
 
 /// Can a value of the bound's type be FILLED: its sort has a `SortDomain`, and so does every
-/// argument that sort's `fill` reads — its conditions? A variable counts, being pinned when the
-/// clause runs. Provider-constrained carrier variables are gated separately by
-/// rule_bound_has_provider_requirement; their obligation is a dictionary read,
-/// not a fillable spec type. A function type, tuple or abstract sort keeps only
-/// the conformance check.
+/// argument that sort's `fill` reads — its conditions? A tuple can where each of its components
+/// can. A variable counts, being pinned when the clause runs. Provider-constrained carrier
+/// variables are gated separately by rule_bound_has_provider_requirement; their obligation is a
+/// dictionary read, not a fillable spec type. A function type or abstract sort keeps only the
+/// conformance check.
 fn bound_is_fillable(kb: &KnowledgeBase, t: TermId) -> bool {
+    if let Some(fields) = schema_fields(kb, &Value::term(t)) {
+        return fields
+            .iter()
+            .all(|(_, c)| matches!(c, Value::Term { id, .. } if bound_is_fillable(kb, *id)));
+    }
     match kb.get_term(t) {
         Term::Var(_) => true,
         Term::Ref(s) => kb.has_sort_domain(*s),

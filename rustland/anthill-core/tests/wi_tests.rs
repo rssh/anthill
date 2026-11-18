@@ -2524,8 +2524,14 @@ mod wi_cbrd2_guard_argument_test;
 mod wi_cbrd2_proof_derives_no_dictionary_test;
 #[path = "include/wi_jwcnn_tuple_equality_test.rs"]
 mod wi_jwcnn_tuple_equality_test;
+#[path = "include/held_call_slot_said_test.rs"]
+mod held_call_slot_said_test;
 #[path = "include/wi_411a7_tuple_type_value_test.rs"]
 mod wi_411a7_tuple_type_value_test;
+#[path = "include/wi_hwd8a_tuple_domain_and_pattern_test.rs"]
+mod wi_hwd8a_tuple_domain_and_pattern_test;
+#[path = "include/tuple_written_provisions_test.rs"]
+mod tuple_written_provisions_test;
 #[path = "include/wi_cbrd2_constraint_typed_test.rs"]
 mod wi_cbrd2_constraint_typed_test;
 #[path = "include/wi_cbrd2_typed_execute_test.rs"]

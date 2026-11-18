@@ -372,9 +372,10 @@ impl OpImplTable {
                 _ => continue,
             };
             // Read the materialized body NodeOccurrence from the KB.
-            // Ops with no body (spec-level declarations) are skipped, and so is a
-            // composite's derived `eq`: the emitted struct's `operator==` is its equality.
-            if kb.is_derived_eq_member(op_sym) {
+            // Ops with no body (spec-level declarations) are skipped, and so are a
+            // composite's derived `eq` and `hash`: the emitted struct's `operator==` is its
+            // equality, and nothing emitted calls a `hash` (the generator has no `Map`).
+            if kb.is_derived_member(op_sym) {
                 continue;
             }
             if let Some(node) = kb.op_body_node(op_sym) {
@@ -2244,8 +2245,9 @@ fn operations_in_sort(
             Some(s) => s,
             None => continue,
         };
-        // A composite's derived `eq` is the struct's `operator==`, not a method.
-        if kb.is_derived_eq_member(op_sym) {
+        // A composite's derived `eq` is the struct's `operator==`, not a method; its derived
+        // `hash` is read by no emitted code.
+        if kb.is_derived_member(op_sym) {
             continue;
         }
         // The operation's parent sort is the prefix of its qualified
@@ -3106,7 +3108,7 @@ fn classify_namespace(
             let Some(op_sym) = anthill_core::kb::op_info::head_name_ref(kb, &row) else {
                 continue;
             };
-            if kb.is_derived_eq_member(op_sym) {
+            if kb.is_derived_member(op_sym) {
                 continue;
             }
             let Some(parent_qn) = parent_qualified_name(kb, op_sym) else {

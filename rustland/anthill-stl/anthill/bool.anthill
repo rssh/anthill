@@ -19,5 +19,6 @@ namespace anthill.prelude
     -- WI-644 / proposal 004: Bool is lawful — PartialEq base + Eq marker.
     provides PartialEq[T = Bool]
     provides Eq[T = Bool]
+    provides Hash[T = Bool]
   end
 end

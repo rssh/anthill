@@ -794,14 +794,17 @@ fn a_conditional_provisions_goals_answer_a_reflect_query() {
     // WI-20261016-YM8HD the demand is `TypeValuePattern provides TypePattern[T = T] :-
     // TypeValue[T = T]`, proposal 071, and `ErrorTag` is retired.)
     //
+    // FOURTEEN since `Pair` writes a sixth, `provides Hash[Self] :- Hash[A], Hash[B]`
+    // (library proposal 001-map).
+    //
     // Still asserted as a COUNT and not `!is_empty()`, for the original reason: a rule
     // that dropped the `provided` join would still answer, and would answer the same
     // rows for every spec.
     assert_eq!(
         solutions.len(),
-        12,
+        14,
         "`provides_when(Pair, ?spec, ?cond)` must answer once per condition of each of \
-         `Pair`'s five written provisions PLUS its derived `TypeValue` one — the \
+         `Pair`'s six written provisions PLUS its derived `TypeValue` one — the \
          prelude's `reify` clause holds the derivation gate open",
     );
 }

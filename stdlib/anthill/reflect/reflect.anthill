@@ -60,9 +60,12 @@ namespace anthill.reflect
   -- `Map` key.
   -- Written in a secondary entry because `sort Symbol = ?` has no body to write it in.
   operation symbolEq(a: Symbol, b: Symbol) -> Bool = a === b
+  -- And its hash is its identity's.
+  operation symbolHash(a: Symbol) -> anthill.prelude.Int64 = anthill.kernel.struct_hash(a)
   namespace Symbol
     provides anthill.prelude.PartialEq[T = Symbol, eq = symbolEq]
     provides anthill.prelude.Eq[T = Symbol]
+    provides anthill.prelude.Hash[T = Symbol, hash = symbolHash]
   end
 
   -- Two terms are equal when they are the same structure, and two that are `Float`s compare
@@ -208,8 +211,8 @@ namespace anthill.reflect
      No argument or result of `admits` stands at `T`, so a call names its instance in its
      bracket: `TypePattern.admits[T = X](t)`.
 
-     A tuple has no type pattern, though it has a `TypeValue`: a pattern at a tuple, or at
-     a type that holds one, is refused at load. >}
+     A tuple pattern admits by label, with width and permutation, as `<:` reads a tuple:
+     `(a: Int64)` admits `(a: Int64, b: String)`, and `(Int64, String)` does not. >}
   sort TypePattern
     sort T = ?
     operation admits(t: Type) -> Bool

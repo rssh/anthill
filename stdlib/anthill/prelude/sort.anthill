@@ -40,9 +40,12 @@ namespace anthill.prelude
   -- denotes a sort resolves its dot in that sort (kernel-language.md §5.4).
   -- A type's equality is its identity.
   operation typeEq(a: Type, b: Type) -> Bool = a === b
+  -- And its hash is its identity's.
+  operation typeHash(a: Type) -> Int64 = anthill.kernel.struct_hash(a)
   namespace Type
     provides PartialEq[T = Type, eq = typeEq]      -- WI-644: Eq requires the PartialEq base
     provides Eq[T = Type]
+    provides Hash[T = Type, hash = typeHash]
     provides Lattice[T = Type]
   end
 end
@@ -399,6 +402,9 @@ enum anthill.prelude.EffectExpression
 
   provides PartialEq[T = EffectExpression]   -- WI-644: Eq requires the PartialEq base
   provides Eq[T = EffectExpression]
+  -- Its hash is its structure's, which its equality is (`anthill.prelude.Hash`).
+  operation hash(x: EffectExpression) -> Int64 = anthill.kernel.struct_hash(x)
+  provides Hash[T = EffectExpression]
 end
 
 -- Standalone records used by `TypeExtractor` — kept OUTSIDE the enum (so the

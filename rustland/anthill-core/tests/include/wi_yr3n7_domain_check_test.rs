@@ -35,7 +35,8 @@
 //!  * [H] a refining sort with no domain admitted without its conformance check — NO ROW, by
 //!    design: a value a constructor heads always conforms to its own sort's top type, so the
 //!    two answer alike today; the check keeps the path before this ticket's reading, under
-//!    which a value whose type is not decided yet waits;
+//!    which a value whose type is not decided yet waits (measured before the merge with
+//!    WI-20261116-HWD8A, whose tuple domains leave the fixture's `Other2` a domain of its own);
 //!  * [N] a typed head's ground bound filled by name where it has no conditions —
 //!    `wi_j9ssg::a_refining_value_is_in_the_refined_domain` (the call's case never runs);
 //!  * [S] the clause-order sort off (facts first, the index's map order inside) — 12 in each of
@@ -133,7 +134,7 @@ end
 /// Refining values reached past the guard in front of the body, which reads a non-parametric
 /// sort's top type alone: through a list element, from a column of mixed types (the ticket's
 /// row 7 device). `Twin[Q]` refines `Pair` at ONE type for both of its parameters; `Other2`
-/// refines `Base` with a field no domain fills (a tuple), so it has no domain of its own.
+/// refines `Base` with a tuple field, which a tuple's `SortDomain` fills (WI-20261116-HWD8A).
 const REFINE: &str = r#"
 namespace yr3n7f
   import anthill.prelude.{List, Int64}
@@ -337,12 +338,10 @@ fn an_unbound_column_generates_in_declaration_order() {
 /// A REFINEMENT'S INSTANCE IS CHECKED WHOLE (`/code-review`): `Twin[Q] requires Pair[A = Q, B =
 /// Q]` names `Q` twice, so a `twin` is no `Pair[A = Colour, B = Letter]` — `Q` meets `Colour`
 /// at `A` and `Letter` at `B` — and is one at `Pair[A = Colour, B = Colour]`. FAILS with a
-/// parameter's later slot left uncompared (`atL` answers the `twin` too).
-///
-/// CONTROL, and a LIMIT stated: a refining sort with NO DOMAIN of its own (`Other2`, whose tuple
-/// field no domain fills) has its value checked as a type with no domain is, by CONFORMANCE —
-/// the check the path before this ticket ran (`DomainEvidence::NoDomainType`), which reads the
-/// top type: `o2(p: (1, "s"))` is admitted beside `o2(p: (1, 2))`, as it was there.
+/// parameter's later slot left uncompared (`atL` answers the `twin` too). And a refining value
+/// is FILLED at its own sort, to its fields' components: `o2(p: (1, "s"))` at `Base` is refused
+/// by the tuple's element, `o2(p: (1, 2))` admitted. FAILS under [C] (no refining value is in
+/// `Base`'s domain).
 #[test]
 fn a_refinements_instance_is_checked_whole() {
     let mut kb = load_kb_with(REFINE);
@@ -355,8 +354,8 @@ fn a_refinements_instance_is_checked_whole() {
     assert!(at_c.iter().any(|(r, _)| r.contains("twin")), "{at_c:?}");
     assert_eq!(definite_unary(&mut kb, "yr3n7f.mkB").len(), 2, "untyped: both values");
     let at_b = crate::common::shown_rows(&mut kb, "yr3n7f.atB");
-    assert_eq!(at_b.len(), 2, "conformance reads the top type: {at_b:?}");
-    assert!(at_b.iter().all(|(_, definite)| *definite), "{at_b:?}");
+    assert_eq!(at_b.len(), 1, "`o2(p: (1, 2))` alone: {at_b:?}");
+    assert!(!at_b[0].0.contains('"') && at_b[0].1, "{at_b:?}");
 }
 
 /// 060 §2.3's BOUND READING at a rigid type: `hasAt[X = Wrap[T = Colour]](wrap(v: red))` goes

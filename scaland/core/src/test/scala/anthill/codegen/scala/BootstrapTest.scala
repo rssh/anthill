@@ -214,11 +214,12 @@ class BootstrapTest extends munit.FunSuite:
     // this reports the compiler's own error; the test above stays green either way.
     //
     // The whole closure goes to one invocation because `Eq` and `NonEq` name `PartialEq`,
-    // which a sibling file declares. eq.anthill is self-contained — the three sorts
+    // which a sibling file declares. eq.anthill is self-contained — the four sorts
     // reference only each other — so no other stdlib file is needed here.
     val files = gen(parseStdlib("anthill/prelude/eq.anthill"))
     assertEquals(files.map(_.relPath).sorted, IndexedSeq(
       "src/main/scala/anthill/prelude/Eq.scala",
+      "src/main/scala/anthill/prelude/Hash.scala",
       "src/main/scala/anthill/prelude/NonEq.scala",
       "src/main/scala/anthill/prelude/PartialEq.scala",
     ), "the closure being compiled must be the whole file, not a subset that happens to work")
@@ -1598,10 +1599,11 @@ class BootstrapTest extends munit.FunSuite:
       s"the witness must reach the body as a `using` parameter:\n$src")
     // EVERY operation, not the ones a reader guesses need it: a sort-level `requires`
     // "supplies every body's evidence" (kernel §8.7), so the signature that omitted it
-    // would be the one an implementor cannot write. `SortedSet` has twenty: its surface
+    // would be the one an implementor cannot write. `SortedSet` has twenty-two: its surface
     // (WI-456 added `iterator` / `collect` / `size` / `eq` with the collection and
-    // equality provisions) plus the weight-balanced tree's own workers.
-    assertEquals(src.linesIterator.count(_.contains("(using O)")), 20,
+    // equality provisions, library proposal 001-map `hash`) plus the weight-balanced tree's
+    // own workers.
+    assertEquals(src.linesIterator.count(_.contains("(using O)")), 22,
       s"every operation of the sort takes the dictionary:\n$src")
     // The parameter is a BINDER here and an ARGUMENT at every use, so the bound must
     // appear on the declaration and nowhere else — `SortedSet[T, O <: Ord[T]]` in a
@@ -1757,8 +1759,8 @@ class BootstrapTest extends munit.FunSuite:
       "(using _root_.anthill.prelude.Eq[T]): Set[T]"),
       s"Set's element equality must reach its bodies:\n$set")
     val map = preludeClosure("map").head.contents
-    assert(map.contains("(using _root_.anthill.prelude.Eq[K])"),
-      s"Map's key equality must reach its bodies:\n$map")
+    assert(map.contains("(using _root_.anthill.prelude.Hash[K])"),
+      s"Map's key hash must reach its bodies:\n$map")
     val vectorSpace = preludeClosure("algebra")
       .find(_.relPath.endsWith("/VectorSpace.scala"))
       .getOrElse(fail("expected VectorSpace.scala")).contents
@@ -2489,7 +2491,7 @@ class BootstrapTest extends munit.FunSuite:
     Seq(
       ("set", "Set", "trait Set[T]:", "`requires _root_.anthill.prelude.Eq[T]`",
         "carrier is\n//   `Set` itself (self-representing)"),
-      ("map", "Map", "trait Map[K, V]:", "`requires _root_.anthill.prelude.Eq[K]`",
+      ("map", "Map", "trait Map[K, V]:", "`requires _root_.anthill.prelude.Hash[K]`",
         "carrier is\n//   `Map` itself (self-representing)"),
       ("algebra", "VectorSpace", "trait VectorSpace[V, F]:", "`requires Ring[F]`",
         "carrier is\n//   its parameter `V`"),

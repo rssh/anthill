@@ -478,6 +478,13 @@ fn collect_conditions(
         out.insert(i);
         return;
     }
+    // A tuple fills each of its components.
+    if let Some(components) = tuple_components(kb, t) {
+        for (_, component) in components {
+            collect_conditions(kb, component, c, conds, params_of, out);
+        }
+        return;
+    }
     let Some(head) = type_head(kb, t) else {
         return;
     };
@@ -497,9 +504,9 @@ fn collect_conditions(
 }
 
 /// The candidates that CAN be filled, as a GREATEST fixpoint: a sort drops out when some
-/// field of some entity names a type with no `SortDomain` — a function type, a tuple, a sort
-/// with no constructors that is no primitive, or a sort that itself dropped out — at a
-/// position `fill` reads. Mutually recursive sorts keep each other.
+/// field of some entity names a type with no `SortDomain` — a function type, a sort with no
+/// constructors that is no primitive, a sort that itself dropped out, or a tuple holding one
+/// — at a position `fill` reads. Mutually recursive sorts keep each other.
 fn fillable_fixpoint(
     kb: &mut KnowledgeBase,
     candidates: &[Candidate],
@@ -560,6 +567,12 @@ fn field_fillable(
 ) -> bool {
     if t == c.self_type || param_index(kb, t, &c.job.params).is_some() {
         return true;
+    }
+    // A tuple can be filled where each of its components can.
+    if let Some(components) = tuple_components(kb, t) {
+        return components
+            .into_iter()
+            .all(|(_, component)| field_fillable(kb, component, c, alive, conds, params_of));
     }
     let Some(head) = type_head(kb, t) else {
         return false;
@@ -643,6 +656,10 @@ enum Evidence {
     Type(TermId),
     /// `Dictionary(subs…, impl: H)` for a type `H[args]` mentioning the sort's parameters.
     Dict(Symbol, Vec<Evidence>),
+    /// A tuple mentioning the sort's parameters: its `SortDomain` dictionary, which holds its
+    /// `Fillable`, `Dictionary(subs…, impl: NamedTuple, labels: (…))`, one sub per component,
+    /// and its labels.
+    Tuple(Vec<Symbol>, Vec<Evidence>),
     /// A slot of the layout no `fill` reads — `SortDomain`'s own chain, a sort-level
     /// `requires` — in a dictionary built here.
     Placeholder,
@@ -653,7 +670,9 @@ impl Evidence {
     fn reads_self(&self) -> bool {
         match self {
             Evidence::SelfDict | Evidence::Sub(_) => true,
-            Evidence::Dict(_, subs) => subs.iter().any(Evidence::reads_self),
+            Evidence::Dict(_, subs) | Evidence::Tuple(_, subs) => {
+                subs.iter().any(Evidence::reads_self)
+            }
             Evidence::Type(_) | Evidence::Placeholder => false,
         }
     }
@@ -793,6 +812,16 @@ fn evidence(kb: &mut KnowledgeBase, t: TermId, c: &Candidate, entry: &SortDomain
             .expect("a parameter a field fills is a condition");
         return Evidence::Sub(entry.sub_offset + k);
     }
+    if let Some(components) = tuple_components(kb, t) {
+        if !term_mentions_params(kb, t, &c.job.params) {
+            return Evidence::Type(t);
+        }
+        let (labels, subs) = components
+            .into_iter()
+            .map(|(label, component)| (label, evidence(kb, component, c, entry)))
+            .unzip();
+        return Evidence::Tuple(labels, subs);
+    }
     let head = type_head(kb, t).expect("a fillable field type has a nominal head");
     let target = kb
         .sort_domain(head)
@@ -841,7 +870,40 @@ fn evidence_term(kb: &mut KnowledgeBase, syms: &ClauseSyms, ev: Evidence, self_v
             let reads = syms.reads();
             crate::kb::typing::dictionary_term(kb, (reads.dict_ctor, reads.dict_impl), head, &subs)
         }
+        Evidence::Tuple(labels, subs) => {
+            let subs: SmallVec<[TermId; 4]> = subs
+                .into_iter()
+                .map(|s| evidence_term(kb, syms, s, self_var))
+                .collect();
+            let reads = syms.reads();
+            let named_tuple = kb
+                .named_tuple_sort()
+                .expect("a tuple field is filled only where the prelude declares `NamedTuple`");
+            // The labels' tuple is viewed by `_N` keys (`term_view::labels_of_view`).
+            kb.intern_positional_labels(labels.len());
+            let fillable = crate::kb::typing::labelled_dictionary_term(
+                kb,
+                (reads.dict_ctor, reads.dict_impl),
+                named_tuple,
+                &subs,
+                &labels,
+            )
+            .expect("a tuple's dictionary is built only where `Dictionary.labels` is declared");
+            crate::kb::typing::dictionary_term(kb, (reads.dict_ctor, reads.dict_impl), named_tuple, &[fillable])
+        }
     }
+}
+
+/// The components of the tuple type `t`, label and type, in the type's order; `None` where `t`
+/// is no tuple.
+fn tuple_components(kb: &KnowledgeBase, t: TermId) -> Option<Vec<(Symbol, TermId)>> {
+    let fields = crate::kb::typing::schema_fields(kb, &crate::eval::value::Value::term(t))?;
+    Some(
+        fields
+            .into_iter()
+            .map(|(label, component)| (label, component.expect_term()))
+            .collect(),
+    )
 }
 
 /// Is `t` the canonical variable of one of `params`, and which?

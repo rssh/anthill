@@ -118,6 +118,7 @@ const HOST_FNS: &[(
     // A tuple's derived `eq` (proposal 004's extension): its components, each through its
     // sub-dictionary.
     ("named_tuple_eq", 2, named_tuple_eq),
+    ("named_tuple_hash", 1, named_tuple_hash),
     // The TOTAL scalar order (`Ord`): `Int64`, `BigInt`, `String`.
     ("ordered_compare", 2, ordered_compare),
     ("ordered_gt", 2, ordered_gt),
@@ -333,6 +334,9 @@ const HOST_FNS: &[(
     ("kernel_struct_eq", 2, builtin_struct_eq),
     // `!==`, its negation (`kernel.anthill`).
     ("kernel_struct_neq", 2, builtin_struct_neq),
+    // A structural hash, and the mix a composite's `hash` combines with (`kernel.anthill`).
+    ("kernel_struct_hash", 1, kernel_struct_hash),
+    ("kernel_hash_mix", 2, kernel_hash_mix),
     // `Map` — the interpreter's map arena (`map.anthill`).
     ("map_empty", 0, map_empty),
     ("map_put", 3, map_put),
@@ -1465,6 +1469,30 @@ fn builtin_struct_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
     struct_equal("struct_eq", i, args, true)
 }
 
+/// `anthill.kernel.struct_hash` — a hash of the value's structure, the fingerprint a map keys
+/// it by: two values `===` calls equal have one fingerprint, and so one hash. A value with no
+/// fingerprint (a variable, a closure, a runtime handle) is refused.
+fn kernel_struct_hash(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use std::hash::{Hash, Hasher};
+    let [x] = expect_args::<1>("struct_hash", args)?;
+    let key = super::map_arena::MapKey::of_value(&i.kb, &x)
+        .ok_or_else(|| type_mismatch("a value with a structure to hash", &x, None))?;
+    // `DefaultHasher::new` is keyed alike in every run, so a hash is the same in each.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    Ok(Value::Int(hasher.finish() as i64))
+}
+
+/// `anthill.kernel.hash_mix` — `seed` and `value` mixed into one hash (the 64-bit form of
+/// `boost::hash_combine`), wrapping rather than raising on overflow.
+fn kernel_hash_mix(_: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [seed, value] = expect_args::<2>("hash_mix", args)?;
+    let (Value::Int(seed), Value::Int(value)) = (&seed, &value) else {
+        return Err(type_mismatch("two Int64 hashes", &seed, Some(&value)));
+    };
+    Ok(Value::Int(mix_hashes(*seed, *value)))
+}
+
 /// `anthill.kernel.struct_neq` (`!==`) — the negation of [`builtin_struct_eq`]: `nan !== nan`
 /// is false.
 fn builtin_struct_neq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -1518,7 +1546,9 @@ fn float_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 /// are equal when each pair of components is, compared at the member the component's
 /// sub-dictionary names, in the order the tuple's dictionary lists them
 /// (`KnowledgeBase::tuple_component_order`). Entered through the tuple's dictionary, which it
-/// reads; a component that cannot be decided is undecided for the tuple.
+/// reads, each value's component found by the dictionary's label: a value wider than its type
+/// is compared at the type's components alone (kernel-language §4.5). A component that cannot
+/// be decided is undecided for the tuple.
 fn named_tuple_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("namedTupleEq", args)?;
     let dict = i.builtin_dispatch_dict.clone().ok_or_else(|| {
@@ -1528,22 +1558,34 @@ fn named_tuple_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
                 .to_string(),
         )
     })?;
-    let pairs = match i.kb().tuple_component_pairs_in_order(&a, &b) {
+    let Some(labels) = dict.labels() else {
+        return Err(EvalError::Internal(
+            "`namedTupleEq` was entered with a dictionary holding no labels: a tuple's \
+             equality reads each value's component by the label its type gives it"
+                .to_string(),
+        ));
+    };
+    if labels.len() != dict.arity() {
+        return Err(EvalError::Internal(format!(
+            "`namedTupleEq`: the dictionary holds {} labels and {} sub-dictionaries",
+            labels.len(),
+            dict.arity()
+        )));
+    }
+    let pairs = match i.kb().tuple_component_pairs_by_labels(&a, &b, &labels) {
         Some(crate::kb::eq_derive::TuplePairs::Pairs(pairs)) => pairs,
-        Some(crate::kb::eq_derive::TuplePairs::Mismatch) => return Ok(Value::Bool(false)),
+        Some(crate::kb::eq_derive::TuplePairs::Mismatch) => {
+            return Err(EvalError::Internal(format!(
+                "`namedTupleEq`: a tuple lacks a component its type names, comparing {a:?} \
+                 and {b:?}"
+            )))
+        }
         None => {
             return Err(EvalError::Internal(format!(
                 "`namedTupleEq` compares two tuples, got {a:?} and {b:?}"
             )))
         }
     };
-    if pairs.len() != dict.arity() {
-        return Err(EvalError::Internal(format!(
-            "`namedTupleEq`: the tuples have {} components and the dictionary {}",
-            pairs.len(),
-            dict.arity()
-        )));
-    }
     for (k, (x, y)) in pairs.into_iter().enumerate() {
         let sub = dict.sub(k).expect("k < arity");
         match i.kb_mut().bridge_eq_through_dictionary(&sub, x, y)? {
@@ -1560,6 +1602,50 @@ fn named_tuple_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
         }
     }
     Ok(Value::Bool(true))
+}
+
+/// `NamedTuple.namedTupleHash` — a tuple's hash through the tuple's `Hash` dictionary: its
+/// `Eq` in the chain slot, then its components' `Hash` instances as one dictionary labelled by
+/// the type's labels. Each component the value holds at a label is hashed through its own
+/// instance and mixed in, so a value wider than its type, or listing its labels in another
+/// order, hashes as its `eq` reads it.
+fn named_tuple_hash(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [v] = expect_args::<1>("namedTupleHash", args)?;
+    let dict = i.builtin_dispatch_dict.clone().ok_or_else(|| {
+        EvalError::Internal("`namedTupleHash` was entered with no dictionary".to_string())
+    })?;
+    let components_dict = dict.sub(1).filter(|_| dict.arity() == 2).ok_or_else(|| {
+        EvalError::Internal(format!(
+            "`namedTupleHash`: the dictionary holds {} sub-dictionaries, where its `Eq` and its \
+             components' were wanted",
+            dict.arity()
+        ))
+    })?;
+    let labels = components_dict.labels().ok_or_else(|| {
+        EvalError::Internal("`namedTupleHash`: the components' dictionary holds no labels".to_string())
+    })?;
+    let components = match i.kb().tuple_components_by_labels(&v, &labels) {
+        Some(Some(components)) => components,
+        Some(None) => return Err(type_mismatch("a tuple with every label of its type", &v, None)),
+        None => return Err(type_mismatch("a tuple", &v, None)),
+    };
+    let mut h = labels.len() as i64;
+    for (k, component) in components.into_iter().enumerate() {
+        let sub = components_dict.sub(k).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "`namedTupleHash`: the components' dictionary holds no instance for component {k}"
+            ))
+        })?;
+        let hk = i.kb_mut().bridge_hash_through_dictionary(&sub, component)?;
+        h = mix_hashes(h, hk);
+    }
+    Ok(Value::Int(h))
+}
+
+/// Two hashes mixed into one — `anthill.kernel.hash_mix`'s arithmetic.
+fn mix_hashes(seed: i64, value: i64) -> i64 {
+    let (s, v) = (seed as u64, value as u64);
+    (s ^ v.wrapping_add(0x9e37_79b9_7f4a_7c15).wrapping_add(s << 6).wrapping_add(s >> 2)) as i64
 }
 
 /// `termEq`, `Term`'s `eq`: two terms are equal when they are the same structure, and two
@@ -6735,10 +6821,152 @@ fn map_key(
     })
 }
 
+/// `Map.empty`, which keeps the `Hash[T = K]` instance its call was handed: every key of the
+/// map, and of each map `put` and `remove` derive from it, is read through it ([`map_slot`]).
 fn map_empty(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [] = expect_args::<0>("Map.empty", args)?;
-    let handle = interp.alloc_map(super::map_arena::MapBody::new());
+    let key_hash = map_key_hash(interp)?;
+    // An instance that names no provider — a host call's, at a key type its value leaves open
+    // (`none`, an `Option[T = ?]`) — is refused where the map is made, as a dispatch through it
+    // would be, and not where a key first reads it.
+    let hash_op = interp
+        .kb
+        .try_resolve_symbol("anthill.prelude.Hash.hash")
+        .ok_or_else(|| EvalError::Internal("this KB declares no `Hash.hash`".to_string()))?;
+    crate::kb::typing::resolve_op_target_checked(&interp.kb, key_hash.impl_sort(), hash_op)
+        .map_err(|refusal| EvalError::dispatch_refused(&interp.kb, hash_op, key_hash.impl_sort(), refusal))?;
+    let handle = interp.alloc_map(super::map_arena::MapBody::keyed_by(key_hash));
     Ok(Value::Map(handle))
+}
+
+/// The `Hash[T = K]` instance the running `Map.empty` call was handed: the requirement its
+/// declaration states, in the channel its call passed (`Interpreter::running_builtin`), as a
+/// raising host operation reads its `TypeValue`. `Map`'s own `requires Hash[T = K]`, the bound
+/// every written `Map[K = …]` is checked against, is a slot of the chain too, and no call
+/// passes it: the slot read is the one the call filled.
+fn map_key_hash(interp: &mut Interpreter) -> Result<Dictionary, EvalError> {
+    let missing = |why: &str| EvalError::Internal(format!("`Map.empty` has no `Hash` instance of its key type: {why}"));
+    let Some((op, requirements)) = interp
+        .running_builtin
+        .as_ref()
+        .map(|b| (b.op, b.requirements.clone()))
+    else {
+        return Err(missing("it was not called as an operation"));
+    };
+    let hash = interp
+        .kb
+        .try_resolve_symbol("anthill.prelude.Hash")
+        .ok_or_else(|| missing("this KB declares no `Hash`"))?;
+    let chain = crate::kb::typing::op_dict_entries(&mut interp.kb, op);
+    let slots: Vec<usize> = chain
+        .entries()
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| interp.kb.canonical_sort_sym(entry.required_sort) == interp.kb.canonical_sort_sym(hash))
+        .map(|(i, _)| i)
+        .collect();
+    if slots.is_empty() {
+        return Err(missing("its declaration requires none"));
+    }
+    slots
+        .into_iter()
+        .filter_map(|i| chain.name_at(&mut interp.kb, i))
+        .find_map(|name| super::eval::find_requirement(&requirements, name).cloned())
+        .ok_or_else(|| missing("its caller handed none — a map is made where its key type is known, or under a `requires Hash[T = K]`"))
+}
+
+thread_local! {
+    static MAP_KEY_COMPARISONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times a map has compared a key with a stored one through `eq` ON THIS THREAD,
+/// ever ([`map_slot`]). An instrument for what a result cannot show, that a key is compared
+/// with the stored keys of its bucket alone: a test reads it before and after building a map
+/// and asserts on the difference; a libtest thread runs one test.
+pub fn map_key_comparisons_by_this_thread() -> u64 {
+    MAP_KEY_COMPARISONS.with(|c| c.get())
+}
+
+/// Where a key stands in a map ([`map_slot`]).
+enum MapSlot {
+    /// No `eq` of its own reaches the key: its structure is its slot.
+    Structural(super::map_arena::MapKey),
+    /// One does, and the key, hashed to `hash`, is equal to `key`, a stored key of that bucket.
+    Stored { hash: i64, key: super::map_arena::MapKey },
+    /// One does, and the key, hashed to `hash`, is equal to no stored key of that bucket: `key`
+    /// is what it is stored under.
+    New { hash: i64, key: super::map_arena::MapKey },
+}
+
+/// The slot `key` addresses in `body`, read through the map's `Hash[T = K]` instance. A key no
+/// `eq` of its own reaches is keyed by its structure, a tuple at the labels its type names
+/// ([`canonical_map_key`]); one that reaches one is hashed through the instance and compared
+/// through `eq` with the stored keys of its bucket alone. `body` is the map's own copy, so the
+/// `hash` and `eq` members run with no borrow of the arena held.
+fn map_slot(
+    interp: &mut Interpreter,
+    body: &super::map_arena::MapBody,
+    key: &Value,
+) -> Result<MapSlot, EvalError> {
+    // A `Hash` instance holds the `Eq` it provides first, in its chain's slot.
+    let eq = body.key_hash().sub(0).ok_or_else(|| {
+        EvalError::Internal("a map's `Hash` instance holds no `Eq` to compare its keys through".to_string())
+    })?;
+    if !interp.kb.fold_gate(key, None, 0, crate::kb::resolve::REACHES_EQ_OVERRIDE) {
+        return Ok(MapSlot::Structural(map_key(&interp.kb, &canonical_map_key(&interp.kb, key, &eq)?)?));
+    }
+    let partial = eq.sub(0).ok_or_else(|| {
+        EvalError::Internal("a map's `Eq` instance holds no `PartialEq` to compare its keys through".to_string())
+    })?;
+    let hash = interp.kb_mut().bridge_hash_through_dictionary(body.key_hash(), key.clone())?;
+    let bucket: Vec<super::map_arena::MapKey> = body.bucket(hash).cloned().collect();
+    for k in bucket {
+        MAP_KEY_COMPARISONS.with(|c| c.set(c.get() + 1));
+        match interp.kb_mut().bridge_eq_through_dictionary(&partial, k.to_value(), key.clone())? {
+            crate::kb::resolve::BridgeEqOutcome::Decided(true) => {
+                return Ok(MapSlot::Stored { hash, key: k })
+            }
+            crate::kb::resolve::BridgeEqOutcome::Decided(false) => {}
+            crate::kb::resolve::BridgeEqOutcome::Undecided { .. } => {
+                return Err(EvalError::Internal(
+                    "a map key's equality with a stored key of its bucket could not be decided".to_string(),
+                ))
+            }
+        }
+    }
+    Ok(MapSlot::New { hash, key: map_key(&interp.kb, key)? })
+}
+
+/// `key` as the structure a map stores it at, read through `eq`, `K`'s `Eq` instance: a tuple
+/// at the labels its type names, each component so through its own instance — a value wider
+/// than its type, or listing its labels in another order, is one key (kernel-language §4.5) —
+/// and any other value as it stands.
+fn canonical_map_key(kb: &crate::kb::KnowledgeBase, key: &Value, eq: &Dictionary) -> Result<Value, EvalError> {
+    if !kb.is_named_tuple_sort(eq.impl_sort()) {
+        return Ok(key.clone());
+    }
+    let broken = |why: &str| EvalError::Internal(format!("a tuple key's `Eq` instance {why}"));
+    // A tuple's `PartialEq` holds its labels; its `Eq` holds that `PartialEq` first.
+    let partial = if eq.labels().is_some() {
+        eq.clone()
+    } else {
+        eq.sub(0).ok_or_else(|| broken("holds no `PartialEq`"))?
+    };
+    let labels = partial.labels().ok_or_else(|| broken("holds no labels"))?;
+    let components = match kb.tuple_components_by_labels(key, &labels) {
+        Some(Some(components)) => components,
+        Some(None) => return Err(type_mismatch("a tuple with every label of the map's key type", key, None)),
+        None => return Err(type_mismatch("a tuple", key, None)),
+    };
+    let mut named = Vec::with_capacity(labels.len());
+    for (k, (label, component)) in labels.iter().zip(components).enumerate() {
+        let sub = partial.sub(k).ok_or_else(|| broken("holds no instance for a component"))?;
+        named.push((*label, canonical_map_key(kb, &component, &sub)?));
+    }
+    Ok(Value::Tuple {
+        pos: Vec::new().into(),
+        named: named.into(),
+    })
 }
 
 fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -6747,9 +6975,11 @@ fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
     let mut body = handle.clone_body();
-    body.insert(key, v_arg);
+    match map_slot(interp, &body, &k_arg)? {
+        MapSlot::Structural(key) | MapSlot::Stored { key, .. } => body.insert(key, v_arg),
+        MapSlot::New { hash, key } => body.insert_hashed(hash, key, v_arg),
+    }
     let new_handle = interp.alloc_map(body);
     Ok(Value::Map(new_handle))
 }
@@ -6763,8 +6993,13 @@ fn map_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
-    let found: Option<Value> = handle.with_body(|b| b.get(&key).cloned());
+    // The map's own copy, keyed with no borrow held: a key that is itself a map reads its
+    // own, and a key's `hash` and `eq` members run.
+    let body = handle.clone_body();
+    let found: Option<Value> = match map_slot(interp, &body, &k_arg)? {
+        MapSlot::Structural(key) | MapSlot::Stored { key, .. } => body.get(&key).cloned(),
+        MapSlot::New { .. } => None,
+    };
     Ok(match found {
         Some(v) => option_some(some_sym, value_key, v),
         None => option_none(none_sym),
@@ -6777,8 +7012,11 @@ fn map_contains(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
-    let present = handle.with_body(|b| b.contains_key(&key));
+    let body = handle.clone_body();
+    let present = match map_slot(interp, &body, &k_arg)? {
+        MapSlot::Structural(key) | MapSlot::Stored { key, .. } => body.contains_key(&key),
+        MapSlot::New { .. } => false,
+    };
     Ok(Value::Bool(present))
 }
 
@@ -6788,12 +7026,15 @@ fn map_remove(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
     let mut body = handle.clone_body();
     // `shift_remove` preserves the order of the remaining entries — matches
     // anthill's user-visible semantics that iteration order reflects insertion
     // order (and stays stable across removals).
-    body.shift_remove(&key);
+    match map_slot(interp, &body, &k_arg)? {
+        MapSlot::Structural(key) => body.shift_remove(&key),
+        MapSlot::Stored { hash, key } => body.shift_remove_hashed(hash, &key),
+        MapSlot::New { .. } => {}
+    }
     let new_handle = interp.alloc_map(body);
     Ok(Value::Map(new_handle))
 }

@@ -67,7 +67,9 @@
 //!    [`a_value_whose_sort_requires_the_spec_does_not_say_it_either`],
 //!    [`a_spec_typed_value_does_not_say_it_either`],
 //!    [`a_value_of_the_callees_own_spec_does_not_say_it_either`],
-//!    [`a_call_that_fixes_nothing_is_refused_alike_in_both_spellings`] (at `typed`),
+//!    `a_call_that_fixes_nothing_is_refused_alike_in_both_spellings` (at `typed`; that row
+//!    is now [`a_call_whose_slot_its_argument_position_says_runs_alike_in_both_spellings`]:
+//!    the parameter `mkS()` meets says its `S`, and the call is typed again there),
 //!    [`an_open_slot_is_not_filled_by_a_value_in_scope`],
 //!    [`a_hole_in_the_receiver_bracket_is_not_filled_either`],
 //!    [`an_open_slot_reaching_an_operations_requirement_is_refused_at_load`],
@@ -427,11 +429,13 @@ fn the_advised_bracket_reads_the_instance_in_scope() {
     );
 }
 
-/// THE TWO SPELLINGS OF ONE PROGRAM AGREE. `User.mkS()` owes the sort's requirement with
-/// nothing to fix `S`; at `typed` the `b` in scope discharged it and the program answered
-/// 31, at `value` it was refused. Both are refused at `mkS()` now.
+/// THE TWO SPELLINGS OF ONE PROGRAM AGREE. `User.mkS()` owes the sort's requirement at its
+/// `S`, which nothing at the call fixes; its value meets `go13`'s `o: Option[T = U]`, and `U`
+/// is `b`'s type, so that is the type `S` takes, and the requirement is built at it: `P`'s
+/// `Store`, and `go` answers 31 at both spellings. FAILS with the held call's second typing
+/// backed out (`HeldCall`): refused at both, "element `State = User.S` is unconstrained".
 #[test]
-fn a_call_that_fixes_nothing_is_refused_alike_in_both_spellings() {
+fn a_call_whose_slot_its_argument_position_says_runs_alike_in_both_spellings() {
     at_each_spelling(|sp| {
         let ns = format!("wi2kv4y.mks_{}", sp.tag);
         let body = format!(
@@ -440,11 +444,11 @@ fn a_call_that_fixes_nothing_is_refused_alike_in_both_spellings() {
             provider("P", sp.call, 30),
             sp.call
         );
-        assert_unfixed(
-            &load_errors_of(&program(&ns, &body)),
-            &ns,
-            "mkS",
-            &format!("`User.mkS()` fixing nothing, {}", sp.tag),
+        assert_eq!(
+            run_int64(&program(&ns, &body), &format!("{ns}.go")),
+            Ok(31),
+            "`User.mkS()` said by `go13`'s parameter, {}",
+            sp.tag
         );
     });
 }

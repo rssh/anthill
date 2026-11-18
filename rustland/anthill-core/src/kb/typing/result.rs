@@ -8,6 +8,7 @@ use super::*;
 
 /// Result of type_check: inferred type + updated env + collected effects.
 /// Mirrors typing_pass_spec.anthill: `TypeResult(type: Type, env: TypingEnv, effects: List[Type])`
+#[derive(Clone)]
 pub struct TypeResult {
     /// WI-342 ty-slot migration: the inferred type is carrier-agnostic — a
     /// ground type rides as `Value::Term`, a denoted-bearing type (today: a

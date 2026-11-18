@@ -12,6 +12,9 @@ sort anthill.prelude.Bool
     or(a: Bool, b: Bool) -> Bool @[host_implemented]
     not(a: Bool) -> Bool @[host_implemented]
   }
+  -- Its hash is its structure's, which its equality is. The binding layer provides
+  -- `anthill.prelude.Hash` with `Eq`.
+  operation hash(x: Bool) -> anthill.prelude.Int64 = anthill.kernel.struct_hash(x)
 
   -- Laws: Boolean algebra
   rule {

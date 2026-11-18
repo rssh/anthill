@@ -2378,12 +2378,13 @@ pub struct KnowledgeBase {
     /// carrier's `PartialEq` on `Eq[F]`, not on `PartialEq[F]`.
     pub(crate) conditional_eq_conditions:
         std::collections::HashMap<(Symbol, Symbol), Vec<(Symbol, Symbol)>>,
-    /// The `eq` members the derivation gave composites (`eq_derive::derived_eq_member_source`,
-    /// loaded by `load::load_derived_eq_members`), each by its symbol and its canonical
-    /// copy. A code generator realizes a composite's equality itself (`operator==`,
-    /// `derive`) and emits none of them; a declaration capturing one, or one capturing a
-    /// name, is no capture: the loader wrote it, and no text reads it by its bare name.
-    pub(crate) derived_eq_members: std::collections::HashSet<Symbol>,
+    /// The `eq` and `hash` members the derivation gave composites
+    /// (`eq_derive::derived_eq_member_source`, `derived_hash_member_source`, loaded by
+    /// `load::load_derived_eq_members`), each by its symbol and its canonical copy. A code
+    /// generator realizes a composite's equality itself (`operator==`, `derive`) and emits
+    /// none of them; a declaration capturing one, or one capturing a name, is no capture: the
+    /// loader wrote it, and no text reads it by its bare name.
+    pub(crate) derived_members: std::collections::HashSet<Symbol>,
     /// WI-20260919-HXGXF — canonical carriers whose `anthill.reflect.TypeValue` provision
     /// THIS LOADER DERIVED, so the derived-only refusal can tell its own rows from an
     /// author's.
@@ -3288,7 +3289,7 @@ impl KnowledgeBase {
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
             conditional_eq_conditions: std::collections::HashMap::new(),
-            derived_eq_members: std::collections::HashSet::new(),
+            derived_members: std::collections::HashSet::new(),
             derived_type_value_carriers: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
@@ -8941,13 +8942,13 @@ impl KnowledgeBase {
         }
     }
 
-    /// Is `op` an `eq` member the derivation gave a composite
-    /// ([`Self::derived_eq_members`])?
+    /// Is `op` an `eq` or `hash` member the derivation gave a composite
+    /// ([`Self::derived_members`])?
     ///
     /// Asked on the paths every `=` takes, so it reads the symbol as given: the set holds
     /// each member under its symbol and its canonical copy.
-    pub fn is_derived_eq_member(&self, op: Symbol) -> bool {
-        self.derived_eq_members.contains(&op)
+    pub fn is_derived_member(&self, op: Symbol) -> bool {
+        self.derived_members.contains(&op)
     }
 
     /// Where the law `eq_refl` answers `true` for a call of `op` on identical operands without

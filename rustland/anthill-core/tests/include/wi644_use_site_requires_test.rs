@@ -11,9 +11,13 @@
 fn assert_nonEq_key_error(errs: &[String], container: &str, carrier: &str) {
     assert!(
         errs.iter().any(|e| {
-            e.contains("lawful") && e.contains("Eq") && e.contains(container) && e.contains(carrier)
+            e.contains("lawful")
+                && e.contains(&format!("does not provide `{}`", crate::common::key_spec_of(container)))
+                && e.contains(container)
+                && e.contains(carrier)
         }),
-        "expected a `{container}` requires-lawful-Eq error naming `{carrier}`; got:\n{}",
+        "expected a `{container}` requires-lawful-`{}` error naming `{carrier}`; got:\n{}",
+        crate::common::key_spec_of(container),
         errs.join("\n"),
     );
 }

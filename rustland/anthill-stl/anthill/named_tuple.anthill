@@ -4,7 +4,8 @@ namespace anthill.prelude
   provides NamedTuple language rust
     artifact "rustland/anthill-core/src/eval/builtins.rs"
     operation_map {
-      namedTupleEq: "named_tuple_eq"
+      namedTupleEq: "named_tuple_eq",
+      hash: "named_tuple_hash"
     }
   end
 end
