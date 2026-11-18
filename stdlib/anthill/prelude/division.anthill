@@ -89,13 +89,13 @@ end
 -- giving `div` one would flip `-7 / 2` from -3 to -4, which
 -- `wi863_operator_arithmetic_test` pins deliberately.
 sort anthill.prelude.EuclideanDomain
-  import anthill.prelude.{Numeric, Divisible}
+  import anthill.prelude.{Numeric, Divisible, Additive}
   import anthill.reflect.{TypeValue}
   -- WI-20260825-KD9SW: a WRITTEN bare `neq` (a law's guard) names the operation by
   -- import now; a minted `=`/`!=` carries its own address and needs nothing.
   import anthill.prelude.PartialEq.{neq}
   -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
-  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Additive.{add, zero}
   import anthill.prelude.Multiplicative.{mul}
   -- WI-882 dropped `import anthill.prelude.PartialOrd.{gt}`: its only written
   -- occurrence was the `mod_nonneg` denial deleted at the foot of this sort.
@@ -116,7 +116,15 @@ sort anthill.prelude.EuclideanDomain
   -- UNTAGGED on purpose (WI-20260820-8RJK8): a guarded equation fires when tagged, and
   -- this one does not reduce — its left-hand side is the larger term. It is a law for
   -- the verifier, like the `Field` identities.
-  rule euclid_div: add(mul(?b, div(?a, ?b)), rem(?a, ?b)) = ?a :- neq(?b, 0)
+  --
+  -- A LEMMA OVER `A`, AND ONLY AT AN `A` THAT IS A EUCLIDEAN DOMAIN (WI-20261117-V0RPW).
+  -- A proof of a guard takes it as a premise (§5.3), instantiating `A` at the type of
+  -- the divisor it matches and passing the guards' instances there; `zero` is
+  -- `Additive[T = A]`'s, read through the guard. Written as `add(…) = ?a :- neq(?b, 0)`,
+  -- it held at every carrier whose division shares `div`, `mul` and `rem`, and with the
+  -- `Int64` literal for zero: `neq(0n, 0)` holds, so the identity was used at a `BigInt`
+  -- divisor of `0n` and the guard over it refuted (MEASURED).
+  rule euclid_div: add[A](mul(?b: A, div(?a, ?b)), rem(?a, ?b)) = ?a :- EuclideanDomain[T = A], Additive[T = A], neq(?b, zero)
 
   -- WI-882 DELETED `constraint mod_nonneg: gt(?b, zero) :- mod(?_, ?b)` from here,
   -- together with `int64.anthill`'s `mod_positive`, which this row was written to

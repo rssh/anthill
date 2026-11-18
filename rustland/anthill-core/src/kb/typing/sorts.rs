@@ -208,9 +208,6 @@ pub(super) fn type_check_sorts_collect(
     // qualified-name string. Reflect is fully loaded by now; `None` (reflect-less
     // KB) leaves `is_tuple_lit` on its exact string fallback.
     kb.tuple_literal_sym = kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL));
-    // Ops reached via a sort's `SortInfo` — so the gated free-op sweep
-    // doesn't re-check them (collected only when the sweep is enabled).
-    let mut sort_owned_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     // WI-314 / WI-20260920-E3DC5 — the region set for result-escape masking. PROGRAM-GLOBAL
     // and loop-invariant across this pass, so it is computed here, once, and threaded into
     // every `check_operation_bodies` call; that function used to compute it itself and so
@@ -220,65 +217,62 @@ pub(super) fn type_check_sorts_collect(
     // ABOVE BOTH CALLS, so the sort loop and the free-op sweep share the one set.
     let region_sorts = crate::kb::region::region_sorts(kb);
 
-    if kb.try_resolve_symbol("anthill.reflect.SortInfo").is_some() {
-        // Each sort's constructors and operations, read ONCE: the loop below walks them,
-        // and the pass before it needs the constructors to know which clauses are the
-        // loop's. `SortInfo` is frozen by now, so the answer cannot change under either.
-        let sort_infos: Vec<(Symbol, Option<(Vec<Symbol>, Vec<Symbol>)>)> = sort_names
+    // Each sort's constructors and operations, read ONCE: the clause pass and the body pass
+    // below walk them, and `check_late_clauses` needs the constructors to know which clauses
+    // are the loop's. `SortInfo` is frozen by now, so the answer cannot change under any.
+    // Without reflect there is no `SortInfo` to read, and neither pass checks anything.
+    let reflect = kb.try_resolve_symbol("anthill.reflect.SortInfo").is_some();
+    let sort_infos: Vec<(Symbol, (Vec<Symbol>, Vec<Symbol>))> = if reflect {
+        sort_names
             .iter()
-            .map(|&sort_sym| (sort_sym, find_sort_info(kb, sort_sym)))
-            .collect();
+            .filter_map(|&sort_sym| match find_sort_info(kb, sort_sym) {
+                Some(info) => Some((sort_sym, info)),
+                // WI-928 — JUSTIFIED, and only since that ticket. `sort_names` is
+                // `LoadResult.defined_sorts`, and both of its producers emit a `SortInfo`
+                // for every name they push: `load_sort_with_body` (always did) and
+                // `load_entity` (§6.3's free-standing spelling). So a `None` is no longer
+                // "this declaration has no record" — the shape that made this arm a SILENT
+                // SKIP of 68 entities' facts, which is the defect that ticket fixed. What
+                // remains is a KB that has no `anthill.reflect.SortInfo` symbol to emit
+                // under at all, i.e. one loaded without reflect: `reflect` above answers
+                // that case for the whole pass, so reaching here means a caller passed a
+                // name that no load defined. Nothing to report about it and nothing to
+                // check — there is no declaration. MEASURED rather than argued: two
+                // full-workspace runs with a `panic!` in this arm never reached it.
+                None => None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // THE CLAUSES, BEFORE THE RULE SWEEP WEAVES THEM. A fact against its constructor's
+    // fields, a rule against the pattern fragment — read as the author wrote them.
+    if reflect {
         // The call's clauses under sorts an EARLIER call defined — BEFORE the loop, where
         // one call over both would have met them: the earlier sorts come first in its
         // list. Inside this guard on purpose: without reflect the loop checks no clause
         // at all, and a later call must not be held to more than one call is.
-        check_late_clauses(
-            kb,
-            &loaded,
-            &sort_infos,
-            &mut errors,
-            &mut sources,
-        );
-        for (sort_sym, sort_info) in sort_infos {
-            let (ctor_syms, op_syms) = match sort_info {
-                Some((ctors, ops)) => (ctors, ops),
-                // WI-928 — JUSTIFIED, and only since this ticket. `sort_names` is
-                // `LoadResult.defined_sorts`, and both of its producers now emit a
-                // `SortInfo` for every name they push: `load_sort_with_body` (always
-                // did) and `load_entity` (§6.3's free-standing spelling, added here).
-                // So a `None` is no longer "this declaration has no record" — the
-                // shape that made this arm a SILENT SKIP of 68 entities' facts, which
-                // is the defect this ticket fixes. What remains is a KB that has no
-                // `anthill.reflect.SortInfo` symbol to emit under at all, i.e. one
-                // loaded without reflect: the guard above already answers that case
-                // for the whole loop, so reaching here means a caller passed a name
-                // that no load defined. Nothing to report about it and nothing to
-                // check — there is no declaration. MEASURED rather than argued: two
-                // full-workspace runs with a `panic!` in this arm never reached it.
-                None => continue,
-            };
-
-            check_entity_facts(kb, &ctor_syms, &mut errors, &mut sources);
-            check_operation_bodies(kb, &op_syms, &mut errors, &mut sources, &region_sorts);
-            if TYPECHECK_FREE_OPS {
-                sort_owned_ops.extend(op_syms.iter().copied());
-            }
-            check_pattern_fragment(kb, sort_sym, &mut errors);
+        check_late_clauses(kb, &loaded, &sort_infos, &mut errors, &mut sources);
+        for (sort_sym, (ctor_syms, _)) in &sort_infos {
+            check_entity_facts(kb, ctor_syms, &mut errors, &mut sources);
+            check_pattern_fragment(kb, *sort_sym, &mut errors);
             // WI-745 invariant, restored INSIDE the loop (review): `sources` must stay
             // parallel to `errors`, and `check_pattern_fragment` takes only `errors` (its
             // diagnostics are per-SORT, with no one file to attribute them to). The pad
             // at the end of this function cannot substitute — once this sort emits one,
-            // every LATER sort's entity-fact / operation-body error pairs with the
-            // PREVIOUS error's `SourceId` and renders `path:line:col` for the wrong file.
+            // every LATER sort's entity-fact error pairs with the PREVIOUS error's
+            // `SourceId` and renders `path:line:col` for the wrong file.
             sources.resize(errors.len(), None);
         }
     }
 
-    // WI-289 (ON — see [`TYPECHECK_FREE_OPS`]): type-check +
-    // simp-rewrite every operation body not owned by a sort. Snapshot first
-    // — typing mutates `op_bodies` via the simp write-back; `check_operation_
-    // bodies` skips body-less / OperationInfo-less symbols and derives each
-    // op's enclosing sort from its QN parent (a namespace ⇒ no requires).
+    // The operations this run types: each sort's, and — WI-289 (ON, see
+    // [`TYPECHECK_FREE_OPS`]) — every operation body no sort of this load owns, typed and
+    // simp-rewritten the same way. A symbol list, read before any body is typed (typing
+    // mutates `op_bodies` via the simp write-back); `check_operation_bodies` skips body-less
+    // / OperationInfo-less symbols and derives each op's enclosing sort from its QN parent (a
+    // namespace ⇒ no requires).
     //
     // WI-20261010-9BKZ4 — AND NOT A SEALED LOAD'S. "No sort of this load owns it" is
     // every operation the KB holds once an earlier load's are counted: a four-line file
@@ -286,7 +280,11 @@ pub(super) fn type_check_sorts_collect(
     // 267 ms load. A sealed load's bodies were typed by that load, and what a later one
     // could have changed in them is refused (`sealed::sealed_code_refusals`); the
     // oracle types them all the same and says if that changed anything.
-    if TYPECHECK_FREE_OPS {
+    let sort_owned_ops: HashSet<Symbol> = sort_infos
+        .iter()
+        .flat_map(|(_, (_, ops))| ops.iter().copied())
+        .collect();
+    let (free_ops, sealed_ops) = if TYPECHECK_FREE_OPS {
         let (free, sealed): (Vec<_>, Vec<_>) = kb
             .op_checked_texts_iter()
             .filter(|(s, _)| !sort_owned_ops.contains(s))
@@ -300,19 +298,92 @@ pub(super) fn type_check_sorts_collect(
         };
         let free_ops = in_written_order(free);
         let sealed_ops = if oracle { in_written_order(sealed) } else { Vec::new() };
-        if !free_ops.is_empty() {
-            check_operation_bodies(kb, &free_ops, &mut errors, &mut sources, &region_sorts);
-        }
-        if oracle && !sealed_ops.is_empty() {
-            oracle_type_sealed_operations(kb, &sealed_ops, &region_sorts);
-        }
-    }
+        (free_ops, sealed_ops)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    // WI-20261117-8J8NG — EVERY RULE BEFORE THE OPERATION BODIES WHOSE TYPING RUNS IT. Typing
+    // a body runs rules: a guard is refuted, a precondition proved, an in-body proof and a
+    // contract's proof discharged (`prove_from_gamma`), and each may run a relation's clauses
+    // and take a guarded `=` law as a premise (§5.3); and a citation in a body is routed to
+    // the requirement reads of the clauses it cites. When the rules were typed and woven
+    // after the bodies, a rule of THIS load had no reads yet where the same rule of an EARLIER
+    // load had them, so the same program was decided in two loads and undecided in one.
+    // MEASURED: `effects { Boom :- firstIs(r, -1) }` at `g(made[A = Int64, WeakOrd =
+    // Descending](1, 5))`, with `rule cmp[A](…) :- WeakOrd[T = A], WeakOrd.compare(…)` and
+    // `made` in an earlier load, was refuted, and in the program's own load owed `Boom`
+    // (WI-20261105-CBRD2: a proof derives no dictionary from the values). WI-20261117-22S8N
+    // had moved the untagged guarded laws ahead alone; now the whole sweep is: a load's
+    // bodies are typed over its rules as a later load's are over an earlier one's.
+    //
+    // What a pass of this sweep reads of the bodies stays after them: the citation routes'
+    // refusals ([`take_citation_refusals`] — the routes themselves are found where each
+    // citation is typed, the reads being there), the eq-override backing check (the
+    // op-body stamp), the unsuppliable-requirement report (the callee's body
+    // classifications), and the sealed-code refusals.
+    //
+    // The signature-level checks first, as before the rule sweep: the operation and entity
+    // metadata the rule collection and its dispatch read is settled by then.
+    //
+    // WI-398: signature well-formedness over EVERY operation — independent of the
+    // sort/body split, so a body-less FREE spec is covered too.
+    errors.extend(check_operation_signatures(kb));
+    errors.extend(check_sort_parameter_carriers(kb));
+    // WI-20261013-50ZMN: and which requirement each of an operation's unnamed
+    // `requires` lines states, where its frame holds two it could be.
+    errors.extend(check_unnamed_requirement_lines(kb));
+    // WI-701 (proposal 054 §"Branch and External"): reject a declared effect row that
+    // carries BOTH Branch and External — a Branch region may not perform External.
+    // Load-time, over every OperationInfo fact, like the signature check above.
+    errors.extend(check_branch_external_exclusion(kb));
+    let run_ops: Vec<Symbol> = sort_owned_ops.iter().copied().chain(free_ops.iter().copied()).collect();
     // A constant's value is a body too: typed, with the equations applied, and stored as
     // typed, whether or not an operation ever reads the constant. And a sealed load's is
     // typed once, as its operation bodies are — the same split, the same oracle, and the
     // refusal below asks both.
     let (constants, sealed_constants) = constant_values_by_seal(kb);
+    // From here to the end of the constants' pass, a proof that reaches one of the run's bodies
+    // or constants before its turn has it typed there ([`body_readiness`]); and until the rule
+    // sweep is done, a citation a body writes waits for the reads it is routed to
+    // ([`route_citation`]). The queues are this run's from their marks on: a run made inside a
+    // run — none is today — leaves the outer's to it, and gives its record back.
+    let outer_bodies = kb
+        .bodies_in_run
+        .replace(BodiesInRun::new(run_ops.iter().copied(), &constants, region_sorts.clone()));
+    let outer_elaborated = std::mem::replace(&mut kb.rules_elaborated, false);
+    let citations_mark = kb.pending_citation_routes.len();
+    let refusals_mark = kb.citation_refusals.len();
+    // The run's contracts, typed ahead of the sweep that reads them: a rule body's call of an
+    // operation is refuted at its precondition's typed conjuncts.
+    type_contracts_ahead(kb, &run_ops, &region_sorts);
+    if let Some(run) = kb.bodies_in_run.as_mut() {
+        run.type_on_demand();
+    }
+    elaborate_rules(kb, oracle, &mut errors, &mut sources);
+    settle_pending_citation_routes(kb, citations_mark);
+
+    // THE BODIES, over the rules: each sort's, then the free ones, then the constants.
+    for (_, (_, op_syms)) in &sort_infos {
+        check_operation_bodies(kb, OpBodyPass::Full, op_syms, &mut errors, &mut sources, &region_sorts);
+        sources.resize(errors.len(), None);
+    }
+    if !free_ops.is_empty() {
+        check_operation_bodies(kb, OpBodyPass::Full, &free_ops, &mut errors, &mut sources, &region_sorts);
+    }
     check_constant_bodies(kb, &constants, &mut errors, &mut sources);
+    // What typing on demand reported, each with its file.
+    sources.resize(errors.len(), None);
+    let run = std::mem::replace(&mut kb.bodies_in_run, outer_bodies)
+        .expect("the run's record stands until its bodies are typed");
+    for (err, src) in run.into_reported() {
+        errors.push(err);
+        sources.push(src);
+    }
+    kb.rules_elaborated = outer_elaborated;
+    if oracle && !sealed_ops.is_empty() {
+        oracle_type_sealed_operations(kb, &sealed_ops, &region_sorts);
+    }
     if oracle && !sealed_constants.is_empty() {
         oracle_type_sealed_constants(kb, &sealed_constants);
     }
@@ -337,41 +408,91 @@ pub(super) fn type_check_sorts_collect(
          the queue — it would never be reported",
     );
 
-    // WI-398: signature well-formedness over EVERY operation — independent of the
-    // sort/body split above, so a body-less FREE spec is covered too.
-    errors.extend(check_operation_signatures(kb));
-    errors.extend(check_sort_parameter_carriers(kb));
-    // WI-20261013-50ZMN: and which requirement each of an operation's unnamed
-    // `requires` lines states, where its frame holds two it could be.
-    errors.extend(check_unnamed_requirement_lines(kb));
+    // WI-20260911-5G28A S2: what the routes of the citations the bodies wrote refused —
+    // each routed where its body was typed, the reads being there by then; a `const` value's
+    // here ([`take_citation_refusals`]). Each names its file.
+    route_citations_from(kb, citations_mark);
+    sources.resize(errors.len(), None);
+    for (err, src) in take_citation_refusals(kb, refusals_mark) {
+        errors.push(err);
+        sources.push(src);
+    }
+    // A bracket the loader refused was the load's: its bodies are typed.
+    kb.refused_bracket_sites.clear();
 
-    // WI-701 (proposal 054 §"Branch and External"): reject a declared effect row that
-    // carries BOTH Branch and External — a Branch region may not perform External.
-    // Load-time, over every OperationInfo fact, like the signature check above.
-    errors.extend(check_branch_external_exclusion(kb));
+    // WI-650: flag a semantic `=`/`eq`/`neq` call whose operand's sort declares
+    // its OWN `eq` override with no backing (a bodyless placeholder — `Map` after
+    // its relational eq apparatus was dropped). Runs after `type_rule_bodies` (the
+    // rule-body operand `inferred_type` it reads) and `check_operation_bodies` (the
+    // op-body Stamp frame), so every operand carries its inferred sort.
+    errors.extend(check_eq_override_backing(kb));
 
+    // WI-745: the passes after the sort loop (signature/rule-body/provider/eq
+    // checks) push untagged errors — pad `sources` with `None` so it stays
+    // parallel to `errors`.
+    sources.resize(errors.len(), None);
+    // WI-20261010-9BKZ4 — the other thing a later load could have changed in a sealed
+    // body: who answers its dispatches. LAST, and inside the run, so that every typer
+    // run raises it and the provision index it asks is this run's.
+    provisions_that_change_a_sealed_dispatch(kb, &mut errors, &mut sources);
+    sorts_a_later_load_moves(kb, &mut errors, &mut sources);
+    clauses_that_change_a_sealed_relation(kb, &mut errors, &mut sources);
+    if oracle {
+        oracle_verdict(
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::ChangesSealedCode { .. })),
+        );
+    }
+    (errors, sources)
+}
+
+/// WI-20261117-8J8NG — THE CONTRACTS OF `ops`, TYPED AHEAD OF THE RULE SWEEP. A rule body's
+/// call of an operation is refuted at the operation's precondition as typed — the typed
+/// conjunct of each comparison and of its negation ([`type_contract_comparisons`]), which
+/// `check_operation_bodies` types before the body — and the rule sweep runs before the
+/// bodies. So each contract is typed here first, and again where its operation's body is,
+/// which reports what it refuses: what this pass reports is dropped, and what it parks for
+/// the end-of-typing report, or queues of a citation, is taken back. Typing a contract twice
+/// records the same conjuncts, the second over the first. Only an operation that declares a
+/// comparison to type is handed to it ([`declares_contract_comparisons`]).
+fn type_contracts_ahead(kb: &mut KnowledgeBase, ops: &[Symbol], region_sorts: &HashSet<Symbol>) {
+    let ops: Vec<Symbol> = ops
+        .iter()
+        .copied()
+        .filter(|&op| declares_contract_comparisons(kb, op))
+        .collect();
+    let parked = kb.unsuppliable_requirements.len();
+    let waiting = kb.pending_citation_routes.len();
+    let (mut errors, mut sources) = (Vec::new(), Vec::new());
+    check_operation_bodies(kb, OpBodyPass::ContractsOnly, &ops, &mut errors, &mut sources, region_sorts);
+    kb.unsuppliable_requirements.truncate(parked);
+    // A citation the pass queued is of a copy it typed: nothing routes it (the pass routes
+    // none, its rules not elaborated), and the body's pass queues its own.
+    kb.pending_citation_routes.truncate(waiting);
+}
+
+/// WI-20261117-8J8NG — THE RULE SWEEP: every rule a seal does not hold typed and elaborated,
+/// before the operation bodies whose typing runs it ([`type_check_sorts_collect`] says why).
+/// Each pass's refusals join `errors`, `sources` parallel to them on entry and on exit.
+fn elaborate_rules(
+    kb: &mut KnowledgeBase,
+    oracle: bool,
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
     // WI-282 + WI-603: type every rule body in one pass — collect each rule's var
     // types once, report a (sort-scoped) contradiction, dispatch its `Expr::DotApply`
     // to method/field form, and stamp the collected type onto every `Var` leaf.
-    // Runs over ALL rules (free namespace-level rules too, which the sort loop
-    // above misses) and after signature checks, so the operation/entity metadata
-    // the collection + dispatch read is settled.
-    // WI-1026: takes `sources` too — this pass now raises the WI-1012 supplier-tie
+    // Runs over ALL rules (free namespace-level rules too, which the sort passes miss).
+    // WI-1026: takes `sources` too — this pass raises the WI-1012 supplier-tie
     // refusal, whose value over eval's face is precisely that it is LOCATED.
-    // Padded HERE, like the sort loop's own pad above: the untagged passes between that
-    // loop and this call (`check_operation_signatures`,
-    // `check_branch_external_exclusion` — WI-945's
-    // `report_unsuppliable_requirements` pads and pairs its own) push errors, and the
+    // Padded HERE: the untagged signature checks before this call push errors, and the
     // `check_entity_facts` / `check_operation_bodies` contract is that `sources` is
     // parallel on ENTRY. Repairing it inside the callee gave this one pass a second
     // convention.
     sources.resize(errors.len(), None);
-    type_rule_bodies(
-        kb,
-        RuleBodies::NotSealed,
-        &mut errors,
-        &mut sources,
-    );
+    type_rule_bodies(kb, RuleBodies::NotSealed, errors, sources);
     if oracle {
         oracle_type_sealed_rules(kb);
     }
@@ -407,20 +528,15 @@ pub(super) fn type_check_sorts_collect(
     // the condition its author could have written — a read before the goal holding it, the
     // call woven through it. AFTER the requirement sweep, which grounds each WRITTEN
     // `require` on a body call and only finds that call unwoven (a transitive or inherited
-    // witness woven first made a loading clause fail "no such call"); BEFORE
-    // `settle_citation_routes`, so a citation routes the inferred reads as the written ones.
+    // witness woven first made a loading clause fail "no such call"); BEFORE the bodies,
+    // whose citations route the inferred reads as the written ones.
     // A call the requirement sweep above refused is not refused again for what it lacks.
     let undeclared = infer_rule_body_requirements(kb, &refused_calls);
     // WI-20261102-ATVC1: every rule-body goal whose callee takes dictionaries is given the ones
     // its clause routes to it — a requirement the clause declares, a dictionary built here.
-    // AFTER the inference, whose reads are what a callee takes; BEFORE
-    // `settle_citation_routes`, which reads a cited clause's goals that pass nothing.
+    // AFTER the inference, whose reads are what a callee takes; BEFORE the bodies, whose
+    // citations read a cited clause's goals that pass nothing.
     let goals_refused = route_rule_goal_requirements(kb);
-    // WI-20260911-5G28A S2: every rule read is now routable, so the citations queued while
-    // the operation bodies were typed can be routed (`settle_citation_routes`). What it
-    // refuses names its file, so it is pushed with the anchored errors below.
-    let citations_refused = settle_citation_routes(kb);
-
 
     // WI-20260917-NR6FJ: the OPERATION-CALL twin of the above — a rule-body call to an
     // operation whose declared `requires` names a concrete carrier that provides no such
@@ -437,51 +553,24 @@ pub(super) fn type_check_sorts_collect(
     // rule-body-walk phase as `check_rule_body_requirements`, after
     // `build_op_signatures` so every op's return type is available.
     //
-    // WI-745's localization, for the ONE late pass that can supply it: every error
-    // this pass raises is anchored on a body occurrence, whose `SourceSpan` names its
-    // file. The block's other passes push untagged errors (padded `None` below), so the
-    // pad has to happen HERE, before these are pushed, or `sources` would fall out of
-    // step with `errors`. Without it both this pass's errors render a bare byte offset,
+    // WI-745's localization: every error this pass raises is anchored on a body
+    // occurrence, whose `SourceSpan` names its file. The passes above push untagged errors,
+    // so the pad has to happen HERE, before these are pushed, or `sources` would fall out
+    // of step with `errors`. Without it both this pass's errors render a bare byte offset,
     // which names nothing — measured on `:- 42`, which reported `at 98..100`.
     sources.resize(errors.len(), None);
     for (err, src) in check_rule_body_goal_readings(kb)
         .into_iter()
         .chain(undeclared)
         .chain(goals_refused)
-        .chain(citations_refused)
     {
         errors.push(err);
         sources.push(src);
     }
-
-    // WI-650: flag a semantic `=`/`eq`/`neq` call whose operand's sort declares
-    // its OWN `eq` override with no backing (a bodyless placeholder — `Map` after
-    // its relational eq apparatus was dropped). Runs after `type_rule_bodies` (the
-    // rule-body operand `inferred_type` it reads) and `check_operation_bodies` (the
-    // op-body Stamp frame), so every operand carries its inferred sort.
-    errors.extend(check_eq_override_backing(kb));
-
-    // WI-745: the passes after the sort loop (signature/rule-body/provider/eq
-    // checks) push untagged errors — pad `sources` with `None` so it stays
-    // parallel to `errors`.
-    sources.resize(errors.len(), None);
-    // WI-20261010-9BKZ4 — the other thing a later load could have changed in a sealed
-    // body: who answers its dispatches. LAST, and inside the run, so that every typer
-    // run raises it and the provision index it asks is this run's.
-    provisions_that_change_a_sealed_dispatch(kb, &mut errors, &mut sources);
-    sorts_a_later_load_moves(kb, &mut errors, &mut sources);
-    clauses_that_change_a_sealed_relation(kb, &mut errors, &mut sources);
-    if oracle {
-        oracle_verdict(
-            errors
-                .iter()
-                .any(|e| matches!(e, TypeError::ChangesSealedCode { .. })),
-        );
-    }
-    (errors, sources)
 }
 
 /// A constant with a written value, and that value as the KB holds it.
+#[derive(Clone, Debug)]
 pub(super) struct ConstantValue {
     pub(super) symbol: Symbol,
     pub(super) value: Rc<NodeOccurrence>,
@@ -557,6 +646,10 @@ pub(super) fn check_constant_bodies(
     sources.resize(errors.len(), None);
     for ConstantValue { symbol, value, site } in constants {
         let (symbol, site) = (*symbol, *site);
+        // WI-20261117-8J8NG: one the run typed on demand before its turn is passed over.
+        if !begin_typing_body(kb, symbol) {
+            continue;
+        }
         let expected = kb
             .const_type(symbol)
             .expect("a constant with a value has a declared type")
@@ -594,6 +687,8 @@ pub(super) fn check_constant_bodies(
                     );
                     kb.set_const_body_node(symbol, Rc::clone(&result.node));
                 }
+                // WI-20261117-8J8NG: the stored value is the typed one, and may be read.
+                typed_body(kb, symbol);
                 // WI-20261020-VQPRP — a const binds nothing, so every variable its value
                 // reads as one is unbound ([`unbound_value_variable`]).
                 if let Some((var, span)) = unbound_value_variable(kb, &result.node, &[], &[]) {
@@ -2240,7 +2335,7 @@ fn check_entity_fact(
 fn check_late_clauses(
     kb: &mut KnowledgeBase,
     loaded: &Loaded<'_>,
-    sort_infos: &[(Symbol, Option<(Vec<Symbol>, Vec<Symbol>)>)],
+    sort_infos: &[(Symbol, (Vec<Symbol>, Vec<Symbol>))],
     errors: &mut Vec<TypeError>,
     sources: &mut Vec<Option<crate::span::SourceId>>,
 ) {
@@ -2257,11 +2352,11 @@ fn check_late_clauses(
     // walks. A sort with no record would contribute none HERE while still being "own" for
     // the rule arm; there is no such sort: both producers of `defined_sorts` write the
     // record in the step that lists the sort, with no exit between (WI-928, and the
-    // loop's `None` arm, which two full runs with a panic in it never reached).
+    // `None` arm where `sort_infos` is read, which two full runs with a panic in it never
+    // reached).
     let mut own_ctors: HashSet<Symbol> = sort_infos
         .iter()
-        .filter_map(|(_, info)| info.as_ref())
-        .flat_map(|(ctors, _)| ctors.iter().copied())
+        .flat_map(|(_, (ctors, _))| ctors.iter().copied())
         .collect();
     for &sort_sym in loaded.refused_sorts {
         if let Some((ctors, _)) = find_sort_info(kb, sort_sym) {

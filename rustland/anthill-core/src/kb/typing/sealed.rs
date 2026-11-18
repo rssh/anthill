@@ -331,9 +331,10 @@ pub(super) fn oracle_type_sealed_constants(kb: &mut KnowledgeBase, sealed: &[Con
 /// Type `ops`' bodies OUTSIDE the run's own sweep: what the pass reports comes back
 /// instead of joining the run's errors, and what it parks for the end-of-typing report
 /// (`dict::report_unsuppliable_requirements`) is taken off that queue and counted. The
-/// other queue typing a body fills, the citation routes, is left to the run it is
-/// called in, which settles it after the sweeps — so this is called from INSIDE a
-/// typer run, above that point, and nowhere else.
+/// citations a body writes are routed where it is typed, and what their routes refuse is
+/// kept for the run it is called in, which reports it after the sweeps
+/// (`take_citation_refusals`) — so this is called from INSIDE a typer run, above that point,
+/// and nowhere else: a refusal kept after it would be reported by the next run.
 fn type_operation_bodies_aside(
     kb: &mut KnowledgeBase,
     ops: &[Symbol],
@@ -341,7 +342,7 @@ fn type_operation_bodies_aside(
 ) -> (Vec<TypeError>, usize) {
     let parked_before = kb.unsuppliable_requirements.len();
     let (mut errors, mut sources) = (Vec::new(), Vec::new());
-    check_operation_bodies(kb, ops, &mut errors, &mut sources, region_sorts);
+    check_operation_bodies(kb, OpBodyPass::Full, ops, &mut errors, &mut sources, region_sorts);
     let parked = kb.unsuppliable_requirements.len() - parked_before;
     kb.unsuppliable_requirements.truncate(parked_before);
     (errors, parked)
@@ -395,10 +396,21 @@ pub(super) fn oracle_type_sealed_rules(kb: &mut KnowledgeBase) {
 /// Which rule bodies one call of [`type_rule_bodies`] types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RuleBodies {
-    /// Every rule a seal does not hold — the sweep.
+    /// Every rule a seal does not hold — the sweep, ahead of the operation bodies
+    /// (WI-20261117-8J8NG).
     NotSealed,
     /// The sealed ones only — the oracle's half.
     SealedOnly,
+}
+
+impl RuleBodies {
+    /// The rules this call types, in the order of their ids.
+    pub(super) fn rules(self, kb: &KnowledgeBase) -> Vec<RuleId> {
+        let sealed = self == RuleBodies::SealedOnly;
+        kb.live_rule_ids_iter()
+            .filter(|&rid| rule_body_is_typed_once(kb, rid) == sealed)
+            .collect()
+    }
 }
 
 /// The rule's body was typed by the sealed load that wrote it: its head is in a sealed

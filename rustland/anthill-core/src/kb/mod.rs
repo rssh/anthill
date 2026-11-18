@@ -1411,6 +1411,11 @@ pub struct KnowledgeBase {
     /// One per goal of an effect guard the loader lowered, drained by the post-load
     /// undefined-name check. See [`Self::record_effect_guard_site`].
     effect_guard_sites: Vec<EffectGuardSite>,
+    /// WI-20261117-8J8NG — where the loader refused a bracket written alone on a relation or an
+    /// operation (`LoadError::BracketOnCallable`), which it leaves as the bare name: the typer
+    /// routes no citation there, whose refusal would say again that the bracket is not read
+    /// (`typing::relation_reference_type`).
+    pub(crate) refused_bracket_sites: HashSet<crate::span::SourceSpan>,
     /// One per `requires <goal>` a sort declares (proposal 062), drained by the post-load
     /// check of the goal itself. See [`Self::record_sort_goal_declaration`].
     sort_goal_declarations: Vec<SortGoalDeclaration>,
@@ -2230,9 +2235,10 @@ pub struct KnowledgeBase {
     /// contract's proof. A proof reads no dictionary from the values: inside one, the eval
     /// bridge refuses to derive a call's dictionaries from its arguments
     /// ([`super::typing::resolve_bridge_requirements_supplied`]), and the proof is undecided
-    /// where it would need them. A rule a proof at load runs may not have its requirement
-    /// reads yet, since operation bodies are typed before rule bodies, and its calls then
-    /// read the provider the values give, not the one the run will.
+    /// where it would need them. A rule a proof at load runs has its requirement reads — a
+    /// typer run elaborates its rules before its bodies (WI-20261117-8J8NG) — but a call
+    /// nothing routes a dictionary to would read the provider the values give, not the one the
+    /// run will.
     ///
     /// A counter, every increment paired with a decrement on the way out, as
     /// [`Self::simp_guard_depth`] is.
@@ -2618,9 +2624,21 @@ pub struct KnowledgeBase {
     // once that body has been classified.
     pub(crate) unsuppliable_requirements: Vec<typing::UnsuppliableRequirement>,
 
-    // WI-20260911-5G28A S2 — rule citations whose implicit arguments are routed only once
-    // every rule's requirement reads exist. See `typing::PendingCitationRoutes`.
+    // WI-20260911-5G28A S2 / WI-20261117-8J8NG — what the routes of the citations typed since
+    // the typer run began refused, each at its citation with its file, kept for the run's
+    // report. See `typing::route_citation`.
+    pub(crate) citation_refusals: Vec<(typing::TypeError, Option<crate::span::SourceId>)>,
+
+    // WI-20261117-8J8NG — a citation typed while the typer run has not yet elaborated the
+    // rules it cites, routed once it has: one in a body typed on demand from the rule sweep.
+    // See `typing::route_citation`.
     pub(crate) pending_citation_routes: Vec<typing::PendingCitationRoutes>,
+    /// WI-20261117-8J8NG — has the typer run elaborated its rules ([`typing::route_citation`])?
+    /// `true` outside a run: what the KB holds was elaborated by the run that loaded it.
+    pub(crate) rules_elaborated: bool,
+    /// WI-20261117-8J8NG — the bodies the typer run in progress types, while it types them
+    /// ([`typing::body_readiness`]). `None` outside a run.
+    pub(crate) bodies_in_run: Option<typing::BodiesInRun>,
 
     // WI-226 Cache A — memoized FLATTENED direct `requires` chain per sort.
     // WI-657(12) revived this (WI-230 → WI-657 it was dormant): it now caches the
@@ -3188,6 +3206,7 @@ impl KnowledgeBase {
             head_name_sites: Vec::new(),
             refused_replacements: HashSet::new(),
             effect_guard_sites: Vec::new(),
+            refused_bracket_sites: HashSet::new(),
             sort_goal_declarations: Vec::new(),
             absence_records: HashMap::new(),
             absence_marker_syms: HashMap::new(),
@@ -3289,7 +3308,10 @@ impl KnowledgeBase {
             extents: extent::ExtentRegistry::new(),
             host_fns: host_fns::HostFnRegistry::new(),
             unsuppliable_requirements: Vec::new(),
+            citation_refusals: Vec::new(),
             pending_citation_routes: Vec::new(),
+            rules_elaborated: true,
+            bodies_in_run: None,
             dispatch_rewrites: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
@@ -10724,6 +10746,14 @@ impl KnowledgeBase {
             vars.push(r.dictionary);
         }
         vars
+    }
+
+    /// The clause slots holding the dictionaries clause `id` declares — its head introducer's
+    /// guards (`rule cmp[A](…) :- WeakOrd[T = A]`, a law over `[A]`, WI-20261117-V0RPW) — which
+    /// its calls are woven through. What a test of the weave reads to tell a declared
+    /// requirement's read from an inferred one.
+    pub fn rule_declared_dictionary_slots(&self, id: RuleId) -> Vec<u32> {
+        self.rule_provider_requirements(id).iter().map(|r| r.dictionary).collect()
     }
 
     pub(crate) fn rule_provider_requirements(&self, id: RuleId) -> &[RuleProviderRequirement] {

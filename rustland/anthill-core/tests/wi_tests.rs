@@ -2542,3 +2542,9 @@ mod wi_fsnz5_reflect_form_identity_test;
 mod positional_sort_goal_test;
 #[path = "include/wi_5vm2g_bigint_zero_divisor_test.rs"]
 mod wi_5vm2g_bigint_zero_divisor_test;
+#[path = "include/wi_v0rpw_law_over_type_variable_test.rs"]
+mod wi_v0rpw_law_over_type_variable_test;
+#[path = "include/wi_22s8n_law_of_the_same_load_test.rs"]
+mod wi_22s8n_law_of_the_same_load_test;
+#[path = "include/wi_8j8ng_rules_before_bodies_test.rs"]
+mod wi_8j8ng_rules_before_bodies_test;

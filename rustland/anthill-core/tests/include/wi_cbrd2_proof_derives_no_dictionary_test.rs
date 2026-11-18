@@ -10,15 +10,29 @@
 //! derives no call's dictionaries from its arguments, and the proof is undecided where it
 //! would need them.
 //!
+//! DECIDED SINCE WI-20261117-8J8NG, with no dictionary read from the values all the same. A load
+//! elaborates its rules before its bodies and routes `made`'s citation of `cmp` once `made` is
+//! typed, so the proof reads `Descending`'s dictionary off the route, as it did with `cmp` and
+//! `made` in an earlier load: `firstIs(r, 4)` holds — `Boom` owed, `h`'s precondition proved —
+//! and `firstIs(r, -1)` is refuted. Before, both were undecided in the program's own load. The
+//! property this file is named for is now driven where a proof has a call no route reaches,
+//! which only a refused program has: [`a_call_no_route_reaches_reads_no_dictionary`].
+//!
 //! ## What fails with the change backed out
 //!
 //! Measured with a temporary switch (the bridge derives inside a proof), then removed. The
 //! control is the switch unset: every row passes.
 //!
-//! * [`a_guard_reading_a_relation_a_rule_answers_reads_no_dictionary`] fails at `firstIs(r,
-//!   4)`: the program loads clean.
-//! * [`a_precondition_reading_a_relation_a_rule_answers_reads_no_dictionary`] fails at
-//!   `firstIs(r, -1)`: the precondition is proved, the program loading clean.
+//! * Since WI-20261117-8J8NG (2026-11-18): [`a_call_no_route_reaches_reads_no_dictionary`]
+//!   alone, the guard refuted and a dictionary derived. All of `wi_tests` passed with the
+//!   switch on before that row was written: every other proof is routed what it needs.
+//! * Before it, when the proof had no route to read:
+//!   [`a_guard_reading_a_relation_a_rule_answers_reads_no_dictionary`] failed at `firstIs(r,
+//!   4)`, the program loading clean, and
+//!   [`a_precondition_reading_a_relation_a_rule_answers_reads_no_dictionary`] at `firstIs(r,
+//!   -1)`, the precondition proved. Both pass with the switch on now, by design: the route
+//!   gives the dictionary, so none is derived either way; the 8J8NG back-outs that fail them are
+//!   in `wi_8j8ng_rules_before_bodies_test`'s header.
 //!
 //! [`a_relation_needing_no_dictionary_is_still_decided`] passes either way by design.
 
@@ -67,41 +81,44 @@ fn errors_and_derived(src: &str) -> (Vec<String>, usize) {
     (errs, bridge_derivations_by_this_thread() - before)
 }
 
-/// `made[…, WeakOrd = Descending](1, 5)`'s first row is `c = 4` when it runs. Neither
-/// `firstIs(r, 4)` nor `firstIs(r, -1)` is decided at load, so `Boom` is owed at both, and each
-/// as `h`'s precondition is unproved; and no dictionary is read from the values, `madeDesc`'s
-/// `.head` guard included.
+/// `made[…, WeakOrd = Descending](1, 5)`'s first row is `c = 4` when it runs, and the proof
+/// reads it so through `made`'s route: `firstIs(r, 4)` holds, owing `Boom`, and `firstIs(r, -1)`
+/// is refuted; and no dictionary is read from the values, `madeDesc`'s `.head` guard included.
 #[test]
 fn a_guard_reading_a_relation_a_rule_answers_reads_no_dictionary() {
-    for (n, guard) in ["firstIs(r, 4)", "firstIs(r, -1)"].into_iter().enumerate() {
+    for (n, (guard, holds)) in [("firstIs(r, 4)", true), ("firstIs(r, -1)", false)].into_iter().enumerate() {
         let program = src(
             &format!("test.cbrd2.pd.r{n}"),
             guard,
             "made[A = Int64, WeakOrd = Descending](1, 5)",
         );
         let (errs, derived) = errors_and_derived(&program);
-        assert!(
+        assert_eq!(
             errs.iter().any(|e| e.contains("undeclared effect: Boom")),
+            holds,
             "{guard}: {errs:?}"
         );
         assert_eq!(derived, 0, "{guard}: a dictionary derived from the values");
     }
 }
 
-/// `h`'s `requires firstIs(r, -1)`, which the run violates, is not proved at `h(made[…](1, 5))`.
+/// `h`'s `requires firstIs(r, -1)`, which the run violates, is not proved at `h(made[…](1, 5))`;
+/// `requires firstIs(r, 4)` is.
 #[test]
 fn a_precondition_reading_a_relation_a_rule_answers_reads_no_dictionary() {
-    for (n, guard) in ["firstIs(r, -1)", "firstIs(r, 4)"].into_iter().enumerate() {
+    for (n, (guard, proved)) in [("firstIs(r, -1)", false), ("firstIs(r, 4)", true)].into_iter().enumerate() {
         let program = src(
             &format!("test.cbrd2.pd.p{n}"),
             guard,
             "made[A = Int64, WeakOrd = Descending](1, 5)",
         );
-        let (errs, _) = errors_and_derived(&program);
-        assert!(
-            errs.iter().any(|e| e.contains("h.requires") && e.contains("precondition")),
+        let (errs, derived) = errors_and_derived(&program);
+        assert_eq!(
+            !errs.iter().any(|e| e.contains("h.requires") && e.contains("precondition")),
+            proved,
             "{guard}: {errs:?}"
         );
+        assert_eq!(derived, 0, "{guard}: a dictionary derived from the values");
     }
 }
 
@@ -116,4 +133,36 @@ fn a_relation_needing_no_dictionary_is_still_decided() {
         let unproved = errs.iter().any(|e| e.contains("h.requires") && e.contains("precondition"));
         assert_eq!((owes, unproved, errs.len()), (holds, !holds, 1), "{guard}: {errs:?}");
     }
+}
+
+/// A proof that reaches a call no route reaches still reads no dictionary from the values —
+/// since WI-20261117-8J8NG only a program the loader refuses has one: `viaOp` calls `needsOrd`,
+/// whose `requires WeakOrd[T = A]` the clause does not declare, and is refused for it, and the
+/// proof of `g`'s guard at `g(1)` runs it all the same. `needsOrd(1)` is `0`, so `viaOp(n, 1)` is
+/// false, and read from the value `1` the guard would be refuted; it is undecided, `Boom` owed.
+/// Declared, `rule viaOp[A](?x: A, ?k) :- WeakOrd[T = A], …`, the call is routed the clause's
+/// dictionary and nothing is derived either way.
+#[test]
+fn a_call_no_route_reaches_reads_no_dictionary() {
+    let program = r#"
+namespace test.cbrd2.pd.unrouted
+  import anthill.prelude.{Int64, Bool, Effect, WeakOrd, Ord}
+  sort Boom
+    entity Bang
+    provides Effect[T = Boom]
+  end
+  operation needsOrd[A](x: A) -> Int64 requires WeakOrd[T = A] = WeakOrd.compare(x, x)
+  rule viaOp(?x, ?k) :- ?k <=> needsOrd(?x)
+  operation g(n: Int64) -> Int64 effects { Boom :- viaOp(n, 1) } = 0
+  operation caller() -> Int64 = g(1)
+end
+"#;
+    let (errs, derived) = errors_and_derived(program);
+    assert!(
+        errs.iter().any(|e| e.contains("viaOp.body") && e.contains("the clause declares none")),
+        "{errs:?}"
+    );
+    assert!(errs.iter().any(|e| e.contains("undeclared effect: Boom")), "{errs:?}");
+    assert_eq!(errs.len(), 2, "{errs:?}");
+    assert_eq!(derived, 0, "a dictionary derived from the values");
 }

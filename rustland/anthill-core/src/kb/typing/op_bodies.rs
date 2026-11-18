@@ -2,9 +2,180 @@
 
 use super::*;
 
+/// What one call of [`check_operation_bodies`] types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OpBodyPass {
+    /// The whole operation: its contract's comparisons, its parameters' defaults, its body.
+    Full,
+    /// Its contract's comparisons alone ([`type_contract_comparisons`]) — the typed conjuncts
+    /// a rule body's call of it is refuted with, which a typer run types ahead of its rule
+    /// sweep and then again with the body (WI-20261117-8J8NG).
+    ContractsOnly,
+}
+
+/// WI-20261117-8J8NG — THE BODIES A TYPER RUN TYPES, while it types them: the operation bodies
+/// and the constant values it has not begun, those it has begun, and those that came out typed;
+/// and whether a proof that reaches one it has not begun types it there ([`body_readiness`]).
+///
+/// A proof run while a body is typed — a guard refuted, a precondition proved — evaluates the
+/// operations and constants it calls, and so does the refutation of a rule-body call's
+/// precondition in the rule sweep. An operation of the same load whose body the run had not
+/// reached yet was evaluated as loaded, its dots undispatched: MEASURED, `operation big(n:
+/// Int64) -> Bool = n.gt(3)` written after `operation caller() -> Int64 = g(1)`, where `g`
+/// declares `effects { Boom :- big(n) }`, aborted the load ("unhandled Expr variant in eval"),
+/// and loaded clean written before it. So the run types such a body where the proof reaches it,
+/// as it would at its turn, and passes over it at its turn.
+#[derive(Debug)]
+pub(crate) struct BodiesInRun {
+    /// The run's operations and constants whose typing has not begun.
+    pending: HashSet<Symbol>,
+    /// The value of each of the run's constants, for one typed where a proof reaches it.
+    constants: HashMap<Symbol, ConstantValue>,
+    /// Every one whose typing has begun in this run.
+    begun: HashSet<Symbol>,
+    /// Every one that came out typed: its stored text is the one that runs. Begun and not
+    /// typed is one being typed now, or one whose typing failed.
+    typed: HashSet<Symbol>,
+    /// Off while the run types its contracts ahead of its rules (`type_contracts_ahead`), a
+    /// pass whose reports are dropped: a body it reaches is not typed yet.
+    on_demand: bool,
+    region_sorts: HashSet<Symbol>,
+    /// What typing a body on demand reported, each error with its file, for the run.
+    reported: Vec<(TypeError, Option<crate::span::SourceId>)>,
+}
+
+impl BodiesInRun {
+    pub(super) fn new(
+        ops: impl IntoIterator<Item = Symbol>,
+        constants: &[ConstantValue],
+        region_sorts: HashSet<Symbol>,
+    ) -> Self {
+        BodiesInRun {
+            pending: ops
+                .into_iter()
+                .chain(constants.iter().map(|c| c.symbol))
+                .collect(),
+            constants: constants.iter().map(|c| (c.symbol, c.clone())).collect(),
+            begun: HashSet::new(),
+            typed: HashSet::new(),
+            on_demand: false,
+            region_sorts,
+            reported: Vec::new(),
+        }
+    }
+
+    /// From the rule sweep on, a proof that reaches a body the run has not begun types it.
+    pub(super) fn type_on_demand(&mut self) {
+        self.on_demand = true;
+    }
+
+    /// What typing bodies on demand reported.
+    pub(super) fn into_reported(self) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
+        self.reported
+    }
+}
+
+/// Whether a body may be run where it is reached ([`body_readiness`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BodyReadiness {
+    Ready,
+    /// The typer run has not typed it: it is being typed now, its typing failed, or it is
+    /// reached where nothing may be typed ([`crate::eval::EvalError::BodyNotTyped`]).
+    NotTyped,
+}
+
+/// Is the stored text of `sym` — an operation's body, a constant's value — the one that runs?
+/// Outside a typer run, and for one the run does not type or has typed, yes. Asks; types
+/// nothing ([`body_readiness`] does).
+pub(crate) fn body_is_typed(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    match kb.bodies_in_run.as_ref() {
+        None => true,
+        Some(run) => run.typed.contains(&sym) || !(run.begun.contains(&sym) || run.pending.contains(&sym)),
+    }
+}
+
+/// WI-20261117-8J8NG — MAY THE STORED TEXT OF `sym` BE RUN WHERE THE EVALUATOR REACHES IT? Yes
+/// where [`body_is_typed`] says so, and for an operation with no body of its own, which the
+/// evaluator runs nothing of. One the run has not begun is typed here first, as at the top of
+/// the run — no proof or guard around it, so its own are made as at its turn — and may then be
+/// run if it came out typed. Not where nothing may be typed: in the contracts pass ahead of the
+/// rules, and under an applied layer, whose discard would take the typed text back while the
+/// run held it typed.
+///
+/// TWO THINGS ARE NOT AS AT ITS TURN, each by choice. (1) One reached from a proof of the rule
+/// sweep — the refutation of a rule-body call's precondition — is typed before the sweep has
+/// elaborated the load's rules, so a proof of its own that runs a rule of this load may be
+/// undecided where at its turn it would not; its citations wait for the sweep
+/// ([`settle_pending_citation_routes`]). Answering such a body "not typed" instead would leave
+/// the precondition unrefuted, a definite violation loading clean; typed early, it is what every
+/// body was before the rules came first. (2) The eval↔SLD crossings it is reached through still
+/// count (`resolve::BRIDGE_REENTRY_CAP`): that cap bounds the native stack, which typing it here
+/// adds to, so its own proofs may reach the cap sooner and be undecided.
+pub(crate) fn body_readiness(kb: &mut KnowledgeBase, sym: Symbol) -> BodyReadiness {
+    if body_is_typed(kb, sym) {
+        return BodyReadiness::Ready;
+    }
+    let layered = kb.terms.is_pinned();
+    let run = kb.bodies_in_run.as_mut().expect("a body not typed is one of a run");
+    let constant = run.constants.get(&sym).cloned();
+    if constant.is_none() && kb.op_body_node(sym).is_none() {
+        return BodyReadiness::Ready;
+    }
+    let run = kb.bodies_in_run.as_mut().expect("a body not typed is one of a run");
+    if !run.pending.contains(&sym) || !run.on_demand || layered {
+        return BodyReadiness::NotTyped;
+    }
+    let region_sorts = run.region_sorts.clone();
+    let around = (
+        std::mem::take(&mut kb.gamma_proof_depth),
+        std::mem::take(&mut kb.simp_guard_depth),
+        std::mem::take(&mut kb.spec_as_providers_depth),
+    );
+    let (mut errors, mut sources) = (Vec::new(), Vec::new());
+    match &constant {
+        Some(value) => check_constant_bodies(kb, std::slice::from_ref(value), &mut errors, &mut sources),
+        None => check_operation_bodies(kb, OpBodyPass::Full, &[sym], &mut errors, &mut sources, &region_sorts),
+    }
+    (kb.gamma_proof_depth, kb.simp_guard_depth, kb.spec_as_providers_depth) = around;
+    debug_assert_eq!(errors.len(), sources.len(), "a typing pass keeps `sources` parallel to `errors`");
+    let run = kb
+        .bodies_in_run
+        .as_mut()
+        .expect("typing a body leaves the run's record in place");
+    // One the pass found nothing of its own to type in is not asked again.
+    run.pending.remove(&sym);
+    run.reported.extend(errors.into_iter().zip(sources));
+    if run.typed.contains(&sym) {
+        BodyReadiness::Ready
+    } else {
+        BodyReadiness::NotTyped
+    }
+}
+
+/// Begin typing `sym`'s text in a typing pass: `false` where the run has begun it already —
+/// typed on demand before its turn.
+pub(super) fn begin_typing_body(kb: &mut KnowledgeBase, sym: Symbol) -> bool {
+    let Some(run) = kb.bodies_in_run.as_mut() else {
+        return true;
+    };
+    if !run.begun.insert(sym) {
+        return false;
+    }
+    run.pending.remove(&sym);
+    true
+}
+
+/// `sym`'s text came out typed: what is stored is what runs.
+pub(super) fn typed_body(kb: &mut KnowledgeBase, sym: Symbol) {
+    if let Some(run) = kb.bodies_in_run.as_mut() {
+        run.typed.insert(sym);
+    }
+}
+
 /// Check operation bodies against their declared return types.
 pub(super) fn check_operation_bodies(
     kb: &mut KnowledgeBase,
+    pass: OpBodyPass,
     op_syms: &[Symbol],
     errors: &mut Vec<TypeError>,
     // WI-745: parallel to `errors`; each error this pass pushes is tagged with
@@ -342,8 +513,22 @@ pub(super) fn check_operation_bodies(
     // lazily — errors pushed during op K are stamped at the top of iteration K+1
     // (and the final flush), which is robust to the loop's early `continue`s.
     let mut cur_src: Option<crate::span::SourceId> = None;
+    // WI-20261117-8J8NG: the citations the current operation writes are queued from
+    // `citations`; they are routed once it is typed ([`route_citations_from`]).
+    let mut citations: Option<usize> = None;
     for op in &ops_to_check {
-        if op.body_node.is_some() {
+        if let Some(mark) = citations.take() {
+            route_citations_from(kb, mark);
+        }
+        // A body the run typed on demand before its turn is passed over at it; the contracts
+        // pass begins nothing.
+        if pass == OpBodyPass::Full && !begin_typing_body(kb, op.op_sym) {
+            continue;
+        }
+        if pass == OpBodyPass::Full {
+            citations = Some(kb.pending_citation_routes.len());
+        }
+        if op.body_node.is_some() && pass == OpBodyPass::Full {
             count_body_typed(BodyKind::Operation);
         }
         while sources.len() < errors.len() {
@@ -561,7 +746,7 @@ pub(super) fn check_operation_bodies(
         };
 
         type_contract_comparisons(kb, &env, op.op_sym, &effective_return, op.site.0, errors);
-        if op.contract_only {
+        if op.contract_only || pass == OpBodyPass::ContractsOnly {
             // A precondition a call in the contract failed is drained here, as a body's is
             // below.
             errors.extend(env.take_deferred_preconditions());
@@ -801,6 +986,10 @@ pub(super) fn check_operation_bodies(
                 // (`ptr_eq` unchanged ⇒ no allocation, no write).
                 if !Rc::ptr_eq(&result.node, body_node) {
                     kb.set_op_body_node(op.op_sym, Rc::clone(&result.node));
+                }
+                // WI-20261117-8J8NG: the stored body is the typed one, and may be run.
+                if pass == OpBodyPass::Full {
+                    typed_body(kb, op.op_sym);
                 }
                 // WI-20260828-N2FHM — see [`surviving_dot_apply`]. Checked on the STORED
                 // tree (after the write-back above), because the stored tree is what eval
@@ -1154,6 +1343,9 @@ pub(super) fn check_operation_bodies(
     while sources.len() < errors.len() {
         sources.push(cur_src);
     }
+    if let Some(mark) = citations {
+        route_citations_from(kb, mark);
+    }
 }
 
 /// The effects of `incurred` that the operation's declared row (`effective_effects`, its
@@ -1239,7 +1431,7 @@ fn type_contract_comparisons(
 /// Does `op_sym` declare something [`type_contract_comparisons`] types: a value precondition
 /// or postcondition, or a guarded effect? What brings a body-less operation with no default
 /// into [`check_operation_bodies`].
-fn declares_contract_comparisons(kb: &mut KnowledgeBase, op_sym: Symbol) -> bool {
+pub(super) fn declares_contract_comparisons(kb: &mut KnowledgeBase, op_sym: Symbol) -> bool {
     let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.clone()) else {
         return false;
     };

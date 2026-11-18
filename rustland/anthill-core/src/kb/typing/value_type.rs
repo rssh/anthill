@@ -475,6 +475,69 @@ fn fresh_type_var(kb: &mut KnowledgeBase) -> Value {
     Value::term(kb.make_type_var(name))
 }
 
+/// A guarded `=` law instantiated at the expression it is used for (WI-20261117-V0RPW). The
+/// law is a lemma over its type variable — `euclid_div: add[A](mul(?b: A, …), …) = ?a :-
+/// EuclideanDomain[T = A], neq(?b, zero)` holds for every `A` that provides `EuclideanDomain`,
+/// with `zero` that `A`'s — and using it for an expression instantiates `A` at the type of
+/// what its bounded variable stands for there: `2n` is a `BigInt` by its spelling (§2.4), a
+/// typed node by the type the typer gave it. `match_subst` is the head's match, keyed by the
+/// clause's De Bruijn slots; the result binds each such type variable the match leaves free.
+/// A bounded variable whose match has no known type instantiates nothing, and the law is then
+/// not usable there: its bound and its requirement stay open.
+pub(crate) fn law_type_instantiation(
+    kb: &mut KnowledgeBase,
+    rid: crate::kb::RuleId,
+    match_subst: &Substitution,
+) -> Substitution {
+    let mut out = match_subst.clone();
+    for (column, bound) in kb.rule_type_bounds(rid).to_vec() {
+        let ViewHead::Var(Var::DeBruijn(t)) = bound.head(kb) else {
+            continue;
+        };
+        let type_slot = Var::DeBruijn(t).as_vid();
+        if out.resolve_as_value(type_slot).is_some() {
+            continue;
+        }
+        let Some(matched) = out.resolve_as_value(Var::DeBruijn(column).as_vid()).cloned() else {
+            continue;
+        };
+        let ty = value_type_term(kb, &Substitution::new(), &matched);
+        if !matches!(ty.head(kb), ViewHead::Var(_)) {
+            out.bind_value(kb, type_slot, ty);
+        }
+    }
+    // Each requirement the law declares, passed at the type it was instantiated at — the
+    // typer's instance of it there, as a typed citation passes a clause's requirements: the
+    // law's own `EuclideanDomain[T = A]`, read through by its `zero`. Where nothing provides
+    // it, the lemma does not hold at that type, and the match is dropped. Only an instance
+    // that binds its carrier alone (`Additive[T = A]`): one that writes more (`Conv[A = X, B =
+    // Int64]`) is not built from the carrier, and is passed nothing — its read then holds the
+    // lemma back, as before.
+    for requirement in kb.rule_provider_requirements(rid).to_vec() {
+        let dict_slot = Var::DeBruijn(requirement.dictionary).as_vid();
+        if out.resolve_as_value(dict_slot).is_some() {
+            continue;
+        }
+        if Value::term(requirement.instance).named_keys(kb).len() > 1 {
+            continue;
+        }
+        let Some(ty) = out.resolve_as_value(Var::DeBruijn(requirement.carrier).as_vid()).cloned() else {
+            continue;
+        };
+        let (Some(spec), Some(carrier)) = (
+            sort_functor_of_view(kb, &Value::term(requirement.instance)),
+            sort_functor_of_view(kb, &ty),
+        ) else {
+            continue;
+        };
+        match instance_dictionary_at(kb, spec, carrier, &ty, &ty) {
+            Ok(dict) => out.bind_value(kb, dict_slot, dict),
+            Err(_) => out.contradiction = true,
+        }
+    }
+    out
+}
+
 /// WI-578 — the prelude sort a literal constant inhabits, as a `Ref(S)` type-term.
 pub(super) fn literal_sort(kb: &mut KnowledgeBase, lit: &Literal) -> Value {
     let name = match lit {

@@ -443,10 +443,11 @@ end
 /// post-match, so a `@[simp]`-TAGGED one is a directional rewrite and
 /// `typed_pattern_bounds_hold` enforces its bound — that half is now KEPT, and
 /// `wi903_typed_bound_dot_rule_test::typed_bound_on_a_guarded_equation_follows_the_tag`
-/// owns the pair. The UNTAGGED half is untouched: `@[simp]` is the enablement (WI-881),
-/// so nothing fires an untagged equation, guarded or not, and its bound would still be
-/// decoration. The measurement above stands as the record of what "the mechanism ran"
-/// is worth without a firing site behind it.
+/// owns the pair. An untagged guarded `=` LAW reads its bound too since
+/// WI-20261117-V0RPW: a proof from Γ takes it as a premise and runs its body, where the bound
+/// is a goal. An untagged guarded `<=>` is neither — `@[simp]` is the enablement (WI-881) —
+/// so its bound would still be decoration, and is refused. The measurement above stands as
+/// the record of what "the mechanism ran" is worth without a reader behind it.
 #[test]
 fn an_untagged_guarded_equation_keeps_its_refusal() {
     const PROG: &str = r#"
@@ -459,11 +460,13 @@ namespace test.pw9a0.guarded
   sort Lib
     sort A = ?
     operation g(x: A) -> A
-    rule { law: g(?x: Colour) = ?x :- item(?x) }
+    rule { law: g(?x: Colour) <=> ?x :- item(?x) }
   end
 end
 "#;
     crate::common::expect_load_errors(crate::common::try_load_kb_with(PROG), &["WI-582"]);
+    // The `=` spelling is a premise, and loads with its bound.
+    crate::common::load_kb_with(&PROG.replace("<=> ?x :- item", "= ?x :- item"));
 }
 
 /// THE DIAGNOSTIC HALF. An introducer with no `:- Spec[A]` guard is ONE fault, and it

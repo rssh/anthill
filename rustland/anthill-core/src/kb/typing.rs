@@ -176,6 +176,7 @@ pub(crate) use guarded_row::*;
 use join_instantiation::*;
 pub(crate) use memory::*;
 use op_bodies::*;
+pub(crate) use op_bodies::{body_is_typed, body_readiness, BodiesInRun, BodyReadiness};
 pub(crate) use param_defaults::*;
 use pattern::*;
 pub(crate) use projection::*;

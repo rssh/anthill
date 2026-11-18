@@ -168,8 +168,10 @@ sort anthill.prelude.Float
   -- which is what keeps a generated backend from calling a `recip` it has no function for
   -- (the C++ binding maps none). It reaches no call made through a dictionary:
   -- `Field.recip` dispatched at `Float` found no member it could run and died at eval, and
-  -- `provides Field[T = Float]` is now refused unless the carrier backs `recip` with
-  -- something a dispatch can run — the body (kernel-language.md §5.3, §8.7).
+  -- `provides Field[T = Float]` was refused unless the carrier backed `recip` with
+  -- something a dispatch can run — the body (kernel-language.md §5.3, §8.7). `Float`
+  -- provides no `Field` since WI-20261117-V0RPW (IEEE division is not the inverse of
+  -- multiplication); the body still serves a direct call.
   rule recip(?a) <=> div(1.0, ?a) @[simp]
 
   -- SPECIFICATION, and an EXACT one — `2·π` is exact in binary floating point (doubling

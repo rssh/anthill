@@ -144,6 +144,16 @@ pub enum EvalError {
     ConstValueUnavailable {
         name: String,
     },
+    /// WI-20261117-8J8NG: a proof run while a typer run types a load reached an operation body
+    /// or a constant value the run has not typed — the one being typed (its own recursion under
+    /// a guard, or a body that calls it back), one whose typing failed, or one reached where
+    /// nothing may be typed. Its text as stored is not the one that runs (its dots not
+    /// dispatched, its equations not applied), so it is not run, and the proof is undecided
+    /// there. One the run has not begun is typed where the proof reaches it
+    /// (`typing::body_readiness`).
+    BodyNotTyped {
+        name: String,
+    },
     /// WI-625 gap 1 (SLD→eval bridge): a semantic comparison inside a bridged
     /// op-body evaluation reached a genuinely UNDECIDED point — a truncated
     /// sub-proof, or an eq-overriding carrier buried under non-overriding
@@ -636,6 +646,9 @@ impl EvalError {
             // is absent from this build — a spec-only build of a program a codegen'd one
             // carries the value for.
             EvalError::ConstValueUnavailable { .. } => BridgeDisposition::Schedule,
+            // WI-20261117-8J8NG: the answer is the typed text's, which exists and this proof
+            // cannot read: an incomplete answer set, never a refutation.
+            EvalError::BodyNotTyped { .. } => BridgeDisposition::Truncation,
 
             // ── Fault: the callee could not be run to an answer ──
             EvalError::Raised { payload, .. } => raised_disposition(kb, payload),
@@ -940,6 +953,11 @@ impl std::fmt::Display for EvalError {
             EvalError::ConstCycle { name } => write!(
                 f,
                 "const `{name}` depends on itself (cycle detected while forcing its value)"
+            ),
+            EvalError::BodyNotTyped { name } => write!(
+                f,
+                "`{name}` is not typed yet in this load — it is being typed, or its typing \
+                 failed: a proof that runs it is undecided"
             ),
             EvalError::ConstValueUnavailable { name } => write!(
                 f,
