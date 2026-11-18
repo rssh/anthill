@@ -1,10 +1,10 @@
-//! A `Map` keeps the `Eq[T = K]` instance its construction is handed (`Map.empty() requires
-//! Eq[T = K]`), and a tuple key is read through it at the labels `K` names (user, 2026-11-17:
-//! "By K's Eq", "The Map value"). The `@[simp]` laws that rewrite a `get` or `contains` of a
-//! `put` guard on `neq(?k, ?k2)`, which is typed where the law fires, at the map's `K` ("guard
-//! should be typed"), so the law and the map agree on which keys are equal. A key whose sort
-//! writes an `eq` of its own is keyed by its structure until library proposal 001-map's phase
-//! 2a: compared with every stored key instead, each operation was O(N) (user: "unacceptable").
+//! A `Map` keeps the `Hash[T = K]` instance its construction is handed (`Map.empty() requires
+//! Hash[T = K]`), and a tuple key is read through its `Eq` at the labels `K` names (user,
+//! 2026-11-17: "By K's Eq", "The Map value"). The `@[simp]` laws that rewrite a `get` or
+//! `contains` of a `put` guard on `neq(?k, ?k2)`, which is typed where the law fires, at the
+//! map's `K` ("guard should be typed"), so the law and the map agree on which keys are equal.
+//! A key whose sort writes an `eq` of its own is hashed through the instance:
+//! `wi_pwk0x_map_keyed_through_hash_test`.
 //!
 //! BACK-OUTS, each a temporary switch in one build (the rows `held_call_slot_said_test` lists):
 //!   * a tuple key read as its structure, not at `K`'s labels: 2 FAIL —
@@ -18,8 +18,9 @@
 //!   * the refusal of a held call nothing said: 1 FAILS,
 //!     [`a_map_whose_key_type_nothing_says_is_refused`] (loads, and dies when run).
 //!
-//! And `Map.empty`'s `requires Eq[T = K]` removed from the standard library: every row of this
-//! file fails, and the three map rows of `held_call_slot_said_test`.
+//! And `Map.empty`'s `requires Hash[T = K]` removed from the standard library: every row of this
+//! file fails, and the three map rows of `held_call_slot_said_test` (measured with its `Eq`
+//! spelling).
 
 use crate::common::{assert_refused_naming, interp_for, load_errors_of, show_value};
 
@@ -91,7 +92,7 @@ end
     );
 }
 
-/// A map whose key type nothing says — not the call, not anything its value meets — owes `Eq`
+/// A map whose key type nothing says — not the call, not anything its value meets — owes `Hash`
 /// at a type nothing fixed, and is refused at load where it is made. It loaded and died when
 /// run, where its `TypeValue` twin was refused.
 #[test]
@@ -107,7 +108,7 @@ end
     assert_refused_naming(
         &load_errors_of(src),
         &[
-            "`anthill.prelude.Eq[T = anthill.prelude.Map.K]`",
+            "`anthill.prelude.Hash[T = anthill.prelude.Map.K]`",
             "cannot be supplied for call to `anthill.prelude.Map.empty`",
             "element `T = anthill.prelude.Map.K` is unconstrained at this call site",
         ],
@@ -115,7 +116,7 @@ end
     );
 }
 
-/// A key type that provides no `Eq` is refused where the map is made, written in the call's
+/// A key type that provides no `Hash` is refused where the map is made, written in the call's
 /// bracket or inferred from a key: `Float`'s equality is partial. `Int64` is the control.
 #[test]
 fn a_key_type_without_eq_is_refused() {
@@ -132,7 +133,7 @@ fn a_key_type_without_eq_is_refused() {
         assert_refused_naming(
             &load_errors_of(&src),
             &[
-                "`anthill.prelude.Eq[T = anthill.prelude.Float]`",
+                "`anthill.prelude.Hash[T = anthill.prelude.Float]`",
                 "cannot be supplied for call to `anthill.prelude.Map.empty`",
             ],
             label,

@@ -81,6 +81,23 @@ sort anthill.prelude.Eq
   rule eq_refl: eq(?a, ?a) <=> true
 end
 
+-- Hash: lawful equality with a hash it agrees with — the instance a hash map keys by.
+-- `hash` maps equal values to one `Int64`, so a map finds a key in the bucket its hash
+-- names and compares it through `eq` there alone (library proposal 001-map, §Key
+-- discipline). Derived wherever `Eq` is derived; a sort that writes its own `eq` writes
+-- `hash` beside it, or provides no `Hash`.
+sort anthill.prelude.Hash
+  sort T = ?
+
+  -- Hold a `Hash[T]` and you hold the `Eq[T]` it agrees with, as `Eq provides PartialEq`.
+  provides Eq[T = T]
+
+  operation hash(x: T) -> Int64
+
+  -- Equal values hash alike. Dormant, as `eq_refl` is: not discharged per instance.
+  rule hash_eq: eq(hash(?a), hash(?b)) = true :- eq(?a, ?b)
+end
+
 -- NonEq: a carrier declares its equality is NOT reflexive by exhibiting a
 -- WITNESS — `nonEqRefl()` returns some value `w` with `eq(w, w) = false`. This
 -- is the constructive form of `∃x. eq(x, x) = false` (Anthill has no `∃` in rule

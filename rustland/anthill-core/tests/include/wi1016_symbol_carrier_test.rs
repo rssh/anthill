@@ -22,12 +22,12 @@ use anthill_core::kb::{ClauseKind, KnowledgeBase};
 const DICT: &str = "anthill.realization.runtime.Dictionary";
 const MAP: &str = "anthill.prelude.Map";
 
-/// `emptyOf(k)` makes an empty map keyed at `k`'s type, under that type's `Eq`, which a map is
-/// made under.
+/// `emptyOf(k)` makes an empty map keyed at `k`'s type, under that type's `Hash`, which a map
+/// is made under.
 fn interp() -> Interpreter {
     crate::common::interp_for(
-        "namespace test.wi1016\n  import anthill.prelude.{Int64, Map, Eq}\n  \
-         operation emptyOf[K](k: K) -> Map[K = K, V = Int64] requires Eq[T = K] = Map.empty()\nend\n",
+        "namespace test.wi1016\n  import anthill.prelude.{Int64, Map, Hash}\n  \
+         operation emptyOf[K](k: K) -> Map[K = K, V = Int64] requires Hash[T = K] = Map.empty()\nend\n",
     )
 }
 

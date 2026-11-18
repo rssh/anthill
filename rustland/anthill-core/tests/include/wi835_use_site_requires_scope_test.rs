@@ -30,10 +30,11 @@ fn assert_non_eq_key_error(errs: &[String], container: &str, param: &str, carrie
         errs.iter().any(|e| {
             e.contains(container)
                 && e.contains(carrier)
-                && e.contains("Eq")
+                && e.contains(&format!("does not provide `{}`", crate::common::key_spec_of(container)))
                 && e.contains(&format!("`{param}`"))
         }),
-        "expected a `{container}` requires-`Eq`-at-`{param}` error naming `{carrier}`; got:\n{}",
+        "expected a `{container}` requires-`{}`-at-`{param}` error naming `{carrier}`; got:\n{}",
+        crate::common::key_spec_of(container),
         errs.join("\n"),
     );
 }
@@ -328,7 +329,7 @@ end
         .unwrap_or_default();
     let refusals = errs
         .iter()
-        .filter(|e| e.contains("does not provide `Eq`") && e.contains("Map"))
+        .filter(|e| e.contains("does not provide `Hash`") && e.contains("Map"))
         .count();
     assert_eq!(
         refusals,
@@ -414,21 +415,21 @@ namespace test.wi835.gaptuple
 end
 "#,
         ),
-        &["anthill.prelude.Map", "`K = (a: Float)`", "does not provide `Eq`"],
+        &["anthill.prelude.Map", "`K = (a: Float)`", "does not provide `Hash`"],
         "a tuple key over Float",
     );
 }
 
 /// A container over the enclosing operation's own TYPE PARAMETER is abstract, not a
 /// concrete carrier — the check must defer, in a signature exactly as it does in a
-/// field. The body's `Map.empty()` owes `Eq` at `A`, which the operation requires.
+/// field. The body's `Map.empty()` owes `Hash` at `A`, which the operation requires.
 #[test]
 fn a_container_over_an_operation_type_param_loads() {
     assert_loads_clean(
         r#"
 namespace test.wi835.abstract
-  import anthill.prelude.{Map, Int64, Eq}
-  operation m[A]() -> Map[K = A, V = Int64] requires Eq[T = A] = Map.empty()
+  import anthill.prelude.{Map, Int64, Hash}
+  operation m[A]() -> Map[K = A, V = Int64] requires Hash[T = A] = Map.empty()
 end
 "#,
     );

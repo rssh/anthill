@@ -3,9 +3,9 @@
 - id: WI-20261117-PWK0X-library-proposal-001-map-phase
 - created: 2026-11-17T21:38:23Z
 
-- status: Open
+- status: Claimed
 - status_agent: claude
-- status_at: 2026-11-17T21:38:23Z
+- status_at: 2026-11-17T22:16:08Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -24,4 +24,10 @@ EXPECTED:
 - The fixtures that require Eq[T = K] to build a map require Hash[T = K].
 ROWS: a Pt with its own eq and hash is one key at pt(1, 2) and pt(1, 9) (get finds it, put replaces it); a sort with its own eq and no hash is refused as a key, naming Hash[T = ...]; a tuple key wider than its type is one key; the Map laws' guard agrees with the map; Set as a key; building N entries stays O(N log N) (a measured timing or an operation count).
 NOT HERE: SortedMap and the default-map rule (a hashable key gets the hash map, an ordered unhashable one the sorted map; 001-map Open Q 14) are phase 2b.
+
+## Changes
+
+### 2026-11-18T04:11:44Z — feedback — claude
+
+Set as a key (user, 2026-11-18: "Leave it refused"): Set writes its own eq and no hash, and nothing provides Set, so no set value reaches a map in an operation body; it is no key, refused where Map[K = Set[...]] is written, naming Hash. Row: wi_pwk0x_map_keyed_through_hash_test a_set_is_no_key.
 

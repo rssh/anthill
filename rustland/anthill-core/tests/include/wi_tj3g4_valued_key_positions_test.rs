@@ -152,7 +152,8 @@ fn brackets_after(src: &str, after: &str, bracket: &str) -> Vec<String> {
 fn assert_key_refusals(src: &str, sites: usize, container: &str, param: &str, printed: &str, why: &str) {
     let (keys, errs) = key_refusals(src);
     assert_eq!(keys.len(), sites, "{why}: {errs:#?}");
-    let at_param = format!("'anthill.prelude.{container}' requires `anthill.prelude.Eq` at its parameter `{param}`");
+    let spec = crate::common::key_spec_of(container);
+    let at_param = format!("'anthill.prelude.{container}' requires `anthill.prelude.{spec}` at its parameter `{param}`");
     for k in &keys {
         assert!(
             k.contains(&at_param) && k.contains(printed),

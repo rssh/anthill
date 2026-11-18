@@ -2848,6 +2848,7 @@ pub(super) fn build_op_scoped_dicts(
                 && !spec_is_a_marker(kb, dep.required_sort)
                 && !dep_completes_to_a_unique_provider(kb, &dep, callee_op)
                 && !read_where_applied(kb, usage, callee_op, &dep, &disambig)
+                && !open_at_a_slot_the_result_leaves(kb, &dep, &disambig, callee_op)
             {
                 kb.unsuppliable_requirements.truncate(parked_mark);
                 // WHERE THE CALL PINS EVERY ELEMENT, the cause is not an element it leaves
@@ -3228,6 +3229,59 @@ pub(super) fn build_op_scoped_dicts(
         out.push(projected);
     }
     Ok(out)
+}
+
+/// Is every element `dep` leaves open at this call a parameter of the callee's own sort, which
+/// the callee's result names — so the call's value leaves that slot open, and what the value
+/// meets may say it (the call is held, `typing::forms::HeldCall`)? `Map.empty()` in
+/// `Map.put(Map.empty(), "a", 1)` is: its `K` is the `String` `put`'s key gives. Where nothing
+/// says it, the held call is refused where the walk ends.
+fn open_at_a_slot_the_result_leaves(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    ctx: &SigmaCtx,
+    callee_op: Symbol,
+) -> bool {
+    let Some(sort) = impl_parent_of_op(kb, callee_op) else {
+        return false;
+    };
+    let Some(goal) = goal_from_requires_entry(kb, dep) else {
+        return false;
+    };
+    let own: Vec<VarId> = sort_type_params_as_pairs(kb, sort)
+        .iter()
+        .filter_map(|(_, var)| match kb.get_term(*var) {
+            Term::Var(Var::Global(vid)) => Some(*vid),
+            _ => None,
+        })
+        .collect();
+    let Some(info) = crate::kb::op_info::lookup_operation_info(kb, callee_op) else {
+        return false;
+    };
+    let mut named: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    crate::kb::node_occurrence::collect_value_type(kb, &info.return_type, &mut named, &mut seen);
+    let mut open: Vec<VarId> = Vec::new();
+    for (_, v) in &goal.bindings {
+        if !is_type_param_view(kb, v) {
+            continue;
+        }
+        if let Some((vid, false)) = sigma_class_terminal(kb, ctx, v) {
+            if !own.contains(&vid) {
+                return false;
+            }
+            open.push(vid);
+        }
+    }
+    // The result names each open slot: a declared `Self` reads as the sort at its own
+    // parameters.
+    !open.is_empty()
+        && (open.iter().all(|v| named.contains(v)) || return_is_own_sort(kb, &info.return_type, sort))
+}
+
+/// Is `ty` the sort `sort` itself, bare or applied — a `-> Self` read as written?
+fn return_is_own_sort(kb: &KnowledgeBase, ty: &Value, sort: Symbol) -> bool {
+    sort_functor_of_view(kb, ty).is_some_and(|s| same_sort_canonical(kb, s, sort))
 }
 
 /// Does `dep` fix its spec whole — write every type parameter of it, at a ground type? A

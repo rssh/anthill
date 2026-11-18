@@ -315,55 +315,7 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
                 spec == partial_eq || !c.partial.contains(&kb.canonical_sort_sym(s))
             })
             .collect();
-        // Optimistic seed: every candidate derivable, resting on nothing.
-        let mut derived: std::collections::HashMap<Symbol, Vec<Condition>> = candidates
-            .iter()
-            .map(|&s| (kb.canonical_sort_sym(s), Vec::new()))
-            .collect();
-        loop {
-            let mut changed = false;
-            for &s in &candidates {
-                let cs = kb.canonical_sort_sym(s);
-                if !derived.contains_key(&cs) {
-                    continue;
-                }
-                let params: Vec<Symbol> = kb.type_param_syms_of(s).to_vec();
-                let mut conds: Vec<Condition> = Vec::new();
-                let mut ok = true;
-                'fields: for ctor in kb.field_constructors_of_sort(s) {
-                    let Some(fields) = kb.entity_field_types(ctor) else {
-                        continue;
-                    };
-                    for (_, ftype) in fields.to_vec() {
-                        let fc =
-                            field_conditions(kb, &ftype, spec, &params, &derived, &c.unbacked_eq);
-                        match fc {
-                            Some(fc) => {
-                                for x in fc {
-                                    if !conds.contains(&x) {
-                                        conds.push(x);
-                                    }
-                                }
-                            }
-                            None => {
-                                ok = false;
-                                break 'fields;
-                            }
-                        }
-                    }
-                }
-                if !ok {
-                    derived.remove(&cs);
-                    changed = true;
-                } else if derived.get(&cs) != Some(&conds) {
-                    derived.insert(cs, conds);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
+        let derived = conditional_rows(kb, &candidates, spec, &c.unbacked_eq);
         for &s in &candidates {
             let Some(conds) = derived.get(&kb.canonical_sort_sym(s)).cloned() else {
                 continue;
@@ -384,6 +336,197 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
         }
     }
     given
+}
+
+/// The conditions each of `candidates` can be given `spec` under, by canonical carrier — a
+/// GREATEST fixpoint over the fields' types ([`field_conditions`]): every candidate seeded
+/// derivable and resting on nothing, and one dropped as soon as a field's `spec` rests on
+/// nothing the carrier can name. A carrier absent from the answer is given no row.
+fn conditional_rows(
+    kb: &KnowledgeBase,
+    candidates: &[Symbol],
+    spec: Symbol,
+    unbacked_eq: &HashSet<Symbol>,
+) -> std::collections::HashMap<Symbol, Vec<Condition>> {
+    let mut derived: std::collections::HashMap<Symbol, Vec<Condition>> = candidates
+        .iter()
+        .map(|&s| (kb.canonical_sort_sym(s), Vec::new()))
+        .collect();
+    loop {
+        let mut changed = false;
+        for &s in candidates {
+            let cs = kb.canonical_sort_sym(s);
+            if !derived.contains_key(&cs) {
+                continue;
+            }
+            let params: Vec<Symbol> = kb.type_param_syms_of(s).to_vec();
+            let mut conds: Vec<Condition> = Vec::new();
+            let mut ok = true;
+            'fields: for ctor in kb.field_constructors_of_sort(s) {
+                let Some(fields) = kb.entity_field_types(ctor) else {
+                    continue;
+                };
+                for (_, ftype) in fields.to_vec() {
+                    match field_conditions(kb, &ftype, spec, &params, &derived, unbacked_eq) {
+                        Some(fc) => {
+                            for x in fc {
+                                if !conds.contains(&x) {
+                                    conds.push(x);
+                                }
+                            }
+                        }
+                        None => {
+                            ok = false;
+                            break 'fields;
+                        }
+                    }
+                }
+            }
+            if !ok {
+                derived.remove(&cs);
+                changed = true;
+            } else if derived.get(&cs) != Some(&conds) {
+                derived.insert(cs, conds);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    derived
+}
+
+/// `Hash` for the composites whose `Eq` is structural — derived by the two passes above
+/// (`given`, the carriers they gave `PartialEq`), or written with no condition and no `eq` of
+/// the sort's own: a hash that agrees with that `eq`, where every field's type has one — over
+/// a parameter, the row rests on `Hash` of it (`provides Hash[Option] :- Hash[T]`), as the
+/// `Eq` row rests on `Eq`. A sort that writes its own `eq`, or a conditional `Eq` (`provides
+/// Eq[T = Box] :- Ord[T]`, which a row resting on the fields' `Hash` would not entail), writes
+/// its `hash` beside it; a field of one that writes no `hash` (`Box(p: Pt)`) leaves its carrier
+/// without `Hash`: no hash its `eq` agrees with is known. The carriers given `Hash`, for
+/// [`derived_hash_member_source`].
+pub(crate) fn derive_hash(kb: &mut KnowledgeBase, c: &EqClassification, given: &[Symbol]) -> Vec<Symbol> {
+    let (Some(eq), Some(hash), true) = (
+        kb.try_resolve_symbol("anthill.prelude.Eq"),
+        kb.try_resolve_symbol("anthill.prelude.Hash"),
+        hash_members_writable(kb),
+    ) else {
+        return Vec::new();
+    };
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    let candidates: Vec<Symbol> = c
+        .sorts
+        .iter()
+        .copied()
+        .filter(|&s| {
+            seen.insert(kb.canonical_sort_sym(s))
+                && !c.boundary.contains(&kb.canonical_sort_sym(s))
+                && (given.contains(&s) || !super::typing::provision_is_conditional(kb, s, eq))
+                && super::typing::sort_provides(kb, s, eq)
+                && !super::typing::sort_provides(kb, s, hash)
+                // An operation `hash` the sort writes is its author's, which the row would
+                // take as its member unread: such a sort writes its `provides Hash`.
+                && kb.try_resolve_symbol(&format!("{}.hash", kb.qualified_name_of(s))).is_none()
+        })
+        .collect();
+    let derived = conditional_rows(kb, &candidates, hash, &c.unbacked_eq);
+    let mut out = Vec::new();
+    for &s in &candidates {
+        let Some(conds) = derived.get(&kb.canonical_sort_sym(s)).cloned() else {
+            continue;
+        };
+        assert_provides(kb, s, hash);
+        record_derived_conditions(kb, s, hash, &conds);
+        out.push(s);
+    }
+    out
+}
+
+/// The `hash` a composite this load gave `Hash` is given ([`derive_hash`]), as
+/// [`derived_eq_member_source`] gives its `eq`: the member a program would write, mixing a
+/// constructor's position with each field's `hash` through the field type's instance —
+///
+/// ```text
+/// operation hash(value: Self) -> Int64 =
+///   match value
+///     case just(v1) -> hash_mix(0, Hash.hash(v1))
+///     case nada() -> 1
+/// ```
+///
+/// — and, for a composite every field of which compares by structure, the structure's hash
+/// (`struct_hash(value)`), which its `eq` agrees with as `===` does.
+pub(crate) fn derived_hash_member_source(kb: &KnowledgeBase, carriers: &[Symbol]) -> Result<Option<String>, String> {
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    let mut carriers: Vec<Symbol> = carriers
+        .iter()
+        .copied()
+        .filter(|&s| seen.insert(kb.canonical_sort_sym(s)))
+        .collect();
+    if carriers.is_empty() {
+        return Ok(None);
+    }
+    carriers.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
+    let structural = structural_carriers(kb, &carriers);
+    let mut out = String::new();
+    for &carrier in &carriers {
+        write_hash_member(kb, carrier, structural.contains(&kb.canonical_sort_sym(carrier)), &mut out)?;
+    }
+    Ok(Some(out))
+}
+
+/// Does the KB declare what a derived `hash` member calls — `Hash.hash` and the kernel's
+/// `struct_hash` and `hash_mix`? Where it does not, no `Hash` row is derived: a row with no
+/// member is one no call can run.
+fn hash_members_writable(kb: &KnowledgeBase) -> bool {
+    ["anthill.prelude.Hash.hash", "anthill.kernel.struct_hash", "anthill.kernel.hash_mix"]
+        .iter()
+        .all(|n| kb.try_resolve_symbol(n).is_some_and(|s| super::op_info::operation_is_declared(kb, s)))
+}
+
+/// One carrier's secondary entry with its `hash` member; see [`derived_hash_member_source`].
+fn write_hash_member(kb: &KnowledgeBase, carrier: Symbol, by_structure: bool, out: &mut String) -> Result<(), String> {
+    use std::fmt::Write;
+    const HASH: &str = "..anthill.prelude.Hash.hash";
+    const MIX: &str = "..anthill.kernel.hash_mix";
+    let qn = kb.qualified_name_of(carrier);
+    let scope = kb.symbols.scope_id(carrier);
+    let value = unused_name(kb, scope, "value");
+    let segments: Vec<&str> = qn.split('.').collect();
+    for (depth, segment) in segments.iter().enumerate() {
+        let _ = writeln!(out, "{}namespace {segment}", "  ".repeat(depth));
+    }
+    let indent = "  ".repeat(segments.len());
+    let _ = writeln!(out, "{indent}operation hash({value}: Self) -> ..anthill.prelude.Int64 =");
+    let close = |out: &mut String| {
+        for depth in (0..segments.len()).rev() {
+            let _ = writeln!(out, "{}end", "  ".repeat(depth));
+        }
+    };
+    if by_structure {
+        let _ = writeln!(out, "{indent}  ..anthill.kernel.struct_hash({value})");
+        close(out);
+        return Ok(());
+    }
+    let mut ctors = kb.field_constructors_of_sort(carrier);
+    ctors.sort_by_key(|c| c.index());
+    ctors.dedup();
+    if ctors.is_empty() {
+        return Err(format!("the composite `{qn}` has no constructor to hash"));
+    }
+    let _ = writeln!(out, "{indent}  match {value}");
+    for (position, &ctor) in ctors.iter().enumerate() {
+        let name = kb.local_name_of(ctor).to_string();
+        let arity = kb.entity_field_types(ctor).map_or(0, |f| f.len());
+        let binders: Vec<String> = (1..=arity).map(|i| unused_name(kb, scope, &format!("v{i}"))).collect();
+        let mut acc = position.to_string();
+        for b in &binders {
+            acc = format!("{MIX}({acc}, {HASH}({b}))");
+        }
+        let _ = writeln!(out, "{indent}    case {name}({}) -> {acc}", binders.join(", "));
+    }
+    close(out);
+    Ok(())
 }
 
 /// The `eq` a composite whose `PartialEq` this load derived is given: the member a
@@ -1000,7 +1143,7 @@ fn equality_signatures(
                 .candidates(kb, carrier)
                 .iter()
                 .map(|c| kb.canonical_sym(c.target))
-                .filter(|&t| !kb.is_derived_eq_member(t))
+                .filter(|&t| !kb.is_derived_member(t))
                 .collect();
             if let Some(signature) = out.get_mut(&carrier) {
                 signature.suppliers.extend(suppliers);
@@ -1489,7 +1632,7 @@ fn is_eq_boundary(
     eq_index.is_some_and(|ix| {
         ix.candidates(kb, sort)
             .iter()
-            .any(|c| !kb.is_derived_eq_member(c.target))
+            .any(|c| !kb.is_derived_member(c.target))
     })
 }
 

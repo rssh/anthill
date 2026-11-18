@@ -60,9 +60,12 @@ namespace anthill.reflect
   -- `Map` key.
   -- Written in a secondary entry because `sort Symbol = ?` has no body to write it in.
   operation symbolEq(a: Symbol, b: Symbol) -> Bool = a === b
+  -- And its hash is its identity's.
+  operation symbolHash(a: Symbol) -> anthill.prelude.Int64 = anthill.kernel.struct_hash(a)
   namespace Symbol
     provides anthill.prelude.PartialEq[T = Symbol, eq = symbolEq]
     provides anthill.prelude.Eq[T = Symbol]
+    provides anthill.prelude.Hash[T = Symbol, hash = symbolHash]
   end
 
   -- Two terms are equal when they are the same structure, and two that are `Float`s compare

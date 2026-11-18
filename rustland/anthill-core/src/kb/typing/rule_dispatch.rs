@@ -140,6 +140,12 @@ pub(super) fn dispatch_calls_in_occ(
             let (mut child_expected, child_declared) =
                 data_slot_arg_hints(kb, shape, expr, children.len());
             unify_side_hint(kb, env, expr, pos, &mut child_expected);
+            // The two shapes typed whole below type each child again, so a call held in a
+            // child is said, or refused, there.
+            let again = (matches!(shape, Some(CallDispatch::BodyLessSpecOp | CallDispatch::Call))
+                && !env.typed_again_by_its_parent)
+                .then(|| env.typed_again());
+            let child_env = again.as_ref().unwrap_or(env);
             // WI-20260904-50B2K — AND WHAT EACH SLOT DECLARES, which is a WIDER list than
             // the hints and answers a different question. A hint is only supplied where a
             // top-down type is CORRECT to impose (a lambda in a callable slot, a call in a
@@ -153,7 +159,7 @@ pub(super) fn dispatch_calls_in_occ(
                 .zip(child_expected)
                 .zip(child_declared)
                 .map(|(((c, p), e), d)| {
-                    dispatch_calls_in_occ(kb, env, simp, c, p, rule_sym, e, d, errors)
+                    dispatch_calls_in_occ(kb, child_env, simp, c, p, rule_sym, e, d, errors)
                 })
                 .collect();
             crate::kb::simp_rewrite::reassemble(occ, &new_children)

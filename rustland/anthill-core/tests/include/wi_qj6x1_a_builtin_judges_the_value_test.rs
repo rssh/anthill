@@ -85,7 +85,7 @@ use crate::common::{interp_for, load_kb_with, query_unary, run_int64};
 fn ns(name: &str, body: &str) -> String {
     format!(
         "namespace test.{name}
-  import anthill.prelude.{{Int64, String, List, Map, Option, Unit, Eq}}
+  import anthill.prelude.{{Int64, String, List, Map, Option, Unit, Hash}}
   import anthill.prelude.List.{{cons, nil}}
   import anthill.prelude.Option.{{some, none}}
   import anthill.reflect.{{Term, make_fn, replace_named_arg, term_as_entity, as_term, term_to_string}}
@@ -97,7 +97,7 @@ fn ns(name: &str, body: &str) -> String {
   end
   operation mkb(n: Int64) -> Box = Box.bx(n)
   operation mp(n: Int64) -> (Int64, Int64) = (n, 2)
-  operation emptyOf[K](k: K) -> Map[K = K, V = Int64] requires Eq[T = K] = Map.empty()
+  operation emptyOf[K](k: K) -> Map[K = K, V = Int64] requires Hash[T = K] = Map.empty()
   operation look(m: Map[K = (Int64, Int64), V = Int64], k: (Int64, Int64)) -> Int64 =
     match m.get(k)
       case some(v) -> v
@@ -336,19 +336,22 @@ fn a_facts_entity_and_an_operation_built_one_are_one_key() {
 fn one_value_is_one_key_on_every_carrier() {
     let mut interp = interp_for(&ns(
         "qjcarriers",
-        "  sort Holder\n    entity h(p: (Int64, Int64))\n  end\n  operation mkh() -> Holder = Holder.h(p: (1, 2))\n  operation red() -> Box = Box.bx(0)",
+        "  sort Holder\n    entity h(p: (Int64, Int64))\n  end\n  operation mkh() -> Holder = Holder.h(p: (1, 2))\n  operation red() -> Box = Box.bx(0)\n  sort Lamp\n    entity off\n  end",
     ));
     let entity = interp.call("test.qjcarriers.mkb", &[Value::Int(1)]).expect("mkb");
     let tuple = interp.call("test.qjcarriers.mp", &[Value::Int(1)]).expect("mp");
     let holder = interp.call("test.qjcarriers.mkh", &[]).expect("mkh");
-    let none = interp
+    // A nullary constructor of a sort with no parameter: a host call hands the map a value
+    // whose type it names whole. `none` names no `T`, so its map's `Hash` names no provider
+    // and is refused where the map is made.
+    let off = interp
         .kb()
-        .try_resolve_symbol("anthill.prelude.Option.none")
-        .expect("none");
+        .try_resolve_symbol("test.qjcarriers.Lamp.off")
+        .expect("off");
     let values = [
         Value::Int(3),
         Value::Str("alice".into()),
-        Value::SymbolRef(none),
+        Value::SymbolRef(off),
         entity,
         tuple,
         Value::Unit,

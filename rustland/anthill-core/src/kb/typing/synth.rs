@@ -1042,6 +1042,7 @@ fn pattern_goal_opened(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<SortGo
 pub(super) enum TupleSpec {
     PartialEq,
     Eq,
+    Hash,
     TypeValue,
     SortDomain,
     Fillable,
@@ -1064,6 +1065,7 @@ pub(super) fn tuple_spec_of(kb: &KnowledgeBase, spec: Symbol) -> Option<TupleSpe
     let (tuple_spec, name) = match kb.local_name_of(spec) {
         "PartialEq" => (TupleSpec::PartialEq, "anthill.prelude.PartialEq"),
         "Eq" => (TupleSpec::Eq, "anthill.prelude.Eq"),
+        "Hash" => (TupleSpec::Hash, "anthill.prelude.Hash"),
         "TypeValue" => (TupleSpec::TypeValue, "anthill.reflect.TypeValue"),
         "SortDomain" => (TupleSpec::SortDomain, SORT_DOMAIN_SPEC),
         "Fillable" => (TupleSpec::Fillable, FILLABLE_SPEC),
@@ -1154,6 +1156,60 @@ fn tuple_instance(
     let ty = goal.bindings.first().map(|(_, t)| t.clone())?;
     if written_at_tuple(kb, goal, scope) {
         return None;
+    }
+    // A tuple's `Hash` is laid out as every `Hash` dictionary is, its chain's `Eq` slot first —
+    // here the tuple's own — and then holds its components' `Hash` instances, in the order its
+    // `eq` compares them, as one labelled dictionary: the labels its member reads each value's
+    // component by, one per component instance.
+    if tuple_spec == TupleSpec::Hash {
+        let eq = kb.try_resolve_symbol("anthill.prelude.Eq")?;
+        let chain = direct_requires(kb, goal.spec_sort);
+        if !matches!(chain.as_slice(), [slot] if kb.canonical_sort_sym(slot.required_sort) == kb.canonical_sort_sym(eq))
+        {
+            return Some(tuple_chain_refusal(kb, goal, eq, chain.len()));
+        }
+        let Some(at_eq) = spec_goal_at(kb, eq, &ty) else {
+            return Some(component_goal_unbuilt(kb, goal, eq, &ty));
+        };
+        let fields = kb.tuple_type_components(fields);
+        stack.push(goal.clone());
+        let eq_node = match resolve_inner(kb, &at_eq, scope, stack, None, None, rung, &mut None) {
+            ResolutionResult::Resolved(node) => node,
+            failure => {
+                stack.pop();
+                return Some(failure);
+            }
+        };
+        let mut sub_resolutions = Vec::with_capacity(fields.len());
+        for (_, component) in &fields {
+            let Some(sub) = spec_goal_at(kb, goal.spec_sort, component) else {
+                stack.pop();
+                return Some(component_goal_unbuilt(kb, goal, goal.spec_sort, component));
+            };
+            match resolve_inner(kb, &sub, scope, stack, None, None, rung, &mut None) {
+                ResolutionResult::Resolved(node) => sub_resolutions.push(node),
+                failure => {
+                    stack.pop();
+                    return Some(failure);
+                }
+            }
+        }
+        stack.pop();
+        kb.intern_positional_labels(fields.len());
+        let components = ResolvedRequiresNode::Conditional {
+            impl_sort: named_tuple,
+            spec_sort: goal.spec_sort,
+            bindings: goal.bindings.clone(),
+            sub_resolutions,
+            labels: Some(fields.iter().map(|(label, _)| *label).collect()),
+        };
+        return Some(ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {
+            impl_sort: named_tuple,
+            spec_sort: goal.spec_sort,
+            bindings: goal.bindings.clone(),
+            sub_resolutions: vec![eq_node, components],
+            labels: None,
+        }));
     }
     // The derived `Eq` is laid out over the tuple's derived `PartialEq`, so it stands only where
     // that does: under a written `PartialEq` the law is the writer's to state.

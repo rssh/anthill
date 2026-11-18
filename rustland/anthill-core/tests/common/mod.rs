@@ -1187,6 +1187,16 @@ pub fn a_binding_less_stdlib_refusal(e: &str) -> bool {
     e.contains("is declared `@[host_implemented]`, but no binding block") || (at_a_host_carrier && of_a_comparison)
 }
 
+/// The spec a standard-library key container requires of its key, by its last segment:
+/// `Map` requires `Hash` (library proposal 001-map), `Set` and the others `Eq`.
+#[allow(dead_code)]
+pub fn key_spec_of(container: &str) -> &'static str {
+    match container.rsplit('.').next() {
+        Some("Map") => "Hash",
+        _ => "Eq",
+    }
+}
+
 /// `errs` without the refusals of an `=` at a relation: a `Relation` provides no `PartialEq`,
 /// so comparing one is refused for that as well as for whatever else the comparison holds
 /// (WI-20261105-CBRD2). For the rows whose subject is how a relation's NAME is read, written as
@@ -1880,9 +1890,9 @@ pub fn sort_provisions_all(kb: &KnowledgeBase) -> Vec<(String, String)> {
     out
 }
 
-/// [`sort_provisions`] without the EQUALITY family (`PartialEq` / `Eq` / `NonEq`) —
-/// for a suite whose question is "what does this carrier provide" about some OTHER
-/// spec.
+/// [`sort_provisions`] without the EQUALITY family (`PartialEq` / `Eq` / `NonEq` / `Hash`)
+/// — for a suite whose question is "what does this carrier provide" about some OTHER
+/// spec. `Hash` is derived wherever `Eq` is (library proposal 001-map).
 ///
 /// WI-1098: those three are no longer a property of what a fixture WROTE. Every
 /// composite carrier now derives one of the two classifications — `PartialEq`+`Eq`
@@ -1903,7 +1913,10 @@ pub fn sort_provisions_outside_equality(kb: &KnowledgeBase) -> Vec<(String, Stri
         .filter(|(_, spec)| {
             !matches!(
                 spec.as_str(),
-                "anthill.prelude.PartialEq" | "anthill.prelude.Eq" | "anthill.prelude.NonEq"
+                "anthill.prelude.PartialEq"
+                    | "anthill.prelude.Eq"
+                    | "anthill.prelude.NonEq"
+                    | "anthill.prelude.Hash"
             )
         })
         .collect()

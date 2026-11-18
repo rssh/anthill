@@ -20,4 +20,9 @@
 sort anthill.prelude.NamedTuple
   operation namedTupleEq(a: NamedTuple, b: NamedTuple) -> Bool @[host_implemented]
   provides anthill.prelude.PartialEq[T = NamedTuple, eq = namedTupleEq]
+  -- A tuple's hash mixes its components' hashes, each through its own instance, at the labels
+  -- its type names; the tuple's `Hash` dictionary holds them after its `Eq`. The member a
+  -- tuple's derived `Hash` instance is entered by, and no provision: a row of `Hash` at
+  -- `NamedTuple` would provide `Eq` at every tuple, a `Float`'s among them.
+  operation hash(a: NamedTuple) -> anthill.prelude.Int64 @[host_implemented]
 end

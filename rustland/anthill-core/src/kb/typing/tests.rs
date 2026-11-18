@@ -4262,7 +4262,7 @@ end
             // kind-hidden sort (a top-level `entity X(…)` is its own sort): there the
             // fixed gate answers the sort, which is what the member is typed in, and the
             // written-keyword spelling answers nothing.
-            if kb.is_derived_eq_member(op) {
+            if kb.is_derived_member(op) {
                 assert_eq!(
                     impl_parent_sort_of_op(&kb, op),
                     impl_parent_of_op(&kb, op),

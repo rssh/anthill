@@ -800,7 +800,7 @@ end
 /// TYPE position. Before expansion `K` looks like a value read and the rule would refuse
 /// a program whose only use of `K` is as a type; after expansion there is no value read
 /// at all. `dq` therefore carries NO `TypeValue` clause — that absence is the assertion; the
-/// `Eq` it requires is the one its map is built under.
+/// `Hash` it requires is the one its map is built under.
 ///
 /// THE CONTROL IS THE SECOND OPERATION, which reads `K` as a genuine value and does
 /// carry the clause: without it this row would pass equally against a rule that never
@@ -809,13 +809,13 @@ end
 fn a_simp_expanded_type_position_is_not_a_value_read() {
     let src = r#"
 namespace test.n31xx.simp
-  import anthill.prelude.{Map, Int64, String, Cell, Type, Eq}
+  import anthill.prelude.{Map, Int64, String, Cell, Type, Hash}
   import anthill.prelude.Map.{put, size}
   import anthill.reflect.{TypeValue}
 
   rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]
 
-  operation dq[K]() -> Int64 requires Eq[T = K] = size(put(mkq(K), "a", 1))
+  operation dq[K]() -> Int64 requires Hash[T = K] = size(put(mkq(K), "a", 1))
   operation genuine[K]() -> Type requires TypeValue[T = K] = Cell[V = K]
 
   operation ask() -> Int64 = dq[K = String]()

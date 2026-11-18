@@ -112,6 +112,15 @@ namespace anthill.kernel
   -- it decides, and undecided where it is.
   operation struct_neq[T](a: T, b: T) -> Bool @[host_implemented]
 
+  -- A hash of a value's structure: two values `struct_eq` calls equal hash alike. The
+  -- `hash` of a type whose equality is structural (`anthill.prelude.Hash`). A value with
+  -- no structure to read — a variable, a closure, a runtime handle — has none.
+  operation struct_hash[T](x: T) -> Int64 @[host_implemented]
+
+  -- `seed` and `value` mixed into one hash, as a composite's `hash` combines its
+  -- constructor's and its fields'.
+  operation hash_mix(seed: Int64, value: Int64) -> Int64 @[host_implemented]
+
   -- Cut (`!`). Commits to the current rule invocation: discards the other
   -- clauses of the rule whose body the `!` appears in, and every choice point
   -- created while resolving the goals before it. Choice points created after

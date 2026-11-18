@@ -235,7 +235,8 @@ fn contains_answers_for_a_provisionless_entity() {
 
 /// The provision rows the derivation asserts, read off the relation — `PartialEq`
 /// AND `Eq`, because `Eq requires PartialEq` and a bare `Eq` would fail
-/// `check_provider_requires`.
+/// `check_provider_requires` — and `Hash`, derived wherever `Eq` is structural (library
+/// proposal 001-map).
 #[test]
 fn a_total_composite_derives_eq_and_partialeq() {
     let kb = crate::common::load_kb_with(NO_PROVIDES);
@@ -243,10 +244,11 @@ fn a_total_composite_derives_eq_and_partialeq() {
         provisions_under(&kb, "wi1098.noprov"),
         vec![
             ("Colour".to_string(), "Eq".to_string()),
+            ("Colour".to_string(), "Hash".to_string()),
             ("Colour".to_string(), "PartialEq".to_string()),
         ],
-        "a Total composite derives exactly the lawful pair — and `Driver`, which has \
-         no constructors, is not a composite carrier and derives nothing"
+        "a Total composite derives exactly the lawful pair and its hash — and `Driver`, \
+         which has no constructors, is not a composite carrier and derives nothing"
     );
 }
 
@@ -270,6 +272,7 @@ fn a_recursive_composite_answers() {
         provisions_under(&kb, "wi1098.rec"),
         vec![
             ("Tree".to_string(), "Eq".to_string()),
+            ("Tree".to_string(), "Hash".to_string()),
             ("Tree".to_string(), "PartialEq".to_string()),
         ],
     );
@@ -324,9 +327,11 @@ fn the_explicit_provides_twin_still_works() {
         provisions_under(&kb, "wi1098.withprov"),
         vec![
             ("Colour".to_string(), "Eq".to_string()),
+            ("Colour".to_string(), "Hash".to_string()),
             ("Colour".to_string(), "PartialEq".to_string()),
         ],
-        "ONE row per spec: the derivation must not re-file what the author wrote"
+        "ONE row per spec: the derivation must not re-file what the author wrote — and a \
+         written `Eq` with no `eq` of the sort's own is structural, so `Hash` is derived"
     );
 }
 
@@ -356,6 +361,7 @@ end
         provisions_under(&kb, "wi1098.floaty"),
         vec![
             ("Plain".to_string(), "Eq".to_string()),
+            ("Plain".to_string(), "Hash".to_string()),
             ("Plain".to_string(), "PartialEq".to_string()),
             ("Point".to_string(), "NonEq".to_string()),
             ("Point".to_string(), "PartialEq".to_string()),
@@ -461,6 +467,7 @@ end
             ("HoldFloatPair".to_string(), "NonEq".to_string()),
             ("HoldFloatPair".to_string(), "PartialEq".to_string()),
             ("HoldInt".to_string(), "Eq".to_string()),
+            ("HoldInt".to_string(), "Hash".to_string()),
             ("HoldInt".to_string(), "PartialEq".to_string()),
         ],
         "`HoldFloatPair` must not be claimed LAWFUL — no `Eq`. Since WI-20260918-CKD4J's \

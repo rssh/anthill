@@ -137,18 +137,18 @@ fn errs(extra: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// `extra`'s refusals but the one its `Map[K = {key}].empty()` owes for want of `Eq` at that
-/// key, which must be among them: a map is built under its key type's `Eq`, and neither a
+/// `extra`'s refusals but the one its `Map[K = {key}].empty()` owes for want of `Hash` at that
+/// key, which must be among them: a map is built under its key type's `Hash`, and neither a
 /// value nor `⊥` has one.
 fn errs_beside_key_eq(extra: &str, key: &str) -> Vec<String> {
     let mut e = errs(extra);
     let eq = format!(
-        "`anthill.prelude.Eq[T = {key}]` cannot be supplied for call to `anthill.prelude.Map.empty`"
+        "`anthill.prelude.Hash[T = {key}]` cannot be supplied for call to `anthill.prelude.Map.empty`"
     );
     let at = e
         .iter()
         .position(|m| m.contains(&eq))
-        .unwrap_or_else(|| panic!("no refusal of `Eq` at `{key}` among {e:#?}"));
+        .unwrap_or_else(|| panic!("no refusal of `Hash` at `{key}` among {e:#?}"));
     e.remove(at);
     e
 }
@@ -430,7 +430,7 @@ fn a_binding_that_denotes_no_type_is_bottom_and_says_so() {
     assert!(
         errs(
             "  rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
-              operation dq[K]() -> Int64 requires anthill.prelude.Eq[T = K] = \
+              operation dq[K]() -> Int64 requires anthill.prelude.Hash[T = K] = \
               size(put(mkq(K), \"a\", 1))\n"
         )
         .is_empty(),

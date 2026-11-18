@@ -1523,10 +1523,10 @@ const KEY_READINGS: usize = 32;
 ///
 /// Deliberate non-scope (documented, not silently dropped):
 ///
-/// (1) DIRECT `requires Eq` only — a container whose Eq requirement is TRANSITIVE
-/// (`sort S requires Ord[T]`, and `Ord requires Eq`) is not chased; the
-/// stdlib key containers (`Map`/`Set`/`Lattice`/`Ord`) all `requires Eq`
-/// directly.
+/// (1) A DIRECT `requires Eq` or `requires Hash` only, each judged at its own spec — a
+/// container whose requirement is TRANSITIVE (`sort S requires Ord[T]`, and `Ord requires
+/// Eq`) is not chased; the stdlib key containers require one directly (`Map` `Hash`,
+/// `Set`/`Lattice`/`Ord` `Eq`).
 ///
 /// (2) — closed. A tuple key whose unlawfulness is in a component (`Map[K = (a: Float)]`)
 /// is refused: [`unlawful_eq_part`] reads a tuple by its components, and one nested in an
@@ -1553,7 +1553,12 @@ pub(crate) fn check_use_site_requires_eq(
     let Some(eq_sym) = kb.try_resolve_symbol("anthill.prelude.Eq") else {
         return Vec::new();
     };
-    let eq_canon = kb.canonical_sort_sym(eq_sym);
+    // A key is judged at each `Eq` or `Hash` clause its container writes, at that clause's
+    // spec: `Map requires Hash[T = K]`, `Set requires Eq[T]`.
+    let key_specs: Vec<Symbol> = std::iter::once(eq_sym)
+        .chain(kb.try_resolve_symbol("anthill.prelude.Hash"))
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect();
 
     // WI-20260831-V25N3: the sites arrive from the caller's single drain (see
     // `load_phase_inner`), not from a drain of this pass's own — the written-row-label
@@ -1616,7 +1621,7 @@ pub(crate) fn check_use_site_requires_eq(
         let raw_goals = eq_clauses.entry(base).or_insert_with(|| {
             provider_requires_subgoals(kb, base, &[], &[])
                 .into_iter()
-                .filter(|g| kb.canonical_sort_sym(g.spec_sort) == eq_canon)
+                .filter(|g| key_specs.contains(&kb.canonical_sort_sym(g.spec_sort)))
                 .collect()
         });
         if raw_goals.is_empty() {
@@ -1626,7 +1631,7 @@ pub(crate) fn check_use_site_requires_eq(
         // two vectors stay index-aligned with the cached raw ones.
         let goals: Vec<SortGoal> = provider_requires_subgoals(kb, base, &sigma, &[])
             .into_iter()
-            .filter(|g| kb.canonical_sort_sym(g.spec_sort) == eq_canon)
+            .filter(|g| key_specs.contains(&kb.canonical_sort_sym(g.spec_sort)))
             .collect();
         for (gi, goal) in goals.iter().enumerate() {
             for (bi, (key, written)) in goal.bindings.iter().enumerate() {
@@ -1667,7 +1672,8 @@ pub(crate) fn check_use_site_requires_eq(
                 // `sort_provides(List, Eq)` says nothing about the argument, and the
                 // conditional row's `:- Eq[T]` is what tells `List[T = Int64]` from
                 // `List[T = Float]`.
-                let Some(part) = unlawful_eq_part(kb, eq_sym, val, site.operation) else {
+                let spec = kb.canonical_sort_sym(goal.spec_sort);
+                let Some(part) = unlawful_eq_part(kb, spec, val, site.operation) else {
                     continue;
                 };
                 let param = container_param(kb, raw_goals, &sigma, (gi, bi), *key);
@@ -1937,7 +1943,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             }
             // A composite's derived `eq` is its `PartialEq` provision's member, not an
             // operation the sort read as a spec asks of its providers.
-            if kb.is_derived_eq_member(spec_op) {
+            if kb.is_derived_member(spec_op) {
                 continue;
             }
             let op_short = kb

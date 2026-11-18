@@ -6460,7 +6460,7 @@ impl HeadCheck {
                 .functor_sym()
                 .and_then(|s| kb.eq_dispatch_target(s))
             {
-                Some(target) if !kb.is_derived_eq_member(target) => HeadVerdict::Stop(true),
+                Some(target) if !kb.is_derived_member(target) => HeadVerdict::Stop(true),
                 _ => HeadVerdict::Recurse,
             },
             // A `Float` literal read carrier-neutrally through the view (a bare
@@ -6472,7 +6472,7 @@ impl HeadCheck {
             HeadCheck::SelfEqualByLaw => match head {
                 ViewHead::Const(Literal::Float(_)) => HeadVerdict::Stop(false),
                 _ => match head.functor_sym().and_then(|s| kb.eq_dispatch_target(s)) {
-                    Some(t) if kb.is_derived_eq_member(t) => HeadVerdict::Recurse,
+                    Some(t) if kb.is_derived_member(t) => HeadVerdict::Recurse,
                     Some(t) => {
                         HeadVerdict::Stop(matches!(kb.eq_law_of_member(t), super::EqLaw::Always))
                     }
@@ -13955,6 +13955,36 @@ impl KnowledgeBase {
         *self = interp.into_kb();
         BRIDGE_REENTRY_DEPTH.with(|d| d.set(d.get() - 1));
         Some(outcome)
+    }
+
+    /// The hash `x` has through `dict`, a `Hash` instance: its member for `hash`, run through
+    /// the SLD→eval bridge as [`Self::bridge_eq_through_dictionary`] runs `eq`. A member that
+    /// cannot be run to an `Int64` — the re-entry cap, a suspended read, a non-`Int64` answer —
+    /// is an error, never a hash made up.
+    pub(crate) fn bridge_hash_through_dictionary(
+        &mut self,
+        dict: &crate::eval::value::Dictionary,
+        x: Value,
+    ) -> Result<i64, EvalError> {
+        let spec_op = self.try_resolve_symbol("anthill.prelude.Hash.hash").ok_or_else(|| {
+            EvalError::Internal("a hash through a dictionary, in a KB that declares no `Hash`".to_string())
+        })?;
+        let member = super::typing::resolve_op_target_checked(self, dict.impl_sort(), spec_op)
+            .map_err(|refusal| EvalError::dispatch_refused(self, spec_op, dict.impl_sort(), refusal))?;
+        let Some(outcome) = self.run_in_bridge_interp(|interp| {
+            interp.call_op_bridged(member, &[x], Some((spec_op, dict)), &[])
+        }) else {
+            return Err(EvalError::Internal(
+                "a hash could not be computed: the bridge's re-entry cap was reached".to_string(),
+            ));
+        };
+        match outcome? {
+            Value::Int(h) => Ok(h),
+            other => Err(EvalError::Internal(format!(
+                "`{}` answered a non-Int64 hash: {other:?}",
+                self.qualified_name_of(member)
+            ))),
+        }
     }
 
     /// `a` and `b` compared at the member of `PartialEq.eq` the dictionary `dict` names, entered

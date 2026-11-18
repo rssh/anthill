@@ -1219,7 +1219,7 @@ impl KnowledgeBase {
             rigid_projection_formations: plain(&self.rigid_projection_formations),
             existential_return_ops: plain(&self.existential_return_ops),
             conditional_eq_conditions: plain(&self.conditional_eq_conditions),
-            derived_eq_members: plain(&self.derived_eq_members),
+            derived_members: plain(&self.derived_members),
             derived_type_value_carriers: plain(&self.derived_type_value_carriers),
             entity_field_types: self.entity_field_types.iter().map(|(entity, fields)| (plain(entity), c.keyed_values(fields))).collect(),
             parameterized_type_sites: self.parameterized_type_sites.iter().map(|site| c.parameterized_site(site)).collect(),

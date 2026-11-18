@@ -39,4 +39,7 @@ sort anthill.prelude.TotalFloat
   -- a real override the semantic `=`/`eq` dispatches to, not just a marker.
   operation eq(a: TotalFloat, b: TotalFloat) -> Bool
   rule eq(?a, ?b) :- ?a === ?b
+  -- Its hash is its structure's, which `===`, its equality, agrees with.
+  operation hash(x: TotalFloat) -> anthill.prelude.Int64 = anthill.kernel.struct_hash(x)
+  provides anthill.prelude.Hash[T = TotalFloat]
 end

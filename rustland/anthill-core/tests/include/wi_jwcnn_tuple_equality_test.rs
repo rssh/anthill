@@ -194,7 +194,7 @@ fn a_tuple_with_a_component_without_equality_is_refused() {
         "test.jwcnn.t8",
         "  operation t8(m: Map[K = (Int64, Float), V = Int64]) -> Int64 = 0",
     ));
-    assert!(errs.len() == 1 && errs[0].contains("Eq") && errs[0].contains("Float"), "{errs:?}");
+    assert!(errs.len() == 1 && errs[0].contains("Hash") && errs[0].contains("Float"), "{errs:?}");
     let errs = load_errors_of(&src(
         "test.jwcnn.t5",
         "  operation t5(m: Map[K = (Int64, Bool), V = Int64]) -> Int64 = 0",

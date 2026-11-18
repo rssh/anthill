@@ -886,7 +886,7 @@ pub(super) fn say_held_call(
         return Ok(());
     };
     let positions = positional_param_indices(kb, &params, held.pos_results.len(), &held.named_args);
-    let mut at_param = |kb: &mut KnowledgeBase, p: usize| -> Vec<Value> {
+    let at_param = |kb: &mut KnowledgeBase, p: usize| -> Vec<Value> {
         let mut ats: Vec<Value> = params.get(p).map(|(_, t)| t.clone()).into_iter().collect();
         if let Some((_, declared)) = declared_params.get(p) {
             ats.push(resolve_type_deep_value(kb, &by_result, declared));
@@ -1156,23 +1156,33 @@ impl WalkSolutions {
     /// a free type variable that owes a dictionary after typing. Only a call still in `typed`,
     /// the tree the walk typed: one a `@[simp]` rewrite took out of it (`Map.size(Map.empty())`
     /// is `0`) is no call of the program.
-    pub(super) fn release_held_calls(&mut self, kb: &mut KnowledgeBase, typed: Option<&Rc<NodeOccurrence>>) {
+    ///
+    /// In a rule body, which is typed after the parked refusals are reported, an unsaid
+    /// requirement is handed back to be raised as the walk's own refusal — unless an
+    /// enclosing walk types this text again ([`TypingEnv::typed_again_by_its_parent`]).
+    pub(super) fn release_held_calls(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        typed: Option<&Rc<NodeOccurrence>>,
+    ) -> Vec<UnsuppliableRequirement> {
         let held_calls = std::mem::take(&mut self.held_calls);
+        let mut raised = Vec::new();
         if held_calls.is_empty() {
-            return;
+            return raised;
         }
         let in_tree = typed.map(nodes_of_tree).unwrap_or_default();
         for held in held_calls {
-            if held.parked.is_empty()
-                && held.env.in_evaluated_body()
-                && in_tree.contains(&Rc::as_ptr(&held.node))
-            {
+            let judged = held.parked.is_empty() && in_tree.contains(&Rc::as_ptr(&held.node));
+            if judged && held.env.in_evaluated_body() {
                 for refusal in unsaid_requirements(kb, &held) {
                     kb.unsuppliable_requirements.push(refusal);
                 }
+            } else if judged && held.env.in_rule_body() && !held.env.typed_again_by_its_parent {
+                raised.extend(unsaid_requirements(kb, &held));
             }
             kb.unsuppliable_requirements.extend(held.parked);
         }
+        raised
     }
 
     /// Hold `value` until its instance is known ([`HeldFunctionValue`]). A reference typed

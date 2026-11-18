@@ -33,6 +33,9 @@ sort anthill.prelude.Int64
   --
   -- `Int64`'s equality, the member a call of `PartialEq.eq` at `Int64` runs.
   operation eq(a: Int64, b: Int64) -> Bool @[host_implemented]
+  -- Its hash is its structure's, which its equality is. The binding layer provides
+  -- `anthill.prelude.Hash` with `Eq`.
+  operation hash(x: Int64) -> Int64 = anthill.kernel.struct_hash(x)
 
   operation {
     compare(a: Int64, b: Int64) -> Int64 @[host_implemented]   -- -1 | 0 | 1

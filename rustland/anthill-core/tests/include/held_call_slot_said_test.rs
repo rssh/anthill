@@ -243,20 +243,20 @@ end
 }
 
 /// A field of a construction says the call written there (`bx(m: Map.empty())`, at the sort's
-/// own `T` under its `requires Eq[T = T]`), and a type a construction meets is read down to its
+/// own `T` under its `requires Hash[T = T]`), and a type a construction meets is read down to its
 /// fields: `some(…)`, a list literal's elements, a tuple's components. A call that waits inside
 /// a call that waits is said when the outer one is (`wrap(mk())`).
 #[test]
 fn a_call_inside_a_construction_is_said_through_its_fields() {
     let src = r#"
 namespace test.held.ctor
-  import anthill.prelude.{Int64, String, Map, Option, List, Eq}
+  import anthill.prelude.{Int64, String, Map, Option, List, Hash}
   import anthill.prelude.Option.{some, none}
   sort Bx
     sort T = ?
     entity bx(m: Map[K = T, V = Int64])
-    operation mk() -> Self requires Eq[T = T] = bx(m: Map.empty())
-    operation wrap(b: Self) -> Self requires Eq[T = T] = b
+    operation mk() -> Self requires Hash[T = T] = bx(m: Map.empty())
+    operation wrap(b: Self) -> Self requires Hash[T = T] = b
     operation size(b: Self) -> Int64 = match b case bx(m) -> Map.size(m)
   end
   operation fillS(b: Bx[T = String]) -> Bx[T = String] = b
@@ -320,7 +320,7 @@ end
     assert_refused_naming(
         &load_errors_of(src),
         &[
-            "`anthill.prelude.Eq[T = anthill.prelude.Map.K]`",
+            "`anthill.prelude.Hash[T = anthill.prelude.Map.K]`",
             "element `T = anthill.prelude.Map.K` is unconstrained at this call site",
         ],
         "a const's map no type is said for",

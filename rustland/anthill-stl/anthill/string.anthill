@@ -54,6 +54,7 @@ namespace anthill.prelude
     -- WI-644 / proposal 004: String is lawful — partial bases + total markers.
     provides PartialEq[T = String]
     provides Eq[T = String]
+    provides Hash[T = String]
     provides PartialOrd[T = String]
     provides Ord[T = String]
   end
