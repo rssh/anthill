@@ -1100,9 +1100,10 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
     }
 }
 
-/// The `fill` of a variable typed at the ground type `bound`, which has a domain: the type's
-/// `fill` by name where it reads no dictionary, else through the type (`apply_domain`); `None`
-/// where the kernel has no `apply_domain` to call.
+/// The `fill` of a variable typed at the ground type `bound`, which has a domain: through the
+/// type (`apply_domain`), the one dispatch — never the type's `fill` by name, which would skip
+/// the case a derived domain adds at the call, a value of a refining sort (WI-20261115-YR3N7).
+/// `None` where the kernel has no `apply_domain` to call.
 fn ground_fill_goals(
     kb: &mut KnowledgeBase,
     bound: TermId,
@@ -1110,21 +1111,13 @@ fn ground_fill_goals(
     ty: &dyn Fn() -> Rc<NodeOccurrence>,
     goal: &dyn Fn(Symbol, Vec<Rc<NodeOccurrence>>) -> Rc<NodeOccurrence>,
 ) -> Option<Vec<Rc<NodeOccurrence>>> {
-    // A tuple's domain is read off its type, its components' dictionaries built as the fill
-    // reaches them.
-    if schema_fields(kb, &Value::term(bound)).is_some() {
-        return kb
-            .try_resolve_symbol(APPLY_DOMAIN_GOAL)
-            .map(|apply| vec![goal(apply, vec![ty(), var()])]);
-    }
-    let head = type_term_head_sym(kb, bound).expect("a fillable bound has a head");
-    let entry = kb.sort_domain(head).cloned().expect("a fillable bound has a domain");
-    if entry.conditions.is_empty() {
-        Some(vec![goal(entry.fill, vec![var()])])
-    } else {
-        kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)
-            .map(|apply| vec![goal(apply, vec![ty(), var()])])
-    }
+    debug_assert!(
+        schema_fields(kb, &Value::term(bound)).is_some()
+            || type_term_head_sym(kb, bound).is_some_and(|h| kb.has_sort_domain(h)),
+        "a fillable bound is a tuple or has a head with a domain",
+    );
+    kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)
+        .map(|apply| vec![goal(apply, vec![ty(), var()])])
 }
 
 /// The goals a query's typed variable `?x: T` adds (proposal 010.1 §3.1): the ones a typed rule

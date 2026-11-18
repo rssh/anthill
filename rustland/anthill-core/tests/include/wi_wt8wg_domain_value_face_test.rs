@@ -4,7 +4,9 @@
 //! WI-20260925-SHED7 REPLACED THE MECHANISM UNDER THE FACE, and kept these rows' answers.
 //! `<Sort>.domain` is no longer a projection of the kernel `domain_member` (retired): it IS
 //! the sort's `SortDomain` `fill`, derived per entity and per field — the constructor
-//! disjunction itself — and the goal face calls it. So the parameterised value face now
+//! disjunction itself — and the goal face calls it. Since WI-20261115-YR3N7 the fill is the
+//! internal `<Sort>.__fill`, a clause per constructor, and `<Sort>.domain` a clause of its own
+//! that hands its dictionary to it: a citation builds its query from its relation's first head. So the parameterised value face now
 //! exists (`List[T = Letter].domain`), a primitive has one (its waiting check), and the
 //! kernel relation's rows are written against `Colour.domain` instead. The back-out axes
 //! below name the WT8WG build and are kept as its record; SHED7's are in

@@ -258,9 +258,11 @@ namespace anthill.reflect
      primitive's `fill` is the waiting type check: it leaves the variable free and
      decides once something binds it.
 
-     The relation a provider's `fill` runs is `<Sort>.domain`, derived beside the sort or
-     written in it (`Colour.domain` answers `red`, `green`, `blue`); the loader records it
-     as the provider's `SortDomain` entry, so a dictionary finds it by its `impl`. >}
+     The relation a provider's `fill` runs is derived beside the sort, a clause per
+     constructor — the constructor in its head, so a bound value selects one clause and an
+     unbound one is generated in clause order — or written in it as `domain`; the loader
+     records it as the provider's `SortDomain` entry, so a dictionary finds it by its
+     `impl` (`Colour.domain`, the derived value face, answers `red`, `green`, `blue`). >}
   sort SortDomain
     sort T = ?
     provides Fillable[T = T]

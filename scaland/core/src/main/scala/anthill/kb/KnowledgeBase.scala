@@ -471,11 +471,13 @@ class KnowledgeBase:
     for (rid, subst) <- candidates do
       if !rules(rid.index).retracted && !subst.isContradiction then
         results += ((rid, subst))
-    // Stable-sort: facts (empty body) before rules (non-empty body).
-    // The discrimination tree uses HashMap internally, so candidate order
-    // is non-deterministic. DFS resolution depends on trying ground facts
-    // before recursive rules to find base-case solutions first.
-    results.sortInPlaceBy((rid, _) => if rules(rid.index).body.isEmpty then 0 else 1)
+    // CLAUSE ORDER (WI-20260911-SXZ3G), as rustland's `query_view`: the tree keeps a
+    // node's edges in a `HashMap`, so what it returns for a goal with a variable at an
+    // indexed position comes in an order the program does not fix. Sorted here by
+    // `RuleId`, the order the clauses were asserted in. Facts (empty body) before rules,
+    // each group in clause order: DFS resolution depends on trying ground facts before
+    // recursive rules to find base-case solutions first.
+    results.sortInPlaceBy((rid, _) => (if rules(rid.index).body.isEmpty then 0 else 1, rid.index))
     results
 
   def queryRules(pattern: TermId): ArrayBuffer[(RuleId, Substitution)] =

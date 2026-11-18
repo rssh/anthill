@@ -727,7 +727,7 @@ fn sort_below<A: TermView, B: TermView>(
 /// (`A requires B`, `B requires A`) gives the instances its other clauses give. The typer's
 /// subtype relation reads a refinement through these instances too
 /// (`subtype::refinement_admits_applied`), so the two agree.
-pub(super) fn instances_through_requires<A: TermView>(
+pub(crate) fn instances_through_requires<A: TermView>(
     kb: &KnowledgeBase,
     a: &A,
     sa: Symbol,

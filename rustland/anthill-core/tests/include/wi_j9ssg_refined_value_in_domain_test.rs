@@ -12,7 +12,10 @@
 //! A derived `fill`'s last case fills a bound value of a refining sort at its own sort, where
 //! its type conforms to the instance the dictionary describes; an open bound is pinned through
 //! the instance the refinement gives (`Wide[W = ?w]` at a `Narrow` is `W = Int64`), as a call's
-//! type argument is.
+//! type argument is. SINCE WI-20261115-YR3N7 the case is the CALL's, not a clause's: the fill is
+//! a clause per constructor, and `apply_domain` fills a value of a refining sort at its own sort
+//! with a dictionary put together from the handed one's slots (`lower_refining_value`). The rows
+//! are unchanged; that ticket's table measures the case at its new site ([C], [N]).
 //!
 //! BACK-OUT, measured one axis at a time (each a temporary switch in one build, removed):
 //!  * [R] the refining case off — both holding rows, and the wider-pattern row of

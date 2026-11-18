@@ -382,8 +382,15 @@ describes.
 Through every step `X` stays a name: no step reads `X`'s type to choose a `fill`. The dictionary
 chooses, the clause heads decide check or generate, and the dictionary goes down the value — whole
 to a recursive field (`List`'s `fill(?t)` is `apply_domain(?self, ?t)`), and as a sub-dictionary to
-a field typed by a parameter. `colours()` and `wrapped()` answer 3 today, on the derivation this
-section replaces; the bound rows (`hasAt`) are this section's reading, not yet measured.
+a field typed by a parameter. Built so (WI-20261115-YR3N7): `colours()` and `wrapped()` answer 3, and
+the bound rows answer 1 — `hasAt[X = Wrap[T = Colour]](wrap(v: red))`, `hasAt[X = Base](other(7))`,
+and `hasAt[X = Wide[W = Colour]](narrow2(q: green))` under `requires Wide[W = Q]`, whose `Q` meets
+the `Colour` dictionary the caller handed (`wi_yr3n7_domain_check_test`). The derived relation is
+the internal `<Sort>.__fill`; `<Sort>.domain`, while it lasts (WT8WG), is a clause of its own that
+hands its dictionary to it — a citation builds its query from its relation's first clause head, and
+takes no constructor there. Every fill call dispatches through `apply_domain`, which costs no depth
+and no fuel, and an unbound value is tried against the heads in clause order (WI-20260911-SXZ3G:
+the index kept no order before).
 
 **The order is semantic — two rules.** `fill` recurses, so it can have infinitely many answers, and
 the order of its alternatives decides what is ever reached. WI-743 measured both:

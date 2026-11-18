@@ -481,7 +481,10 @@ pub enum BuiltinTag {
     /// ([`KnowledgeBase::lower_apply_domain`]), so the ordinary lookup finds its clauses and
     /// no second clause opener exists (§4.2); a parametric provider's clauses are handed the
     /// dictionary as their implicit argument, on the marker a citation's arguments ride
-    /// ([`WITHIN_REQUIREMENTS`]).
+    /// ([`WITHIN_REQUIREMENTS`]). The replacement is asked in the same step, so the dispatch
+    /// costs neither depth nor fuel; and where the provider is a DERIVED domain and the value a
+    /// constructor of a sort that refines it, the replacement is that sort's `fill`
+    /// (WI-20261115-YR3N7, `KnowledgeBase::lower_refining_value`).
     ///
     /// Reached here only when the lowering could not decide: the evidence is not readable
     /// yet — a variable, a condition whose type is unpinned — so the goal DELAYS and rotation
@@ -494,12 +497,6 @@ pub enum BuiltinTag {
     /// dictionary operand. Registered so the loader's name check knows the symbol; reaching
     /// it as a goal is an error.
     DomainSub,
-
-    /// `__refined_domain(?x, evidence)`, the last case of a derived `fill`
-    /// (`kb::fill_derive::REFINED_DOMAIN`): `step_init` REPLACES it with the `fill` at the sort
-    /// of a bound `?x` that refines the filled one ([`KnowledgeBase::lower_refined_domain`]),
-    /// and fails it otherwise. Never reaches `execute_builtin`.
-    RefinedDomain,
 }
 
 impl BuiltinTag {
@@ -1807,6 +1804,10 @@ pub struct SearchStream {
     /// `cut_cache` is, and for the same reason: a rule that holds none — nearly every rule —
     /// opens with one `HashMap` probe instead of a scan of its body.
     routing_read_cache: HashMap<RuleId, SmallVec<[usize; 2]>>,
+    /// Per-query cache: rule → the body position of its own `SortDomain` read where the rule is
+    /// a clause of a DERIVED `fill` ([`derived_fill_read_position`]), which the body open drops
+    /// once a marker has bound it. Static per rule, as `routing_read_cache` is.
+    fill_read_cache: HashMap<RuleId, Option<usize>>,
     /// Per-query cache: a cited relation → its requirement-read layout
     /// (`typing::requirement_read_counts`), which [`bind_citation_reads`] reads at every
     /// clause opening a citation marker reaches — a `fill` step opens its relation once per
@@ -3143,6 +3144,13 @@ impl SearchStream {
                         Some(goal) => {
                             f.goals[0].goal = goal;
                             f.state = FrameState::Init { delay_mode };
+                            // A DISPATCH COSTS NOTHING (060-implementation §7.3 item 7): no depth
+                            // (the goal keeps its own) and no fuel — the `fill` call it lowered to
+                            // is asked in this same step, so a typed column's check costs what the
+                            // same domain written a clause per constructor does
+                            // (WI-20261115-YR3N7). Bounded: the call is a `fill` relation's goal,
+                            // never another `apply_domain`.
+                            return self.step_init(kb);
                         }
                         None => {
                             f.goals.remove(0);
@@ -3153,22 +3161,6 @@ impl SearchStream {
                     }
                     return Some(StepResult::Continue);
                 }
-            }
-            // The last case of a derived `fill`: the `fill` at the sort of a bound value that
-            // refines the filled one, in place, or no solution.
-            if tag == BuiltinTag::RefinedDomain {
-                let subst = frame.subst.clone();
-                match kb.lower_refined_domain(&goal_val, &subst) {
-                    Some(goal) => {
-                        let f = self.stack.last_mut().unwrap();
-                        f.goals[0].goal = goal;
-                        f.state = FrameState::Init { delay_mode };
-                    }
-                    None => {
-                        self.stack.pop();
-                    }
-                }
-                return Some(StepResult::Continue);
             }
             if tag == BuiltinTag::HoApply {
                 let subst = frame.subst.clone();
@@ -6042,14 +6034,19 @@ impl SearchStream {
             // here, before any of its body runs: each requirement read of the opened
             // clause has its `out` bound to the dictionary the citation captured for it,
             // so the read CHECKS it (060 §4) instead of deriving its own.
-            if let Some((relation, dicts)) = within_requirements_args(kb, &original_goal) {
+            // Which of the clause's reads the marker bound, in body order.
+            let bound_reads: SmallVec<[bool; 2]> = if let Some((relation, dicts)) =
+                within_requirements_args(kb, &original_goal)
+            {
                 let layout =
                     Rc::clone(self.read_layout_cache.entry(relation).or_insert_with(|| {
                         super::typing::requirement_read_counts(kb, relation).into()
                     }));
                 let carriers = within_requirements_carriers(kb, &original_goal);
-                bind_citation_reads(kb, rid, &layout, &dicts, &carriers, &fresh_nodes, &mut merged);
-            }
+                bind_citation_reads(kb, rid, &layout, &dicts, &carriers, &fresh_nodes, &mut merged)
+            } else {
+                SmallVec::new()
+            };
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
             if !caller_fresh_vars.is_empty()
@@ -6131,16 +6128,31 @@ impl SearchStream {
                     found
                 }
             };
-            let fresh_nodes: Vec<Rc<NodeOccurrence>> = if routing_reads.is_empty() {
-                fresh_nodes
-            } else {
-                fresh_nodes
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(i, _)| !routing_reads.contains(i))
-                    .map(|(_, n)| n)
-                    .collect()
-            };
+            // A DERIVED `fill`'s own read, once a marker has bound its `out`: a filled
+            // `SortDomain` read is TRUSTED, not checked, so it runs as no goal, and a fill
+            // step costs what a clause per constructor written by hand does
+            // (WI-20261115-YR3N7). Unbound — the relation reached with no marker — it runs,
+            // and builds the dictionary from its witness, the head's constructor pattern.
+            let fill_read = match self.fill_read_cache.get(&rid) {
+                Some(&cached) => cached,
+                None => {
+                    let found = derived_fill_read_position(kb, rid, &fresh_nodes);
+                    self.fill_read_cache.insert(rid, found);
+                    found
+                }
+            }
+            .filter(|_| bound_reads.first() == Some(&true));
+            let fresh_nodes: Vec<Rc<NodeOccurrence>> =
+                if routing_reads.is_empty() && fill_read.is_none() {
+                    fresh_nodes
+                } else {
+                    fresh_nodes
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| !routing_reads.contains(i) && fill_read != Some(*i))
+                        .map(|(_, n)| n)
+                        .collect()
+                };
 
             // WI-246: opened rule-body atoms enter the goal stream as
             // `Value::Node` occurrences (carrying any typer dot-rewrites),
@@ -6579,6 +6591,7 @@ impl KnowledgeBase {
             next_barrier: 0,
             cut_cache: HashMap::new(),
             routing_read_cache: HashMap::new(),
+            fill_read_cache: HashMap::new(),
             read_layout_cache: HashMap::new(),
             truncated: false,
             out_of_fuel: false,
@@ -7330,7 +7343,6 @@ impl KnowledgeBase {
             BuiltinTag::DomainSub => BuiltinResult::Error(ResolveError::new(
                 "`__domain_sub` is `apply_domain`'s dictionary operand, not a goal".to_string(),
             )),
-            BuiltinTag::RefinedDomain => unreachable!("`__refined_domain` is lowered in `step_init`"),
         }
     }
 
@@ -8276,17 +8288,30 @@ impl KnowledgeBase {
             }
             DomainEvidence::Dict { impl_sort, value } => {
                 // The provider's `fill`, from its `SortDomain` entry.
-                let Some((fill, kind, reads_dict)) = self
+                let Some((fill, kind, reads)) = self
                     .sort_domain(impl_sort)
-                    .map(|e| (e.fill, e.kind, !e.conditions.is_empty()))
+                    .map(|e| (e.fill, e.kind, e.reads))
                 else {
                     return ApplyDomainLowering::Error(format!(
                         "apply_domain: `{}` provides no `fill`",
                         self.qualified_name_of(impl_sort),
                     ));
                 };
+                // A DERIVED domain's one added case, A VALUE OF A REFINING SORT, is the call's
+                // (060 §2.3): no clause can hold it — indexed, its head would list the refining
+                // sorts' values in generation; a variable head would be tried, and refuted,
+                // beside every value of the sort's own. A hand-written or primitive provider's
+                // own clauses decide.
+                if kind == super::fill_derive::SortDomainKind::Derived {
+                    let x_now = self.walk_arg(goal.pos_arg(self, 1), scratch);
+                    if let Some((x_now, owner)) =
+                        x_now.and_then(|x| self.refining_sort_of(x, impl_sort))
+                    {
+                        return self.lower_refining_value(x_now, owner, impl_sort, &value, scratch, pin);
+                    }
+                }
                 ApplyDomainLowering::Goal {
-                    goal: self.fill_goal(fill, kind, reads_dict, x, value),
+                    goal: self.fill_goal(fill, kind, reads, x, value),
                     pin,
                 }
             }
@@ -8326,15 +8351,11 @@ impl KnowledgeBase {
         }
     }
 
-    /// [`BuiltinTag::RefinedDomain`]'s lowering: `apply_domain(T, ?x)`, `T` the type of the value
-    /// `?x` is bound to, where its sort is not the one the evidence names and refines it at the
-    /// instance the evidence describes — `other(n: 7)` under `sort Other requires Base`, filled
-    /// at `Base`, is filled at `Other`. `None` — no solution — for an unbound `?x`, a value of
-    /// the filled sort itself, and one whose type is no subtype of that instance. The instance
-    /// is read off the dictionary's conditions where they are types; a condition held as a
-    /// dictionary, or not yet pinned, is an argument left unwritten.
-    pub(crate) fn lower_refined_domain(&mut self, goal: &Value, subst: &Substitution) -> Option<Value> {
-        let x = self.walk_arg(goal.pos_arg(self, 0), subst)?;
+    /// The sort of `x`, a value bound to a constructor of ANOTHER sort than the derived domain
+    /// `impl_sort` — the refinement case of [`Self::lower_apply_domain`] — with `x` itself; `None`
+    /// for an unbound `x`, a value no constructor heads (a literal: no clause of the fill takes
+    /// it), and a constructor of `impl_sort`'s own.
+    fn refining_sort_of(&self, x: Value, impl_sort: Symbol) -> Option<(Value, Symbol)> {
         if self.value_is_unbound_var(&x) {
             return None;
         }
@@ -8342,34 +8363,278 @@ impl KnowledgeBase {
             ViewHead::Functor { functor, .. } | ViewHead::Ident(functor) => functor,
             _ => return None,
         };
-        let owner = self.type_arg_owner(functor)?;
-        let owner = self.canonical_sort_sym(owner);
-        let evidence = goal.pos_arg(self, 1)?.to_value();
-        let DomainEvidence::Dict { impl_sort, value: dict } = self.domain_evidence(evidence, subst) else {
-            return None;
-        };
+        let owner = self.canonical_sort_sym(self.type_arg_owner(functor)?);
         if owner == impl_sort {
             return None;
         }
-        let entry = self.sort_domain(impl_sort)?.clone();
-        let ctor = crate::kb::term_view::dictionary_view_syms(self).map(|(c, _)| c);
+        let ctor = self.canonical_sort_sym(functor);
+        let own = self
+            .sort_domain(impl_sort)
+            .is_some_and(|e| e.ctors.contains(&ctor));
+        (!own).then_some((x, owner))
+    }
+
+    /// The refinement case of a derived domain (060 §2.3; kernel-language §5.3, §8.2): `x`, a
+    /// value of `owner`, at the dictionary `dict` of `impl_sort`, which `owner` refines. It is
+    /// filled at `owner`, with a dictionary PUT TOGETHER FROM `dict`'S SLOTS — never one its own
+    /// type names, which would replace a sub-domain a rigid caller handed: each instance of
+    /// `impl_sort` the `requires` clauses give `owner` is matched against `dict`
+    /// ([`Self::evidence_admits`]), and the slot each of `owner`'s parameters meets is that
+    /// parameter's condition. A parameter no slot reaches is a fresh type, pinned from the value
+    /// where the fill reads it. No instance admitted — `owner` does not refine `impl_sort`, or
+    /// does at another instance (`Narrow requires Wide[W = Int64]` at `Wide[W = String]`'s
+    /// dictionary) — and the value is not in the domain. A refining sort with NO DOMAIN of its
+    /// own has nothing to fill: the value is checked against its own type, the conformance a
+    /// type with no domain answers (`DomainEvidence::NoDomainType`).
+    fn lower_refining_value(
+        &mut self,
+        x: Value,
+        owner: Symbol,
+        impl_sort: Symbol,
+        dict: &Value,
+        subst: &Substitution,
+        pin: Option<Substitution>,
+    ) -> ApplyDomainLowering {
+        let entry = self.sort_domain(owner).cloned();
+        let params: Vec<super::fill_derive::DomainParam> = entry
+            .as_ref()
+            .map(|e| e.params.clone())
+            .or_else(|| self.domain_params_of(owner))
+            .unwrap_or_default();
+        // `owner` at its canonical parameters, so the instances come back in terms of them.
+        let own_type = if params.is_empty() {
+            Value::SymbolRef(owner)
+        } else {
+            Value::Entity {
+                functor: owner,
+                pos: Vec::new().into(),
+                named: params
+                    .iter()
+                    .map(|p| (p.key, Value::term(p.var)))
+                    .collect::<Vec<_>>()
+                    .into(),
+            }
+        };
+        let instances =
+            match super::typing::instances_through_requires(self, &own_type, owner, impl_sort, 0) {
+                Ok(instances) => instances,
+                Err(_) => {
+                    return ApplyDomainLowering::Error(format!(
+                        "apply_domain: the `requires` clauses through which `{}` refines `{}` \
+                         nest too deep to read",
+                        self.qualified_name_of(owner),
+                        self.qualified_name_of(impl_sort),
+                    ))
+                }
+            };
+        // Per parameter, its canonical variable — the one the instances are written in.
+        let param_vars: Vec<Option<VarId>> = params
+            .iter()
+            .map(|p| match self.get_term(p.var) {
+                Term::Var(Var::Global(v)) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        let known: Vec<VarId> = param_vars.iter().flatten().copied().collect();
+        for instance in &instances {
+            let mut met: Vec<(VarId, Value)> = Vec::new();
+            match self.evidence_admits(instance, dict.clone(), &known, subst, &mut met) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(why) => return ApplyDomainLowering::Error(format!("apply_domain: {why}")),
+            }
+            let Some(entry) = entry else {
+                let Some(own) = super::typing::value_type_open(self, subst, &x) else {
+                    return ApplyDomainLowering::NotYet;
+                };
+                return match super::typing::type_bound_verdict_view(self, subst, &x, &own) {
+                    super::typing::TypeBoundVerdict::Holds => ApplyDomainLowering::Holds { pin },
+                    super::typing::TypeBoundVerdict::Refuted => ApplyDomainLowering::Fail,
+                    super::typing::TypeBoundVerdict::Suspend => ApplyDomainLowering::NotYet,
+                };
+            };
+            let Some((ctor, impl_key)) = crate::kb::term_view::dictionary_view_syms(self) else {
+                return ApplyDomainLowering::Error(
+                    "apply_domain: this KB never loaded `anthill.realization.runtime.Dictionary`"
+                        .to_string(),
+                );
+            };
+            // THE TYPER'S LAYOUT, as `domain_evidence_of_type` builds it: placeholders for the
+            // slots no `fill` reads, then a condition per parameter a field fills.
+            let mut subs: Vec<Value> = vec![Value::Unit; entry.sub_offset];
+            for &j in &entry.conditions {
+                let sub = param_vars
+                    .get(j)
+                    .copied()
+                    .flatten()
+                    .and_then(|v| met.iter().find(|(w, _)| *w == v))
+                    .map(|(_, ev)| ev.clone())
+                    .unwrap_or_else(|| {
+                        let name = self.intern("T");
+                        Value::Var(Var::Global(self.fresh_var(name)))
+                    });
+                subs.push(sub);
+            }
+            let own_dict = Value::Entity {
+                functor: ctor,
+                pos: subs.into(),
+                named: vec![(impl_key, Value::SymbolRef(owner))].into(),
+            };
+            return ApplyDomainLowering::Goal {
+                goal: self.fill_goal(entry.fill, entry.kind, entry.reads, x, own_dict),
+                pin,
+            };
+        }
+        ApplyDomainLowering::Fail
+    }
+
+    /// Does the dictionary or type `ev` describe the type `pattern` — an instance of the refined
+    /// sort, in terms of the refining sort's parameters `params` — and which slot does each of
+    /// those parameters meet (`met`)? A dictionary is read at its conditions, a slot at a time,
+    /// as a `fill` reads it: its `impl` names the pattern's sort, and each condition's slot
+    /// describes the pattern's argument there. A parameter met TWICE (`requires Pair[A = Q, B =
+    /// Q]`) is one type, so its later slot must describe the type its first slot does. A tuple or
+    /// function type is held in a slot as a type, and is compared as one.
+    ///
+    /// What admits without being compared, each because nothing in the dictionary says otherwise:
+    /// a parameter the dictionary does not lay out (no field fills it), a slot not pinned yet
+    /// (its type is pinned from the value where the fill reads it), and a pattern variable that
+    /// is no parameter of the refining sort's. A dictionary with no `impl`, or missing a slot its
+    /// provider lays out, is malformed: an `Err`, never an answer.
+    fn evidence_admits(
+        &mut self,
+        pattern: &Value,
+        ev: Value,
+        params: &[VarId],
+        subst: &Substitution,
+        met: &mut Vec<(VarId, Value)>,
+    ) -> Result<bool, String> {
+        let ph = match pattern.head(self) {
+            ViewHead::Var(_) => {
+                let Some(v) = self.value_global_var(pattern).filter(|v| params.contains(v)) else {
+                    return Ok(true);
+                };
+                let first = met.iter().find(|(w, _)| *w == v).map(|(_, first)| first.clone());
+                return match first {
+                    None => {
+                        met.push((v, ev));
+                        Ok(true)
+                    }
+                    Some(first) => match self.evidence_type(first, subst)? {
+                        Some(ty) => self.evidence_admits(&ty, ev, &[], subst, &mut Vec::new()),
+                        None => Ok(true),
+                    },
+                };
+            }
+            ViewHead::Functor { functor, .. } | ViewHead::Ident(functor) => {
+                self.canonical_sort_sym(functor)
+            }
+            _ => {
+                return match self.bound_evidence(ev, subst) {
+                    Err(_) => Ok(true),
+                    Ok(ev) if self.is_dictionary_value(&ev) => Ok(false),
+                    Ok(ev) => Ok(super::typing::types_compatible(
+                        self,
+                        &mut Substitution::new(),
+                        &ev,
+                        pattern,
+                    )),
+                };
+            }
+        };
+        let ev = match self.bound_evidence(ev, subst) {
+            Ok(ev) => ev,
+            Err(_) => return Ok(true),
+        };
+        let eh = match ev.head(self) {
+            ViewHead::Functor { functor, .. } | ViewHead::Ident(functor) => functor,
+            ViewHead::Var(_) => return Ok(true),
+            _ => return Ok(false),
+        };
+        if let Some((ctor, impl_key)) = crate::kb::term_view::dictionary_view_syms(self) {
+            if eh == ctor {
+                let impl_sort = self.dictionary_impl(&ev, impl_key).map_err(evidence_fault)?;
+                if self.canonical_sort_sym(impl_sort) != ph {
+                    return Ok(false);
+                }
+                let Some((conditions, cond_params, offset)) = self.sort_domain(ph).map(|e| {
+                    let ps: Vec<_> = e.conditions.iter().map(|&j| e.params[j]).collect();
+                    (e.conditions.len(), ps, e.sub_offset)
+                }) else {
+                    return Ok(true);
+                };
+                for (k, p) in cond_params.iter().enumerate().take(conditions) {
+                    let Some(arg) =
+                        super::fill_derive::condition_arg(self, pattern, p).map(|a| a.to_value())
+                    else {
+                        continue;
+                    };
+                    let Some(sub) = self.walk_arg(ev.pos_arg(self, offset + k), subst) else {
+                        return Err(format!(
+                            "a `{}` dictionary has no sub-dictionary {}",
+                            self.qualified_name_of(ph),
+                            offset + k,
+                        ));
+                    };
+                    if !self.evidence_admits(&arg, sub, params, subst, met)? {
+                        return Ok(false);
+                    }
+                }
+                return Ok(true);
+            }
+        }
+        // A TYPE: its head is the pattern's, and each argument it writes describes the
+        // pattern's argument of that name (by SHORT name, as `condition_arg` reads one).
+        if self.canonical_sort_sym(eh) != ph {
+            return Ok(false);
+        }
+        for key in pattern.named_keys(self) {
+            let name = self.local_name_of(key).to_string();
+            let pair = (
+                pattern.named_field(self, &name).map(|a| a.to_value()),
+                ev.named_field(self, &name).map(|a| a.to_value()),
+            );
+            if let (Some(arg), Some(sub)) = pair {
+                if !self.evidence_admits(&arg, sub, params, subst, met)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// The TYPE the evidence `ev` describes — a dictionary as its provider's sort at the types
+    /// its conditions describe, a type as itself — or `None` while it is not pinned. Where a
+    /// parameter met twice is compared ([`Self::evidence_admits`]).
+    fn evidence_type(&self, ev: Value, subst: &Substitution) -> Result<Option<Value>, String> {
+        let ev = match self.bound_evidence(ev, subst) {
+            Ok(ev) => ev,
+            Err(_) => return Ok(None),
+        };
+        let Some((_, impl_key)) = crate::kb::term_view::dictionary_view_syms(self)
+            .filter(|_| self.is_dictionary_value(&ev))
+        else {
+            return Ok(Some(ev));
+        };
+        let impl_sort = self.dictionary_impl(&ev, impl_key).map_err(evidence_fault)?;
+        let impl_sort = self.canonical_sort_sym(impl_sort);
+        let Some(entry) = self.sort_domain(impl_sort) else {
+            return Ok(Some(Value::SymbolRef(impl_sort)));
+        };
         let mut named: Vec<(Symbol, Value)> = Vec::new();
         for (k, &j) in entry.conditions.iter().enumerate() {
-            let Some(sub) = dict.pos_arg(self, entry.sub_offset + k).map(|s| s.to_value()) else {
-                continue;
+            let Some(sub) = self.walk_arg(ev.pos_arg(self, entry.sub_offset + k), subst) else {
+                return Err(format!(
+                    "a `{}` dictionary has no sub-dictionary {}",
+                    self.qualified_name_of(impl_sort),
+                    entry.sub_offset + k,
+                ));
             };
-            let sub = match self.value_global_var(&sub) {
-                Some(vid) => self.chase_var(vid, subst).cloned().unwrap_or(sub),
-                None => sub,
-            };
-            let is_dict =
-                matches!(sub.head(self), ViewHead::Functor { functor, .. } if Some(functor) == ctor);
-            if is_dict || self.value_is_unbound_var(&sub) {
-                continue;
+            if let Some(ty) = self.evidence_type(sub, subst)? {
+                named.push((entry.params[j].key, ty));
             }
-            named.push((entry.params[j].key, sub.carried().clone()));
         }
-        let instance = if named.is_empty() {
+        Ok(Some(if named.is_empty() {
             Value::SymbolRef(impl_sort)
         } else {
             Value::Entity {
@@ -8377,39 +8642,38 @@ impl KnowledgeBase {
                 pos: Vec::new().into(),
                 named: named.into(),
             }
-        };
-        let carried = super::typing::value_type_term(self, subst, &x);
-        if !super::typing::types_compatible(self, &mut Substitution::new(), &carried, &instance) {
-            return None;
-        }
-        let own = super::typing::value_type_open(self, subst, &x)
-            .expect("a value headed by a constructor has a type with a head");
-        let apply = self
-            .try_resolve_symbol(super::typing::APPLY_DOMAIN_GOAL)
-            .expect("a derived `fill` is emitted only where `apply_domain` is registered");
-        Some(self.make_goal_value(apply, vec![own, x]))
+        }))
+    }
+
+    /// Is `v` headed by the runtime `Dictionary` constructor?
+    fn is_dictionary_value(&self, v: &Value) -> bool {
+        crate::kb::term_view::dictionary_view_syms(self).is_some_and(|(ctor, _)| {
+            matches!(v.head(self), ViewHead::Functor { functor, .. } if functor == ctor)
+        })
     }
 
     /// `fill(?x)`, wrapped so each of the relation's `SortDomain` reads is handed `dict`
     /// ([`within_requirements_goal`]) — the implicit parameter a parametric provider reads
     /// its conditions through. A relation with no such read is called bare.
     ///
-    /// ON THE HOT PATH, once per fill step: a DERIVED `fill` has exactly one read, its own
-    /// dictionary, where its sort has conditions (`reads_dict`) and none otherwise — the
-    /// provider's `SortDomain` entry, which the caller holds, says which (`kind`), with no
-    /// scan. Only a written domain's clauses are scanned for reads.
+    /// ON THE HOT PATH, once per fill step: a DERIVED `fill` reads its own dictionary once in
+    /// each clause that reads a condition, `reads` of them (WI-20261115-YR3N7: a clause per
+    /// constructor, `fill(nil)` reading none), so the WHOLE dictionary goes to each, one copy
+    /// per slot of the relation's layout — the provider's `SortDomain` entry, which the caller
+    /// holds, says how many (`kind`, `reads`), with no scan. Only a written domain's clauses are
+    /// scanned for reads.
     fn fill_goal(
         &mut self,
         fill: Symbol,
         kind: super::fill_derive::SortDomainKind,
-        reads_dict: bool,
+        reads: usize,
         x: Value,
         dict: Value,
     ) -> Value {
         let goal = self.make_goal_value(fill, vec![x]);
         if kind != super::fill_derive::SortDomainKind::Written {
-            return if reads_dict {
-                within_requirements_goal(self, goal, fill, vec![dict])
+            return if reads > 0 {
+                within_requirements_goal(self, goal, fill, vec![dict; reads])
             } else {
                 goal
             };
@@ -17124,6 +17388,24 @@ fn is_routing_only_read(kb: &KnowledgeBase, n: &NodeOccurrence) -> bool {
         || super::typing::is_typed_head_domain_pass(kb, by)
 }
 
+/// WI-20261115-YR3N7 — where the clause `rid` of a DERIVED `fill` (`kb::fill_derive`) holds its
+/// own `SortDomain` read in the opened `body`, or `None` for any other clause, or a fill clause
+/// that reads no condition. A derived clause holds at most one read, its first goal — so it is
+/// the first [`bind_citation_reads`] reports.
+fn derived_fill_read_position(
+    kb: &KnowledgeBase,
+    rid: RuleId,
+    body: &[Rc<NodeOccurrence>],
+) -> Option<usize> {
+    let functor = kb.rule_head_value(rid).head(kb).functor_sym()?;
+    if !kb.is_derived_fill_relation(functor) {
+        return None;
+    }
+    let fd = super::typing::find_dictionary_symbol(kb)?;
+    let first = body.first()?;
+    super::typing::requirement_read_out(kb, fd, first).map(|_| 0)
+}
+
 /// A functional-relation goal's call and result column —
 /// [`KnowledgeBase::functional_relation_call`].
 pub(crate) struct FunctionalRelationCall {
@@ -17221,6 +17503,18 @@ pub(crate) enum ApplyDomainLowering {
     NotYet,
     /// The goal is malformed or names no domain — the builtin arm reports it.
     Error(String),
+}
+
+/// The message a malformed dictionary's [`DomainEvidence`] carries, for a reader that reports it
+/// rather than answers with it ([`KnowledgeBase::evidence_admits`]).
+fn evidence_fault(e: DomainEvidence) -> String {
+    match e {
+        DomainEvidence::NoDomain(why) => why,
+        DomainEvidence::NotYet(_) => "a dictionary whose `impl` is not bound yet".to_string(),
+        DomainEvidence::NoDomainType(_) | DomainEvidence::Dict { .. } => {
+            "a dictionary that names no provider".to_string()
+        }
+    }
 }
 
 /// What [`KnowledgeBase::tuple_fill_goal`] makes of a fill at a tuple.
@@ -17329,7 +17623,9 @@ fn within_requirements_carriers(kb: &KnowledgeBase, goal: &Value) -> Vec<(usize,
 /// it takes nothing. The reads are found in the OPENED body by the same predicate and in
 /// the same order the typer enumerated them in the stored one (`requirement_read_out`), so
 /// position is identity; each `out` is a fresh variable once opened, and a read whose slot
-/// is [`UNROUTED_READ`] is left to derive its own.
+/// is [`UNROUTED_READ`] is left to derive its own. Returns, per read in body order, whether it
+/// was bound here — a derived `fill`'s read so handed its dictionary runs as no goal
+/// (WI-20261115-YR3N7).
 fn bind_citation_reads(
     kb: &mut KnowledgeBase,
     rid: RuleId,
@@ -17338,9 +17634,9 @@ fn bind_citation_reads(
     carriers: &[(usize, Value)],
     opened: &[Rc<NodeOccurrence>],
     merged: &mut Substitution,
-) {
+) -> SmallVec<[bool; 2]> {
     let Some(at) = counts.iter().position(|(r, _)| *r == rid) else {
-        return;
+        return SmallVec::new();
     };
     let offset: usize = counts[..at].iter().map(|(_, n)| n).sum();
     let fd = super::typing::find_dictionary_symbol(kb)
@@ -17379,6 +17675,7 @@ fn bind_citation_reads(
         counts[at].1,
         "an opened clause holds the requirement reads its stored body held",
     );
+    let mut bound: SmallVec<[bool; 2]> = SmallVec::with_capacity(outs.len());
     for (i, out) in outs.iter().enumerate() {
         let Some(dict) = dicts.get(offset + i) else {
             unreachable!("a citation marker carries one slot per position of its relation's layout");
@@ -17387,13 +17684,16 @@ fn bind_citation_reads(
         // clause's read (WI-20261102-ATVC1) as a variable no one bound yet — its clause's
         // caller passed nothing for it, and the read below derives its own.
         if is_unrouted_read(kb, dict) || kb.value_is_unbound_var(dict) {
+            bound.push(false);
             continue;
         }
         let Some(Expr::Var(Var::Global(vid))) = out.as_expr() else {
             unreachable!("an opened parameter's variable is a fresh variable, got {:?}", out.as_expr());
         };
         merged.bind_waking(kb, *vid, dict.clone());
+        bound.push(true);
     }
+    bound
 }
 
 /// The kernel address of the scope-discharge marker a discharge appends after its
