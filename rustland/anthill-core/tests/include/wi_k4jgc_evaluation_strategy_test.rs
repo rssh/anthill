@@ -127,7 +127,8 @@ namespace k4jgc
   -- CONTROLS
   rule controlVar(?n) :- box(v: ?n) <=> box(v: C.tag(red()))
   rule controlWhole(?v) :- ?v <=> C.tag(?c)
-  rule controlNarrow(?a) :- List.append(?a, [3]) = [1, 3]
+  rule controlNarrow(?a) :- List.append(?a, [3]) === [1, 3]
+  rule controlNarrowEq(?a) :- List.append(?a, [3]) = [1, 3]
 end
 "#;
 
@@ -405,7 +406,8 @@ fn control_a_whole_stuck_side_waits() {
 }
 
 /// CONTROL — passes either way, BY DESIGN: the WI-580 unfold still NARROWS a call on a flex
-/// argument (`append(?a, [3]) = [1, 3]` solves `?a = [1]`); it runs before `=` evaluates.
+/// argument (`append(?a, [3]) === [1, 3]` solves `?a = [1]`); it runs before `===` evaluates.
+/// A `=` at `List` is its member's and starts no split (WI-20261105-CBRD2): it waits for `?a`.
 #[test]
 fn control_the_unfold_still_narrows() {
     let mut kb = kb();
@@ -414,4 +416,6 @@ fn control_the_unfold_still_narrows() {
         vec![("cons(head: 1, tail: nil)".to_string(), true)],
         "`?a = [1]`, definite",
     );
+    let eq_rows = rows(&mut kb, "controlNarrowEq");
+    assert!(eq_rows.len() == 1 && !eq_rows[0].1, "one conditional row; got {eq_rows:?}");
 }

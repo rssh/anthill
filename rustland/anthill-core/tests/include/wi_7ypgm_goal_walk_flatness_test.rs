@@ -469,12 +469,12 @@ end
 }
 
 /// `op_call_as_occ` — the WI-580 case-split, on the carrier the walk builds.
-/// `[tail3(?t), eq(append(?a, ?t), [1,3])]` binds `?t = [3]` first, so the `append`
+/// `[tail3(?t), struct_eq(append(?a, ?t), [1,3])]` binds `?t = [3]` first, so the `append`
 /// operand is σ-MOVED and arrives as a `Value::Entity` while `?a` stays unground. The
 /// equation solves `?a = [1]`.
 ///
 /// FAILS when the predicate's `Entity` arm is removed: the case-split is abandoned,
-/// the `eq` builtin compares `append(?a,[3])` to `cons(1, cons(3, nil))` structurally,
+/// the `===` builtin compares `append(?a,[3])` to `cons(1, cons(3, nil))` structurally,
 /// the head functors differ, and the goal answers NOTHING — a lost solution.
 #[test]
 fn an_entity_carried_op_call_operand_still_case_splits() {
@@ -512,7 +512,11 @@ end
     let three = kb.alloc(Term::Const(Literal::Int(3)));
     let three_nil = cons(&mut kb, three, nil_t); // [3]
     let one_three = cons(&mut kb, one, three_nil); // [1, 3]
-    let eq_sym = kb.eq_functor();
+    // `===`: the split decides by structure, which `===` asks, and a `=` at `List` (its
+    // member's) starts none (WI-20261105-CBRD2).
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.kernel.struct_eq")
+        .expect("struct_eq");
 
     // CONTROL: the SAME equation with the tail written literally — σ never touches the
     // goal, the operand stays a `Value::Term`, and `op_call_as_occ`'s Term arm splits
@@ -544,7 +548,7 @@ end
     assert_eq!(
         sols.len(),
         1,
-        "`[tail3(?t), eq(append(?a, ?t), [1,3])]` must still solve `?a = [1]`; `[]` is \
+        "`[tail3(?t), struct_eq(append(?a, ?t), [1,3])]` must still solve `?a = [1]`; `[]` is \
          the case-split abandoning the `Value::Entity` operand the walk builds",
     );
     let a_vid = match kb.get_term(a) {

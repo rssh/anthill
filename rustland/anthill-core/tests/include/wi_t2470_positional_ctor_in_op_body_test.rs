@@ -240,7 +240,7 @@ namespace test.t2470
   rule gpat(1)  :- C.punmix(two(a: 1, b: 7)) = 7
   rule gpat0(1) :- C.punmix(two(a: 1, b: 7)) = 0
   rule gmg(1)   :- C.mpick(red()) = some(1)
-  rule gm(?c)   :- C.mpick(?c)    = some(1)
+  rule gm(?c)   :- C.mpick(?c)    === some(1)
 end
 "#;
 
@@ -368,6 +368,9 @@ fn the_stdlib_option_monad_builds_a_matchable_value() {
 /// OTHER)` — and the residual is built by `anf_flatten`, which had its own copy of the
 /// gap. `unify` is structural by construction, so a positional residual against a named
 /// OTHER failed EVERY arm and the goal was decided FALSE.
+///
+/// `gm` is written `===`: a `=` at `Option` is its member's and starts no split
+/// (WI-20261105-CBRD2).
 ///
 /// THE TWO AXES ARE SEPARATE AND EACH WAS BACKED OUT ALONE. `gm` is (0, 0) with only
 /// `finish_constructor` fixed and (1, 1) with only `anf_flatten` fixed; every other row

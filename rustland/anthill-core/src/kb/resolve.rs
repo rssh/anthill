@@ -3364,12 +3364,22 @@ impl SearchStream {
             if tag == BuiltinTag::Not {
                 return self.step_naf(kb, &goal_val, depth, delay_mode);
             }
-            // WI-580 (design §3.3): abstract-interpretation fallback. A `SemEq`
-            // goal whose operand is an unground, rule-less bodied op-call is
-            // expanded by case-splitting the callee's body — one `Continuation`
-            // per `match` arm — instead of delaying. Mirrors the `push_choice` /
-            // Γ special-cases above (set the frame's ChoicePoint, then continue).
-            if !open_world_operand && matches!(tag, BuiltinTag::SemEq | BuiltinTag::ScalarEq) {
+            // WI-580 (design §3.3): abstract-interpretation fallback. A `===` goal whose
+            // operand is an unground, rule-less bodied op-call is expanded by case-splitting
+            // the callee's body — one `Continuation` per `match` arm — instead of delaying.
+            // Mirrors the `push_choice` / Γ special-cases above (set the frame's ChoicePoint,
+            // then continue). The split decides by structure, the relation `===` asks, and the
+            // relation a `=` asks at a scalar whose equality is identity — a `Bool` condition's
+            // `eq(member(?x, l), true)` enumerates `?x`. A `=` at any other carrier is its
+            // member's, which a split by structure is not, and waits for its arguments. Only at
+            // two places: a split takes the equation to hold, and a third, the verdict's result
+            // column (`eq(C.tag(?c), 1, ?r)`), would be left unbound by it.
+            if !open_world_operand
+                && matches!(goal_val.head(kb), ViewHead::Functor { pos_arity: 2, named_arity: 0, .. })
+                && (tag == BuiltinTag::StructEq
+                    || (matches!(tag, BuiltinTag::SemEq | BuiltinTag::ScalarEq)
+                        && kb.equality_is_identity(&goal_val)))
+            {
                 let sub = self.stack.last().unwrap().subst.clone();
                 if let Some(candidates) = kb.unfold_eq_operand(&goal_val, &sub) {
                     let f = self.stack.last_mut().unwrap();
@@ -6416,8 +6426,6 @@ enum HeadCheck {
     /// WI-616: the head functor is an eq-dispatch-index carrier (overrides `eq`),
     /// read off either the `Functor` or the canonical bare-`Ref` spelling.
     EqOverride,
-    /// The head is a `Float` leaf; anything else walks its children.
-    FloatLeaf,
     /// Is the value equal to itself by `Eq`'s law alone? A `Float` is not (`nan`); a value
     /// of a carrier whose own `eq` is lawful is; one whose `eq` is not, or is lawful only
     /// on some carriers, may not be; a derived member's carrier is equal to itself where
@@ -6479,16 +6487,6 @@ pub(crate) const SELF_EQUAL_BY_LAW: GateSpec = GateSpec {
     depth_cap: Some((REACH_DEPTH_CAP, false)),
 };
 
-/// Does the value hold a `Float` anywhere? Capped as [`REACHES_EQ_OVERRIDE`] is: past
-/// the cap it answers "holds", the direction its one reader declines in.
-pub(crate) const REACHES_FLOAT: GateSpec = GateSpec {
-    combine: Combine::Any,
-    chase_sigma: false,
-    head_check: HeadCheck::FloatLeaf,
-    opaque: false,
-    depth_cap: Some((REACH_DEPTH_CAP, true)),
-};
-
 impl HeadCheck {
     /// The head-level short-circuit for this gate — reads the head and the KB's
     /// classification tables only.
@@ -6503,12 +6501,6 @@ impl HeadCheck {
                 .and_then(|s| kb.eq_dispatch_target(s))
             {
                 Some(target) if !kb.is_derived_member(target) => HeadVerdict::Stop(true),
-                _ => HeadVerdict::Recurse,
-            },
-            // A `Float` literal read carrier-neutrally through the view (a bare
-            // `Value::Float`, a `Value::Term(Const)`, a Node float-literal).
-            HeadCheck::FloatLeaf => match head {
-                ViewHead::Const(Literal::Float(_)) => HeadVerdict::Stop(true),
                 _ => HeadVerdict::Recurse,
             },
             HeadCheck::SelfEqualByLaw => match head {
@@ -9989,6 +9981,32 @@ impl KnowledgeBase {
             });
         }
         (labels.len() == pins.len()).then_some((pins, labels))
+    }
+
+    /// Is `goal` an equality at a scalar whose `eq` is identity of the two values (`Int64`,
+    /// `Bool`, `String`, `BigInt`, `Type`, `Symbol`; not `Float`, whose `eq` is IEEE's), the
+    /// relation `===` asks? It is a call of such a scalar's member, written as the member
+    /// (`Int64.eq(a, b)`) or as the spec's `eq` the typer pinned to it.
+    pub(crate) fn equality_is_identity(&self, goal: &Value) -> bool {
+        let ViewHead::Functor { functor, .. } = goal.head(self) else { return false };
+        // The carrier the call is at: the member's own sort, or, for one entered through a
+        // dictionary, the provider it names (`Type` binds `eq = typeEq`, declared outside it).
+        let carrier = if self.builtin_of(functor) == Some(BuiltinTag::ScalarEq) {
+            super::typing::impl_parent_sort_of_op(self, functor)
+        } else {
+            let Value::Node(o) = goal else { return false };
+            match o.apply_dispatch() {
+                node_occurrence::ApplyDispatch::Pin(t) if t != functor => {
+                    super::typing::impl_parent_sort_of_op(self, t)
+                }
+                node_occurrence::ApplyDispatch::NeedsDict(t) if t != functor => o
+                    .classified_dispatch()
+                    .map(|(_, provider, _)| provider)
+                    .or_else(|| super::typing::impl_parent_sort_of_op(self, t)),
+                _ => return false,
+            }
+        };
+        carrier.is_some_and(|sort| super::eq_derive::is_identity_scalar(self, sort))
     }
 
     /// The goal that `operand` holds, `eq(operand, true)`, pinned to `Bool`'s own `eq`: a call
@@ -15888,17 +15906,6 @@ impl KnowledgeBase {
                 None,
             ))
         };
-        // WI-20260827-P1TPE — the OTHER half of the per-arm decline below, asked ONCE:
-        // it does not depend on `arm`, and inside the loop it re-folded `other` per arm.
-        // `has_eq_dispatch_entries` first, mirroring `sem_eq_values_at` outcome 3 — on a KB
-        // where no carrier overrides `eq` this is the only question that can be answered
-        // without a fold, and it is the common KB.
-        let other_can_meet_an_override =
-            self.has_eq_dispatch_entries() && self.value_reaches_eq_override(&other, subst);
-        // The `Float` leg of the same question: a structural verdict reads `nan` as equal to
-        // itself, the OTHER way it is the wrong relation. A composite holding a `Float` has
-        // an `eq` of its own (a derived member) and is the override legs'.
-        let other_reaches_float = self.value_reaches_float(&other);
         let mut cands = Vec::with_capacity(arms.len());
         for arm in arms {
             let mut rename: Vec<(Symbol, VarId)> = Vec::new();
@@ -15909,89 +15916,18 @@ impl KnowledgeBase {
             // re-walked back to a Node (the retired `materialize_from_handle`
             // round-trip).
             let result_occ = self.anf_flatten(&arm.body, &rename, &mut hoists, &frame)?;
-            // WI-20260827-P1TPE — THE ARM'S OWN RESIDUAL DECIDES WHETHER THIS UNFOLD IS
-            // THE RIGHT RELATION. The goal is `eq`, which DISPATCHES to the carrier's
-            // declared equality (kernel-language.md §8.3); `result_g` below asserts
-            // `unify`, which is structural by construction (049's Invariant at
-            // [`Self::builtin_unify`]: "carrier-agnostic and structural-only — it never
-            // dispatches"). Where the two disagree an arm whose residual is
-            // DECLARED-equal to OTHER but structurally different FAILS, and when every
-            // arm fails the goal is DECIDED FALSE — a dropped solution, and a definite
-            // refutation NAF concludes from.
-            //
-            // MEASURED before this decline, with NO call anywhere in the equation
-            // (`ae`'s `eq` reads field `k` and ignores field `tag`):
-            //   `C.pick(?c) = ae(k: 1, tag: 9)`     0 total, 0 definite  DECIDED FALSE
-            //   `C.pick(red()) = ae(k: 1, tag: 9)`  1 DEFINITE           the ground twin
-            //
-            // THE FIRST HALF IS THE RESIDUAL, and neither of the two obvious keys can
-            // replace it — both were prototyped and each left the defect live:
-            //   * OTHER's structure alone hides the carrier behind an un-reduced call —
-            //     `C.mk(red())`'s head is `mk`, and `AE` occurs nowhere in it;
-            //   * the operation's declared RETURN TYPE has no children beyond its own
-            //     bindings, so `-> Wrap` (a `wrap(v: AE)` entity) reaches nothing, and a
-            //     GENERIC `-> Option[T = A]` reaches only the bare parameter — both
-            //     measured DECIDING FALSE under that key.
-            // The residual is exactly what `unify` will compare, so nothing it will
-            // compare can be missing from it.
-            //
-            // AND A CALL HIDDEN INSIDE THE RESIDUAL COSTS NOTHING, which is what makes
-            // reading structure sound on THIS side: `anf_flatten` has already hoisted
-            // every op-call out of `result_occ` into its own `eq` goal (decided
-            // SEMANTICALLY), and `unify_values` returns `Delay` on any un-reduced call it
-            // still meets, at the top of every recursion level. So a carrier this scan
-            // cannot see can only make the goal SUSPEND, never wrongly refute.
-            //
-            // THE SECOND HALF (`other_can_meet_an_override`, hoisted above the loop) is
-            // not conservatism — `unify` can only wrongly REFUTE where BOTH sides are
-            // concrete; against a flex operand it BINDS. Without it the GENERATOR shape
-            // stops answering, MEASURED: `C.pick(?c) = ?v` and `C.fpick(?c) = wrap(v: ?v)`
-            // each went 2 DEFINITE (a complete answer set) to a suspension. Found by
-            // /code-review on the residual-only version.
-            //
-            // AND THE SAME QUESTION HAS A THIRD LEG: a `Float`, where a structural verdict is
-            // wrong in the OPPOSITE and worse direction — a definite PROOF rather than a
-            // dropped solution. MEASURED before this leg, ground vs unground again:
-            //   `C.pick(red()) = p(f: nan)`  0 total   correctly REFUTED (IEEE nan != nan)
-            //   `C.pick(?c)    = p(f: nan)`  1 DEFINITE `?c = red`         WRONG
-            // The per-arm `unify` reads `nan` as reflexive (`OrderedFloat`), so the arm
-            // succeeds and the goal is PROVED of a relation that is false. Found by
-            // /code-review. It is read off the values, so it also declines a Float compare
-            // where structural and IEEE happen to AGREE (`C.fplain(?c) = p(f: 2.5)`, 1
-            // DEFINITE → suspension).
-            //
-            // AN OVERRIDE BEHIND A CALL IN OTHER is read too: OTHER was evaluated above, so
-            // `C.pick(?c) = C.mk(red())` meets `ae(k: 1, tag: 9)` here and declines
-            // (`wi_p1tpe_unfold_eq_semantic_test::an_override_behind_a_call_is_read_through_its_value`).
-            // Read unevaluated, `mk`'s head hid `AE` from both halves, and only a gate
-            // declining every OTHER that held a bodied call kept the row from a refutation.
-            //
-            // WHAT IT STILL COSTS, driven at
-            // `wi_p1tpe_unfold_eq_semantic_test::the_one_answer_the_decline_costs_was_half_an_answer_set`:
-            // `C.pick(?c) = ae(k: ?k, tag: 8)` was 1 DEFINITE and is now a suspension.
-            // That answer set was 1 of 2 — `?c = green, ?k = 2` holds under `aeq` and the
-            // structural `unify` dropped it on `tag` — so the trade is a silently
-            // incomplete DEFINITE set for a suspension that omits nothing.
-            let residual = Value::Node(Rc::clone(&result_occ));
-            if (other_can_meet_an_override && self.value_reaches_eq_override(&residual, subst))
-                || (other_reaches_float && self.value_reaches_float(&residual))
-            {
-                return None;
-            }
+            // The goal is `===`, or a `=` at a scalar whose equality is identity, and the
+            // per-arm `unify` below is structural too: the split is the relation the goal asks,
+            // so no carrier the residual or OTHER reaches declines it (WI-20260827-P1TPE's
+            // decline was for a `=` at a carrier with an `eq` of its own, which no longer starts
+            // a split).
             // WI-690 inc2: both `unify` goals ride as `Value::Node` occurrences —
             // the scrutinee / result / OTHER operands are used directly, with no
             // `occurrence_to_term` lowering. The residual/OTHER decomposition is
-            // UNIFY, not `SemEq`: needed narrowing must BIND the fresh spine vars
-            // (`SemEq` only compares and would delay on a flex operand). This is
-            // structural on the data spine, which is why the decline above exists —
-            // WI-20260827-P1TPE: "sound but merely incomplete for a custom-`Eq`
-            // ELEMENT type" was the claim here before, and it was FALSE. A residual
-            // that reaches an overriding carrier does not stay a WI-519 residual, it
-            // FAILS structurally, and when every arm does the goal is decided FALSE.
-            // Such a residual no longer reaches this line. What remains structural is
-            // a spine whose every override is behind a var (which BINDS, never
-            // refutes) or behind a call (which DELAYS); element `eq` semantics live in
-            // the body's own `eq` calls, hoisted below as `SemEq`.
+            // UNIFY, not a comparison: needed narrowing must BIND the fresh spine vars
+            // (a comparison only compares and would delay on a flex operand). It is
+            // structural, as the goal is; an `eq` the body itself calls is a call, hoisted
+            // below and run at its member.
             let unify_g = mk_unify(
                 vec![Rc::clone(&scrutinee_occ), pattern_occ],
                 scrutinee_occ.span,
@@ -15999,7 +15935,7 @@ impl KnowledgeBase {
             let result_g = mk_unify(vec![result_occ, Rc::clone(&other_occ)], arm.body.span);
             // Order: unify scrutinee shape → unify(result, OTHER) (binds the
             // hoist vars against the finite OTHER, bounding the recursion) → the
-            // hoisted op-call `SemEq` goals (which re-trigger this fallback on
+            // hoisted op-call `===` goals (which re-trigger this fallback on
             // their now-smaller arguments).
             // WI-668/WI-690: each hoisted op-call goal is ALREADY a `Value::Node`
             // occurrence (built directly by `anf_flatten`), so its re-triggered
@@ -16348,13 +16284,14 @@ impl KnowledgeBase {
                 }
                 // The call as the body makes it, carrying the dictionaries the body gives
                 // it ([`Self::hoisted_call`]), then ANF-hoisted as a fresh var + a
-                // `Value::Node` `eq` goal that re-triggers the unfold on its now-smaller
-                // arguments.
+                // `Value::Node` `===` goal that re-triggers the unfold on its now-smaller
+                // arguments: the call's value is compared with what the arms build of it,
+                // by structure.
                 let call = self.hoisted_call(occ, functor, pos, named, frame)?;
                 let anf = self.intern("_anf");
                 let tvid = self.fresh_var(anf);
                 let tvar = NodeOccurrence::new_expr(Expr::Var(Var::Global(tvid)), span, None);
-                let eq_sym = self.eq_functor();
+                let eq_sym = self.struct_eq_functor();
                 let eq_goal = NodeOccurrence::new_expr(
                     Expr::Apply {
                         recv_type: None,

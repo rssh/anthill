@@ -11318,6 +11318,15 @@ impl KnowledgeBase {
             )
     }
 
+    /// The structural equality functor, `anthill.kernel.struct_eq` (`===`). Panics on a KB
+    /// that was never bootstrapped, as [`Self::eq_functor`] does.
+    pub(crate) fn struct_eq_functor(&self) -> Symbol {
+        self.try_resolve_symbol("anthill.kernel.struct_eq").expect(
+            "struct_eq_functor: `anthill.kernel.struct_eq` is unregistered — this KB was never \
+             bootstrapped",
+        )
+    }
+
     /// The canonical unification functor — `anthill.kernel.unify`, the head an
     /// `<=>`-spelled equation carries (proposal 049). The bind-side peer of
     /// [`Self::eq_functor`]: equational rule selection (`apply_eq_rules`, the

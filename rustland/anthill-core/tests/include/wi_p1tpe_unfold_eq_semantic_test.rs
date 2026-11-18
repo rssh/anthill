@@ -99,6 +99,18 @@
 //! argument in an operation body building a value nothing matches; it refutes even the
 //! GROUND call, with no unfold and no `eq` override involved. WI-20260827-T2470 owns it,
 //! with the isolated five-row fixture.
+//!
+//! SINCE WI-20261105-CBRD2 THE SPLIT STARTS ONLY WHERE IT IS THE RELATION ASKED: from a `===`
+//! goal, and from a `=` the typer pinned to a scalar's own member whose equality is identity
+//! (`Int64`, `Bool`, `String`; not `Float`). A `=` at any other carrier — `AE`, `Wrap`,
+//! `Option[T = AE]`, `P`, `Box` — is its member's, starts no split, and waits for its
+//! arguments, so the decline this file was written for is gone with nothing to decline: the
+//! `=` rows over `AE` and `P` are suspensions, never refutations, and the rows that used the
+//! split to answer write `===` (`plain`, `bodyNest`, the generators). The back-out statements
+//! on the rows below were measured against the decline; the measured back-out now is the old
+//! start (a `=` at any carrier splits) with no decline, under which
+//! `a_case_split_over_a_custom_eq_carrier_no_longer_decides_false` and
+//! `naf_over_the_refutation_no_longer_proves_a_falsehood` fail again.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::KnowledgeBase;
@@ -213,20 +225,20 @@ namespace p1tpe
   rule fldg(1)      :- C.fpick(red()) = wrap(v: ae(k: 1, tag: 9))
   rule w(?c)        :- C.pick(?c) = C.mk(red())
   rule wg(1)        :- C.pick(red()) = C.mk(red())
-  rule plain(?c)    :- C.bpick(?c) = box(v: 1)
+  rule plain(?c)    :- C.bpick(?c) === box(v: 1)
   rule tagr(?c)     :- C.tag(?c) = 1
-  rule bodyNest(?c) :- C.bpick(?c) = box(v: C.tag(red()))
-  rule gen(?c, ?v)  :- C.pick(?c) = ?v
-  rule genw(?c, ?v) :- C.fpick(?c) = wrap(v: ?v)
+  rule bodyNest(?c) :- C.bpick(?c) === box(v: C.tag(red()))
+  rule gen(?c, ?v)  :- C.pick(?c) === ?v
+  rule genw(?c, ?v) :- C.fpick(?c) === wrap(v: ?v)
   rule genp(?c, ?k) :- C.pick(?c) = ae(k: ?k, tag: 8)
-  rule genb(?c, ?v) :- C.bpick(?c) = ?v
+  rule genb(?c, ?v) :- C.bpick(?c) === ?v
   rule genpRed()    :- C.pick(red()) = ae(k: 1, tag: 8)
   rule genpGreen()  :- C.pick(green()) = ae(k: 2, tag: 8)
   rule nanr(?c)     :- C.fnan(?c) = p(f: nan)
   rule nanrg(1)     :- C.fnan(red()) = p(f: nan)
   rule fok(?c)      :- C.fplain(?c) = p(f: 2.5)
   rule fokg(1)      :- C.fplain(red()) = p(f: 2.5)
-  rule fgen(?c, ?v) :- C.fplain(?c) = ?v
+  rule fgen(?c, ?v) :- C.fplain(?c) === ?v
   rule cost(?c)     :- C.cpick(?c, ae(k: 1, tag: 8), ae(k: 2, tag: 0)) = ae(k: 1, tag: 9)
   rule costg(1)     :- C.cpick(red(), ae(k: 1, tag: 8), ae(k: 2, tag: 0)) = ae(k: 1, tag: 9)
 end
@@ -454,8 +466,9 @@ fn the_one_answer_the_decline_costs_was_half_an_answer_set() {
     );
 }
 
-/// AT AN OVERRIDING CARRIER AND STILL NOT DECLINED, because this residual's compare is
-/// ALREADY SEMANTIC. The row that says the key is keyed on the right thing.
+/// AT AN OVERRIDING CARRIER: since WI-20261105-CBRD2 a `=` at `AE` starts no split, so the
+/// unground row waits where it was split and decided below; the ground twin decides. What
+/// follows is the row as it stood under the decline.
 ///
 /// `C.cpick`'s arm bodies are its own PARAMETERS, so `anf_flatten` hoists each arm's
 /// residual to a BARE VAR plus its own `eq` goal, and the arm's goals are
@@ -476,13 +489,9 @@ fn a_residual_that_hoists_its_call_still_decides() {
         "the ground twin decides, as the witness that `?c = red` is the true answer"
     );
     assert_eq!(
-        (
-            counts(&mut kb, "p1tpe.cost(?c)"),
-            definite_names(&mut kb, "p1tpe.cost")
-        ),
-        ((1, 1), vec!["red".to_string()]),
-        "and the unground row still finds it — the value asserted, not just the count. \
-         Unmoved in all four gate states"
+        counts(&mut kb, "p1tpe.cost(?c)"),
+        (1, 0),
+        "a `=` at `AE` starts no split (WI-20261105-CBRD2): the unground row waits for `?c`"
     );
 }
 

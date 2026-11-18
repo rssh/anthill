@@ -18,6 +18,11 @@
 //! the unfolded call carries for it: the typer's dictionary at literals, a citation's through a
 //! clause's condition. An operation with `requires` was declined outright before.
 //!
+//! The split starts from `===`, and from a `=` at a scalar whose equality is identity
+//! (WI-20261105-CBRD2): the `Box` and `List` equations are written `===`, the `Int64` ones
+//! (`selDesc`) `=`, and the `AE` ones (`w`), whose `eq` is `aeq`, `=`, which starts no split
+//! and waits.
+//!
 //! BACK-OUTS, each part by a temporary switch, all in one build and measured against this module
 //! alone: the gate restored, OTHER read unevaluated, hoisted calls built without the typer's
 //! stamps, an operation with `requires` declined, the slot weave off. Each row says which it
@@ -124,16 +129,16 @@ namespace wi2hx69
         case green() -> 4
   end
 
-  rule bodyNest(?c)      :- C.bpick(?c) = box(v: C.tag(red()))
-  rule hostNest(?c)      :- C.bpick(?c) = box(v: Int64.add(0, 1))
-  rule waitNest(?c, ?d)  :- C.bpick(?c) = box(v: C.tag(?d))
-  rule plain(?c)         :- C.bpick(?c) = box(v: 1)
+  rule bodyNest(?c)      :- C.bpick(?c) === box(v: C.tag(red()))
+  rule hostNest(?c)      :- C.bpick(?c) === box(v: Int64.add(0, 1))
+  rule waitNest(?c, ?d)  :- C.bpick(?c) === box(v: C.tag(?d))
+  rule plain(?c)         :- C.bpick(?c) === box(v: 1)
   rule w(?c)             :- C.pick(?c) = C.mk(red())
   rule wg(1)             :- C.pick(red()) = C.mk(red())
   rule w0()              :- C.pick(?c) = C.mk(red())
   rule w0Naf(1)          :- not(w0())
-  rule app(?a, ?b)       :- append(?a, [3]) = append(?b, [4])
-  rule app1(?a)          :- append(?a, [3]) = [1, 3]
+  rule app(?a, ?b)       :- append(?a, [3]) === append(?b, [4])
+  rule app1(?a)          :- append(?a, [3]) === [1, 3]
 
   rule selDesc(?c)       :- Util.pickD(?c, 1, 5) = 4
   rule selOwn(?c)        :- Util.pickD(?c, 1, 5) = -1

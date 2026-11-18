@@ -2506,6 +2506,8 @@ mod wi_cbrd2_typed_neq_test;
 mod wi_cbrd2_typed_condition_test;
 #[path = "include/wi_cbrd2_written_provision_member_test.rs"]
 mod wi_cbrd2_written_provision_member_test;
+#[path = "include/wi_cbrd2_structural_unfold_test.rs"]
+mod wi_cbrd2_structural_unfold_test;
 #[path = "include/wi_cbrd2_effect_guard_comparison_test.rs"]
 mod wi_cbrd2_effect_guard_comparison_test;
 #[path = "include/wi_cbrd2_equality_law_test.rs"]

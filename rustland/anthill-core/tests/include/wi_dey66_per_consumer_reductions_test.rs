@@ -249,7 +249,7 @@ namespace test.dey66.tuple
   rule valuem(?r) :- firstm(?xs, 9) = 9, ?r <=> ?xs
   rule dropped(?r) :- drops(?xs, 9) = 9, ?r <=> ?xs
   rule overlapping(?r) :- overlap(?xs, 9) = 9, ?r <=> ?xs
-  rule appended(?a) :- appT(?a, [3]) = [1, 3]
+  rule appended(?a) :- appT(?a, [3]) === [1, 3]
 end
 "#;
 
@@ -279,6 +279,7 @@ fn an_arm_the_known_component_refutes_is_dropped() {
 
 /// A recursive tuple match narrows as its `match xs` twin, `List.append`, does: the
 /// arm's residual is unified with OTHER first, so it terminates. Before: one conditional row.
+/// Written `===`: a `=` at `List` is its member's and starts no split (WI-20261105-CBRD2).
 #[test]
 fn a_recursive_tuple_match_narrows_as_its_twin() {
     let mut kb = crate::common::load_kb_with(TUPLES);

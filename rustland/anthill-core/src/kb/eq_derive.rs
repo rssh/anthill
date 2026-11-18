@@ -728,6 +728,14 @@ const STRUCTURAL_SCALARS: [&str; 6] = [
     "anthill.reflect.Symbol",
 ];
 
+/// Is `sort` one of [`STRUCTURAL_SCALARS`], whose `eq` is identity of the two values?
+pub(crate) fn is_identity_scalar(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    let cs = kb.canonical_sort_sym(sort);
+    STRUCTURAL_SCALARS
+        .iter()
+        .any(|n| kb.try_resolve_symbol(n).is_some_and(|s| kb.canonical_sort_sym(s) == cs))
+}
+
 /// The carriers, canonical, whose every field compares by structure: a field of a
 /// [`STRUCTURAL_SCALARS`] sort, or of a non-parametric carrier of this set. A greatest
 /// fixpoint, so a recursive composite of such fields is in it. A parametric carrier is
@@ -1974,15 +1982,5 @@ impl KnowledgeBase {
                 })
                 .collect(),
         )
-    }
-
-    /// Does `v` hold a `Float` anywhere? A structural compare reads `nan` as equal to
-    /// itself, so it is not a `Float`'s equality, and the resolver's equation unfold
-    /// declines where both sides hold one (`resolve.rs`, the per-arm decline). A
-    /// structural (non-σ) [`KnowledgeBase::fold_gate`] over
-    /// [`crate::kb::resolve::REACHES_FLOAT`].
-    pub(crate) fn value_reaches_float(&self, v: &Value) -> bool {
-        // `None` is the inert empty σ `fold_gate` never consults for `chase_sigma: false`.
-        self.fold_gate(v, None, 0, crate::kb::resolve::REACHES_FLOAT)
     }
 }

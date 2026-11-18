@@ -352,15 +352,15 @@ fn or_rule_isolates_substitutions_across_branches() {
 
 #[test]
 fn wi580_relational_append_solves_first_arg() {
-    // WI-580 §3.3: abstract-interpretation-on-suspend. Solve `append(?a, [3]) =
+    // WI-580 §3.3: abstract-interpretation-on-suspend. Solve `append(?a, [3]) ===
     // [1,3]` for the unground first arg — the <=> rules can't (they need a
     // ground-headed first arg); the body-unfold case-split does, converging to
-    // the unique ?a = [1].
+    // the unique ?a = [1]. `===`: the split decides by structure, and a `=` at `List` is its
+    // member's, which starts none (WI-20261105-CBRD2).
     let src = r#"
         namespace test.wi580ra
           import anthill.prelude.List.{append, cons, nil}
-          import anthill.prelude.PartialEq.{eq}
-          rule solve(?a) :- eq(append(?a, cons(head: 3, tail: nil)), cons(head: 1, tail: cons(head: 3, tail: nil)))
+          rule solve(?a) :- append(?a, cons(head: 3, tail: nil)) === cons(head: 1, tail: cons(head: 3, tail: nil))
         end
     "#;
     let mut kb = load_with(src);
@@ -419,7 +419,7 @@ fn wi668_term_carried_opcall_eq_case_splits() {
     // case-split; `op_call_as_occ` keeps a `Value::Term` arm precisely for this
     // carrier (rule-body atoms arrive as `Value::Node` and hit the other arm, so
     // `wi580_relational_append_solves_first_arg`, which wraps the eq in a rule,
-    // does NOT exercise this path). Same equation, queried as a bare `eq(...)`.
+    // does NOT exercise this path). Same equation, queried as a bare `struct_eq(...)`.
     let src = r#"
         namespace test.wi668
           import anthill.prelude.List.{append, cons, nil}
@@ -461,7 +461,9 @@ fn wi668_term_carried_opcall_eq_case_splits() {
         pos_args: SmallVec::from_slice(&[a_term, three_nil]),
         named_args: SmallVec::new(),
     });
-    let eq_sym = kb.eq_functor();
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.kernel.struct_eq")
+        .expect("struct_eq");
     let goal = kb.alloc(Term::Fn {
         functor: eq_sym,
         pos_args: SmallVec::from_slice(&[append_call, one_three]),
