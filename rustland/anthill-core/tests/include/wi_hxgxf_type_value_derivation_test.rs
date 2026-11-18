@@ -82,7 +82,7 @@ fn refusals(src: &str) -> Vec<String> {
 /// diagnostic would use — so the assertion reads as the type the author wrote.
 fn type_answer(src: &str, op: &str) -> String {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(op, &[Value::Int(0)]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Term { id, .. }) => {
             anthill_core::kb::typing::type_display_name(interp.kb(), id)
         }

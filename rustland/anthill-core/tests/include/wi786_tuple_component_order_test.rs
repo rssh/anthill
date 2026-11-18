@@ -31,7 +31,7 @@ fn run_int(src: &str, op: &str) -> i64 {
     // Fresh interpreter per call — a reused one poisons later calls after a trap.
     let mut interp = interp_for(src);
     match interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,
@@ -102,7 +102,7 @@ end
         "fixture must load; the check is at eval"
     );
     let mut interp = interp_for(src);
-    match interp.call("test.wi786sound.drive", &[]) {
+    match interp.call("test.wi786sound.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(i)) => assert_eq!(i, 3, "p must bind the Int64 slot"),
         Ok(other) => panic!(
             "an operation declared -> Int64 returned {other:?} — pre-fix it returned \

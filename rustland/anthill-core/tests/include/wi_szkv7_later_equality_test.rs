@@ -129,7 +129,7 @@ fn assert_later_load_refused(earlier: &str, later_source: &str, carrier: &str, a
 fn bool_of(kb: KnowledgeBase, op: &str) -> bool {
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("`{op}` did not run to a Bool: {other:?}"),
     }
@@ -547,7 +547,7 @@ fn a_kb_loaded_candidate_adding_to_a_base_sorts_equality_is_refused() {
     let list = interp
         .build_list_value(vec![Value::Str(READING_EQ.to_string())], &[])
         .expect("build List[String]");
-    let payload = match interp.call("anthill.reflect.KB.loaded", &[list]) {
+    let payload = match interp.call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[list])).map(|h| h.value) {
         Err(EvalError::Raised { payload, .. }) => format!("{payload:?}"),
         other => panic!("the candidate is RAISED, as `load_failed`; got {other:?}"),
     };
@@ -737,7 +737,7 @@ end
         let list = interp
             .build_list_value(vec![Value::Str(source.to_string())], &[])
             .expect("build List[String]");
-        interp.call("anthill.reflect.KB.loaded", &[list])
+        interp.call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[list])).map(|h| h.value)
     };
     let derived_for = |interp: &Interpreter| -> Vec<(String, String)> {
         crate::common::sort_provisions_all(interp.kb())

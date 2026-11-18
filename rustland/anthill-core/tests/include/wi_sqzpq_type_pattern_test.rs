@@ -149,7 +149,7 @@ fn assert_answers(src: &str, rows: &[(&str, bool)]) {
 
 fn assert_ops_answer(interp: &mut anthill_core::eval::Interpreter, rows: &[(&str, bool)]) {
     for (op, want) in rows {
-        match interp.call(&format!("wisqzpq.tp.D.{op}"), &[Value::Int(0)]) {
+        match interp.call(&format!("wisqzpq.tp.D.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Bool(got)) => assert_eq!(got, *want, "{op}"),
             other => panic!("{op}: expected a Bool, got {other:?}"),
         }
@@ -161,7 +161,7 @@ fn assert_ops_answer(interp: &mut anthill_core::eval::Interpreter, rows: &[(&str
 fn assert_runs_fail(src: &str, rows: &[(&str, &str)]) {
     let mut interp = crate::common::interp_for(src);
     for (op, says) in rows {
-        match interp.call(&format!("wisqzpq.tp.D.{op}"), &[Value::Int(0)]) {
+        match interp.call(&format!("wisqzpq.tp.D.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Err(e) => {
                 let err = e.to_string();
                 assert!(err.contains(says), "{op}: expected an error saying `{says}`, got: {err}");
@@ -379,7 +379,7 @@ end
         ("wildcardOnce", "Boom"),
         ("written", "Duo[L = Int64, R = String]"),
     ] {
-        match interp.call(&format!("wisqzpq.q.D.{op}"), &[Value::Int(0)]) {
+        match interp.call(&format!("wisqzpq.q.D.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(v) => assert_eq!(
                 anthill_core::kb::typing::type_display_name_value(interp.kb(), &v),
                 want,
@@ -526,7 +526,7 @@ end
         "    provides Show[T = Boom] where\n      operation tag() -> Int64 = 2\n    end",
     );
     let mut interp = crate::common::interp_for(&answered);
-    match interp.call("wisqzpq.open.D.atTheOpenSlot", &[Value::Int(0)]) {
+    match interp.call("wisqzpq.open.D.atTheOpenSlot", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(2)) => {}
         other => panic!("the provision at the open slot answers it; got {other:?}"),
     }
@@ -609,11 +609,11 @@ end
     let mut interp = crate::common::interp_for(&src(
         "    operation completed(n: Int64) -> Int64 = Box.tagOf2(0)\n    operation stated(n: Int64) -> Bool = Catch[P = IoError].catches(FileNotFound)",
     ));
-    match interp.call("wisqzpq.tp.D.completed", &[Value::Int(0)]) {
+    match interp.call("wisqzpq.tp.D.completed", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(7)) => {}
         other => panic!("the one provider completes `Box.V`; got {other:?}"),
     }
-    match interp.call("wisqzpq.tp.D.stated", &[Value::Int(0)]) {
+    match interp.call("wisqzpq.tp.D.stated", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Bool(true)) => {}
         other => panic!("the receiver written in full answers; got {other:?}"),
     }
@@ -974,7 +974,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     for (op, want) in [("effectful", 3), ("preconditioned", 3), ("inABlock", 4)] {
-        match interp.call(&format!("wisqzpq.tp.D.{op}"), &[Value::Int(0)]) {
+        match interp.call(&format!("wisqzpq.tp.D.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(got)) => assert_eq!(got, want, "{op}"),
             other => panic!("{op}: expected an Int64, got {other:?}"),
         }
@@ -1009,7 +1009,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     for (op, want) in [("positional", "Int64"), ("sortLevel", "String")] {
-        match interp.call(&format!("wisqzpq.tp.D.{op}"), &[Value::Int(0)]) {
+        match interp.call(&format!("wisqzpq.tp.D.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(v) => assert_eq!(
                 anthill_core::kb::typing::type_display_name_value(interp.kb(), &v),
                 want,

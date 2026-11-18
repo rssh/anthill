@@ -143,7 +143,7 @@ fn rows(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<String> {
 
 fn drain(interp: &mut Interpreter, op: &str) -> Vec<String> {
     let v = interp
-        .call(&format!("test.wi730.{op}"), &[])
+        .call(&format!("test.wi730.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op} runs the filtered relation: {e:?}"));
     let mut r = rows(interp.kb(), &v);
     r.sort();
@@ -352,7 +352,7 @@ namespace test.wi730naf
 end
 "#;
     let mut interp = interp_for(SRC);
-    match interp.call("test.wi730naf.p", &[]) {
+    match interp.call("test.wi730naf.p", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { payload, .. }) => {
             let functor = match &payload {
                 Value::Entity { functor, .. } => *functor,

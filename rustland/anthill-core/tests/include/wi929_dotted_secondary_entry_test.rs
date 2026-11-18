@@ -46,7 +46,7 @@ fn eval_int(src: &str, op: &str) -> i64 {
         .unwrap_or_else(|errs| panic!("fixture must load clean; got {errs:#?}"));
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         Ok(other) => panic!("expected Int, got {}", other.type_name()),
         Err(e) => panic!("operation call failed: {e}"),

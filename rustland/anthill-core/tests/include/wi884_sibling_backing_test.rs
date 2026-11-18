@@ -119,7 +119,7 @@ fn int64_bounds_answer_in_both_nullary_call_forms() {
         ("wi884.siblings.I.dMinBare", i64::MIN),
         ("wi884.siblings.I.dMaxBare", i64::MAX),
     ] {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "{entry}"),
             other => panic!("call {entry}: expected an Int64, got {other:?}"),
         }
@@ -138,7 +138,7 @@ type Interp = anthill_core::eval::Interpreter;
 fn call_s(interp: &mut Interp, entry: &str, args: &[&str]) -> Value {
     let vals: Vec<Value> = args.iter().map(|s| Value::Str((*s).to_string())).collect();
     interp
-        .call(&format!("wi884.siblings.S.{entry}"), &vals)
+        .call(&format!("wi884.siblings.S.{entry}"), &anthill_core::eval::HostValue::all(&vals)).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {entry}{args:?}: {e:?}"))
 }
 fn call_bool(interp: &mut Interp, entry: &str, args: &[&str]) -> bool {
@@ -281,7 +281,7 @@ fn is_empty_reaches_every_call_form() {
         assert!(call_bool(&mut interp, entry, &[""]), "{entry}(\"\")");
         assert!(!call_bool(&mut interp, entry, &["ab"]), "{entry}(\"ab\")");
     }
-    match interp.call("wi884.siblings.S.dEmptyLiteralDot", &[Value::Int(0)]) {
+    match interp.call("wi884.siblings.S.dEmptyLiteralDot", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Bool(true)) => {}
         other => panic!("\"\".isEmpty() must answer true; got {other:?}"),
     }
@@ -376,7 +376,7 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
         ("wi884.siblings.B.dOr", true),
         ("wi884.siblings.B.dNot", false),
     ] {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Bool(b)) => assert_eq!(b, want, "{entry}"),
             other => panic!("call {entry}: expected a Bool, got {other:?}"),
         }
@@ -436,7 +436,7 @@ end
         ),
     ] {
         let path = format!("wi887.spellings.{entry}");
-        match interp.call(&path, &[Value::Int(0)]) {
+        match interp.call(&path, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(1)) => {}
             other => panic!("{why}; got {other:?}"),
         }
@@ -469,12 +469,12 @@ namespace wi884.iteLaw
 end
 "#;
     let mut interp = crate::common::interp_for(CONTROL);
-    match interp.call("wi884.iteLaw.C.literal", &[Value::Int(0)]) {
+    match interp.call("wi884.iteLaw.C.literal", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(10)) => {}
         other => panic!("a literal condition must inline; got {other:?}"),
     }
     // Same interpreter: a trap poisons every LATER call, and this is the last one.
-    match interp.call("wi884.iteLaw.C.mixed", &[Value::Int(2), Value::Int(1)]) {
+    match interp.call("wi884.iteLaw.C.mixed", &anthill_core::eval::HostValue::all(&[Value::Int(2), Value::Int(1)])).map(|h| h.value) {
         Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. }) => {
             assert_eq!(name, "wi884.iteLaw.C.myIte")
         }
@@ -525,7 +525,7 @@ fn the_connective_admits_the_equation_and_the_attribute_fires_it() {
         .collect();
     let mut interp = crate::common::interp_for(&src);
     for (ns, attribute, expected) in ADMITTED.iter() {
-        let got = interp.call(&format!("wi884.{ns}.C.drive"), &[Value::Int(0)]);
+        let got = interp.call(&format!("wi884.{ns}.C.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
         let label = format!(
             "`<=>`{}",
             if attribute.is_empty() {
@@ -539,6 +539,12 @@ fn the_connective_admits_the_equation_and_the_attribute_fires_it() {
             (None, Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. })) => {
                 assert_eq!(name, format!("wi884.{ns}.C.pick"), "{label}")
             }
+            // Proposal 074 §1.4: the host call is typed as a body's call is, and refused there,
+            // naming the member nothing backs.
+            (None, Err(anthill_core::eval::EvalError::HostCallRefused { detail, .. })) => assert!(
+                detail.contains(&format!("wi884.{ns}.C.pick")) && detail.contains("no body"),
+                "{label}: {detail}"
+            ),
             (_, other) => panic!(
                 "{label}: expected {}, got {other:?}",
                 match expected {

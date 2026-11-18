@@ -55,7 +55,7 @@ fn holds(kb: &mut KnowledgeBase, pattern: &str) -> Option<bool> {
 fn call_bool(interp: &mut anthill_core::eval::Interpreter, op: &str, args: &[Value]) -> bool {
     use anthill_core::kb::term_view::TermView;
     let v = interp
-        .call(op, args)
+        .call(op, &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op} must evaluate: {e:?}"));
     v.literal_bool(interp.kb())
         .unwrap_or_else(|| panic!("{op} must answer a Bool, got {v:?}"))

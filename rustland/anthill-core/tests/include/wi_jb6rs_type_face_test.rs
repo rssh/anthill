@@ -90,7 +90,7 @@ fn a_bracket_in_an_operation_body_is_the_type() {
         .try_resolve_symbol("test.jb6rs.face.Colour.red")
         .expect("red resolves");
     let the_type = interp.kb_mut().make_sort_ref(red);
-    match interp.call("test.jb6rs.face.theType", &[]).expect("theType runs") {
+    match interp.call("test.jb6rs.face.theType", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("theType runs") {
         Value::Term { id, .. } => {
             assert_eq!(id, the_type, "`red[]` is the type every producer builds");
             assert!(
@@ -100,7 +100,7 @@ fn a_bracket_in_an_operation_body_is_the_type() {
         }
         other => panic!("expected the type as a term, got {other:?}"),
     }
-    let instance = interp.call("test.jb6rs.face.theInstance", &[]).expect("theInstance runs");
+    let instance = interp.call("test.jb6rs.face.theInstance", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("theInstance runs");
     assert!(
         !matches!(instance, Value::Term { id, .. } if id == the_type),
         "`red` is the instance, not the type: {instance:?}"
@@ -147,8 +147,8 @@ end
     let applied = src("applied", "(if ?b then counter() else counter())");
     assert_eq!(load_errors_of(&applied), Vec::<String>::new(), "the applied constructor is the instance");
     let mut interp = interp_for(&applied);
-    let picked = interp.call("test.jb6rs.compound.applied.use", &[]).expect("use runs");
-    let instance = interp.call("test.jb6rs.compound.applied.inst", &[]).expect("inst runs");
+    let picked = interp.call("test.jb6rs.compound.applied.use", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("use runs");
+    let instance = interp.call("test.jb6rs.compound.applied.inst", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("inst runs");
     assert_eq!(format!("{picked:?}"), format!("{instance:?}"), "`counter()` is the instance");
 }
 
@@ -304,7 +304,7 @@ end
 fn a_reader_handed_an_entitys_type_reads_its_declaration() {
     let mut interp = interp_for(BY_TYPE);
     let count = |interp: &mut anthill_core::eval::Interpreter, op: &str| match interp
-        .call(&format!("test.jb6rs.bytype.{op}"), &[])
+        .call(&format!("test.jb6rs.bytype.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op} runs: {e:?}"))
     {
         Value::Int(n) => n,
@@ -313,7 +313,7 @@ fn a_reader_handed_an_entitys_type_reads_its_declaration() {
     assert_eq!(count(&mut interp, "byType"), 2, "`Item[]` lists the facts");
     assert_eq!(count(&mut interp, "storedByType"), 2, "and `stored_facts_of` alike");
     for op in ["itemTypeModifiable", "variantModifiable"] {
-        match interp.call(&format!("test.jb6rs.bytype.{op}"), &[]) {
+        match interp.call(&format!("test.jb6rs.bytype.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Bool(false)) => {}
             other => panic!("{op}: `is_modifiable` reads an entity's type, which holds no cell: {other:?}"),
         }
@@ -323,7 +323,7 @@ fn a_reader_handed_an_entitys_type_reads_its_declaration() {
         .try_resolve_symbol("test.jb6rs.bytype.Item")
         .expect("Item resolves");
     let the_type = interp.kb_mut().make_sort_ref(item);
-    match interp.call("test.jb6rs.bytype.bracketType", &[]).expect("bracketType runs") {
+    match interp.call("test.jb6rs.bytype.bracketType", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("bracketType runs") {
         Value::Term { id, .. } => assert_eq!(id, the_type, "`Item[]` is the type every producer builds"),
         other => panic!("expected the type as a term, got {other:?}"),
     }
@@ -488,7 +488,7 @@ fn a_bare_constructor_in_a_data_context_is_its_instance() {
         .expect("Baz resolves");
     let head_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
         let v = interp
-            .call(&format!("test.jb6rs.reading.{op}"), &[])
+            .call(&format!("test.jb6rs.reading.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op} runs: {e:?}"));
         anthill_core::eval::value_functor(interp.kb(), &v).unwrap_or_else(|| panic!("{op}: {v:?}"))
     };
@@ -575,7 +575,7 @@ fn kind_reports_a_type_face_as_a_sort() {
     let the_type = interp.kb_mut().make_sort_ref(red);
     let the_instance = interp.kb_mut().alloc(Term::Ref(red));
     let kind_of = |interp: &mut anthill_core::eval::Interpreter, t| match interp
-        .call("anthill.reflect.kind", &[Value::term(t)])
+        .call("anthill.reflect.kind", &anthill_core::eval::HostValue::all(&[Value::term(t)])).map(|h| h.value)
         .expect("kind runs")
     {
         Value::Str(s) => s,

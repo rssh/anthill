@@ -34,26 +34,7 @@ fn stored_reference(interp: &mut Interpreter, stored: &Value) -> Value {
 /// same short_name on `local_name_of`. Mutable borrow because intern may
 /// allocate a new symbol slot.
 fn filestore_value(interp: &mut Interpreter, root: &str) -> Value {
-    let fs = interp.kb_mut().intern("FileStore");
-    let flat = interp.kb_mut().intern("Flat");
-    let root_sym = interp.kb_mut().intern("root");
-    let convention_sym = interp.kb_mut().intern("convention");
-    Value::Entity {
-        functor: fs,
-        pos: vec![].into(),
-        named: vec![
-            (root_sym, Value::Str(root.to_string())),
-            (
-                convention_sym,
-                Value::Entity {
-                    functor: flat,
-                    pos: vec![].into(),
-                    named: vec![].into(),
-                },
-            ),
-        ]
-        .into(),
-    }
+    crate::common::file_store_value(interp.kb(), "FileStore", root, "flat")
 }
 
 #[test]
@@ -89,24 +70,24 @@ fn persist_then_flush_writes_fact_to_disk() {
         named: vec![(value_sym, Value::Int(7))].into(),
     };
 
-    let none_val = Value::Unit;
+    let none_val = crate::common::no_meta(interp.kb());
     let result = interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store_val.clone(), foo_val, none_val.clone()],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), foo_val, none_val.clone()]),
+        ).map(|h| h.value)
         .expect("persist call");
     assert!(
         matches!(result, Value::Entity { .. }),
         "persist returns StoredRef"
     );
 
-    let nil_val = Value::Unit; // delta arg, ignored in v1
+    let nil_val = crate::common::nil_value(interp.kb());
     let flushed = interp
         .call(
             "anthill.persistence.Store.flush",
-            &[store_val.clone(), nil_val],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), nil_val]),
+        ).map(|h| h.value)
         .expect("flush call");
     assert!(matches!(flushed, Value::Bool(true)));
 
@@ -152,7 +133,7 @@ fn a_fact_holding_an_operation_built_tuple_is_persisted() {
     let root = dir.path().to_path_buf();
     let src = "namespace test.g99apersist\n  import anthill.prelude.Int64\n  sort Holder\n    entity h(p: (Int64, Int64))\n  end\n  operation mk() -> Holder = Holder.h(p: (1, 2))\nend\n";
     let mut interp = interp_for(src);
-    let fact = interp.call("test.g99apersist.mk", &[]).expect("mk");
+    let fact = interp.call("test.g99apersist.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("mk");
 
     let store_val = filestore_value(&mut interp, root.to_str().unwrap());
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
@@ -166,11 +147,11 @@ fn a_fact_holding_an_operation_built_tuple_is_persisted() {
     interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store_val.clone(), fact, Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), fact, crate::common::no_meta(interp.kb())]),
+        ).map(|h| h.value)
         .expect("persist call");
     let flushed = interp
-        .call("anthill.persistence.Store.flush", &[store_val, Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store_val, crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .expect("flush call");
     assert!(matches!(flushed, Value::Bool(true)));
 
@@ -222,8 +203,8 @@ fn failed_mirror_persist_does_not_assert_a_resident_fact() {
     let error = interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store_val, fact, Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val, fact, crate::common::no_meta(interp.kb())]),
+        ).map(|h| h.value)
         .expect_err("the mirror failure must surface");
     assert!(format!("{error:?}").contains("deliberate test failure"));
     assert!(
@@ -275,24 +256,24 @@ fn retract_via_builtin_removes_fact_from_disk() {
         named: vec![].into(),
     };
 
-    let none_val = Value::Unit;
+    let none_val = crate::common::no_meta(interp.kb());
     let _foo_id = interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store_val.clone(), foo_val, none_val.clone()],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), foo_val, none_val.clone()]),
+        ).map(|h| h.value)
         .unwrap();
     let bar_id = interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store_val.clone(), bar_val, none_val.clone()],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), bar_val, none_val.clone()]),
+        ).map(|h| h.value)
         .unwrap();
     interp
         .call(
             "anthill.persistence.Store.flush",
-            &[store_val.clone(), Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), crate::common::nil_value(interp.kb())]),
+        ).map(|h| h.value)
         .unwrap();
 
     // Sanity: both on disk.
@@ -307,12 +288,12 @@ fn retract_via_builtin_removes_fact_from_disk() {
     let retracted = interp
         .call(
             "anthill.persistence.NonMonotonicStore.retract",
-            &[store_val.clone(), bar_reference],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), bar_reference]),
+        ).map(|h| h.value)
         .unwrap();
     assert!(matches!(retracted, Value::Bool(true)));
     interp
-        .call("anthill.persistence.Store.flush", &[store_val, Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store_val, crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .unwrap();
 
     let after_retract = std::fs::read_to_string(&path).unwrap();
@@ -357,14 +338,14 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
     let persisted = interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store_val.clone(), original, Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), original, crate::common::no_meta(interp.kb())]),
+        ).map(|h| h.value)
         .expect("persist");
     interp
         .call(
             "anthill.persistence.Store.flush",
-            &[store_val.clone(), Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), crate::common::nil_value(interp.kb())]),
+        ).map(|h| h.value)
         .expect("flush initial row");
 
     let replacement = Value::Entity {
@@ -376,8 +357,8 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
     let updated = interp
         .call(
             "anthill.persistence.NonMonotonicStore.update",
-            &[store_val.clone(), persisted_reference, replacement],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val.clone(), persisted_reference, replacement]),
+        ).map(|h| h.value)
         .expect("update");
     let Value::Entity { functor, named, .. } = updated else {
         panic!("update must return Option.some(StoredRef)");
@@ -393,7 +374,7 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
     assert!(matches!(updated_reference, Value::FactRef(_)));
 
     interp
-        .call("anthill.persistence.Store.flush", &[store_val, Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store_val, crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .expect("flush replacement");
     let text = std::fs::read_to_string(root.join("facts.anthill")).expect("read facts");
     assert!(
@@ -451,15 +432,15 @@ fn a_row_persisted_and_retracted_in_one_flush_is_not_written() {
     let (mut interp, store) = non_monotone_bar_store(dir.path(), "onefluret");
     let row = bar_of(&mut interp, "onefluret", 1);
     let stored = interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), row, Value::Unit])
+        .call("anthill.persistence.Store.persist", &anthill_core::eval::HostValue::all(&[store.clone(), row, crate::common::no_meta(interp.kb())])).map(|h| h.value)
         .expect("persist");
     let reference = stored_reference(&mut interp, &stored);
     let retracted = interp
-        .call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
+        .call("anthill.persistence.NonMonotonicStore.retract", &anthill_core::eval::HostValue::all(&[store.clone(), reference])).map(|h| h.value)
         .expect("retract");
     assert!(matches!(retracted, Value::Bool(true)));
     interp
-        .call("anthill.persistence.Store.flush", &[store, Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store, crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .expect("flush");
     let text = std::fs::read_to_string(dir.path().join("facts.anthill")).unwrap_or_default();
     assert!(!text.contains("Bar(value: 1)"), "the retracted row was written:\n{text}");
@@ -473,18 +454,18 @@ fn an_update_in_the_flush_that_persisted_its_row_replaces_it() {
     let (mut interp, store) = non_monotone_bar_store(dir.path(), "oneflupd");
     let row = bar_of(&mut interp, "oneflupd", 1);
     let stored = interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), row, Value::Unit])
+        .call("anthill.persistence.Store.persist", &anthill_core::eval::HostValue::all(&[store.clone(), row, crate::common::no_meta(interp.kb())])).map(|h| h.value)
         .expect("persist");
     let reference = stored_reference(&mut interp, &stored);
     let replacement = bar_of(&mut interp, "oneflupd", 2);
     interp
         .call(
             "anthill.persistence.NonMonotonicStore.update",
-            &[store.clone(), reference, replacement],
-        )
+            &anthill_core::eval::HostValue::all(&[store.clone(), reference, replacement]),
+        ).map(|h| h.value)
         .expect("update");
     interp
-        .call("anthill.persistence.Store.flush", &[store, Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store, crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .expect("flush");
     let text = std::fs::read_to_string(dir.path().join("facts.anthill")).expect("read facts");
     assert!(
@@ -501,20 +482,20 @@ fn a_row_retracted_then_persisted_again_is_written_once() {
     let (mut interp, store) = non_monotone_bar_store(dir.path(), "retagain");
     let row = bar_of(&mut interp, "retagain", 1);
     let stored = interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), row.clone(), Value::Unit])
+        .call("anthill.persistence.Store.persist", &anthill_core::eval::HostValue::all(&[store.clone(), row.clone(), crate::common::no_meta(interp.kb())])).map(|h| h.value)
         .expect("persist");
     interp
-        .call("anthill.persistence.Store.flush", &[store.clone(), Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store.clone(), crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .expect("flush");
     let reference = stored_reference(&mut interp, &stored);
     interp
-        .call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
+        .call("anthill.persistence.NonMonotonicStore.retract", &anthill_core::eval::HostValue::all(&[store.clone(), reference])).map(|h| h.value)
         .expect("retract");
     interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), row, Value::Unit])
+        .call("anthill.persistence.Store.persist", &anthill_core::eval::HostValue::all(&[store.clone(), row, crate::common::no_meta(interp.kb())])).map(|h| h.value)
         .expect("persist again");
     interp
-        .call("anthill.persistence.Store.flush", &[store, Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store, crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .expect("flush");
     let text = std::fs::read_to_string(dir.path().join("facts.anthill")).expect("read facts");
     assert_eq!(text.matches("Bar(value: 1)").count(), 1, "got:\n{text}");

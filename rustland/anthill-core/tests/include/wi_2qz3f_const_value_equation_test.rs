@@ -325,7 +325,7 @@ fn the_value_typed_again_is_the_same_value() {
     for (which, kb) in [("the KB typed twice", kb), ("its copy", copy)] {
         let mut interp = anthill_core::eval::Interpreter::new(kb);
         anthill_core::eval::builtins::register_standard_builtins(&mut interp);
-        match interp.call("test.q2again.rd", &[]) {
+        match interp.call("test.q2again.rd", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(anthill_core::eval::Value::Int(8)) => {}
             other => panic!("{which}: `rd` did not run to 8: {other:?}"),
         }

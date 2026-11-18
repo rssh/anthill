@@ -439,7 +439,7 @@ fn judged(program: &Program) -> Verdict {
     };
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(eval::Value::Int(value)) => Verdict::Runs(value.to_string()),
         Ok(other) => Verdict::DriveFails(format!("NotAnInt64/{}", variant_name(&other))),
         Err(error) => Verdict::DriveFails(variant_name(&error)),

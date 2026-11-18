@@ -569,7 +569,7 @@ fn a_program_whose_row_was_discharged_evaluates() {
     );
     let mut interp = crate::common::interp_for_files(&[DECLS, &src]);
     let got = interp
-        .call("wi329.c_eval.run_handled", &[])
+        .call("wi329.c_eval.run_handled", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call run_handled: {e:?}"));
     assert_eq!(
         got.literal_int64(interp.kb()),

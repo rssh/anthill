@@ -75,7 +75,7 @@ fn a_function_value_is_typed_at_the_instance_its_call_fixes() {
     let got: Vec<(String, String)> = ["inCtor", "inOption", "inList", "inCtorL", "inOptionL", "inListL"]
         .iter()
         .map(|op| {
-            let v = match interp.call(&format!("test.j6k.later.{op}"), &[]) {
+            let v = match interp.call(&format!("test.j6k.later.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
                 Ok(v) => show_value(interp.kb(), &v),
                 Err(e) => format!("{e:?}"),
             };
@@ -183,7 +183,7 @@ fn a_host_call_of_a_raising_builtin_is_passed_its_type_value() {
     interp
         .register_standard_effect_handlers()
         .expect("register standard effect handlers");
-    match interp.call("anthill.prelude.Error.raise", &[Value::Str("kaboom".into())]) {
+    match interp.call("anthill.prelude.Error.raise", &anthill_core::eval::HostValue::all(&[Value::Str("kaboom".into())])).map(|h| h.value) {
         Err(EvalError::Raised { .. }) => {}
         other => panic!("`Error.raise` raises its payload; got {other:?}"),
     }
@@ -191,7 +191,7 @@ fn a_host_call_of_a_raising_builtin_is_passed_its_type_value() {
     let sources = interp
         .build_list_value(vec![Value::Str("namespace ( ) ] not anthill".to_string())], &[])
         .expect("build List[String]");
-    match interp.call("anthill.reflect.KB.loaded", &[sources]) {
+    match interp.call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[sources])).map(|h| h.value) {
         Err(EvalError::Raised { .. }) => {}
         other => panic!("`KB.loaded` of a source that does not parse raises; got {other:?}"),
     }
@@ -423,7 +423,7 @@ end
         ("viaGenNested", false),
         ("viaGenStr", true),
     ] {
-        let got = interp.call(&format!("test.j6k.cell.{op}"), &[]);
+        let got = interp.call(&format!("test.j6k.cell.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
         assert!(matches!(got, Ok(Value::Bool(b)) if b == want), "{op} answers {want}; got {got:?}");
     }
     let mut kb = load_kb_with(src);

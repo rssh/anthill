@@ -84,7 +84,7 @@ fn a_bottom_closed_at_a_name_is_declared_by_the_written_row() {
         let src = program(decl);
         assert_eq!(crate::common::load_errors_of(&src), Vec::<String>::new(), "{shape}");
         let mut interp = crate::common::interp_for(&src);
-        let v = interp.call("test.closedslot.caught", &[]).expect("runs");
+        let v = interp.call("test.closedslot.caught", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("runs");
         assert!(matches!(v, Value::Int(2)), "{shape}: the raise is caught; got {v:?}");
     }
 }
@@ -98,6 +98,6 @@ fn the_annotated_twin_is_declared_by_the_same_row() {
     Error.raise(o)",
     );
     let mut interp = crate::common::interp_for(&src);
-    let v = interp.call("test.closedslot.caught", &[]).expect("runs");
+    let v = interp.call("test.closedslot.caught", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("runs");
     assert!(matches!(v, Value::Int(2)), "the raise is caught; got {v:?}");
 }

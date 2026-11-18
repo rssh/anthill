@@ -194,7 +194,7 @@ end
 /// `Driver.<op>()` called from the interpreter, as an integer.
 fn interp_int(op: &str) -> i64 {
     let mut interp = interp_for(QUERY);
-    match interp.call(&format!("test.bxmpk.query.Driver.{op}"), &[]) {
+    match interp.call(&format!("test.bxmpk.query.Driver.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{op}` returned {other:?}"),
     }

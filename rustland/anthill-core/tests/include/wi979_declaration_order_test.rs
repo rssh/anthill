@@ -147,7 +147,7 @@ end
     ] {
         let mut interp = crate::common::interp_for(src);
         assert!(
-            matches!(interp.call(&format!("{ns}.drive"), &[]), Ok(Value::Int(2))),
+            matches!(interp.call(&format!("{ns}.drive"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(2))),
             "{label}: bare `Red(…)` must resolve through the variant-exposure link",
         );
     }
@@ -208,7 +208,7 @@ fn both_orders_dispatch_the_secondary_entrys_member() {
     for (label, src, _ns) in cases() {
         let mut interp = crate::common::interp_for(src);
         let got = interp
-            .call(&format!("{_ns}.drive"), &[])
+            .call(&format!("{_ns}.drive"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{label}: drive() failed: {e:?}"));
         assert!(
             matches!(got, Value::Int(5)),

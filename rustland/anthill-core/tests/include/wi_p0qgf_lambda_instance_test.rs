@@ -42,7 +42,7 @@ use anthill_core::eval::{Interpreter, Value};
 use crate::common::{interp_for, load_errors_of, one_definite_int, show_value};
 
 fn call(interp: &mut Interpreter, op: &str) -> Value {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(v) => v,
         Err(e) => panic!("`{op}`: {e:?}"),
     }

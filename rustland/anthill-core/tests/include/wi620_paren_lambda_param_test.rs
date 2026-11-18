@@ -38,7 +38,7 @@ fn call_ints(src: &str, calls: &[(&str, i64)]) {
     let mut interp = Interpreter::new(kb);
     for (op, expected) in calls {
         let result = interp
-            .call(op, &[])
+            .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("call {op}: {e:?}"));
         assert_eq!(expect_int(result, interp.kb()), *expected, "{op}");
     }

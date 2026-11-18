@@ -87,7 +87,7 @@ end
 
 fn eval_fresh(src: &str, entry: &str) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(0)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 /// Call several entries on ONE interpreter, returning `(entry, value)` pairs.
@@ -102,7 +102,7 @@ fn eval_all(src: &str, entries: &[&str]) -> Vec<Value> {
         .iter()
         .map(|e| {
             interp
-                .call(e, &[Value::Int(0)])
+                .call(e, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
                 .unwrap_or_else(|err| panic!("call {e}: {err:?}"))
         })
         .collect()
@@ -403,11 +403,22 @@ end
 /// Register the standard eval builtins over `src`, returning the error instead of
 /// panicking — `common::interp_for` `.expect()`s this step, which is exactly the
 /// failure the runtime-owned arm below is about.
-/// Build an interpreter over `src` and call `op` with `nargs` placeholder arguments, which
-/// the entry an unrunnable binding registers does not read; the message it raises.
+/// Build an interpreter over `src` and call `op` with `nargs` widgets, which the entry an
+/// unrunnable binding registers does not read; the message it raises. A widget and not a
+/// bare placeholder: the host call is typed as a body's call is (proposal 074 §1.4), so
+/// each argument is at the `Widget` its parameter takes.
 fn unrunnable_message(src: &str, op: &str, nargs: usize) -> String {
     let mut interp = crate::common::interp_for(src);
-    crate::common::unrunnable_at_call(&mut interp, op, &vec![Value::Int(0); nargs]).to_string()
+    let ns = op.rsplit_once(".Widget.").map(|(ns, _)| ns).expect("a Widget operation");
+    let widget = Value::Entity {
+        functor: interp
+            .kb()
+            .try_resolve_symbol(&format!("{ns}.Widget.widget"))
+            .expect("the `widget` constructor"),
+        pos: Vec::new().into(),
+        named: vec![(interp.kb_mut().intern("v"), Value::Int(0))].into(),
+    };
+    crate::common::unrunnable_at_call(&mut interp, op, &vec![widget; nargs]).to_string()
 }
 
 /// A binding block carrying one `operation_map` entry, over a carrier declaring a

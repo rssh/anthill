@@ -191,7 +191,7 @@ end
         ("test.wi943.covered.Driver.via", 1),
         ("test.wi943.covered.Driver.via2", -1),
     ] {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) => {
                 assert_eq!(n, want, "{entry} must compare through its own requirement")
             }

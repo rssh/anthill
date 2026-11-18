@@ -192,7 +192,7 @@ fn assert_floundered(interp: &anthill_core::eval::Interpreter, err: EvalError) -
 fn wi737_var_bearing_row_raises_instead_of_materializing() {
     let mut interp = interp_for(SRC);
     let err = interp
-        .call("test.wi737.pairCount", &[])
+        .call("test.wi737.pairCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("an undecided body must not drain to a row of logic variables");
     let goals = assert_floundered(&interp, err);
     assert!(
@@ -208,7 +208,7 @@ fn wi737_var_bearing_row_raises_instead_of_materializing() {
 fn wi737_spurious_membership_over_undecidable_body_raises() {
     let mut interp = interp_for(SRC);
     let err = interp
-        .call("test.wi737.memberCount", &[])
+        .call("test.wi737.memberCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("an undecided body must not report rows, even with bound columns");
     let goals = assert_floundered(&interp, err);
     assert!(goals >= 1, "the raise names the undischarged goals");
@@ -221,7 +221,7 @@ fn wi737_spurious_membership_over_undecidable_body_raises() {
 fn wi737_zero_column_membership_raises_rather_than_yielding_unit() {
     let mut interp = interp_for(SRC);
     let err = interp
-        .call("test.wi737.membershipCount", &[])
+        .call("test.wi737.membershipCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a floundered 0-column membership must not read as `unit` = provable");
     let goals = assert_floundered(&interp, err);
     assert!(goals >= 1, "the raise names the undischarged goals");
@@ -234,7 +234,7 @@ fn wi737_zero_column_membership_raises_rather_than_yielding_unit() {
 fn wi737_definite_relation_still_drains() {
     let mut interp = interp_for(SRC);
     let n = interp
-        .call("test.wi737.pairAnyCount", &[])
+        .call("test.wi737.pairAnyCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a DEFINITE relation drains unchanged — the gate is on the residual");
     assert_eq!(
         n.literal_int64(interp.kb()),
@@ -257,7 +257,7 @@ fn wi737_definite_relation_still_drains() {
 fn wi737_same_guard_drains_when_its_vars_are_bound_by_the_body() {
     let mut interp = interp_for(SRC);
     let n = interp
-        .call("test.wi737.distinctLocalCount", &[])
+        .call("test.wi737.distinctLocalCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a decidable `neq` must NOT raise — the guard is not the trigger");
     assert_eq!(
         n.literal_int64(interp.kb()),
@@ -272,7 +272,7 @@ fn wi737_same_guard_drains_when_its_vars_are_bound_by_the_body() {
 fn wi737_definite_membership_still_yields_unit() {
     let mut interp = interp_for(SRC);
     let n = interp
-        .call("test.wi737.hasOneCount", &[])
+        .call("test.wi737.hasOneCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a definite membership relation still drains");
     assert_eq!(
         n.literal_int64(interp.kb()),
@@ -291,7 +291,7 @@ fn wi737_definite_membership_still_yields_unit() {
 fn wi737_definite_prefix_drains_and_the_raise_is_lazy() {
     let mut interp = interp_for(SRC);
     let bounded = interp
-        .call("test.wi737.mixedBounded", &[])
+        .call("test.wi737.mixedBounded", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the 3 definite rows drain — the drain never reaches the floundered clause");
     assert_eq!(
         bounded.literal_int64(interp.kb()),
@@ -300,7 +300,7 @@ fn wi737_definite_prefix_drains_and_the_raise_is_lazy() {
     );
 
     let err = interp
-        .call("test.wi737.mixedFull", &[])
+        .call("test.wi737.mixedFull", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("pumping past them reaches the floundered clause, which raises");
     let goals = assert_floundered(&interp, err);
     assert!(goals >= 1, "the raise names the undischarged goals");

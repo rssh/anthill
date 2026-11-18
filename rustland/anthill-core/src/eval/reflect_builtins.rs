@@ -1218,6 +1218,19 @@ pub(super) fn kernel_not(interp: &mut Interpreter, args: &[Value]) -> Result<Val
 mod tests {
     use super::*;
 
+    /// The ambient KB value `kb()` answers, where a call takes a `KB`.
+    fn ambient_kb(interp: &Interpreter) -> Value {
+        let functor = interp
+            .kb()
+            .try_resolve_symbol("anthill.reflect.KB.kb")
+            .expect("`KB.kb` is declared");
+        Value::Entity {
+            functor,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+        }
+    }
+
     use crate::eval::{self, Interpreter, Value};
     use crate::kb::term_view::TermView;
 
@@ -1253,8 +1266,8 @@ end
         let result = interp
             .call(
                 "anthill.reflect.KB.sort_template",
-                &[Value::Unit, color_ref],
-            )
+                &crate::eval::HostValue::all(&[ambient_kb(&interp), color_ref]),
+            ).map(|h| h.value)
             .expect("sort_template call");
         match result {
             Value::Entity { functor, named, .. } => {
@@ -1305,7 +1318,7 @@ end
             named: Vec::new().into(),
         };
         let result = interp
-            .call("anthill.reflect.KB.sorts", &[Value::Unit, none_val])
+            .call("anthill.reflect.KB.sorts", &crate::eval::HostValue::all(&[ambient_kb(&interp), none_val])).map(|h| h.value)
             .expect("sorts call");
         let mut count = 0;
         let mut cur = result;
@@ -1363,7 +1376,7 @@ end
                 named: vec![(value_field, Value::Str(ns.to_string()))].into(),
             };
             let listed = interp
-                .call("anthill.reflect.KB.sorts", &[Value::Unit, arg])
+                .call("anthill.reflect.KB.sorts", &crate::eval::HostValue::all(&[ambient_kb(&interp), arg])).map(|h| h.value)
                 .expect("sorts");
             let mut names: Vec<String> = list_values(&interp, listed)
                 .iter()
@@ -1426,7 +1439,7 @@ end
             named: vec![(value_sym, Value::Str("Beta".into()))].into(),
         };
         let result = interp
-            .call("anthill.reflect.KB.descriptions", &[Value::Unit, target])
+            .call("anthill.reflect.KB.descriptions", &crate::eval::HostValue::all(&[ambient_kb(&interp), target])).map(|h| h.value)
             .expect("descriptions call");
 
         // Walk the cons-list, collecting (content, index) per DescriptionInfo.
@@ -1499,11 +1512,11 @@ end
         let reified = interp
             .call(
                 "anthill.reflect.KB.reify",
-                &[Value::Unit, Value::term(ref_tid)],
-            )
+                &crate::eval::HostValue::all(&[ambient_kb(&interp), Value::term(ref_tid)]),
+            ).map(|h| h.value)
             .expect("reify call");
         let reflected = interp
-            .call("anthill.reflect.KB.reflect", &[Value::Unit, reified])
+            .call("anthill.reflect.KB.reflect", &crate::eval::HostValue::all(&[ambient_kb(&interp), reified])).map(|h| h.value)
             .expect("reflect call");
         match reflected {
             Value::Term { id: tid, .. } => {
@@ -1555,9 +1568,9 @@ end
         let red_instance = interp.kb_mut().alloc(CoreTerm::Ref(red));
         let mut round_trip = |tid: TermId| -> TermId {
             let reified = interp
-                .call("anthill.reflect.KB.reify", &[Value::Unit, Value::term(tid)])
+                .call("anthill.reflect.KB.reify", &crate::eval::HostValue::all(&[ambient_kb(&interp), Value::term(tid)])).map(|h| h.value)
                 .expect("reify call");
-            match interp.call("anthill.reflect.KB.reflect", &[Value::Unit, reified]).expect("reflect call") {
+            match interp.call("anthill.reflect.KB.reflect", &crate::eval::HostValue::all(&[ambient_kb(&interp), reified])).map(|h| h.value).expect("reflect call") {
                 Value::Term { id, .. } => id,
                 other => panic!("expected Value::Term, got {other:?}"),
             }
@@ -1650,7 +1663,7 @@ end
         }
         fn host_says(interp: &mut Interpreter, qn: &str, arg: &Value) -> bool {
             match interp
-                .call(qn, &[arg.clone()])
+                .call(qn, &crate::eval::HostValue::all(&[arg.clone()])).map(|h| h.value)
                 .unwrap_or_else(|e| panic!("{qn} must ANSWER for this carrier, got {e:?}"))
             {
                 Value::Bool(b) => b,
@@ -1761,14 +1774,14 @@ end
         );
         assert!(
             matches!(
-                interp.call("test.wi982_body.lit_is_nonvar", &[]),
+                interp.call("test.wi982_body.lit_is_nonvar", &crate::eval::HostValue::all(&[])).map(|h| h.value),
                 Ok(Value::Bool(true))
             ),
             "a bare imported `nonvar(42)` in an operation body must answer true",
         );
         assert!(
             matches!(
-                interp.call("test.wi982_body.lit_is_ground", &[]),
+                interp.call("test.wi982_body.lit_is_ground", &crate::eval::HostValue::all(&[])).map(|h| h.value),
                 Ok(Value::Bool(true))
             ),
             "a fully-qualified `anthill.reflect.ground(42)` in an operation body must answer true",
@@ -1802,24 +1815,24 @@ end
         let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(sym));
 
         let same = interp
-            .call("anthill.reflect.sort_as_term", &[Value::term(ref_tid)])
+            .call("anthill.reflect.sort_as_term", &crate::eval::HostValue::all(&[Value::term(ref_tid)])).map(|h| h.value)
             .expect("sort_as_term");
         assert!(matches!(same, Value::Term { id: t, .. } if t == ref_tid));
 
         let ok = interp
-            .call("anthill.reflect.can_be_sort", &[Value::term(ref_tid)])
+            .call("anthill.reflect.can_be_sort", &crate::eval::HostValue::all(&[Value::term(ref_tid)])).map(|h| h.value)
             .expect("can_be_sort");
         assert!(matches!(ok, Value::Bool(true)));
 
         // Int64 literal is NOT a sort.
         let lit = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(42)));
         let not_sort = interp
-            .call("anthill.reflect.can_be_sort", &[Value::term(lit)])
+            .call("anthill.reflect.can_be_sort", &crate::eval::HostValue::all(&[Value::term(lit)])).map(|h| h.value)
             .expect("can_be_sort (lit)");
         assert!(matches!(not_sort, Value::Bool(false)));
 
         let as_opt = interp
-            .call("anthill.reflect.term_as_sort", &[Value::term(lit)])
+            .call("anthill.reflect.term_as_sort", &crate::eval::HostValue::all(&[Value::term(lit)])).map(|h| h.value)
             .expect("term_as_sort");
         match as_opt {
             Value::Entity { functor, named, .. } => {
@@ -1853,7 +1866,7 @@ end
             ("anthill.reflect.short_name", short),
             ("anthill.reflect.kind", kind),
         ] {
-            match interp.call(op, &[sym.clone()]) {
+            match interp.call(op, &crate::eval::HostValue::all(&[sym.clone()])).map(|h| h.value) {
                 Ok(Value::Str(got)) => {
                     assert_eq!(got, expected, "{op} on a {} carrier", sym.type_name(),)
                 }
@@ -1908,7 +1921,7 @@ end
 
         // The producer: `Dictionary.impl(d) -> Symbol`.
         let sym_val = interp
-            .call("anthill.realization.runtime.Dictionary.impl", &[dict])
+            .call("anthill.realization.runtime.Dictionary.impl", &crate::eval::HostValue::all(&[dict])).map(|h| h.value)
             .expect("Dictionary.impl");
         assert!(
             matches!(sym_val, Value::SymbolRef(s) if s == color),
@@ -1934,7 +1947,7 @@ end
         // the DECLARING SCOPE its own stdlib signature promises ("Symbol → enclosing
         // scope symbol"), which for `Color` is the namespace that declares it.
         let scope_answer = interp
-            .call("anthill.reflect.scope", &[sym_val.clone()])
+            .call("anthill.reflect.scope", &crate::eval::HostValue::all(&[sym_val.clone()])).map(|h| h.value)
             .expect("scope must answer on a minted Symbol");
         assert_eq!(
             crate::eval::value_functor(interp.kb(), &scope_answer)
@@ -1970,8 +1983,8 @@ end
         let bound = interp
             .call(
                 "anthill.reflect.resolve_sort_instantiation_param",
-                &[Value::term(inst), Value::SymbolRef(t_param)],
-            )
+                &crate::eval::HostValue::all(&[Value::term(inst), Value::SymbolRef(t_param)]),
+            ).map(|h| h.value)
             .expect("resolve_sort_instantiation_param must accept a minted Symbol param");
         assert!(
             matches!(bound, Value::Term { id, .. }
@@ -2013,7 +2026,7 @@ end
             named_args: vec![(entity_field, red_ref)].into(),
         });
         let result = interp
-            .call("anthill.kernel.not", &[Value::term(goal)])
+            .call("anthill.kernel.not", &crate::eval::HostValue::all(&[Value::term(goal)])).map(|h| h.value)
             .expect("kernel.not");
         assert!(
             matches!(result, Value::Bool(false)),
@@ -2052,7 +2065,7 @@ end
             named_args: vec![(entity_field, green_ref)].into(),
         });
         let result = interp
-            .call("anthill.kernel.not", &[Value::term(goal)])
+            .call("anthill.kernel.not", &crate::eval::HostValue::all(&[Value::term(goal)])).map(|h| h.value)
             .expect("kernel.not");
         assert!(
             matches!(result, Value::Bool(true)),
@@ -2081,7 +2094,7 @@ end
                 Value::term(kb.resolve_qualified_name_term(qname))
             };
             let result = interp
-                .call("anthill.reflect.KB.fields", &[Value::Unit, entity])
+                .call("anthill.reflect.KB.fields", &crate::eval::HostValue::all(&[ambient_kb(&interp), entity])).map(|h| h.value)
                 .expect("fields by reference never errors");
             let field_named = |v: &Value, key: &str| -> Option<Value> {
                 match v {
@@ -2134,7 +2147,7 @@ end
             pos_args: Default::default(),
             named_args: vec![(entity_field, var_term)].into(),
         });
-        let result = interp.call("anthill.kernel.not", &[Value::term(goal)]);
+        let result = interp.call("anthill.kernel.not", &crate::eval::HostValue::all(&[Value::term(goal)])).map(|h| h.value);
         match result {
             Err(EvalError::Internal(msg)) => {
                 assert!(
@@ -2195,11 +2208,12 @@ end
             named: vec![(term_field, inner)].into(),
         };
 
+        // The stream at the type `execute` gives it: a handle says nothing of its element.
         let stream = interp
-            .call("anthill.reflect.KB.execute", &[Value::Unit, query])
+            .call("anthill.reflect.KB.execute", &crate::eval::HostValue::all(&[ambient_kb(&interp), query]))
             .expect("execute");
         let pumped = interp
-            .call("anthill.prelude.LogicalStream.splitFirst", &[stream])
+            .call("anthill.prelude.Stream.splitFirst", &[stream]).map(|h| h.value)
             .expect("splitFirst");
 
         // Unwrap Option.some → Pair.pair → fst = the Solution element.
@@ -2271,12 +2285,12 @@ end
         let result = interp
             .call(
                 "anthill.reflect.Substitution.apply",
-                &[
+                &crate::eval::HostValue::all(&[
                     Value::Substitution(s_handle),
                     Value::term(var_term),
-                    Value::Unit,
-                ],
-            )
+                    ambient_kb(&interp),
+                ]),
+            ).map(|h| h.value)
             .expect("apply");
         match result {
             Value::Term { id: tid, .. } => {
@@ -2310,8 +2324,8 @@ end
         let result = interp
             .call(
                 "anthill.reflect.Substitution.bindings",
-                &[Value::Substitution(s_handle)],
-            )
+                &crate::eval::HostValue::all(&[Value::Substitution(s_handle)]),
+            ).map(|h| h.value)
             .expect("bindings");
         // A cons-list with one Pair(fst: <var term>, snd: Int64(42)).
         let head = match result {
@@ -2377,12 +2391,12 @@ end
         let composed = interp
             .call(
                 "anthill.reflect.Substitution.compose",
-                &[
+                &crate::eval::HostValue::all(&[
                     Value::Substitution(h1),
                     Value::Substitution(h2),
-                    Value::Unit,
-                ],
-            )
+                    ambient_kb(&interp),
+                ]),
+            ).map(|h| h.value)
             .expect("compose");
         let handle = match composed {
             Value::Substitution(h) => h,
@@ -2458,8 +2472,8 @@ end
         let looked = b
             .call(
                 "anthill.reflect.Substitution.lookup",
-                &[Value::Substitution(h.clone()), Value::Str("x".into())],
-            )
+                &crate::eval::HostValue::all(&[Value::Substitution(h.clone()), Value::Str("x".into())]),
+            ).map(|h| h.value)
             .expect("lookup");
         assert_eq!(
             int_of(&b, &payload(&b, &looked, "value")),
@@ -2472,12 +2486,12 @@ end
         let applied = b
             .call(
                 "anthill.reflect.Substitution.apply",
-                &[
+                &crate::eval::HostValue::all(&[
                     Value::Substitution(h.clone()),
                     Value::term(x_term),
-                    Value::Unit,
-                ],
-            )
+                    ambient_kb(&b),
+                ]),
+            ).map(|h| h.value)
             .expect("apply");
         assert_eq!(int_of(&b, &applied), Some(7), "apply read {applied:?}");
 
@@ -2485,8 +2499,8 @@ end
         let listed = b
             .call(
                 "anthill.reflect.Substitution.bindings",
-                &[Value::Substitution(h.clone())],
-            )
+                &crate::eval::HostValue::all(&[Value::Substitution(h.clone())]),
+            ).map(|h| h.value)
             .expect("bindings");
         let pair = payload(&b, &listed, "head");
         assert_eq!(
@@ -2500,12 +2514,12 @@ end
         let composed = b
             .call(
                 "anthill.reflect.Substitution.compose",
-                &[
+                &crate::eval::HostValue::all(&[
                     Value::Substitution(h),
                     Value::Substitution(in_b),
-                    Value::Unit,
-                ],
-            )
+                    ambient_kb(&b),
+                ]),
+            ).map(|h| h.value)
             .expect("compose");
         let x_after = match &composed {
             Value::Substitution(c) => c.with_subst(|s| s.bindings.get(&x).cloned()),
@@ -2558,32 +2572,32 @@ end
         let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(sym));
 
         let qn = interp
-            .call("anthill.reflect.qualified_name", &[Value::term(ref_tid)])
+            .call("anthill.reflect.qualified_name", &crate::eval::HostValue::all(&[Value::term(ref_tid)])).map(|h| h.value)
             .expect("qualified_name");
         assert!(matches!(qn, Value::Str(ref s) if s == "test.reflect_syms.Color.red"));
 
         let sn = interp
-            .call("anthill.reflect.short_name", &[Value::term(ref_tid)])
+            .call("anthill.reflect.short_name", &crate::eval::HostValue::all(&[Value::term(ref_tid)])).map(|h| h.value)
             .expect("short_name");
         assert!(matches!(sn, Value::Str(ref s) if s == "red"));
 
         let kn = interp
-            .call("anthill.reflect.kind", &[Value::term(ref_tid)])
+            .call("anthill.reflect.kind", &crate::eval::HostValue::all(&[Value::term(ref_tid)])).map(|h| h.value)
             .expect("kind");
         assert!(matches!(kn, Value::Str(ref s) if s == "Entity"));
 
         let ls = interp
             .call(
                 "anthill.reflect.lookup_symbol",
-                &[Value::Str("test.reflect_syms.Color.red".into())],
-            )
+                &crate::eval::HostValue::all(&[Value::Str("test.reflect_syms.Color.red".into())]),
+            ).map(|h| h.value)
             .expect("lookup_symbol");
         assert!(matches!(ls, Value::Term { .. }));
     }
 
     /// The symbol a `lookup_symbol` result denotes, by qualified name.
     fn looked_up_name(interp: &mut Interpreter, name: &str) -> Result<String, EvalError> {
-        let v = interp.call("anthill.reflect.lookup_symbol", &[Value::Str(name.into())])?;
+        let v = interp.call("anthill.reflect.lookup_symbol", &crate::eval::HostValue::all(&[Value::Str(name.into())])).map(|h| h.value)?;
         let sym = interp
             .kb()
             .value_symbol(&v)
@@ -2677,7 +2691,7 @@ end
             Value::term(kb.resolve_qualified_name_term("test.reflect_ctors.Fruit"))
         };
         let result = interp
-            .call("anthill.reflect.KB.constructors", &[Value::Unit, fruit])
+            .call("anthill.reflect.KB.constructors", &crate::eval::HostValue::all(&[ambient_kb(&interp), fruit])).map(|h| h.value)
             .expect("constructors call");
         let mut names: Vec<String> = Vec::new();
         let mut cur = result;
@@ -2782,7 +2796,7 @@ end
             Value::term(kb.resolve_qualified_name_term("test.ops_alias.Acct"))
         };
         let result = interp
-            .call("anthill.reflect.KB.operations", &[Value::Unit, acct])
+            .call("anthill.reflect.KB.operations", &crate::eval::HostValue::all(&[ambient_kb(&interp), acct])).map(|h| h.value)
             .expect("operations call");
         let ops = list_values(&interp, result);
         let params_of = |interp: &Interpreter, short: &str| -> usize {
@@ -2827,7 +2841,7 @@ end
             Value::term(kb.resolve_qualified_name_term("test.wi548_op_contract.Tank"))
         };
         let result = interp
-            .call("anthill.reflect.KB.operations", &[Value::Unit, tank])
+            .call("anthill.reflect.KB.operations", &crate::eval::HostValue::all(&[ambient_kb(&interp), tank])).map(|h| h.value)
             .expect("operations call");
 
         // The op's `name` field is `Value::Term(Ref(sym))`; match by short name.

@@ -56,6 +56,15 @@ use crate::common::interp_for;
 /// stay distinguishable from "backed by whichever mirror happens to be registered".
 const SRC: &str = "namespace test.wi830\n  \
                    import anthill.reflect.{fact_monotonicity, non_monotone}\n  \
+                   import anthill.prelude.{String}\n  \
+                   import anthill.persistence.{NonMonotonicStore}\n  \
+                   entity RecordingStore(label: String)\n  \
+                   provides RecordingStore language rust\n    \
+                   artifact \"rustland/anthill-core/tests/include/wi830_mirror_coverage_test.rs\"\n  \
+                   end\n  \
+                   namespace RecordingStore\n    \
+                   provides NonMonotonicStore\n  \
+                   end\n  \
                    entity Alpha830\n  \
                    entity Beta830\n  \
                    entity Gamma830\n  \
@@ -106,9 +115,14 @@ impl Store for RecordingStore {
 
 /// The store VALUE a recorder registers under. It differs per label, so two mirrors get
 /// distinct canonical keys — registering both under one key would replace rather than
-/// coexist, which is a different test.
+/// coexist, which is a different test. A value of the program's `RecordingStore`, which
+/// provides `NonMonotonicStore` as anthill-stl's binding provides it for a library backend, so
+/// a host call of a `Store` operation types at it (proposal 074 §1.4).
 fn recorder_store_value(interp: &mut Interpreter, label: &str) -> Value {
-    let functor = interp.kb_mut().intern("RecordingStore");
+    let functor = interp
+        .kb()
+        .try_resolve_symbol("test.wi830.RecordingStore")
+        .expect("the program's `RecordingStore`");
     let label_field = interp.kb_mut().intern("label");
     Value::Entity {
         functor,
@@ -224,7 +238,10 @@ fn two_mirrors_may_not_claim_one_functor() {
 
     // The second registration, spelled out rather than via the helper, because the helper
     // unwraps and this is the refusal.
-    let functor = interp.kb_mut().intern("RecordingStore");
+    let functor = interp
+        .kb()
+        .try_resolve_symbol("test.wi830.RecordingStore")
+        .expect("the program's `RecordingStore`");
     let label_field = interp.kb_mut().intern("label");
     let store_val = Value::Entity {
         functor,
@@ -285,8 +302,8 @@ fn a_persisted_functor_is_covered_by_the_mirror_that_took_it() {
     interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store_val, row, Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store_val, row, crate::common::no_meta(interp.kb())]),
+        ).map(|h| h.value)
         .expect("persist Delta830 through the alpha mirror");
 
     // Now reach the SAME row the other way and retract through that reference.

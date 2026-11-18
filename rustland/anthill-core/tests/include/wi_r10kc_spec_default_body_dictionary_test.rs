@@ -140,7 +140,7 @@ fn program(ns: &str, rivals: &str, body: &str) -> String {
 
 fn eval_bool(src: &str, entry: &str, why: &str) -> bool {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{why}; got {other:?}"),
     }
@@ -389,8 +389,8 @@ fn a_generic_consumer_over_a_list_keeps_each_elements_ordering() {
 //     THE SORT HALF ONLY. The OP-half twin — EE0EP's `has(s: MySet[T = String], …)`,
 //     whose slot `s.O` is op-scoped — was closed by WI-20260922-ATFGH without touching
 //     the stand-in: that slot is a marker whose read is refused at `interp.call`, and
-//     `Interpreter::call_with_witnesses` names its witness
-//     (`wi_ee0ep_param_dictionary_test::the_host_entry_names_the_witness_or_is_refused`).
+//     `Interpreter::call_typed` reads its witness off the argument's type
+//     (`wi_ee0ep_param_dictionary_test::the_host_entry_reads_the_witness_off_the_type`).
 //     This row's slot is the SORT's own `O`, one of the dictionaries
 //     `call_with_requirements` takes from a host, and WI-868's stand-in decision is what
 //     keeps plain `interp.call` as it is.
@@ -475,12 +475,15 @@ fn the_host_entry_route_answers_by_value_direction() {
 
     let mut interp = crate::common::interp_for(&src);
     let one = interp
-        .call("r10kc.host.Mk.one", &[Value::Int(0)])
+        .call("r10kc.host.Mk.one", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         .expect("building the one-element set");
-    let host = interp.call("r10kc.host.MySet.contains", &[one, Value::Str("aa".to_string())]);
+    let host = interp.call("r10kc.host.MySet.contains", &anthill_core::eval::HostValue::all(&[one, Value::Str("aa".to_string())])).map(|h| h.value);
+    // Proposal 074 §1.4: the host call is typed as a body's call is; the set comes back at
+    // `Mk.one`'s result type, which names no `O`, and the call is refused where it is made —
+    // nothing at it can supply the slot, and nothing chooses one from the strings.
     assert!(
-        matches!(&host, Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. })
-            if name == "anthill.prelude.WeakOrd.compare"),
+        matches!(&host, Err(anthill_core::eval::EvalError::HostCallRefused { detail, .. })
+            if detail.contains("NOTHING HERE CAN SUPPLY IT")),
         "the host passes no `O`, and nothing chooses one from the strings: {host:?}",
     );
 }

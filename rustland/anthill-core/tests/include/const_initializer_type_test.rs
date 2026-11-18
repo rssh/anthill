@@ -67,7 +67,7 @@ fn a_const_of_its_declared_type_is_its_value() {
         "  const A: Int64 = 1\n  const B: Int64 = A + 1\n  const NAMES: List[T = String] = [\"a\", \"b\"]\n  \
          operation go() -> Int64 = B + List.length(NAMES)",
     ));
-    assert!(matches!(interp.call("test.citfence.go", &[]), Ok(Value::Int(4))));
+    assert!(matches!(interp.call("test.citfence.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(4))));
 }
 
 /// A slot the declared type leaves out is the initializer's to fill: `const things: List`

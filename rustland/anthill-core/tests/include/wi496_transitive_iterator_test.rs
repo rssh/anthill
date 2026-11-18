@@ -60,9 +60,9 @@ fn transitive_iterator_typechecks() {
 #[test]
 fn transitive_iterator_evaluates() {
     let mut interp = crate::common::interp_for(SRC);
-    let xs = interp.call("wi496.transitive.mk", &[]).expect("build list");
+    let xs = interp.call("wi496.transitive.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("build list");
     let got = interp
-        .call("wi496.transitive.walk", &[xs])
+        .call("wi496.transitive.walk", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call walk: {e:?}"));
     assert_eq!(
         got.literal_int64(interp.kb()),

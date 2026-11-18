@@ -119,7 +119,7 @@ end
 /// "loads clean" half of each pin needs no separate load.
 fn eval_fresh(src: &str, entry: &str, n: i64) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(n)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
 }
 
 /// The WI-325 ladder's suggestion for this spec — asserted by the three pins
@@ -153,7 +153,7 @@ fn positive_control_load_error_is_reported() {
 #[test]
 fn positive_control_eval_error_is_reported() {
     let mut interp = crate::common::interp_for("");
-    let got = interp.call("wi817.no_such.op", &[Value::Int(0)]);
+    let got = interp.call("wi817.no_such.op", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(got.is_err(), "a bogus op name must Err; got {got:?}");
 }
 
@@ -239,7 +239,7 @@ fn op_param_control_and_witness_recurse_identically() {
         // ever occurs), so the poisoning footgun does not apply.
         let mut interp = crate::common::interp_for(src);
         for (n, correct) in [(0, 1), (1, 12), (2, 122)] {
-            let got = interp.call(&entry, &[Value::Int(n)]);
+            let got = interp.call(&entry, &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value);
             assert!(
                 matches!(got, Ok(Value::Int(v)) if v == correct),
                 "{label} drive({n}): expected the depth-coded Ok(Int({correct})) \
@@ -364,7 +364,7 @@ fn op_scoped_recursion_correct_control_and_lambda_identical() {
         // two of the three stdlib loads are saved.
         let mut interp = crate::common::interp_for(src);
         for (n, correct) in [(0, 1), (1, 12), (2, 122)] {
-            let got = interp.call(&entry, &[Value::Int(n)]);
+            let got = interp.call(&entry, &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value);
             assert!(
                 matches!(got, Ok(Value::Int(v)) if v == correct),
                 "{label} drive({n}): expected the depth-coded Ok(Int({correct})) \
@@ -466,7 +466,7 @@ fn sort_level_recursion_correct_control_and_lambda_identical() {
         // two of the three stdlib loads are saved.
         let mut interp = crate::common::interp_for(src);
         for (n, correct) in [(0, 1), (1, 12), (2, 122)] {
-            let got = interp.call(&entry, &[Value::Int(n)]);
+            let got = interp.call(&entry, &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value);
             assert!(
                 matches!(got, Ok(Value::Int(v)) if v == correct),
                 "{label} drive({n}): expected the depth-coded Ok(Int({correct})) \
@@ -511,7 +511,7 @@ fn sort_param_applier_witness_matches_control() {
     );
     let mut interp = crate::common::interp_for(&witness);
     for (n, correct) in [(0, 1), (1, 12), (2, 122)] {
-        let got = interp.call("wi817.v11.Driver.drive", &[Value::Int(n)]);
+        let got = interp.call("wi817.v11.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value);
         assert!(
             matches!(got, Ok(Value::Int(v)) if v == correct),
             "sort-param applier drive({n}): expected the depth-coded \

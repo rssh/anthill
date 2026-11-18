@@ -97,7 +97,7 @@ fn decided_in_rule(kb: &KnowledgeBase, qn: &str, spec_op: &str) -> Vec<Option<St
 
 /// The `Int64` the nullary operation `op` answers.
 fn int(interp: &mut Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{op}`: expected an Int64, got {other:?}"),
     }

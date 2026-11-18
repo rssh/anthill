@@ -16,7 +16,7 @@ use anthill_core::eval::{Interpreter, Value};
 
 fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
     match interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         Value::Int(i) => i,

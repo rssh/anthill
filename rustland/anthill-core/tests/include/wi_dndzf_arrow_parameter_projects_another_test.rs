@@ -216,7 +216,7 @@ fn sum_with_reads_its_callbacks_projection_at_the_instance_it_hands() {
     assert_eq!(runs("sum_with", decls), Ok(5));
     let mut interp = interp_for(&program("sum_with_float", decls));
     let v: Value = interp
-        .call("wi_dndzf3.sum_with_float.floats", &[])
+        .call("wi_dndzf3.sum_with_float.floats", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("floats: {e:?}"));
     assert_eq!(show_value(interp.kb(), &v), "4.0");
 }

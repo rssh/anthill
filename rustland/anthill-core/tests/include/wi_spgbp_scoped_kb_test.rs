@@ -28,7 +28,7 @@ fn call_loaded(interp: &mut anthill_core::eval::Interpreter, sources: &[&str]) -
         .build_list_value(elements, &[])
         .expect("build List[String]");
     interp
-        .call("anthill.reflect.KB.loaded", &[list])
+        .call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[list])).map(|h| h.value)
         .expect("KB.loaded")
 }
 
@@ -109,7 +109,8 @@ fn spgbp_a_lazy_stream_keeps_its_layer_alive() {
     };
 
     let stream = interp
-        .call("anthill.reflect.KB.execute", &[layer.clone(), query])
+        .call("anthill.reflect.KB.execute", &anthill_core::eval::HostValue::all(&[layer.clone(), query]))
+        .map(|h| interp.carried(h.value))
         .expect("KB.execute");
     let handle = match stream {
         Value::Stream(h) => h,
@@ -175,7 +176,7 @@ end
         .expect("build List[String]");
 
     let err = interp
-        .call("anthill.reflect.KB.loaded", &[list])
+        .call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[list])).map(|h| h.value)
         .expect_err("a source naming an undeclared sort must not load");
     assert!(
         matches!(err, anthill_core::eval::EvalError::Raised { .. }),
@@ -233,7 +234,7 @@ fn spgbp_a_failed_load_is_catchable_by_an_error_handler() {
     let list = interp
         .build_list_value(vec![Value::Str("namespace ( ) ] not anthill".to_string())], &[])
         .expect("build List[String]");
-    let _ = interp.call("anthill.reflect.KB.loaded", &[list]);
+    let _ = interp.call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[list])).map(|h| h.value);
 
     let payloads = seen.borrow();
     assert_eq!(
@@ -261,7 +262,7 @@ fn spgbp_a_source_that_does_not_parse_raises() {
         .build_list_value(vec![Value::Str("namespace ( ) ] not anthill".to_string())], &[])
         .expect("build List[String]");
     let err = interp
-        .call("anthill.reflect.KB.loaded", &[list])
+        .call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[list])).map(|h| h.value)
         .expect_err("unparseable source must be refused");
     assert!(
         matches!(err, anthill_core::eval::EvalError::Raised { .. }),
@@ -288,7 +289,7 @@ end
 "#,
     );
     let ambient = interp
-        .call("anthill.reflect.KB.kb", &[])
+        .call("anthill.reflect.KB.kb", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("kb() is the ambient sentinel");
 
     let gadget = interp
@@ -320,7 +321,8 @@ end
     };
 
     let stream = interp
-        .call("anthill.reflect.KB.execute", &[ambient, query])
+        .call("anthill.reflect.KB.execute", &anthill_core::eval::HostValue::all(&[ambient, query]))
+        .map(|h| interp.carried(h.value))
         .expect("KB.execute over the ambient KB");
     let handle = match stream {
         Value::Stream(h) => h,

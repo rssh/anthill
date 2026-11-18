@@ -89,7 +89,7 @@ fn drive(src: &str) -> Value {
         panic!("expected a clean load; got:\n  {}", errs.join("\n  "));
     }
     let mut interp = interp_for(src);
-    interp.call("test.wi1130.drive", &[]).expect("drive() runs")
+    interp.call("test.wi1130.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("drive() runs")
 }
 
 /// `drive()`'s value as an `i64`. `Value` has no `PartialEq`, so the variant is matched

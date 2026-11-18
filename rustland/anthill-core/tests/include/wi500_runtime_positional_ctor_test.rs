@@ -124,7 +124,7 @@ fn persisted_positional_entity_matches_named_pattern() {
 fn op_body_positional_ctor_persisted_matches() {
     let kb = crate::common::load_kb_with(SRC);
     let mut interp = Interpreter::new(kb);
-    let v = interp.call("test.wi500.mk", &[]).expect("call mk");
+    let v = interp.call("test.wi500.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("call mk");
     let t = interp
         .kb_mut()
         .alloc_from_value(&v)

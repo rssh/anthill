@@ -95,7 +95,7 @@ fn pinned(member: &str) -> Vec<Option<String>> {
 }
 
 fn call_bool(interp: &mut Interpreter, op: &str, args: &[Value]) -> bool {
-    match interp.call(op, args) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(args)).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("`{op}`: expected a Bool, got {other:?}"),
     }
@@ -265,7 +265,7 @@ end
     );
     assert!(call_bool(&mut interp, &format!("{NS}.bx.same"), &[]));
     assert!(!call_bool(&mut interp, &format!("{NS}.bx.apart"), &[]));
-    let one = interp.call(&format!("{NS}.bx.one"), &[]);
+    let one = interp.call(&format!("{NS}.bx.one"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     let one = one.unwrap_or_else(|e| panic!("cell(1): {e:?}"));
     assert!(call_bool(&mut interp, EQ, &[one.clone(), one]));
 }

@@ -234,14 +234,14 @@ fn existential_dict_flows_out_at_eval() {
         "namespace test.wi402x.eval\n{FACTORY}\n  operation openStore(persistent: Bool) -> C ensures KVStore[C, K = String, V = String] =\n    if persistent then diskStore(\"/d\") else memStore\n  operation clientDisk() -> String = openStore(true).describe()\n  operation clientMem() -> String = openStore(false).describe()\nend\n"
     );
     let mut interp = crate::common::interp_for(&src);
-    match interp.call("test.wi402x.eval.clientDisk", &[]) {
+    match interp.call("test.wi402x.eval.clientDisk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Str(s)) => assert_eq!(
             s, "disk",
             "openStore(true) returns diskStore; describe must dispatch on its runtime sort"
         ),
         other => panic!("clientDisk should eval to \"disk\" via dict-out dispatch; got {other:?}"),
     }
-    match interp.call("test.wi402x.eval.clientMem", &[]) {
+    match interp.call("test.wi402x.eval.clientMem", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Str(s)) => assert_eq!(
             s, "mem",
             "openStore(false) returns memStore; describe must dispatch on its runtime sort"

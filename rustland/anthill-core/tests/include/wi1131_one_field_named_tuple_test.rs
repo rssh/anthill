@@ -93,7 +93,7 @@ fn drive(decls: &str) -> Value {
     }
     let mut interp = interp_for(&source);
     interp
-        .call("test.wi1131.drive", &[])
+        .call("test.wi1131.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("drive() runs")
 }
 

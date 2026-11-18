@@ -212,7 +212,7 @@ fn a_field_typed_by_an_alias_takes_a_value_of_the_type() {
         "  sort Purse\n    entity purse(m: Money)\n  end\n  \
          operation go() -> Int64 = purse(m: 4).m + 1",
     ));
-    assert!(matches!(interp.call("test.dffence.go", &[]), Ok(Value::Int(5))));
+    assert!(matches!(interp.call("test.dffence.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(5))));
 }
 
 /// A mismatch at a field written through an alias leads with the alias, in a fact and at

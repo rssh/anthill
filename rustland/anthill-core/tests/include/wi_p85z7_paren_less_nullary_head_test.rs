@@ -317,7 +317,7 @@ end
             "the parenthesised law IS a redex, and `@[simp]` inlines it before dispatch",
         ),
     ] {
-        match interp.call(path, &[Value::Int(0)]) {
+        match interp.call(path, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) if n == want => {}
             other => panic!("{path} must answer {want}: {why}; got {other:?}"),
         }
@@ -383,7 +383,7 @@ fn a_bare_equation_subject_mints_exactly_like_its_parenthesised_twin() {
              rule {head} <=> 7 @[simp]\n  \
              operation drive(n: Int64) -> Int64 = tauFresh()\nend\n"
         ));
-        match interp.call(&format!("zzP85Z7.eqmint{label}.drive"), &[Value::Int(0)]) {
+        match interp.call(&format!("zzP85Z7.eqmint{label}.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(7)) => {}
             other => panic!(
                 "{label}: the op-body citation must inline the law and answer 7; got {other:?}"

@@ -147,7 +147,7 @@ fn max_depth_of(interp: &Interpreter, payload: &Value) -> i64 {
 #[test]
 fn execute_over_a_cut_search_raises_search_truncated() {
     let mut interp = interp_for(SRC);
-    let result = interp.call("test.p9qbf.executeDeep", &[]);
+    let result = interp.call("test.p9qbf.executeDeep", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     let (ctor, payload) = raised(&interp, result, "executeDeep");
     assert_eq!(ctor, SEARCH_TRUNCATED);
     assert_eq!(
@@ -164,7 +164,7 @@ fn execute_over_a_cut_search_raises_search_truncated() {
 #[test]
 fn a_program_catches_and_matches_search_truncated() {
     let mut interp = interp_for(SRC);
-    match interp.call("test.p9qbf.caughtDepth", &[]) {
+    match interp.call("test.p9qbf.caughtDepth", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(d)) => assert_eq!(d, ResolveConfig::default().max_depth as i64),
         other => panic!("the boundary catches `search_truncated(d)`; got {other:?}"),
     }
@@ -179,7 +179,7 @@ fn a_program_catches_and_matches_search_truncated() {
 fn a_relation_over_a_cut_search_raises_search_truncated() {
     let mut interp = interp_for(SRC);
     for op in ["test.p9qbf.deepCount", "test.p9qbf.deepIsEmpty"] {
-        let result = interp.call(op, &[]);
+        let result = interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
         let (ctor, _) = raised(&interp, result, op);
         assert_eq!(ctor, SEARCH_TRUNCATED, "{op}");
     }
@@ -194,7 +194,7 @@ fn a_relation_over_a_cut_search_raises_search_truncated() {
 #[test]
 fn rows_before_the_cut_come_out_first() {
     let mut interp = interp_for(SRC);
-    let handle = match interp.call("test.p9qbf.some1Stream", &[]) {
+    let handle = match interp.call("test.p9qbf.some1Stream", &[]).map(|h| interp.carried(h.value)) {
         Ok(Value::Stream(h)) => h,
         other => panic!("`execute` returns a stream, got {other:?}"),
     };
@@ -230,11 +230,11 @@ fn rows_before_the_cut_come_out_first() {
 #[test]
 fn a_relation_hands_out_its_rows_before_the_cut() {
     let mut interp = interp_for(SRC);
-    match interp.call("test.p9qbf.some1Count", &[Value::Int(5)]) {
+    match interp.call("test.p9qbf.some1Count", &anthill_core::eval::HostValue::all(&[Value::Int(5)])).map(|h| h.value) {
         Ok(Value::Int(5)) => {}
         other => panic!("five rows are there before the cut; got {other:?}"),
     }
-    let result = interp.call("test.p9qbf.some1Count", &[Value::Int(1000)]);
+    let result = interp.call("test.p9qbf.some1Count", &anthill_core::eval::HostValue::all(&[Value::Int(1000)])).map(|h| h.value);
     let (ctor, _) = raised(&interp, result, "some1Count(1000)");
     assert_eq!(ctor, SEARCH_TRUNCATED);
 }
@@ -245,19 +245,19 @@ fn a_relation_hands_out_its_rows_before_the_cut() {
 #[test]
 fn a_search_that_ends_below_the_limit_ends_as_before() {
     let mut interp = interp_for(SRC);
-    match interp.call("test.p9qbf.executeReach", &[]) {
+    match interp.call("test.p9qbf.executeReach", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(0)) => {}
         other => panic!("`Reach(from: 3, ..)` has no answer, and the search is complete; got {other:?}"),
     }
-    match interp.call("test.p9qbf.reachCount", &[]) {
+    match interp.call("test.p9qbf.reachCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(3)) => {}
         other => panic!("`reach` holds (1,2), (2,3), (1,3); got {other:?}"),
     }
-    match interp.call("test.p9qbf.reachIsEmpty", &[]) {
+    match interp.call("test.p9qbf.reachIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(true)) => {}
         other => panic!("`reach(3, 1)` holds nothing; got {other:?}"),
     }
-    let handle = match interp.call("test.p9qbf.reachStream", &[]) {
+    let handle = match interp.call("test.p9qbf.reachStream", &[]).map(|h| interp.carried(h.value)) {
         Ok(Value::Stream(h)) => h,
         other => panic!("`execute` returns a stream, got {other:?}"),
     };

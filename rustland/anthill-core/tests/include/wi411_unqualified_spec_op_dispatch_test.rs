@@ -90,7 +90,7 @@ end
     let run = |interp: &mut Interpreter, op: &str| {
         expect_int(
             interp
-                .call(op, &[])
+                .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
                 .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
             interp.kb(),
         )

@@ -227,7 +227,7 @@ fn assert_answers(src: &str, ns: &str, rows: &[(&str, i64)]) {
     let wrong: Vec<String> = rows
         .iter()
         .filter_map(
-            |&(entry, want)| match interp.call(&format!("{ns}.Driver.{entry}"), &[]) {
+            |&(entry, want)| match interp.call(&format!("{ns}.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
                 Ok(Value::Int(n)) if n == want => None,
                 other => Some(format!("`{entry}`: expected {want}, got {other:?}")),
             },

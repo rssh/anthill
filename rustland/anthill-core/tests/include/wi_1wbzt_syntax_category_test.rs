@@ -58,7 +58,7 @@ end
 fn drive(src: &str, qn: &str) -> String {
     let mut interp = interp_for(src);
     let got = interp
-        .call(qn, &[])
+        .call(qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{qn} must evaluate: {e:?}"));
     format!("{got:?}")
 }
@@ -561,7 +561,7 @@ end
         );
     }
     let got = interp
-        .call("test.wbzt.diamond.drive", &[])
+        .call("test.wbzt.diamond.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("two routes to one declaration must still dispatch");
     assert_eq!(
         format!("{got:?}"),
@@ -720,7 +720,7 @@ end
         format!(
             "{:?}",
             interp
-                .call("test.wbzt.host.drive", &[])
+                .call("test.wbzt.host.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
                 .expect("the host `add` must be registered at the category's address")
         ),
         "Int(3)"

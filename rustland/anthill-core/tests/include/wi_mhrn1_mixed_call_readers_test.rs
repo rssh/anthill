@@ -321,7 +321,7 @@ fn a_query_s_mixed_call_reaches_the_supplied_member() {
 
 fn drive_bool(src: &str, entry: &str) -> bool {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
     }
@@ -329,7 +329,7 @@ fn drive_bool(src: &str, entry: &str) -> bool {
 
 fn drive_int(src: &str, entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }

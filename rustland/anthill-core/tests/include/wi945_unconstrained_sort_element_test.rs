@@ -189,7 +189,7 @@ fn drive_123(src: &str, ns: &str, want: (f64, f64, f64), why: &str) {
     let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
     let entry = format!("{ns}.Driver.drive");
     let out = interp
-        .call(&entry, &[a])
+        .call(&entry, &anthill_core::eval::HostValue::all(&[a])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{entry}: {why}; got {e}"));
     assert_eq!(components(interp.kb(), &out), want, "{entry}: {why}");
 }

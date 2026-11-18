@@ -244,7 +244,7 @@ fn x7nk_an_ordinary_member_call_on_a_relation_still_works() {
     r.isEmpty
 "#,
     ));
-    match interp.call("test.x7nk.empty", &[]) {
+    match interp.call("test.x7nk.empty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => assert!(!b, "person_row has two rows, so it is not empty"),
         other => panic!("expected a Bool, got {other:?}"),
     }
@@ -264,7 +264,7 @@ fn x7nk_a_member_inside_a_projection_is_still_a_tuple() {
     r.(isEmpty)
 "#,
     ));
-    match interp.call("test.x7nk.emptyCol", &[]) {
+    match interp.call("test.x7nk.emptyCol", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(v @ Value::Tuple { .. }) => match crate::common::sole_column(&v) {
             Value::Bool(b) => assert!(!b, "person_row has two rows, so it is not empty"),
             other => panic!("expected a Bool component, got {other:?}"),
@@ -289,11 +289,11 @@ fn x7nk_a_projection_that_does_name_columns_still_projects() {
 "#,
     ));
     let one = interp
-        .call("test.x7nk.one", &[])
+        .call("test.x7nk.one", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("one: {e:?}"));
     assert_eq!(crate::common::list_column_strings(interp.kb(), &one), vec!["alice"]);
     let two = interp
-        .call("test.x7nk.two", &[])
+        .call("test.x7nk.two", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("two: {e:?}"));
     // The ROW SHAPE, not just the count: a two-column projection's rows are TWO-component
     // named tuples of a `String` and an `Int64`. A tuple OF two single-column relations —

@@ -181,7 +181,7 @@ fn a_bare_name_in_a_data_context_is_the_operation_in_both_orders() {
             })
             .collect()
     };
-    let applied = |src: &str| interp_for(src).call("test.x7exey.viaBare", &[]);
+    let applied = |src: &str| interp_for(src).call("test.x7exey.viaBare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     for (order, decls) in [
         ("the spec first", format!("{SPEC}{PREDICATE}")),
         ("the predicate first", format!("{PREDICATE}{SPEC}")),
@@ -304,7 +304,7 @@ fn a_bracket_binding_is_the_type_in_every_body_in_both_orders() {
         assert_eq!(query_unary(&mut kb, "test.x7exey.viaOther").len(), 0, "{order}: viaOther");
         let mut interp = interp_for(&src);
         let positive = interp.kb().try_resolve_symbol("test.x7exey.Positive").expect("resolves");
-        let Ok(the_box) = interp.call("test.x7exey.theBox", &[]) else {
+        let Ok(the_box) = interp.call("test.x7exey.theBox", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) else {
             panic!("{order}: `theBox` returns the type");
         };
         let Some((_, named)) = type_application(interp.kb(), &the_box) else {

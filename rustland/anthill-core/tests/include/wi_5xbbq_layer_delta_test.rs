@@ -54,14 +54,14 @@ fn call_loaded(interp: &mut anthill_core::eval::Interpreter, src: &str) -> Value
         .build_list_value(vec![Value::Str(src.to_string())], &[])
         .expect("build List[String]");
     interp
-        .call("anthill.reflect.KB.loaded", &[list])
+        .call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[list])).map(|h| h.value)
         .expect("KB.loaded")
 }
 
 /// `(qualified name, minted, declared)` for every row `KB.layer_symbols` answers.
 fn symbols(interp: &mut anthill_core::eval::Interpreter, layer: &Value) -> Vec<(String, bool, bool)> {
     let rows = interp
-        .call("anthill.reflect.KB.layer_symbols", &[layer.clone()])
+        .call("anthill.reflect.KB.layer_symbols", &anthill_core::eval::HostValue::all(&[layer.clone()])).map(|h| h.value)
         .expect("layer_symbols");
     list_items(interp, &rows)
         .into_iter()
@@ -88,7 +88,7 @@ fn clauses(
     layer: &Value,
 ) -> Vec<(Option<String>, bool)> {
     let rows = interp
-        .call("anthill.reflect.KB.layer_clauses", &[layer.clone()])
+        .call("anthill.reflect.KB.layer_clauses", &anthill_core::eval::HostValue::all(&[layer.clone()])).map(|h| h.value)
         .expect("layer_clauses");
     list_items(interp, &rows)
         .into_iter()
@@ -295,9 +295,9 @@ end
 fn xbbq_a_delta_is_refused_for_the_ambient_kb_and_for_a_shadowed_layer() {
     let mut interp = common::interp_for(BASE);
 
-    let ambient = interp.call("anthill.reflect.KB.kb", &[]).expect("kb()");
+    let ambient = interp.call("anthill.reflect.KB.kb", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("kb()");
     let e = interp
-        .call("anthill.reflect.KB.layer_symbols", &[ambient])
+        .call("anthill.reflect.KB.layer_symbols", &anthill_core::eval::HostValue::all(&[ambient])).map(|h| h.value)
         .expect_err("the ambient KB has no delta");
     assert!(
         format!("{e:?}").contains("names no layer"),
@@ -312,7 +312,7 @@ fn xbbq_a_delta_is_refused_for_the_ambient_kb_and_for_a_shadowed_layer() {
         "namespace xbbq.inner\n  sort Extra\n    entity extra\n  end\nend\n",
     );
     let e = interp
-        .call("anthill.reflect.KB.layer_clauses", &[outer])
+        .call("anthill.reflect.KB.layer_clauses", &anthill_core::eval::HostValue::all(&[outer])).map(|h| h.value)
         .expect_err("an outer layer's delta must be refused while an inner one is applied");
     assert!(
         format!("{e:?}").contains("not the innermost"),

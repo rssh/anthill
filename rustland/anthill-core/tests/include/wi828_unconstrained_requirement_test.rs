@@ -229,7 +229,7 @@ fn constrained_twin_forwards_and_evals() {
   end"#,
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi828.ok.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi828.ok.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(11))),
         "expected Ok(Int(11)); got {got:?}"
@@ -254,7 +254,7 @@ fn concrete_twin_constructs_and_evals() {
   end"#,
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi828.conc.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi828.conc.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(1))),
         "expected Ok(Int(1)); got {got:?}"

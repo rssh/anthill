@@ -271,7 +271,7 @@ fn run_inner(args: &RunArgs) -> Result<i32, i32> {
         runner::EXIT_RUNTIME
     })?;
 
-    let result = interp.call(&main_qname, &[args_value]);
+    let result = interp.call(&main_qname, &anthill_core::eval::HostValue::all(&[args_value])).map(|h| h.value);
     Ok(runner::exit_code_from_main(interp.kb(), result))
 }
 

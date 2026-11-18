@@ -131,7 +131,7 @@ fn load_clean(src: &str, what: &str) {
 fn drive(src: &str, qn: &str) -> String {
     let mut interp = interp_for(src);
     let got = interp
-        .call(qn, &[])
+        .call(qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{qn} must evaluate: {e:?}"));
     format!("{got:?}")
 }

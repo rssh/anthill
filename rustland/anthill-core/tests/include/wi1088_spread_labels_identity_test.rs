@@ -120,7 +120,7 @@ use anthill_core::kb::term_view::{goal_fingerprint, views_structurally_equal};
 fn drive_int(src: &str, op: &str) -> i64 {
     // A FRESH interpreter per call — a reused one poisons later calls after a trap.
     match crate::common::interp_for(src)
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,
@@ -437,14 +437,14 @@ fn the_spread_labels_accessor_answers_for_both_mints() {
     let call = |i: &mut Interpreter, labels: Option<Vec<Symbol>>| {
         i.call(
             "anthill.realization.runtime.OpRef.spreadLabels",
-            &[Value::OpRef {
+            &anthill_core::eval::HostValue::all(&[Value::OpRef {
                 op_reqs: None,
                 op,
                 dict: None,
                 named: None,
                 spread_labels: labels.map(|l| Rc::from(l.as_slice())),
-            }],
-        )
+            }]),
+        ).map(|h| h.value)
         .expect("OpRef.spreadLabels")
     };
 

@@ -41,6 +41,14 @@
 //! The `Error.reify` route a rule body's call reaches through the bridge is
 //! `wi_9wvt7_reify_rule_body_test`'s, now through the dispatch's own boundary step.
 //!
+//! Proposal 074 §1.4 (WI-20261113-S4D63): a host call of a spec's own operation goes through
+//! the spec's dictionary at its receiver's type (`Desc[T = Wrap[A = Leaf]]`, `WrapDesc`'s over
+//! `Leaf`'s), which names the member, and nothing in the host call's dispatch is chosen by a
+//! value. With that threading switched off and the host's dispatch by value off, both `Desc`
+//! rows fail (`OperationBodyMissing` for the body-less one, refused at `x` for the other), and
+//! so do guardians' three host-driven rounds (`OperationBodyMissing { name:
+//! "guardians.Llm.complete" }`); measured 2026-11-18.
+//!
 //! PASS EITHER WAY, BY DESIGN: each row's operation-body twin, the answer the host call is held
 //! to; and the member called straight from the host with no dictionary, refused on both trees.
 
@@ -71,10 +79,10 @@ fn a_host_call_of_a_body_less_spec_operation_reaches_a_conditional_member() {
     let ns = "zpetz.bodyless";
     let mut interp = crate::common::interp_for(&desc_program(ns));
     for (mk, body, want) in [("mk", "viaBody", 12), ("mk2", "viaBody2", 122)] {
-        let w = interp.call(&format!("{ns}.{mk}"), &[]).expect("the value is made");
-        let host = interp.call(&format!("{ns}.Desc.describe"), &[w.clone()]);
+        let w = interp.call(&format!("{ns}.{mk}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the value is made");
+        let host = interp.call(&format!("{ns}.Desc.describe"), &anthill_core::eval::HostValue::all(&[w.clone()])).map(|h| h.value);
         let passed = interp.call_with_requirements(&format!("{ns}.Desc.describe"), &[w.clone()], Default::default());
-        let in_body = interp.call(&format!("{ns}.{body}"), &[w]);
+        let in_body = interp.call(&format!("{ns}.{body}"), &anthill_core::eval::HostValue::all(&[w])).map(|h| h.value);
         assert!(matches!(host, Ok(Value::Int(n)) if n == want), "host call at `{mk}`: {host:?}");
         assert!(matches!(passed, Ok(Value::Int(n)) if n == want), "`call_with_requirements` at `{mk}`: {passed:?}");
         assert!(matches!(in_body, Ok(Value::Int(n)) if n == want), "body at `{mk}`: {in_body:?}");
@@ -85,8 +93,8 @@ fn a_host_call_of_a_body_less_spec_operation_reaches_a_conditional_member() {
     // passes what its callee reads or is refused (proposal 073 §6.1, WI-20261105-CBRD2). It
     // was handed nothing and raised `UnpinnedRequirement` while a call in a body still chose
     // from values.
-    let w = interp.call(&format!("{ns}.mk"), &[]).expect("the value is made");
-    let member = interp.call(&format!("{ns}.WrapDesc.describe"), &[w]);
+    let w = interp.call(&format!("{ns}.mk"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the value is made");
+    let member = interp.call(&format!("{ns}.WrapDesc.describe"), &anthill_core::eval::HostValue::all(&[w])).map(|h| h.value);
     assert!(matches!(member, Ok(Value::Int(12))), "the member at the value: {member:?}");
 }
 
@@ -128,10 +136,10 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     for (mk, body, want) in [("mkLeaf", "leafBody", 1), ("mkWrap", "wrapBody", 12)] {
-        let v = interp.call(&format!("zpetz.body.{mk}"), &[]).expect("the value is made");
-        let host = interp.call("zpetz.body.Desc.describe", &[v.clone()]);
+        let v = interp.call(&format!("zpetz.body.{mk}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the value is made");
+        let host = interp.call("zpetz.body.Desc.describe", &anthill_core::eval::HostValue::all(&[v.clone()])).map(|h| h.value);
         let passed = interp.call_with_requirements("zpetz.body.Desc.describe", &[v.clone()], Default::default());
-        let in_body = interp.call(&format!("zpetz.body.{body}"), &[v]);
+        let in_body = interp.call(&format!("zpetz.body.{body}"), &anthill_core::eval::HostValue::all(&[v])).map(|h| h.value);
         assert!(matches!(host, Ok(Value::Int(n)) if n == want), "host call at `{mk}`: {host:?}");
         assert!(matches!(passed, Ok(Value::Int(n)) if n == want), "`call_with_requirements` at `{mk}`: {passed:?}");
         assert!(matches!(in_body, Ok(Value::Int(n)) if n == want), "body at `{mk}`: {in_body:?}");
@@ -159,11 +167,11 @@ fn a_host_call_of_a_lawful_eq_is_equal_by_the_law() {
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    let one = interp.call("zpetz.refl.one", &[]).expect("one");
-    let two = interp.call("zpetz.refl.two", &[]).expect("two");
+    let one = interp.call("zpetz.refl.one", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("one");
+    let two = interp.call("zpetz.refl.two", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("two");
     for (a, b, want) in [(&one, &one, true), (&one, &two, false)] {
-        let host = interp.call("zpetz.refl.Own.eq", &[a.clone(), b.clone()]);
-        let in_body = interp.call("zpetz.refl.viaBody", &[a.clone(), b.clone()]);
+        let host = interp.call("zpetz.refl.Own.eq", &anthill_core::eval::HostValue::all(&[a.clone(), b.clone()])).map(|h| h.value);
+        let in_body = interp.call("zpetz.refl.viaBody", &anthill_core::eval::HostValue::all(&[a.clone(), b.clone()])).map(|h| h.value);
         assert!(matches!(host, Ok(Value::Bool(x)) if x == want), "host call: {host:?}");
         assert!(matches!(in_body, Ok(Value::Bool(x)) if x == want), "body: {in_body:?}");
     }

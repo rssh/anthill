@@ -59,9 +59,9 @@ fn a_caller_requirement_supplies_the_defaults_instance() {
 #[test]
 fn a_host_entry_supplies_the_defaults_instance() {
     let mut interp = crate::common::interp_for(&program("operation value() -> L = l(3)"));
-    let value = interp.call("defaultInstance.value", &[]).unwrap();
+    let value = interp.call("defaultInstance.value", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).unwrap();
     assert!(matches!(
-        interp.call("defaultInstance.Coll.viaHelper", &[value]),
+        interp.call("defaultInstance.Coll.viaHelper", &anthill_core::eval::HostValue::all(&[value])).map(|h| h.value),
         Ok(anthill_core::eval::Value::Int(6))
     ));
 }

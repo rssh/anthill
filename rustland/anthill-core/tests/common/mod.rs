@@ -1252,7 +1252,7 @@ pub fn run_int64(source: &str, entry: &str) -> Result<i64, String> {
     let kb = try_load_kb_with(source).map_err(|errs| errs.join("\n"))?;
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(eval::Value::Int(v)) => Ok(v),
         other => Err(format!("`{entry}` did not run to an Int64: {other:?}")),
     }
@@ -1261,6 +1261,87 @@ pub fn run_int64(source: &str, entry: &str) -> Result<i64, String> {
 /// Load stdlib + user source, construct an `Interpreter`, and register the
 /// standard eval builtins. The one-liner every eval_mN_test file needs.
 #[allow(dead_code)]
+/// A store description of one of the standard library's file backends (`FileStore`,
+/// `IndexedFileStore`) at `root` with a nullary `convention` (`flat`, `by_domain`), as
+/// `FileStore(root: …, convention: flat())` builds it in anthill code — the value a host call
+/// of a `Store` operation types at that backend, which anthill-stl's binding provides `Store`
+/// for.
+#[allow(dead_code)]
+pub fn file_store_value(kb: &KnowledgeBase, backend: &str, root: &str, convention: &str) -> eval::Value {
+    let functor = kb
+        .try_resolve_symbol(&format!("anthill.persistence.filesystem.{backend}"))
+        .unwrap_or_else(|| panic!("`{backend}` is a filesystem backend"));
+    let flat = kb
+        .try_resolve_symbol(&format!("anthill.persistence.filesystem.FileConvention.{convention}"))
+        .unwrap_or_else(|| panic!("`FileConvention.{convention}`"));
+    let field = |name: &str| kb.lookup_symbol(name).unwrap_or_else(|| panic!("the field `{name}`"));
+    eval::Value::Entity {
+        functor,
+        pos: Vec::new().into(),
+        named: vec![
+            (field("root"), eval::Value::Str(root.to_string())),
+            (
+                field("convention"),
+                eval::Value::Entity {
+                    functor: flat,
+                    pos: Vec::new().into(),
+                    named: Vec::new().into(),
+                },
+            ),
+        ]
+        .into(),
+    }
+}
+
+/// The type `List[T = <elem>]`, `elem` a sort's qualified name — what a host hands a list over
+/// at where its elements' own types are not the list's (literals in a `List[T = Term]`).
+#[allow(dead_code)]
+pub fn list_type(kb: &mut KnowledgeBase, elem: &str) -> eval::Value {
+    let list = kb.try_resolve_symbol("anthill.prelude.List").expect("`List`");
+    let t = kb.try_resolve_symbol("anthill.prelude.List.T").expect("`List.T`");
+    let elem = kb.try_resolve_symbol(elem).unwrap_or_else(|| panic!("the sort `{elem}`"));
+    let (base, elem) = (kb.make_sort_ref(list), kb.make_sort_ref(elem));
+    eval::Value::term(kb.make_parameterized_type(base, &[(t, elem)]))
+}
+
+/// The type the sort `qn` names.
+#[allow(dead_code)]
+pub fn sort_type(kb: &mut KnowledgeBase, qn: &str) -> eval::Value {
+    let sort = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("the sort `{qn}`"));
+    eval::Value::term(kb.make_sort_ref(sort))
+}
+
+/// The ambient KB value — what `kb()` answers — where a call takes a `KB`.
+#[allow(dead_code)]
+pub fn ambient_kb(kb: &KnowledgeBase) -> eval::Value {
+    eval::Value::Entity {
+        functor: kb.try_resolve_symbol("anthill.reflect.KB.kb").expect("`KB.kb`"),
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    }
+}
+
+/// `nil`, the empty list.
+#[allow(dead_code)]
+pub fn nil_value(kb: &KnowledgeBase) -> eval::Value {
+    eval::Value::Entity {
+        functor: kb.try_resolve_symbol("anthill.prelude.List.nil").expect("`List.nil`"),
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    }
+}
+
+/// The `Meta` a fact persisted with no entries is given — `Meta(entries: as_term(nil()))`, as
+/// anthill-todo's store writes it.
+#[allow(dead_code)]
+pub fn no_meta(kb: &KnowledgeBase) -> eval::Value {
+    eval::Value::Entity {
+        functor: kb.try_resolve_symbol("anthill.prelude.Meta.Meta").expect("`Meta`"),
+        pos: Vec::new().into(),
+        named: vec![(kb.lookup_symbol("entries").expect("the field `entries`"), nil_value(kb))].into(),
+    }
+}
+
 pub fn interp_for(source: &str) -> Interpreter {
     let kb = load_kb_with(source);
     let mut interp = Interpreter::new(kb);
@@ -1276,7 +1357,7 @@ pub fn unrunnable_at_call(
     entry: &str,
     args: &[eval::Value],
 ) -> eval::UnrunnableHostBinding {
-    match interp.call(entry, args) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(args)).map(|h| h.value) {
         Err(eval::EvalError::UnrunnableHostBinding(binding)) => binding,
         other => panic!("`{entry}` must raise UnrunnableHostBinding at its call; got {other:?}"),
     }

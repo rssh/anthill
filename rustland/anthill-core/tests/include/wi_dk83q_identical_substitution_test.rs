@@ -279,7 +279,7 @@ end
         let mut interp = crate::common::interp_for(&src);
         for op in ["direct", "viaGeneric"] {
             let v = interp
-                .call(&format!("test.dkbind.{op}"), &[])
+                .call(&format!("test.dkbind.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
                 .unwrap_or_else(|e| panic!("{written}, {op}: {e}"));
             assert_eq!(
                 crate::common::scalar_str(interp.kb(), &v).as_deref(),
@@ -348,7 +348,7 @@ fn a_host_row_written_out_is_the_bare_row() {
          Error.reify[T1 = Boom](lambda () -> Host.go(boom(why: \"x\")))",
     );
     let mut interp = host_interp(&src);
-    match interp.call("test.dkh.passes", &[]) {
+    match interp.call("test.dkh.passes", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { .. }) => {}
         other => panic!("the raise passes the boundary at `Boom` and leaves `passes`, got {other:?}"),
     }
@@ -390,7 +390,7 @@ fn a_host_raise_at_a_type_parameter_is_threaded() {
     let mut interp = host_interp(&src);
     for (op, want) in [("nestedB", "outer"), ("nestedO", "inner")] {
         let v = interp
-            .call(&format!("test.dkh.{op}"), &[])
+            .call(&format!("test.dkh.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert_eq!(crate::common::scalar_str(interp.kb(), &v).as_deref(), Some(want), "{op}");
     }
@@ -479,7 +479,7 @@ namespace test.dkhkb
 end
 "#;
     let mut interp = crate::common::interp_for(beneath);
-    let v = interp.call("test.dkhkb.go", &[]).expect("`go` runs");
+    let v = interp.call("test.dkhkb.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("`go` runs");
     assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(7));
 }
 

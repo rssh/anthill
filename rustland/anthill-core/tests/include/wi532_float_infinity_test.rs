@@ -29,7 +29,7 @@ namespace test.wi532.pos
 end
 "#,
     );
-    match i.call("test.wi532.pos.go", &[]) {
+    match i.call("test.wi532.pos.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Float(f)) => assert!(f.is_infinite() && f > 0.0, "expected +∞, got {f}"),
         other => panic!("expected Float(+∞) from the infinity const, got {other:?}"),
     }
@@ -50,11 +50,11 @@ namespace test.wi532.siblings
 end
 "#,
     );
-    match i.call("test.wi532.siblings.neginf", &[]) {
+    match i.call("test.wi532.siblings.neginf", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Float(f)) => assert!(f.is_infinite() && f < 0.0, "expected -∞, got {f}"),
         other => panic!("expected Float(-∞), got {other:?}"),
     }
-    match i.call("test.wi532.siblings.bad", &[]) {
+    match i.call("test.wi532.siblings.bad", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Float(f)) => assert!(f.is_nan(), "expected NaN, got {f}"),
         other => panic!("expected Float(NaN), got {other:?}"),
     }
@@ -75,21 +75,21 @@ end
 "#,
     );
     assert_eq!(
-        i.call("test.wi532.classify.inf_is_infinite", &[])
+        i.call("test.wi532.classify.inf_is_infinite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .expect("call")
             .literal_bool(i.kb()),
         Some(true),
         "isInfinite(infinity) must be true",
     );
     assert_eq!(
-        i.call("test.wi532.classify.inf_is_not_finite", &[])
+        i.call("test.wi532.classify.inf_is_not_finite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .expect("call")
             .literal_bool(i.kb()),
         Some(false),
         "isFinite(infinity) must be false",
     );
     assert_eq!(
-        i.call("test.wi532.classify.nan_is_nan", &[])
+        i.call("test.wi532.classify.nan_is_nan", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .expect("call")
             .literal_bool(i.kb()),
         Some(true),
@@ -112,7 +112,7 @@ namespace test.wi532.driver
 end
 "#,
     );
-    match i.call("test.wi532.driver.go", &[]) {
+    match i.call("test.wi532.driver.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Float(f)) => assert!(f.is_infinite() && f > 0.0, "expected +∞, got {f}"),
         other => panic!("expected a const-of-a-const to fold to +∞, got {other:?}"),
     }

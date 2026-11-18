@@ -77,7 +77,7 @@ fn macro_rewrites_consumer_body_at_compile_time() {
 fn macro_output_re_types_and_evaluates() {
     let mut interp = crate::common::interp_for(SRC);
     let got = interp
-        .call("test.wi722.consumer", &[])
+        .call("test.wi722.consumer", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("consumer evaluates");
     match got {
         Value::Int(n) => assert_eq!(n, 105, "wrapped(5) = add(5, 100) = 105"),

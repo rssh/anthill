@@ -448,7 +448,7 @@ end
 
 /// Evaluate a nullary operation and render the type value it delivers.
 fn eval_type(interp: &mut anthill_core::eval::Interpreter, op: &str) -> String {
-    match interp.call(&format!("test.rs2g4e.{op}"), &[]) {
+    match interp.call(&format!("test.rs2g4e.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(ty) => TermPrinter::new(interp.kb()).print_value(&ty),
         Err(e) => panic!("{op}: {e:?}"),
     }
@@ -602,7 +602,7 @@ end
 "
     );
     let mut interp = interp_for(&written);
-    let got = match interp.call("test.rs2g4x.w_written", &[]) {
+    let got = match interp.call("test.rs2g4x.w_written", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(ty) => TermPrinter::new(interp.kb()).print_value(&ty),
         Err(e) => panic!("{e:?}"),
     };

@@ -146,7 +146,7 @@ fn kb_loaded_refuses_an_ill_typed_fact_over_a_base_entity() {
         let list = interp
             .build_list_value(vec![Value::Str(source.to_string())], &[])
             .expect("build List[String]");
-        interp.call("anthill.reflect.KB.loaded", &[list])
+        interp.call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[list])).map(|h| h.value)
     };
 
     let payload = match loaded(ILL) {

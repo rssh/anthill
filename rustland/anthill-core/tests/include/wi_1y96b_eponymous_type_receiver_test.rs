@@ -36,7 +36,7 @@ fn source(ns: &str, body: &str) -> String {
 
 fn int(ns: &str, body: &str) -> i64 {
     let mut interp = interp_for(&source(ns, body));
-    match interp.call(&format!("test.{ns}.go"), &[]) {
+    match interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{ns}: expected an Int64, got {other:?}"),
     }

@@ -108,7 +108,7 @@ fn threads_a_bare_type_variable_through_a_call() {
 end
 ";
     let mut interp = interp_for(src);
-    let got = interp.call("tv_bare.run", &[]).expect("run evaluates");
+    let got = interp.call("tv_bare.run", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("run evaluates");
     assert_eq!(int_of(&got), 7, "the value must thread through too");
 }
 
@@ -130,7 +130,7 @@ end
         box_sort("tv_nested")
     );
     let mut interp = interp_for(&src);
-    let got = interp.call("tv_nested.run", &[]).expect("run evaluates");
+    let got = interp.call("tv_nested.run", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("run evaluates");
     assert_eq!(int_of(&got), 3);
 }
 

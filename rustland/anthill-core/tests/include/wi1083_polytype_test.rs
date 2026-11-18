@@ -114,7 +114,7 @@ fn int_result(src: &str, op: &str) -> i64 {
     // Fresh interpreter per call — a reused one poisons later calls after a trap.
     let mut interp = crate::common::interp_for(src);
     match interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,
@@ -149,7 +149,7 @@ fn a_requires_carrying_member_runs_as_a_function_value() {
         \x20 operation use_it() -> String = callit(tagged)\n\
         end\n";
     let mut interp = crate::common::interp_for(src);
-    match interp.call("test.wi1083.req.use_it", &[]) {
+    match interp.call("test.wi1083.req.use_it", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Str(s)) => assert_eq!(
             &*s, "hi",
             "the eta'd member must RUN and return its argument",
@@ -192,7 +192,7 @@ fn a_member_naming_its_own_sort_still_resolves_its_dictionary() {
         \x20 operation use_it() -> String = callit(relabel, Holder(seed: 1))\n\
         end\n";
     let mut interp = crate::common::interp_for(src);
-    match interp.call("test.wi1083.self.use_it", &[]) {
+    match interp.call("test.wi1083.self.use_it", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Str(s)) => assert_eq!(&*s, "ok"),
         Ok(other) => panic!("expected Str(\"ok\"), got {other:?}"),
         Err(e) => panic!("the eta'd member must run with its dictionary attached: {e:?}"),

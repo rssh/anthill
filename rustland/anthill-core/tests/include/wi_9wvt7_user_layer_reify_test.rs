@@ -120,7 +120,7 @@ fn the_bracket_reaches_the_providers_reify() {
         PROVIDER,
         "Err2.reify[T = Boom](lambda () -> mayFail(n))",
     ));
-    match interp.call("test.userreify.c", &[Value::Int(1)]) {
+    match interp.call("test.userreify.c", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value) {
         Err(e) => assert!(
             format!("{e}").contains("test.userreify.Impl.reify"),
             "the run reaches Impl's reify: {e}"
@@ -148,7 +148,7 @@ namespace test.preludereify
 end
 "#,
     );
-    let v = interp.call("test.preludereify.c", &[Value::Int(1)]).expect("runs");
+    let v = interp.call("test.preludereify.c", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("runs");
     assert!(matches!(v, Value::Int(2)), "caught; got {v:?}");
 }
 
@@ -177,7 +177,7 @@ namespace anthill.prelude.Option
 end
 "#,
     );
-    let v = interp.call("test.hknest.r", &[]).expect("runs");
+    let v = interp.call("test.hknest.r", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("runs");
     assert!(matches!(v, Value::Int(56)), "both calls reach Option's members; got {v:?}");
 }
 

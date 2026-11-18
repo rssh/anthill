@@ -88,7 +88,7 @@ end
 fn run(src: &str, entry: &str) -> (bool, usize) {
     let mut interp = interp_for(src);
     let before = eq_index_reads_by_this_thread();
-    let v = match interp.call(entry, &[]) {
+    let v = match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
     };

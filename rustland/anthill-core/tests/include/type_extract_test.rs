@@ -44,7 +44,7 @@ fn extract_sort_ref_reifies_sortref() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp);
     let r = interp
-        .call("anthill.reflect.extract", &[Value::term(ty)])
+        .call("anthill.reflect.extract", &anthill_core::eval::HostValue::all(&[Value::term(ty)])).map(|h| h.value)
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -84,7 +84,7 @@ fn extract_parameterized_reifies_parameterized_with_typebinding() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp);
     let r = interp
-        .call("anthill.reflect.extract", &[Value::term(ty)])
+        .call("anthill.reflect.extract", &anthill_core::eval::HostValue::all(&[Value::term(ty)])).map(|h| h.value)
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -125,7 +125,7 @@ fn extract_term_backed_ref_reifies_sortref() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp);
     let r = interp
-        .call("anthill.reflect.extract", &[Value::term(ty)])
+        .call("anthill.reflect.extract", &anthill_core::eval::HostValue::all(&[Value::term(ty)])).map(|h| h.value)
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -179,7 +179,7 @@ fn extract_term_backed_fn_reifies_parameterized() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp);
     let r = interp
-        .call("anthill.reflect.extract", &[Value::term(ty)])
+        .call("anthill.reflect.extract", &anthill_core::eval::HostValue::all(&[Value::term(ty)])).map(|h| h.value)
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -236,7 +236,7 @@ fn extract_non_type_reifies_error() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp);
     let r = interp
-        .call("anthill.reflect.extract", &[Value::term(non_type)])
+        .call("anthill.reflect.extract", &anthill_core::eval::HostValue::all(&[Value::term(non_type)])).map(|h| h.value)
         .expect("extract should evaluate (total)");
 
     assert_eq!(

@@ -136,7 +136,7 @@ fn answers(kb: &mut KnowledgeBase, pattern: &str) -> usize {
 fn int_op(src: &str, qn: &str) -> i64 {
     let mut interp = interp_for(src);
     let v = interp
-        .call(qn, &[])
+        .call(qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("`{qn}` must run: {e:?}"));
     crate::common::scalar_int(interp.kb(), &v)
         .unwrap_or_else(|| panic!("`{qn}` must answer an Int64"))
@@ -191,7 +191,7 @@ fn the_derived_value_face_answers_the_sorts_inhabitants() {
 fn the_derived_column_is_typed_at_the_sort() {
     let mut interp = interp_for(COLOUR_SRC);
     let v = interp
-        .call("test.wt8wg.colour.firstColour", &[])
+        .call("test.wt8wg.colour.firstColour", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`Colour.domain.head.x` runs");
     let ctor = crate::common::entity_functor(interp.kb(), &v)
         .map(|s| interp.kb().qualified_name_of(s).to_string());
@@ -242,7 +242,7 @@ end
 fn a_recursive_sorts_value_face_enumerates_by_depth() {
     let mut interp = interp_for(NAT_SRC);
     let rows = interp
-        .call("test.wt8wg.nat.firstFour", &[])
+        .call("test.wt8wg.nat.firstFour", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`Nat.domain.takeN(4)` runs");
     let kb = interp.kb();
     let depths: Vec<usize> = crate::common::list_heads(&rows)
@@ -476,7 +476,7 @@ fn a_field_named_domain_and_the_derived_relation_coexist() {
     );
     let mut interp = interp_for(FIELD_SRC);
     let v = interp
-        .call("test.wt8wg.field.theField", &[])
+        .call("test.wt8wg.field.theField", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the FIELD still reads");
     let ctor = crate::common::entity_functor(interp.kb(), &v)
         .map(|s| interp.kb().qualified_name_of(s).to_string());

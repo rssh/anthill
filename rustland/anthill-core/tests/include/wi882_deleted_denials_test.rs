@@ -149,7 +149,7 @@ fn euclidean_mod_accepts_a_negative_divisor() {
         // CONTROL: passes with and without the delete, by design.
         ("wi882.denials.D.dModPos", 2),
     ] {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(got)) => assert_eq!(got, want, "{entry}"),
             other => panic!("call {entry}: expected Int({want}), got {other:?}"),
         }
@@ -212,14 +212,14 @@ fn the_remaining_float_denials_restricted_a_total_operation() {
         "wi882.denials.D.dLog10ZeroIsInf",
         "wi882.denials.D.dLog2NegIsNaN",
     ] {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Bool(true)) => {}
             other => panic!("call {entry}: expected Bool(true), got {other:?}"),
         }
     }
     // The SIGN too, so "it answered something" cannot pass for "it answered +inf":
     // an `Err` and a NaN both fail this, and a NaN would fail it even against itself.
-    match interp.call("wi882.denials.D.dDivZeroSign", &[Value::Int(0)]) {
+    match interp.call("wi882.denials.D.dDivZeroSign", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Float(got)) => assert_eq!(got, f64::INFINITY, "1.0 / 0.0"),
         other => panic!("call dDivZeroSign: expected Float(inf), got {other:?}"),
     }

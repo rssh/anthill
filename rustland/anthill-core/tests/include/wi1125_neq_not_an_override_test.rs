@@ -637,7 +637,7 @@ fn the_eq_spelling_of_the_same_carrier_is_answered_semantically() {
     assert!(load_errors(&src).is_empty(), "{:#?}", load_errors(&src));
     let mut i: Interpreter = crate::common::interp_for(&src);
     let call = |i: &mut Interpreter, op: &str| -> bool {
-        i.call(op, &[])
+        i.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
             .literal_bool(i.kb())
             .unwrap_or_else(|| panic!("call {op}: not a Bool"))

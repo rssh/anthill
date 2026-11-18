@@ -84,7 +84,7 @@ fn a_circular_binding_runs_to_the_step_budget() {
     let src = program(ns, "", supply);
     let mut interp = crate::common::interp_for(&src);
     interp.config_mut().step_cap = Some(1_000_000);
-    let answer = interp.call(&format!("{ns}.go"), &[]);
+    let answer = interp.call(&format!("{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         matches!(
             answer,
@@ -138,7 +138,14 @@ fn a_non_ground_operand_is_undecided() {
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(v, var)]),
     }));
-    let answer = interp.call("anthill.prelude.PartialEq.eq", &[open.clone(), open]);
+    // The typed host call is the body's call `PartialEq.eq(a, b)` at `Loop`, pinned to the
+    // binding at load: `neverEq` answers without reading its operands (WI-20261113-S4D63).
+    let typed = interp
+        .call("anthill.prelude.PartialEq.eq", &anthill_core::eval::HostValue::all(&[open.clone(), open.clone()]))
+        .map(|h| h.value);
+    assert!(matches!(typed, Ok(Value::Bool(false))), "the binding answers: {typed:?}");
+    // The untyped entry reaches eval's equality, which asks the operands.
+    let answer = interp.call_with_requirements("anthill.prelude.PartialEq.eq", &[open.clone(), open], Default::default());
     assert!(
         answer
             .as_ref()
@@ -157,7 +164,7 @@ fn a_circular_member_runs_to_the_step_budget() {
     let src = program(ns, member, "");
     let mut interp = crate::common::interp_for(&src);
     interp.config_mut().step_cap = Some(1_000_000);
-    let answer = interp.call(&format!("{ns}.go"), &[]);
+    let answer = interp.call(&format!("{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         matches!(
             answer,

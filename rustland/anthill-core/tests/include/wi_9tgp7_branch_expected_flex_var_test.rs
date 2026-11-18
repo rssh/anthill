@@ -123,7 +123,7 @@ fn drive_in(src: &str, op: &str) -> Vec<i64> {
     // trapped call, which reads as an unrelated second failure.
     let mut interp = interp_for(src);
     let v = interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"));
     list_ints(&v)
 }

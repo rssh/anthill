@@ -60,7 +60,7 @@ fn each_sort_uses_its_own_rules() {
         ),
     ] {
         let path = format!("wi894.inverted.{op}");
-        match interp.call(&path, &[Value::Int(0)]) {
+        match interp.call(&path, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) if n == expected => {}
             other => panic!("{path} must answer {expected}: {why}; got {other:?}"),
         }

@@ -62,13 +62,13 @@ end
 fn wi729_sort_qualified_receiver_method_call_matches_let_bound() {
     let mut interp = interp_for(SORT_SRC);
     let inline = interp
-        .call("test.wi729sort.inlineRows", &[])
+        .call("test.wi729sort.inlineRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the inline `Queen.find.where(λ)` spelling runs");
     let let_bound = interp
-        .call("test.wi729sort.letBoundRows", &[])
+        .call("test.wi729sort.letBoundRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the let-bound spelling runs");
     let all = interp
-        .call("test.wi729sort.allRows", &[])
+        .call("test.wi729sort.allRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the unfiltered relation runs");
 
     assert_eq!(
@@ -125,7 +125,7 @@ end
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
-        .call("test.wi729ns.use.aliceRows", &[])
+        .call("test.wi729ns.use.aliceRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("aliceRows drains the where-filtered bare-qualified relation");
     assert_eq!(
         collect_named_rows(interp.kb(), &r),
@@ -198,7 +198,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi729shadow.shadowed", &[])
+        .call("test.wi729shadow.shadowed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the shadowed receiver runs");
     match r {
         Value::Int(n) => assert_eq!(
@@ -285,7 +285,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     let present = interp
-        .call("test.wi729applied.rowTwoPresent", &[])
+        .call("test.wi729applied.rowTwoPresent", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the applied `Sort.rule(arg)` form runs");
     assert_eq!(
         present.literal_bool(interp.kb()),
@@ -293,7 +293,7 @@ end
         "`Queen.find(2)` still APPLIES the rule — binding row=2, which is a fact"
     );
     let absent = interp
-        .call("test.wi729applied.rowNinePresent", &[])
+        .call("test.wi729applied.rowNinePresent", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the applied form runs for an absent row");
     assert_eq!(
         absent.literal_bool(interp.kb()),

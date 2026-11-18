@@ -347,6 +347,16 @@ pub enum EvalError {
     HostNameUnresolved {
         detail: String,
     },
+    /// Proposal 074 §1.4 — a host call refused where it enters, before anything runs: the
+    /// typer's verdict on the call as it would be written in a body (`Interpreter::call`) —
+    /// `zeroOf()` over `zeroOf[X]() -> X requires Additive[T = X]`, `X` unconstrained; `7`
+    /// where `add2(x: Additive, …)` takes a dictionary. `detail` is the typer's sentence. A
+    /// PROGRAM error at the host's call, not an evaluator invariant, so not
+    /// [`Self::Internal`].
+    HostCallRefused {
+        op: String,
+        detail: String,
+    },
     Internal(String),
 }
 
@@ -708,6 +718,7 @@ impl EvalError {
             | EvalError::RaiseTypeUnread { .. }
             | EvalError::TypePatternUnjudged { .. }
             | EvalError::HostNameUnresolved { .. }
+            | EvalError::HostCallRefused { .. }
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
@@ -1047,6 +1058,9 @@ impl std::fmt::Display for EvalError {
             EvalError::RaiseTypeUnread { detail } => write!(f, "{detail}"),
             EvalError::TypePatternUnjudged { detail } => write!(f, "type_admits: {detail}"),
             EvalError::HostNameUnresolved { detail } => write!(f, "{detail}"),
+            EvalError::HostCallRefused { op, detail } => {
+                write!(f, "host call of `{op}` refused: {detail}")
+            }
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

@@ -108,7 +108,7 @@ fn compound_single_handoff_constructs_deeper_dict() {
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi825.h1.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi825.h1.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(122))),
         "expected Ok(Int(122)) = the callee dep constructed one level deeper \
@@ -148,7 +148,7 @@ fn compound_recursion_depth_coded() {
     // the trapped-call poisoning footgun does not apply.
     let mut interp = crate::common::interp_for(&src);
     for (n, correct) in [(0, 12), (1, 122), (2, 1222)] {
-        let got = interp.call("wi825.rec.Driver.drive", &[Value::Int(n)]);
+        let got = interp.call("wi825.rec.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value);
         assert!(
             matches!(got, Ok(Value::Int(v)) if v == correct),
             "drive({n}): expected the depth-coded Ok(Int({correct})) \
@@ -175,7 +175,7 @@ fn positive_control_no_cover_constructs_depth2() {
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi825.ctl.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi825.ctl.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(122))),
         "expected Ok(Int(122)) from cover-free construction (this worked \
@@ -205,7 +205,7 @@ fn ground_compound_cover_still_serves() {
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi825.gnd.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi825.gnd.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(12))),
         "expected Ok(Int(12)) with the ground compound entry still covering; got {got:?}"

@@ -629,7 +629,7 @@ end
 fn nullary_eta_lift_round_trips_through_eval() {
     let mut interp = crate::common::interp_for(ETA_NULLARY_SRC);
     let r = interp
-        .call("smoke.eta_nullary.use_it", &[])
+        .call("smoke.eta_nullary.use_it", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("use_it evaluates");
     assert_eq!(
         r.literal_int64(interp.kb()),
@@ -665,7 +665,7 @@ end
 fn nullary_returning_function_prefers_return_type_reading() {
     let mut interp = crate::common::interp_for(NULLARY_RETURNS_FN_SRC);
     let r = interp
-        .call("smoke.nullary_ret_fn.go", &[])
+        .call("smoke.nullary_ret_fn.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("go evaluates");
     assert_eq!(
         r.literal_int64(interp.kb()),

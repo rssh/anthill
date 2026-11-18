@@ -48,7 +48,7 @@ end
 
     for (op, want) in [("cell_is", true), ("kb_is", true), ("int_is", false)] {
         let got = interp
-            .call(&format!("test.wi206.{op}"), &[])
+            .call(&format!("test.wi206.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         assert!(
             matches!(got, Value::Bool(b) if b == want),
@@ -82,7 +82,7 @@ fn parameterized_instance_is_modifiable_via_its_base_sort() {
     };
 
     let got = interp
-        .call("anthill.reflect.is_modifiable", &[cell_int])
+        .call("anthill.reflect.is_modifiable", &anthill_core::eval::HostValue::all(&[cell_int])).map(|h| h.value)
         .expect("is_modifiable(Cell[V = Int64])");
     assert!(
         matches!(got, Value::Bool(true)),
@@ -122,14 +122,14 @@ end
 "#;
     let mut interp = interp_for(src);
 
-    let box_is = interp.call("test.wi206d.box_is", &[]).expect("box_is");
+    let box_is = interp.call("test.wi206d.box_is", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("box_is");
     assert!(
         matches!(box_is, Value::Bool(true)),
         "the fact's T binding is Box[V = Int64] — its head sort Box is modifiable, \
          got {box_is:?}"
     );
 
-    let int_is = interp.call("test.wi206d.int_is", &[]).expect("int_is");
+    let int_is = interp.call("test.wi206d.int_is", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("int_is");
     assert!(
         matches!(int_is, Value::Bool(false)),
         "Int64 merely APPEARS inside the fact's T binding as a type argument — that \
@@ -218,7 +218,7 @@ end
         ("bare_list_is", false),
     ] {
         let got = interp
-            .call(&format!("test.wi206e.{op}"), &[])
+            .call(&format!("test.wi206e.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         assert!(matches!(got, Value::Bool(b) if b == want), "{op}: expected {want}, got {got:?}");
     }
@@ -264,7 +264,7 @@ end
     let mut interp = interp_for(src);
     for (op, want) in [("cells_is", true), ("ints_is", false)] {
         let got = interp
-            .call(&format!("test.wi206f.{op}"), &[])
+            .call(&format!("test.wi206f.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         assert!(matches!(got, Value::Bool(b) if b == want), "{op}: expected {want}, got {got:?}");
     }
@@ -291,6 +291,6 @@ fn a_data_value_is_refused_as_no_type() {
             named_args: SmallVec::from_slice(&[(n, three)]),
         }))
     };
-    let got = interp.call("anthill.reflect.is_modifiable", &[value]);
+    let got = interp.call("anthill.reflect.is_modifiable", &anthill_core::eval::HostValue::all(&[value])).map(|h| h.value);
     assert!(got.is_err(), "a data value must be refused as no type; got {got:?}");
 }

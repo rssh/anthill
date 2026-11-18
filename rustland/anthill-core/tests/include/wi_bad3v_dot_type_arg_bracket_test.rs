@@ -357,7 +357,7 @@ end
 
     let bound_sort = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> String {
         let v = interp
-            .call(&format!("test.bad3v.{op}"), &[])
+            .call(&format!("test.bad3v.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         let Some((_, named)) = type_application(interp.kb(), &v) else {
             panic!("{op}: expected `Cell[V = …]`, got {v:?}");

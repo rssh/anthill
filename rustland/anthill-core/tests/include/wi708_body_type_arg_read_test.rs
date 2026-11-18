@@ -31,7 +31,7 @@ end
     let mut interp = interp_for(src);
 
     let v = interp
-        .call("test.wi708.ty_int", &[])
+        .call("test.wi708.ty_int", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("ty_int: {e:?}"));
     let Some((functor, named)) = type_application(interp.kb(), &v) else {
         panic!("expected a parameterized type (`Cell[V = …]`), got {v:?}");
@@ -76,7 +76,7 @@ end
 
     let arg_sort = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> String {
         let v = interp
-            .call(&format!("test.wi708b.{op}"), &[])
+            .call(&format!("test.wi708b.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         let Some((_, named)) = type_application(interp.kb(), &v) else {
             panic!("{op}: expected a parameterized type, got {v:?}");
@@ -132,7 +132,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("test.wi708coll.callProbe", &[])
+        .call("test.wi708coll.callProbe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("callProbe: {e:?}"));
     let Some((_, named)) = type_application(interp.kb(), &v) else {
         panic!("expected a `Cell[V = …]` type, got {v:?}");
@@ -177,7 +177,7 @@ end
 
     let arg_sort = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> String {
         let v = interp
-            .call(&format!("test.wi708c.{op}"), &[])
+            .call(&format!("test.wi708c.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         let Some((_, named)) = type_application(interp.kb(), &v) else {
             panic!("{op}: expected a parameterized type, got {v:?}");

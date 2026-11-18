@@ -74,7 +74,7 @@ fn errors_of(src: &str) -> Vec<String> {
 fn go(src: &str, ns: &str) -> i64 {
     let mut interp = interp_for(src);
     let v = interp
-        .call(&format!("probe.{ns}.go"), &[])
+        .call(&format!("probe.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("probe.{ns}.go: {e}"));
     let kb = interp.kb();
     scalar_int(kb, &v).unwrap_or_else(|| panic!("probe.{ns}.go did not answer an Int64: {v:?}"))

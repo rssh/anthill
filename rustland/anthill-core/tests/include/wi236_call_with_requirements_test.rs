@@ -153,7 +153,7 @@ fn plain_call_on_polymorphic_op_documents_the_gap() {
     let cell = build_cell_wis(&mut interp);
     let id_arg = Value::Str("WI-001".to_string());
 
-    let result = interp.call("test.wi236_poly.Driver.drive", &[cell, id_arg]);
+    let result = interp.call("test.wi236_poly.Driver.drive", &anthill_core::eval::HostValue::all(&[cell, id_arg])).map(|h| h.value);
     eprintln!("[wi236-gap] plain-call result: {result:?}");
     // We don't assert a specific error shape here — the point is
     // that some failure occurs along the cross-sort dispatch path

@@ -106,7 +106,7 @@ end
 /// `wig37hs.go()`'s answer.
 fn go(body: &str) -> i64 {
     let mut interp = interp_for(&program(body));
-    match interp.call("wig37hs.go", &[]) {
+    match interp.call("wig37hs.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -295,7 +295,7 @@ fn the_typer_agrees_with_type_admits() {
     let mut interp = interp_for(&program(&ops));
     let mut wrong = Vec::new();
     for (op, p, t, want) in pairs {
-        match interp.call(&format!("wig37hs.{op}"), &[Value::Int(0)]) {
+        match interp.call(&format!("wig37hs.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Bool(got)) if got == *want => {}
             other => wrong.push(format!(
                 "{op}: type_admits({p}, {t}) is {want}, got {other:?}"

@@ -22,7 +22,7 @@ use anthill_core::eval::{Interpreter, Value};
 use crate::common::{interp_for, load_errors_of, one_definite_int, show_value};
 
 fn call(interp: &mut Interpreter, op: &str) -> Value {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(v) => v,
         Err(e) => panic!("`{op}`: {e:?}"),
     }
@@ -190,7 +190,8 @@ fn a_user_spec_and_its_spec_body_at_the_instance() {
     assert_eq!(int(&mut interp, "p0qgf.user.dPlusLeaf"), 8);
 }
 
-/// A host call passes the instance as the value it is.
+/// A host call passes the instance as the value it is, at the type the call that made it
+/// answered (proposal 074 §1.4).
 #[test]
 fn a_host_call_passes_the_instance() {
     let src = program(
@@ -198,8 +199,11 @@ fn a_host_call_passes_the_instance() {
         "  operation intInstance() -> Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()",
     );
     let mut interp = interp_for(&src);
-    let dict = call(&mut interp, "p0qgf.host.intInstance");
-    match interp.call("p0qgf.host.add2", &[dict, Value::Int(2), Value::Int(3)]) {
+    let dict = interp.call("p0qgf.host.intInstance", &[]).expect("intInstance");
+    match interp
+        .call("p0qgf.host.add2", &[dict, Value::Int(2).into(), Value::Int(3).into()])
+        .map(|h| h.value)
+    {
         Ok(Value::Int(5)) => {}
         other => panic!("expected 5, got {other:?}"),
     }

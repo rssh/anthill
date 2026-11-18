@@ -131,7 +131,7 @@ fn assert_answers(src: &str, rule: &str, expected: i64) {
 #[track_caller]
 fn call_printed(interp: &mut Interpreter, entry: &str, args: &[Value]) -> String {
     let v = interp
-        .call(entry, args)
+        .call(entry, &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{entry}: {e:?}"));
     match v {
         Value::Str(s) => s,
@@ -153,17 +153,17 @@ fn carriers(interp: &mut Interpreter, v: &Value) -> [(&'static str, Value); 3] {
 /// An empty map keyed at `key`'s type, made by the program's `emptyOf` in `test.{name}`: a map
 /// is made under its key type's `Eq`, which a host call with no caller is handed by nobody.
 fn empty_map(interp: &mut Interpreter, name: &str, key: &Value) -> Value {
-    interp.call(&format!("test.{name}.emptyOf"), &[key.clone()]).expect("emptyOf")
+    interp.call(&format!("test.{name}.emptyOf"), &anthill_core::eval::HostValue::all(&[key.clone()])).map(|h| h.value).expect("emptyOf")
 }
 
 /// `Map.get(Map.put(empty, put_key, 4), get_key)`, as the `Int64` it holds, or `None`.
 fn put_then_get(interp: &mut Interpreter, name: &str, put_key: &Value, get_key: &Value) -> Option<i64> {
     let m = empty_map(interp, name, put_key);
     let m = interp
-        .call("anthill.prelude.Map.put", &[m, put_key.clone(), Value::Int(4)])
+        .call("anthill.prelude.Map.put", &anthill_core::eval::HostValue::all(&[m, put_key.clone(), Value::Int(4)])).map(|h| h.value)
         .expect("Map.put");
     let got = interp
-        .call("anthill.prelude.Map.get", &[m, get_key.clone()])
+        .call("anthill.prelude.Map.get", &anthill_core::eval::HostValue::all(&[m, get_key.clone()])).map(|h| h.value)
         .expect("Map.get");
     option_int(interp, &got)
 }
@@ -184,7 +184,7 @@ fn option_int(interp: &Interpreter, v: &Value) -> Option<i64> {
 
 #[track_caller]
 fn assert_type_error(interp: &mut Interpreter, entry: &str, args: &[Value]) {
-    match interp.call(entry, args) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(args)).map(|h| h.value) {
         Err(anthill_core::eval::error::EvalError::TypeMismatch { .. }) => {}
         other => panic!("{entry}: expected a type error, got {other:?}"),
     }
@@ -338,9 +338,9 @@ fn one_value_is_one_key_on_every_carrier() {
         "qjcarriers",
         "  sort Holder\n    entity h(p: (Int64, Int64))\n  end\n  operation mkh() -> Holder = Holder.h(p: (1, 2))\n  operation red() -> Box = Box.bx(0)\n  sort Lamp\n    entity off\n  end",
     ));
-    let entity = interp.call("test.qjcarriers.mkb", &[Value::Int(1)]).expect("mkb");
-    let tuple = interp.call("test.qjcarriers.mp", &[Value::Int(1)]).expect("mp");
-    let holder = interp.call("test.qjcarriers.mkh", &[]).expect("mkh");
+    let entity = interp.call("test.qjcarriers.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
+    let tuple = interp.call("test.qjcarriers.mp", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mp");
+    let holder = interp.call("test.qjcarriers.mkh", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("mkh");
     // A nullary constructor of a sort with no parameter: a host call hands the map a value
     // whose type it names whole. `none` names no `T`, so its map's `Hash` names no provider
     // and is refused where the map is made.
@@ -376,9 +376,9 @@ fn one_value_is_one_key_on_every_carrier() {
 #[test]
 fn two_values_are_two_keys_on_every_carrier() {
     let mut interp = interp_for(&ns("qjdistinct", ""));
-    let one = interp.call("test.qjdistinct.mkb", &[Value::Int(1)]).expect("mkb");
-    let two = interp.call("test.qjdistinct.mkb", &[Value::Int(2)]).expect("mkb");
-    let a = interp.call("test.qjdistinct.mp", &[Value::Int(1)]).expect("mp");
+    let one = interp.call("test.qjdistinct.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
+    let two = interp.call("test.qjdistinct.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(2)])).map(|h| h.value).expect("mkb");
+    let a = interp.call("test.qjdistinct.mp", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mp");
     let b = Value::Tuple {
         pos: vec![Value::Int(2), Value::Int(1)].into(),
         named: Vec::new().into(),
@@ -404,13 +404,19 @@ fn two_values_are_two_keys_on_every_carrier() {
 fn a_map_lookup_interns_nothing() {
     let mut interp = interp_for(&ns("qjnointern", ""));
     let absent = interp
-        .call("test.qjnointern.mkb", &[Value::Int(987_654)])
+        .call("test.qjnointern.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(987_654)])).map(|h| h.value)
         .expect("mkb");
     let node = Value::Node(value_as_occurrence(interp.kb_mut(), &absent));
     let m = empty_map(&mut interp, "qjnointern", &absent);
+    // The host call is typed once per operation and argument types (proposal 074 §1.4), and
+    // its first typing mints the call's types: one call first, so what is measured is the
+    // lookup's own writes.
+    interp
+        .call("anthill.prelude.Map.get", &anthill_core::eval::HostValue::all(&[m.clone(), node.clone()]))
+        .expect("Map.get");
     let before = interp.kb().term_store_len();
     let got = interp
-        .call("anthill.prelude.Map.get", &[m, node])
+        .call("anthill.prelude.Map.get", &anthill_core::eval::HostValue::all(&[m, node])).map(|h| h.value)
         .expect("Map.get");
     assert_eq!(option_int(&interp, &got), None);
     assert_eq!(interp.kb().term_store_len(), before, "the lookup wrote to the store");
@@ -420,14 +426,14 @@ fn a_map_lookup_interns_nothing() {
 #[test]
 fn a_key_read_back_addresses_its_slot() {
     let mut interp = interp_for(&ns("qjkeysback", ""));
-    let entity = interp.call("test.qjkeysback.mkb", &[Value::Int(1)]).expect("mkb");
+    let entity = interp.call("test.qjkeysback.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
     let node = Value::Node(value_as_occurrence(interp.kb_mut(), &entity));
     let m = empty_map(&mut interp, "qjkeysback", &entity);
     let m = interp
-        .call("anthill.prelude.Map.put", &[m, node, Value::Int(4)])
+        .call("anthill.prelude.Map.put", &anthill_core::eval::HostValue::all(&[m, node, Value::Int(4)])).map(|h| h.value)
         .expect("Map.put");
     let keys = interp
-        .call("anthill.prelude.Map.keys", &[m.clone()])
+        .call("anthill.prelude.Map.keys", &anthill_core::eval::HostValue::all(&[m.clone()])).map(|h| h.value)
         .expect("Map.keys");
     let Value::Entity { named, pos, .. } = &keys else {
         panic!("Map.keys: {keys:?}");
@@ -439,7 +445,7 @@ fn a_key_read_back_addresses_its_slot() {
         .or_else(|| pos.first().cloned())
         .expect("one key");
     let got = interp
-        .call("anthill.prelude.Map.get", &[m, head])
+        .call("anthill.prelude.Map.get", &anthill_core::eval::HostValue::all(&[m, head])).map(|h| h.value)
         .expect("Map.get");
     assert_eq!(option_int(&interp, &got), Some(4));
 }
@@ -507,7 +513,7 @@ fn make_fn_builds_one_term_from_every_carrier() {
         "qjmfcarriers",
         "  operation mfOf(x: Term) -> Term = make_fn(\"test.qjmfcarriers.Pk.pk\", cons(x, cons(as_term(1), nil())))",
     ));
-    let entity = interp.call("test.qjmfcarriers.mkb", &[Value::Int(1)]).expect("mkb");
+    let entity = interp.call("test.qjmfcarriers.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
     for (on, arg) in carriers(&mut interp, &entity) {
         assert_eq!(
             call_printed(&mut interp, "test.qjmfcarriers.mfOf", &[arg]),
@@ -526,8 +532,8 @@ fn make_fn_of_a_constructor_is_the_constructors_value() {
         "qjmfctor",
         "  operation mfBx(n: Int64) -> Term = make_fn(\"test.qjmfctor.Box.bx\", cons(as_term(n), nil()))",
     ));
-    let built = interp.call("test.qjmfctor.mfBx", &[Value::Int(1)]).expect("mfBx");
-    let entity = interp.call("test.qjmfctor.mkb", &[Value::Int(1)]).expect("mkb");
+    let built = interp.call("test.qjmfctor.mfBx", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mfBx");
+    let entity = interp.call("test.qjmfctor.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
     let built_on = carriers(&mut interp, &built);
     let entity_on = carriers(&mut interp, &entity);
     for (put_on, put_key) in &built_on {
@@ -575,8 +581,8 @@ fn replace_named_arg_reads_every_carrier() {
         "qjrncarriers",
         "  operation rnOf(t: Term, x: Term) -> Term = replace_named_arg(t, \"v\", x)",
     ));
-    let entity = interp.call("test.qjrncarriers.mkb", &[Value::Int(1)]).expect("mkb");
-    let tuple = interp.call("test.qjrncarriers.mp", &[Value::Int(1)]).expect("mp");
+    let entity = interp.call("test.qjrncarriers.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
+    let tuple = interp.call("test.qjrncarriers.mp", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mp");
     for (t_on, t) in carriers(&mut interp, &entity) {
         for (x_on, x) in carriers(&mut interp, &tuple) {
             assert_eq!(
@@ -618,10 +624,10 @@ fn a_tuple_decodes_as_no_entity() {
 #[test]
 fn a_tuple_decodes_as_no_entity_on_every_carrier() {
     let mut interp = interp_for(&ns("qjtetupc", DECODE));
-    let tuple = interp.call("test.qjtetupc.mp", &[Value::Int(1)]).expect("mp");
+    let tuple = interp.call("test.qjtetupc.mp", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mp");
     for v in [tuple, Value::Unit] {
         for (on, arg) in carriers(&mut interp, &v) {
-            let got = interp.call("test.qjtetupc.teOf", &[arg]).expect("teOf");
+            let got = interp.call("test.qjtetupc.teOf", &anthill_core::eval::HostValue::all(&[arg])).map(|h| h.value).expect("teOf");
             assert!(matches!(got, Value::Int(0)), "{v:?} as {on}: {got:?}");
         }
     }
@@ -631,9 +637,9 @@ fn a_tuple_decodes_as_no_entity_on_every_carrier() {
 #[test]
 fn an_entity_decodes_on_every_carrier() {
     let mut interp = interp_for(&ns("qjteent", DECODE));
-    let entity = interp.call("test.qjteent.mkb", &[Value::Int(1)]).expect("mkb");
+    let entity = interp.call("test.qjteent.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
     for (on, arg) in carriers(&mut interp, &entity) {
-        let got = interp.call("test.qjteent.teOf", &[arg]).expect("teOf");
+        let got = interp.call("test.qjteent.teOf", &anthill_core::eval::HostValue::all(&[arg])).map(|h| h.value).expect("teOf");
         assert!(matches!(got, Value::Int(1)), "{on}: {got:?}");
     }
 }
@@ -654,7 +660,7 @@ fn an_application_with_an_undeclared_argument_decodes_as_no_entity() {
         named: vec![(v, Value::Int(1)), (w, Value::Int(2))].into(),
     };
     for (on, arg) in carriers(&mut interp, &extra) {
-        let got = interp.call("test.qjteextra.teOf", &[arg]).expect("teOf");
+        let got = interp.call("test.qjteextra.teOf", &anthill_core::eval::HostValue::all(&[arg])).map(|h| h.value).expect("teOf");
         assert!(matches!(got, Value::Int(0)), "{on}: {got:?}");
     }
 }
@@ -682,7 +688,7 @@ fn a_runtime_handle_is_no_term() {
         ),
     ));
     let handle = empty_map(&mut interp, "qjhandleterm", &Value::Int(0));
-    let entity = interp.call("test.qjhandleterm.mkb", &[Value::Int(1)]).expect("mkb");
+    let entity = interp.call("test.qjhandleterm.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
     assert_type_error(&mut interp, "test.qjhandleterm.mfOf", &[handle.clone()]);
     assert_type_error(&mut interp, "test.qjhandleterm.rnOf", &[handle.clone(), Value::Int(7)]);
     assert_type_error(&mut interp, "test.qjhandleterm.rnOf", &[entity, handle.clone()]);
@@ -708,7 +714,7 @@ fn a_runtime_handle_inside_a_builders_argument_is_no_term() {
         pos: Vec::new().into(),
         named: vec![(v, handle)].into(),
     };
-    let entity = interp.call("test.qjhandledeep.mkb", &[Value::Int(1)]).expect("mkb");
+    let entity = interp.call("test.qjhandledeep.mkb", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value).expect("mkb");
     assert_type_error(&mut interp, "test.qjhandledeep.mfOf", &[holding.clone()]);
     assert_type_error(&mut interp, "test.qjhandledeep.rnOf", &[entity, holding]);
 }
@@ -717,9 +723,18 @@ fn a_runtime_handle_inside_a_builders_argument_is_no_term() {
 
 const STORE_SRC: &str = "namespace test.qjstore
   import anthill.prelude.Int64
-  import anthill.reflect.{fact_monotonicity, non_monotone}
+  import anthill.reflect.{fact_monotonicity, non_monotone, Term}
+  import anthill.prelude.Meta.{Meta}
+  import anthill.prelude.{Modify, Error}
+  import anthill.persistence.{Store, NonMonotonicStore}
+  import anthill.persistence.filesystem.{IndexedFileStore}
   entity Bar(value: Int64)
   rule fact_monotonicity(Bar) <=> non_monotone() @[simp]
+  -- `IndexedFileStore` is a `Store` through `NonMonotonicStore` and through
+  -- `QueryableStore`, so a call of `Store.persist` there names the one it means.
+  operation persistIndexed(s: IndexedFileStore, f: Term, m: Meta) -> anthill.reflect.StoredRef[T = Term]
+    effects {Modify[s], Error} =
+    Store.persist[Store = NonMonotonicStore](s, f, m)
 end
 ";
 
@@ -731,26 +746,7 @@ fn mount(
     root: &std::path::Path,
     store: Box<dyn anthill_core::persistence::Store>,
 ) -> Value {
-    let fs = interp.kb_mut().intern(functor);
-    let flat = interp.kb_mut().intern("Flat");
-    let root_sym = interp.kb_mut().intern("root");
-    let convention = interp.kb_mut().intern("convention");
-    let store_val = Value::Entity {
-        functor: fs,
-        pos: Vec::new().into(),
-        named: vec![
-            (root_sym, Value::Str(root.to_str().unwrap().to_string())),
-            (
-                convention,
-                Value::Entity {
-                    functor: flat,
-                    pos: Vec::new().into(),
-                    named: Vec::new().into(),
-                },
-            ),
-        ]
-        .into(),
-    };
+    let store_val = crate::common::file_store_value(interp.kb(), functor, root.to_str().unwrap(), "flat");
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
     interp
         .register_mirror(key, store, &[])
@@ -785,10 +781,10 @@ fn a_fact_an_occurrence_carries_is_persisted() {
     let row = bar(&mut interp, 1);
     let fact = node_of(&mut interp, &row);
     interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), fact, Value::Unit])
+        .call("anthill.persistence.Store.persist", &anthill_core::eval::HostValue::all(&[store.clone(), fact, crate::common::no_meta(interp.kb())])).map(|h| h.value)
         .expect("persist");
     interp
-        .call("anthill.persistence.Store.flush", &[store, Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store, crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .expect("flush");
     let text = std::fs::read_to_string(dir.path().join("facts.anthill")).expect("read facts");
     assert!(text.contains("Bar(value: 1)"), "got:\n{text}");
@@ -806,7 +802,7 @@ fn an_update_an_occurrence_carries_replaces_the_row() {
     );
     let row = bar(&mut interp, 1);
     let stored = interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), row, Value::Unit])
+        .call("anthill.persistence.Store.persist", &anthill_core::eval::HostValue::all(&[store.clone(), row, crate::common::no_meta(interp.kb())])).map(|h| h.value)
         .expect("persist");
     let reference_sym = interp.kb_mut().intern("reference");
     let Value::Entity { named, .. } = &stored else {
@@ -822,11 +818,11 @@ fn an_update_an_occurrence_carries_replaces_the_row() {
     interp
         .call(
             "anthill.persistence.NonMonotonicStore.update",
-            &[store.clone(), reference, replacement],
-        )
+            &anthill_core::eval::HostValue::all(&[store.clone(), reference, replacement]),
+        ).map(|h| h.value)
         .expect("update");
     interp
-        .call("anthill.persistence.Store.flush", &[store, Value::Unit])
+        .call("anthill.persistence.Store.flush", &anthill_core::eval::HostValue::all(&[store, crate::common::nil_value(interp.kb())])).map(|h| h.value)
         .expect("flush");
     let text = std::fs::read_to_string(dir.path().join("facts.anthill")).expect("read facts");
     assert!(
@@ -846,13 +842,17 @@ fn retrieve_takes_a_pattern_an_occurrence_carries() {
         Box::new(IndexedFileStore::new(dir.path().to_path_buf(), FileConvention::Flat)),
     );
     let row = bar(&mut interp, 1);
+    // Proposal 074 §1.4: a host call writes no bracket, and `Store.persist` at an
+    // `IndexedFileStore` needs one, so it goes through an operation of the program's.
     interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), row.clone(), Value::Unit])
+        .call("test.qjstore.persistIndexed", &anthill_core::eval::HostValue::all(&[store.clone(), row.clone(), crate::common::no_meta(interp.kb())])).map(|h| h.value)
         .expect("persist");
     let pattern = node_of(&mut interp, &row);
     let hits = interp
-        .call("anthill.persistence.QueryableStore.retrieve", &[store, pattern])
+        .call("anthill.persistence.QueryableStore.retrieve", &anthill_core::eval::HostValue::all(&[store, pattern])).map(|h| h.value)
         .expect("retrieve");
+    // The result is a `Stream`, an instance: the host reads the stream it carries.
+    let hits = interp.carried(hits);
     let Value::Stream(mut h) = hits else {
         panic!("retrieve: {hits:?}");
     };

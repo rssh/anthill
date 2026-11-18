@@ -226,7 +226,7 @@ fn a_list_read_folds_a_real_spine() {
     // operation body because a rule body cannot bind a host op's result (this ticket's
     // second, unfixed finding), so this is where the CONTENT can be asserted.
     let mut interp = crate::common::interp_for(FIXTURE);
-    let n = match interp.call("test.w1ykh.three_items", &[]) {
+    let n = match interp.call("test.w1ykh.three_items", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => n,
         other => panic!("`three_items` must evaluate to an Int64: {other:?}"),
     };
@@ -251,7 +251,7 @@ fn a_field_reads_through_as_term() {
     // option came back.
     let mut interp = crate::common::interp_for(FIXTURE);
     let got = interp
-        .call("test.w1ykh.field_of_as_term", &[])
+        .call("test.w1ykh.field_of_as_term", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`field_of_as_term` must evaluate");
     let anthill_core::eval::Value::Entity { functor, named, .. } = &got else {
         panic!("expected `some(value: 7)`, got {got:?}")
@@ -321,7 +321,7 @@ fn a_leaf_term_answers_none_rather_than_raising() {
     // built on. A guard that tests the head for `Functor` raises here instead.
     let mut interp = crate::common::interp_for(FIXTURE);
     let got = interp
-        .call("test.w1ykh.field_of_a_literal", &[])
+        .call("test.w1ykh.field_of_a_literal", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a literal term must ANSWER, not raise");
     assert!(
         matches!(&got, anthill_core::eval::Value::Entity { functor, .. }
@@ -356,7 +356,7 @@ fn a_non_term_carrier_raises_rather_than_answering_none() {
         } else {
             vec![op_ref.clone()]
         };
-        let r = interp.call(op, &args);
+        let r = interp.call(op, &anthill_core::eval::HostValue::all(&args)).map(|h| h.value);
         assert!(
             r.is_err(),
             "`{op}` on an operation reference must RAISE, not answer: {r:?}"
@@ -378,7 +378,7 @@ fn a_node_carried_term_prints_without_interning() {
     let mut interp = crate::common::interp_for(FIXTURE);
     let before = interp.kb().term_store_len();
     let printed = interp
-        .call("test.w1ykh.print_a_field", &[])
+        .call("test.w1ykh.print_a_field", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`print_a_field` must evaluate");
     let grew = interp.kb().term_store_len() - before;
     match &printed {

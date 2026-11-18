@@ -66,7 +66,7 @@ fn program(ns: &str, body: &str) -> String {
 
 /// An operation of `ns` returning an `Int64`; a trap fails the row at its own call.
 fn int(interp: &mut anthill_core::eval::Interpreter, ns: &str, op: &str) -> i64 {
-    match interp.call(&format!("{ns}.{op}"), &[]) {
+    match interp.call(&format!("{ns}.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{op}: expected an Int64, got {other:?}"),
     }
@@ -896,7 +896,7 @@ end
       woven([\"a\", \"b\", \"c\"]).head.n
   end",
     ));
-    match interp.call("j9ssg.chain.U.cited", &[]) {
+    match interp.call("j9ssg.chain.U.cited", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(3)) => {}
         other => panic!("`cited`: expected 3, got {other:?}"),
     }

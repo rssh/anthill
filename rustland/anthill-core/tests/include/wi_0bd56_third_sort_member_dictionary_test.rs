@@ -63,7 +63,7 @@ end
 
 fn call(src: &str, entry: &str) -> Result<eval::Value, eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
 }
 
 fn answers(src: &str, entry: &str, want: i64) {

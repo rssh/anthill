@@ -102,7 +102,7 @@ end
 /// "loads clean" half of each value pin is enforced) and call `entry(0)`.
 fn eval_fresh(src: &str, entry: &str) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(0)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 fn load_errs(src: &str) -> Vec<String> {

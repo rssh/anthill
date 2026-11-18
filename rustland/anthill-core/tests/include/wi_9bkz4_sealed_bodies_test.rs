@@ -140,7 +140,7 @@ fn values(kb: KnowledgeBase, entries: &[&str]) -> Vec<i64> {
     eval::builtins::register_standard_builtins(&mut interp);
     entries
         .iter()
-        .map(|entry| match interp.call(entry, &[]) {
+        .map(|entry| match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => n,
             other => panic!("`{entry}` did not run to an Int64: {other:?}"),
         })

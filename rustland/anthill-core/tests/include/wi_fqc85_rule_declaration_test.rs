@@ -513,7 +513,7 @@ namespace fqc85.eqn
 end
 "#;
     let mut interp = crate::common::interp_for(FIRES);
-    match interp.call("fqc85.eqn.C.drive", &[anthill_core::eval::Value::Int(0)]) {
+    match interp.call("fqc85.eqn.C.drive", &anthill_core::eval::HostValue::all(&[anthill_core::eval::Value::Int(0)])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(10)) => {}
         other => panic!("a body-less `<=>` equation must still fire; got {other:?}"),
     }

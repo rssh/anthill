@@ -95,7 +95,7 @@ fn witness_sort_loads_clean() {
 #[test]
 fn witness_dispatches_in_generic_context() {
     let mut interp = crate::common::interp_for(WITNESS_SRC);
-    match interp.call("test.wi450.eval.runGeneric", &[]) {
+    match interp.call("test.wi450.eval.runGeneric", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 99,
             "combineBox must dispatch combine to the witness TagCombiner.combine (n = 99); got {n}"
@@ -114,7 +114,7 @@ fn witness_dispatches_in_generic_context() {
 #[test]
 fn witness_dispatches_direct_value_call() {
     let mut interp = crate::common::interp_for(WITNESS_SRC);
-    match interp.call("test.wi450.eval.runDirect", &[]) {
+    match interp.call("test.wi450.eval.runDirect", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 99,
             "Combiner.combine(tag, tag) must dispatch to the witness TagCombiner.combine (n = 99); got {n}"
@@ -132,7 +132,7 @@ fn witness_dispatches_direct_value_call() {
 #[test]
 fn witness_dispatches_dot_call() {
     let mut interp = crate::common::interp_for(WITNESS_SRC);
-    match interp.call("test.wi450.eval.runDot", &[]) {
+    match interp.call("test.wi450.eval.runDot", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 99,
             "tag.combine(tag) must dispatch to the witness TagCombiner.combine (n = 99); got {n}"

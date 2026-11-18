@@ -159,7 +159,7 @@ impl Driver {
     fn call(&mut self, op: &str) -> Value {
         let entry = format!("{}.{op}", self.ns);
         self.interp
-            .call(&entry, &[Value::Int(0)])
+            .call(&entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{entry} runs; got {e:?}"))
     }
 

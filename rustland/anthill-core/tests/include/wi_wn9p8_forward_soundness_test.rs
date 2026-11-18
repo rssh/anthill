@@ -203,7 +203,7 @@ fn sole_message(src: &str, what: &str) -> String {
 /// load, so a value is also a clean-load assertion).
 fn eval_str(src: &str, entry: &str, what: &str) -> String {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Str(s)) => s.to_string(),
         other => panic!("{what}: expected a string from {entry}; got {other:?}"),
     }

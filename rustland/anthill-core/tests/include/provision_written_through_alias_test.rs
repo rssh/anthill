@@ -122,7 +122,7 @@ fn outcome(ns: &str, body: &str) -> String {
         return format!("REFUSED {errs:?}");
     }
     let mut interp = interp_for(&source(ns, body));
-    match interp.call(&format!("test.{ns}.go"), &[]) {
+    match interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => format!("RUNS {n}"),
         other => format!("{other:?}").replace(ns, "NS"),
     }
@@ -563,7 +563,7 @@ fn a_modifiable_claim_written_through_an_alias_is_about_its_sort() {
         );
         let mut interp = interp_for(&src);
         for (op, want) in [("slot_is", true), ("other_is", false)] {
-            let got = interp.call(&format!("test.{ns}.{op}"), &[]);
+            let got = interp.call(&format!("test.{ns}.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
             assert!(matches!(got, Ok(Value::Bool(b)) if b == want), "{ns}.{op}: {got:?}");
         }
     }
@@ -624,7 +624,7 @@ fn a_projection_rebuilt_at_a_binding_written_through_an_alias_is_read_at_its_typ
              operation go() -> Int64 = Sp.size(car(n: 40)) + 2\nend\n"
         );
         let mut interp = interp_for(&src);
-        interp.call(&format!("test.{ns}.go"), &[])
+        interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
     };
     for (spelling, at) in [("alias", "MS"), ("written", "MemStore")] {
         let got = run(spelling, at);
@@ -669,8 +669,8 @@ fn a_host_entry_is_completed_from_a_provision_written_through_an_alias() {
              operation twice[V, F](a: V) -> Int64 requires Scale[V = V, F = F] = Scale.scale(a)"
         );
         let mut interp = interp_for(&source(&ns, &body));
-        let made = interp.call(&format!("test.{ns}.mk"), &[]).expect("a Vec");
-        let got = interp.call(&format!("test.{ns}.twice"), &[made]);
+        let made = interp.call(&format!("test.{ns}.mk"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("a Vec");
+        let got = interp.call(&format!("test.{ns}.twice"), &anthill_core::eval::HostValue::all(&[made])).map(|h| h.value);
         assert!(matches!(got, Ok(Value::Int(5))), "{ns}: {got:?}");
     }
 }

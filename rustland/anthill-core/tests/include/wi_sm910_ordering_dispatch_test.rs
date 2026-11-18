@@ -240,7 +240,7 @@ fn a_caller_holding_the_spec_owes_the_body_nothing() {
     for (ns, own_gt, want_p) in [("sm910.gen.own", true, false), ("sm910.gen.cmp", false, true)] {
         let mut interp = crate::common::interp_for(&point_program(ns, own_gt, tail));
         for (entry, want) in [("i", true), ("f", false), ("p", want_p)] {
-            let got = interp.call(&format!("{ns}.{entry}"), &[]);
+            let got = interp.call(&format!("{ns}.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
             assert!(
                 matches!(got, Ok(Value::Bool(b)) if b == want),
                 "{ns}.{entry} answers {want}; got {got:?}"
@@ -438,7 +438,7 @@ end
 fn a_binding_eq_is_the_calls_member() {
     let mut interp = crate::common::interp_for(CHAIN);
     for (entry, want) in [("apart", false), ("same", true)] {
-        let got = interp.call(&format!("sm910.chain.{entry}"), &[]);
+        let got = interp.call(&format!("sm910.chain.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
         assert!(
             matches!(got, Ok(Value::Bool(b)) if b == want),
             "{entry} answers {want}; got {got:?}"

@@ -70,7 +70,7 @@ fn answers(src: &str, entries: &[&str]) -> Vec<String> {
     let mut interp = interp_for(src);
     entries
         .iter()
-        .map(|entry| match interp.call(entry, &[]) {
+        .map(|entry| match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(v) => show_value(interp.kb(), &v),
             Err(e) => panic!("{entry}: {e:?}"),
         })
@@ -273,7 +273,7 @@ fn building_a_map_compares_a_key_with_its_bucket_alone() {
     let mut interp = interp_for(&src);
     let mut measured = |entry: &str| {
         let before = map_key_comparisons_by_this_thread();
-        let v = interp.call(&format!("{ns}.{entry}"), &[]).unwrap_or_else(|e| panic!("{entry}: {e:?}"));
+        let v = interp.call(&format!("{ns}.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).unwrap_or_else(|e| panic!("{entry}: {e:?}"));
         (show_value(interp.kb(), &v), map_key_comparisons_by_this_thread() - before)
     };
     assert_eq!(measured("built"), ("100".to_string(), 0));
@@ -303,7 +303,7 @@ fn a_derived_hash_tells_constructors_apart() {
     let mut interp = interp_for(&src);
     let mut measured = |entry: &str| {
         let before = map_key_comparisons_by_this_thread();
-        let v = interp.call(&format!("{ns}.{entry}"), &[]).unwrap_or_else(|e| panic!("{entry}: {e:?}"));
+        let v = interp.call(&format!("{ns}.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).unwrap_or_else(|e| panic!("{entry}: {e:?}"));
         (show_value(interp.kb(), &v), map_key_comparisons_by_this_thread() - before)
     };
     assert_eq!(measured("sameSide"), ("some(value: 1)".to_string(), 1));
@@ -329,8 +329,10 @@ fn a_removed_key_leaves_the_others_in_insertion_order() {
 }
 
 /// A host call hands `Map.empty` the `Hash` its argument's type names: `none` names no `T`,
-/// so its map's instance names no provider, and it is refused where the map is made. A
-/// nullary constructor of a sort with no parameter is the control.
+/// so no provision answers `Hash[T = Option]`, and the call is refused where it is made, as
+/// `emptyOf(none())` is in a body (proposal 074 §1.4). A nullary constructor of a sort with no
+/// parameter is the control. FAILS, measured, with the requirement the typing parks not read
+/// at the host call: the map is made.
 #[test]
 fn a_host_value_that_names_no_key_type_is_refused_where_its_map_is_made() {
     let ns = "test.pwk0x.host";
@@ -341,16 +343,24 @@ fn a_host_value_that_names_no_key_type_is_refused_where_its_map_is_made() {
     let mut interp = interp_for(&src);
     let none = interp.kb().try_resolve_symbol("anthill.prelude.Option.none").expect("none");
     let off = interp.kb().try_resolve_symbol(&format!("{ns}.Lamp.off")).expect("off");
-    let refused = format!("{:?}", interp.call(&format!("{ns}.emptyOf"), &[Value::SymbolRef(none)]));
+    let refused = format!("{:?}", interp.call(&format!("{ns}.emptyOf"), &anthill_core::eval::HostValue::all(&[Value::SymbolRef(none)])).map(|h| h.value));
     assert!(
-        refused.contains("UnpinnedRequirement") && refused.contains("anthill.prelude.Hash[T = anthill.prelude.Option]"),
+        refused.contains("HostCallRefused") && refused.contains("anthill.prelude.Hash[T = anthill.prelude.Option]"),
         "{refused}"
     );
-    let m = interp.call(&format!("{ns}.emptyOf"), &[Value::SymbolRef(off)]).expect("emptyOf(off)");
+    let twin = load_errors_of(&program(
+        ns,
+        "  sort Lamp\n    entity off\n  end\n  operation emptyOf[K](k: K) -> Map[K = K, V = Int64] requires Hash[T = K] = Map.empty()\n  operation twin() -> Map[K = Option, V = Int64] = emptyOf(Option.none())\n",
+    ));
+    assert!(
+        twin.iter().any(|e| e.contains("anthill.prelude.Hash[T = anthill.prelude.Option]")),
+        "the body twin is refused naming the requirement: {twin:#?}"
+    );
+    let m = interp.call(&format!("{ns}.emptyOf"), &anthill_core::eval::HostValue::all(&[Value::SymbolRef(off)])).map(|h| h.value).expect("emptyOf(off)");
     let m = interp
-        .call("anthill.prelude.Map.put", &[m, Value::SymbolRef(off), Value::Int(4)])
+        .call("anthill.prelude.Map.put", &anthill_core::eval::HostValue::all(&[m, Value::SymbolRef(off), Value::Int(4)])).map(|h| h.value)
         .expect("put");
-    let n = interp.call("anthill.prelude.Map.size", &[m]).expect("size");
+    let n = interp.call("anthill.prelude.Map.size", &anthill_core::eval::HostValue::all(&[m])).map(|h| h.value).expect("size");
     assert_eq!(show_value(interp.kb(), &n), "1");
 }
 

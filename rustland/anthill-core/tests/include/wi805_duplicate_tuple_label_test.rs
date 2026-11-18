@@ -274,7 +274,7 @@ end
         load_errs(src)
     );
     let mut interp = interp_for(src);
-    match interp.call("test.wi805.cap3.drive", &[]).expect("drive") {
+    match interp.call("test.wi805.cap3.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("drive") {
         anthill_core::eval::Value::Int(3) => {}
         other => panic!("`.b` must read the captured `b` column (3); got {other:?}"),
     }

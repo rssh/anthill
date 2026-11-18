@@ -114,7 +114,7 @@ fn load_errors(ops: &str) -> Vec<String> {
 fn assert_bool(ops: &str, op: &str, want: bool) {
     let mut interp = crate::common::interp_for_files(&[DECLS, &program(ops)]);
     let v = interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op} must run; got {e:?}"));
     assert_eq!(
         as_bool(&v, interp.kb()),
@@ -174,7 +174,7 @@ fn find_callback_dot_selects_by_the_field_it_reads() {
         ),
     ]);
     let v = interp
-        .call("dotfind.first_flagged_name", &[])
+        .call("dotfind.first_flagged_name", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("first_flagged_name must run");
     assert_eq!(
         crate::common::scalar_str(interp.kb(), &v).as_deref(),
@@ -234,7 +234,7 @@ fn control_filter_elems_dot() {
         ),
     ]);
     let v = interp
-        .call("dotfind.via_filter", &[])
+        .call("dotfind.via_filter", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("via_filter must run");
     assert_eq!(
         crate::common::scalar_int(interp.kb(), &v),

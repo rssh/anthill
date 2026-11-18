@@ -190,7 +190,7 @@ fn rows(v: &Value) -> Vec<Vec<(String, Value)>> {
 fn wi731_a_renamed_column_keeps_its_position() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.wi731.middle", &[])
+        .call("test.wi731.middle", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("middle: {e:?}"));
     let got = rows(&v);
     let kb = interp.kb();
@@ -232,10 +232,10 @@ fn wi731_a_renamed_column_keeps_its_position() {
 fn wi731_rename_changes_no_row() {
     let mut interp = interp_for(SRC);
     let renamed = interp
-        .call("test.wi731.middle", &[])
+        .call("test.wi731.middle", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("middle: {e:?}"));
     let plain = interp
-        .call("test.wi731.plainLet", &[])
+        .call("test.wi731.plainLet", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("plainLet: {e:?}"));
     let mut vals = |v: &Value| -> Vec<Vec<String>> {
         let mut out: Vec<Vec<String>> = rows(v)
@@ -259,7 +259,7 @@ fn wi731_rename_changes_no_row() {
 fn wi731_a_swap_is_legal_and_stays_in_place() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.wi731.swap", &[])
+        .call("test.wi731.swap", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("swap: {e:?}"));
     let all = rows(&v);
     let kb = interp.kb();
@@ -283,7 +283,7 @@ fn wi731_a_swap_is_legal_and_stays_in_place() {
 fn wi731_a_join_over_a_shared_column_name_runs_after_a_rename() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.wi731.owners", &[])
+        .call("test.wi731.owners", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("owners: {e:?}"));
     let got = rows(&v);
     assert_eq!(
@@ -310,7 +310,7 @@ fn wi731_a_join_over_a_shared_column_name_runs_after_a_rename() {
 fn wi731_a_self_join_runs_after_renaming_every_column() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.wi731.selfjoin", &[])
+        .call("test.wi731.selfjoin", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("selfjoin: {e:?}"));
     let got = rows(&v);
     assert_eq!(
@@ -413,7 +413,7 @@ fn wi731_a_source_of_the_wrong_type_is_refused() {
 fn wi731_a_receiver_sharing_one_variable_renames_only_the_named_column() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.wi731.dupVar", &[])
+        .call("test.wi731.dupVar", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("dupVar: {e:?}"));
     for row in crate::common::list_heads(&v) {
         let Value::Tuple { pos, named } = &row else {
@@ -474,7 +474,7 @@ fn wi731_a_foreign_source_column_is_refused() {
     );
     let mut interp = interp_for(&src);
     let err = interp
-        .call("test.wi731.bad", &[])
+        .call("test.wi731.bad", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a foreign source column must not silently rename the receiver's own");
     let text = format!("{err:?}");
     assert!(

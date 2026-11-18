@@ -169,7 +169,7 @@ fn load_errs(src: &str) -> Vec<String> {
 /// clean-load assertion.
 fn eval_fresh(src: &str, entry: &str) -> Result<Value, EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(0)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 fn eval_int(src: &str, entry: &str, why: &str) -> i64 {
@@ -189,7 +189,7 @@ fn probe_leaf_from_host(src: &str, ns: &str) -> Result<Value, EvalError> {
         pos: Vec::new().into(),
         named: Vec::new().into(),
     };
-    interp.call(&format!("{ns}.Holder.probe"), &[leaf])
+    interp.call(&format!("{ns}.Holder.probe"), &anthill_core::eval::HostValue::all(&[leaf])).map(|h| h.value)
 }
 
 /// `Driver.drive(0)` calling `Holder.probe(arg)` — a typer-classified call site, which
@@ -433,6 +433,18 @@ fn a_witness_only_value_directed_tie_stays_loud() {
     let ns = "wi861.vd.loud";
     let src = program(ns, &[LEAF_BARE, RIVAL, OTHER, HOLDER_OP]);
     let err = probe_leaf_from_host(&src, ns).unwrap_err();
+    // Proposal 074 §1.4 (WI-20261113-S4D63): the host call is typed as a body's call is, and
+    // the tie is refused there, before the call runs, naming the requirement and both
+    // witnesses — still no default row to break it.
+    if let EvalError::HostCallRefused { detail, .. } = &err {
+        assert!(
+            detail.contains("Desc[T = wi861.vd.loud.Leaf]")
+                && detail.contains("Rival")
+                && detail.contains("Other"),
+            "the tie names the requirement and both witnesses: {detail}"
+        );
+        return;
+    }
     let EvalError::AmbiguousRequirement {
         requirement,
         candidates,

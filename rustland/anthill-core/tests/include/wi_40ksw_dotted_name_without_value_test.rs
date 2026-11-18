@@ -233,7 +233,7 @@ fn a_value_prefix_is_read_as_before() {
         "{DECL}namespace k40j\n  import anthill.prelude.Int64\n  \
          operation go() -> Int64 = zz.Q.origin.x\nend\n"
     ));
-    match interp.call("k40j.go", &[]) {
+    match interp.call("k40j.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 3),
         other => panic!("expected 3, got {other:?}"),
     }

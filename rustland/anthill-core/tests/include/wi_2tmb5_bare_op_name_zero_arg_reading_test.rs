@@ -275,7 +275,7 @@ end
         (DIRECT, "wi2tmb5.arrowslot.drive", "the ARROW slot"),
         (VIA, "wi2tmb5.polyslot.drive", "the POLYMORPHIC slot"),
     ] {
-        match interp_for(src).call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+        match interp_for(src).call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
             anthill_core::eval::Value::Int(i) => assert_eq!(
                 i, 7,
                 "{which} must spread `(acc: 3, x: 10)` into `sub2(x, acc)` BY LABEL; \
@@ -301,7 +301,7 @@ namespace wi2tmb5.nullary
 end
 "#;
     match interp_for(src)
-        .call("wi2tmb5.nullary.drive", &[])
+        .call("wi2tmb5.nullary.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call drive")
     {
         anthill_core::eval::Value::Int(i) => assert_eq!(i, 42),

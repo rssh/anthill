@@ -60,7 +60,7 @@ fn run(namespace: Option<&str>, spec: &str, op: &str) -> i64 {
         Some(ns) => format!("{ns}.{op}"),
         None => op.to_string(),
     };
-    match interp.call(&entry, &[]) {
+    match interp.call(&entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{entry}` over a provided `{spec}` must run to an Int64: {other:?}"),
     }
@@ -180,7 +180,7 @@ end
 fn go_written(ns: &str, param: &str) -> i64 {
     let mut interp = interp_for(&written_provision_program(ns, param));
     let entry = format!("{ns}.go");
-    match interp.call(&entry, &[]) {
+    match interp.call(&entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{entry}` with a `{param}` parameter must run to an Int64: {other:?}"),
     }

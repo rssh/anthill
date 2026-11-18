@@ -106,6 +106,11 @@ left is at a route with no typed caller.
 | untyped frame | `dispatch_resolved_operation` steps 3 and 3b, gated on `untyped_caller()`: a rule-body lambda, a reflected form run by `eval_node_isolated`, a host call | 60 dispatches |
 | resolver | the classification of an unstamped rule-body or query call by the operand's sort | `spec_op_dispatch_by_value` from `kb/resolve.rs`, 128 |
 
+Since 074 stage 10 (WI-20261113-S4D63) a host call (`Interpreter::call`) is typed as the
+same call in an operation body and reads no value: the host-entry row is the resolver's bridge
+and `call_with_requirements` (`invoke_op_with_requirements`), and a host call is no untyped
+frame.
+
 The receiver-less sibling of a default body (step 3c) reads the dictionary the frame was
 entered with, not a value, and built no frame from values in the census. A frame is
 `untyped` (`Frame::untyped`) where the code it runs was typed with no caller to pass a

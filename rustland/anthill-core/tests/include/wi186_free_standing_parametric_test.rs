@@ -34,7 +34,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.wi186_id_int.main", &[])
+        .call("test.wi186_id_int.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call main");
     assert_eq!(r.literal_int64(interp.kb()), Some(42));
 }
@@ -51,7 +51,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.wi186_id_str.main", &[])
+        .call("test.wi186_id_str.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call main");
     match r {
         Value::Str(s) => assert_eq!(s, "hello"),
@@ -77,11 +77,11 @@ end
 "#;
     let mut interp = interp_for(src);
     let n = interp
-        .call("test.wi186_id_two.as_int", &[])
+        .call("test.wi186_id_two.as_int", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("as_int");
     assert_eq!(n.literal_int64(interp.kb()), Some(7));
     let s = interp
-        .call("test.wi186_id_two.as_str", &[])
+        .call("test.wi186_id_two.as_str", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("as_str");
     match s {
         Value::Str(t) => assert_eq!(t, "ok"),
@@ -110,7 +110,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.wi186_make_pair.main", &[])
+        .call("test.wi186_make_pair.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call main");
     match r {
         Value::Entity {

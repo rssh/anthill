@@ -152,7 +152,7 @@ fn loads_clean(src: &str, why: &str) {
 /// (`wi841_call_site_selection_test`'s shape.)
 fn eval_fresh(src: &str, entry: &str) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(0)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 fn eval_str(src: &str, entry: &str, why: &str) -> String {

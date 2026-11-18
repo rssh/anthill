@@ -153,7 +153,7 @@ fn clause_defined_member(receiving: bool) -> &'static str {
 }
 
 fn call(interp: &mut anthill_core::eval::Interpreter, op: &str) -> Result<i64, String> {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(i)) => Ok(i),
         other => Err(format!("{other:?}")),
     }
@@ -334,11 +334,13 @@ fn dictionary_ops_and_resolve_op_agree() {
         other => panic!("expected an OpRef, got {other:?}"),
     };
     let resolved = interp
-        .call(&format!("{DICT}.resolveOp"), &[d.clone(), spec_op])
+        .call(&format!("{DICT}.resolveOp"), &anthill_core::eval::HostValue::all(&[d.clone(), spec_op])).map(|h| h.value)
         .expect("resolveOp");
     assert_eq!(op_of(&interp, &resolved), format!("{ns}.otherDescribe"));
 
-    let mut list = interp.call(&format!("{DICT}.ops"), &[d]).expect("ops");
+    let list = interp.call(&format!("{DICT}.ops"), &anthill_core::eval::HostValue::all(&[d])).map(|h| h.value).expect("ops");
+    // A `FiniteStream` instance, as a body holds it: the list is its carrier's value.
+    let mut list = interp.carried(list);
     let mut ops: Vec<String> = Vec::new();
     while let Value::Entity { named, .. } = &list {
         let field = |short: &str| {

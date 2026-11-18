@@ -139,7 +139,7 @@ fn distinct_labels_still_construct_and_read() {
         "a distinct-label construction must load; got: {errs:?}"
     );
     let mut interp = interp_for(&src);
-    match interp.call("test.wi809.ok.d", &[]).expect("d") {
+    match interp.call("test.wi809.ok.d", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("d") {
         anthill_core::eval::Value::Int(2) => {}
         other => panic!(
             "`.b` must read the `b` field (2) — the slot the bug left unbound; got {other:?}"

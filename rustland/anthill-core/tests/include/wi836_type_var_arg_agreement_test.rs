@@ -75,7 +75,7 @@ fn eval_int(src: &str, op: &str) -> i64 {
     // A FRESH interpreter per case: after any trapped call, reusing one makes
     // every later call return a bogus `Internal(...)` that reads as a second bug.
     match interp_for(src)
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,

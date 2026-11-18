@@ -80,7 +80,7 @@ fn a_row_written_in_another_order_is_the_same_row() {
                operation inner() -> Int64 effects {Other, Tag[B = String, A = Int64]} = 7\n  \
                operation go() -> Int64 effects {Tag[A = Int64, B = String], Other} = inner()\nend\n";
     let mut interp = interp_for(src);
-    match interp.call("test.disporderrow.go", &[]) {
+    match interp.call("test.disporderrow.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(7)) => {}
         other => panic!("expected 7, got {other:?}"),
     }

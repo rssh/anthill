@@ -156,7 +156,7 @@ fn errors_of(body: &str) -> Vec<String> {
 
 fn int_of(interp: &mut Interpreter, op: &str, args: &[Value]) -> i64 {
     interp
-        .call(op, args)
+        .call(op, &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
         .literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("call {op}: expected Int64"))
@@ -269,7 +269,7 @@ end
     assert!(errs.is_empty(), "got: {errs:?}");
     let mut interp = crate::common::interp_for(src);
     let xs = interp
-        .call("wiekwdc.stdlib.mk", &[])
+        .call("wiekwdc.stdlib.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build the source list");
     assert_eq!(
         int_of(&mut interp, "wiekwdc.stdlib.firstMapped", &[xs.clone()]),

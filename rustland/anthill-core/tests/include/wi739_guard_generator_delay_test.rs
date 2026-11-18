@@ -433,7 +433,7 @@ fn wi739_arith_graph_form_then_guard_enumerates() {
 fn wi739_fix_supplied_binding_drains() {
     let mut interp = crate::common::interp_for(FIX_SRC);
     let n = interp
-        .call("wi739.fixcase.fixedCount", &[])
+        .call("wi739.fixcase.fixedCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("distinct_pair.fix(x: 1) must drain, not raise RelationFloundered");
     assert_eq!(
         n.literal_int64(interp.kb()),

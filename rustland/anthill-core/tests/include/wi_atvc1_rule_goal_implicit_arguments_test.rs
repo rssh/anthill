@@ -58,7 +58,7 @@ fn program(ns: &str, body: &str) -> String {
 
 /// An operation of `ns` returning an `Int64`; a trap fails the row at its own call.
 fn int(interp: &mut anthill_core::eval::Interpreter, ns: &str, op: &str) -> i64 {
-    match interp.call(&format!("{ns}.{op}"), &[]) {
+    match interp.call(&format!("{ns}.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{op}: expected an Int64, got {other:?}"),
     }
@@ -592,7 +592,7 @@ fn a_callers_pattern_reaches_a_reify_through_a_rule() {
 
 /// A raise of `other(n: 7)` that no pattern on the way admits.
 fn other_escapes(interp: &mut anthill_core::eval::Interpreter, ns: &str, op: &str) {
-    match interp.call(&format!("{ns}.{op}"), &[]) {
+    match interp.call(&format!("{ns}.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(e) => {
             let e = format!("{e:?}");
             assert!(e.contains("other(n: 7)"), "{op}: the `Other` is not caught: {e}");

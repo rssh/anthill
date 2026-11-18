@@ -232,7 +232,7 @@ namespace anthill.test.wi567eval
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    let got = interp.call("anthill.test.wi567eval.run", &[]);
+    let got = interp.call("anthill.test.wi567eval.run", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         matches!(got, Ok(anthill_core::eval::Value::Int(7))),
         "the discharged `head` must still evaluate to the head element; got {got:?}"
@@ -240,7 +240,7 @@ end
     // The else arm is reached for an empty list — the branch whose existence is
     // what makes the then-arm's discharge sound in the first place.
     let mut interp = crate::common::interp_for(src);
-    let empty = interp.call("anthill.test.wi567eval.run_empty", &[]);
+    let empty = interp.call("anthill.test.wi567eval.run_empty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         matches!(empty, Ok(anthill_core::eval::Value::Int(0))),
         "an empty list must take the else arm and never reach `head`; got {empty:?}"

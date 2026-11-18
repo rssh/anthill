@@ -374,7 +374,7 @@ fn facts_of_reads_the_sort_through_every_naming_carrier() {
     let mut answers: Vec<(&str, Vec<String>)> = Vec::new();
     for (name, v) in carriers {
         let list = interp
-            .call("anthill.reflect.KB.facts_of", &[Value::Unit, v])
+            .call("anthill.reflect.KB.facts_of", &anthill_core::eval::HostValue::all(&[crate::common::ambient_kb(interp.kb()), v])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{name}: facts_of should resolve the sort, got {e:?}"));
         let heads: Vec<String> = crate::common::list_heads(&list)
             .iter()
@@ -406,7 +406,7 @@ fn facts_of_reads_the_sort_through_every_naming_carrier() {
         named: None,
     };
     let err = interp
-        .call("anthill.reflect.KB.facts_of", &[Value::Unit, opref])
+        .call("anthill.reflect.KB.facts_of", &anthill_core::eval::HostValue::all(&[crate::common::ambient_kb(interp.kb()), opref])).map(|h| h.value)
         .expect_err("an OpRef is a type error at a sort slot, not an empty answer");
     let msg = format!("{err:?}");
     assert!(

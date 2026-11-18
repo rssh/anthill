@@ -65,7 +65,7 @@ fn assert_not_implemented(result: Result<Value, EvalError>, running: &str, why: 
 #[test]
 fn a_call_that_reaches_todo_faults_naming_its_operation() {
     let mut interp = interp_for(RUN);
-    let result = interp.call("jr.run.nested", &[]);
+    let result = interp.call("jr.run.nested", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     let rendered = match &result {
         Err(e) => e.to_string(),
         Ok(v) => panic!("a call through the hole returned {v:?}"),
@@ -73,7 +73,7 @@ fn a_call_that_reaches_todo_faults_naming_its_operation() {
     assert_not_implemented(result, "jr.run.stub", "a non-tail call of the hole");
     assert_eq!(rendered, "not implemented: `jr.run.stub` reached `todo()`");
     // CONTROL: the hole is only where it is reached — the rest of the program runs.
-    assert!(matches!(interp.call("jr.run.fine", &[]), Ok(Value::Int(7))));
+    assert!(matches!(interp.call("jr.run.fine", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(7))));
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn a_tail_call_of_a_hole_names_the_operation_that_holds_it() {
     // `tail`'s call of `stub` and `stub`'s of `todo` are both in tail position: a frame
     // a tail call replaces must still leave the holder on top when the builtin runs.
     assert_not_implemented(
-        interp.call("jr.run.tail", &[]),
+        interp.call("jr.run.tail", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value),
         "jr.run.stub",
         "a tail call of the hole",
     );
@@ -105,9 +105,9 @@ namespace jr.lam
 end
 "#,
     );
-    assert_not_implemented(interp.call("jr.lam.writer", &[]), "jr.lam.writer", "a lambda");
+    assert_not_implemented(interp.call("jr.lam.writer", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), "jr.lam.writer", "a lambda");
     assert_not_implemented(
-        interp.call("jr.lam.nested", &[]),
+        interp.call("jr.lam.nested", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value),
         "jr.lam.nested",
         "a lambda written inside a lambda",
     );
@@ -137,11 +137,11 @@ end
     );
     // CONTROL: the boundary is live — it catches the raise.
     assert!(
-        matches!(interp.call("jr.reify.raised", &[]), Ok(Value::Int(42))),
+        matches!(interp.call("jr.reify.raised", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(42))),
         "Error.reify must catch a real raise"
     );
     assert_not_implemented(
-        interp.call("jr.reify.holed", &[]),
+        interp.call("jr.reify.holed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value),
         "jr.reify.stub",
         "a hole inside an Error.reify thunk",
     );
@@ -181,7 +181,7 @@ end
 fn the_disposition_of_a_hole_is_a_fault() {
     let mut interp = interp_for(RUN);
     let err = interp
-        .call("jr.run.stub", &[Value::Int(1)])
+        .call("jr.run.stub", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .expect_err("the hole has no value");
     assert!(matches!(err, EvalError::NotImplemented { .. }), "{err:?}");
     assert_eq!(err.bridge_disposition(interp.kb()), BridgeDisposition::Fault);

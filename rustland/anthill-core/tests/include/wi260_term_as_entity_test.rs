@@ -17,6 +17,11 @@ namespace test.wi260
   sort Inventory
     entity Item(id: String, name: String, count: Int64)
   end
+  import anthill.reflect.{Term, term_as_entity}
+  import anthill.prelude.{Option, Int64}
+  -- `term_as_entity`'s `E` is fixed by the result it is read at: a host call writes no
+  -- bracket and is typed as a body's call is (proposal 074 §1.4), so it calls this.
+  operation asEntity(t: Term) -> Option[T = Inventory] = term_as_entity[E = Inventory](t)
   operation main() -> Int64 = 0
 end
 "#;
@@ -49,7 +54,7 @@ end
         .expect("Option.some present");
 
     let result = interp
-        .call("anthill.reflect.term_as_entity", &[Value::term(item_tid)])
+        .call("test.wi260.asEntity", &anthill_core::eval::HostValue::all(&[Value::term(item_tid)])).map(|h| h.value)
         .expect("call term_as_entity");
 
     let inner = match result {
@@ -115,6 +120,11 @@ fn term_as_entity_returns_none_for_non_constructor() {
     let src = r#"
 namespace test.wi260_none
   import anthill.prelude.Option.{none}
+  import anthill.reflect.{Term, term_as_entity}
+  import anthill.prelude.{Option, Int64}
+  -- `term_as_entity`'s `E` is fixed by the result it is read at: a host call writes no
+  -- bracket and is typed as a body's call is (proposal 074 §1.4), so it calls this.
+  operation asEntity(t: Term) -> Option[T = Int64] = term_as_entity[E = Int64](t)
   operation main() -> Int64 = 0
 end
 "#;
@@ -129,7 +139,7 @@ end
         .expect("Option.none present");
 
     let result = interp
-        .call("anthill.reflect.term_as_entity", &[Value::term(tid)])
+        .call("test.wi260_none.asEntity", &anthill_core::eval::HostValue::all(&[Value::term(tid)])).map(|h| h.value)
         .expect("call term_as_entity");
 
     match result {
@@ -159,6 +169,11 @@ fn term_as_entity_reads_a_native_literal_as_its_term_twin() {
 namespace test.wi260_native
   import anthill.prelude.Option.{none}
   import anthill.prelude.{Map, Int64}
+  import anthill.reflect.{Term, term_as_entity}
+  import anthill.prelude.{Option, Int64}
+  -- `term_as_entity`'s `E` is fixed by the result it is read at: a host call writes no
+  -- bracket and is typed as a body's call is (proposal 074 §1.4), so it calls this.
+  operation asEntity(t: Term) -> Option[T = Int64] = term_as_entity[E = Int64](t)
   operation main() -> Int64 = 0
   operation emptyM() -> Map[K = Int64, V = Int64] = Map.empty()
 end
@@ -171,7 +186,7 @@ end
 
     for native in [Value::Str("not-an-entity".into()), Value::Int(7)] {
         let result = interp
-            .call("anthill.reflect.term_as_entity", &[native.clone()])
+            .call("test.wi260_native.asEntity", &anthill_core::eval::HostValue::all(&[native.clone()])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{native:?} is a term's literal, not a refusal: {e}"));
         assert!(
             matches!(&result, Value::Entity { functor, named, .. } if *functor == none_sym && named.is_empty()),
@@ -180,11 +195,11 @@ end
     }
 
     let handle = interp
-        .call("test.wi260_native.emptyM", &[])
+        .call("test.wi260_native.emptyM", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("emptyM");
     assert!(
         interp
-            .call("anthill.reflect.term_as_entity", &[handle])
+            .call("test.wi260_native.asEntity", &anthill_core::eval::HostValue::all(&[handle])).map(|h| h.value)
             .is_err(),
         "a value with no term reading is a caller mistake, not an absent entity"
     );
@@ -197,6 +212,11 @@ fn term_as_entity_returns_none_for_unregistered_functor() {
     let src = r#"
 namespace test.wi260_unregistered
   import anthill.prelude.Option.{none}
+  import anthill.reflect.{Term, term_as_entity}
+  import anthill.prelude.{Option, Int64}
+  -- `term_as_entity`'s `E` is fixed by the result it is read at: a host call writes no
+  -- bracket and is typed as a body's call is (proposal 074 §1.4), so it calls this.
+  operation asEntity(t: Term) -> Option[T = Int64] = term_as_entity[E = Int64](t)
   operation main() -> Int64 = 0
 end
 "#;
@@ -216,7 +236,7 @@ end
         .expect("Option.none present");
 
     let result = interp
-        .call("anthill.reflect.term_as_entity", &[Value::term(tid)])
+        .call("test.wi260_unregistered.asEntity", &anthill_core::eval::HostValue::all(&[Value::term(tid)])).map(|h| h.value)
         .expect("call term_as_entity");
 
     match result {
@@ -244,6 +264,11 @@ namespace test.wi260_nested
     entity Inner(tag: String)
     entity Outer(name: String, child: Inner)
   end
+  import anthill.reflect.{Term, term_as_entity}
+  import anthill.prelude.{Option, Int64}
+  -- `term_as_entity`'s `E` is fixed by the result it is read at: a host call writes no
+  -- bracket and is typed as a body's call is (proposal 074 §1.4), so it calls this.
+  operation asEntity(t: Term) -> Option[T = Tree] = term_as_entity[E = Tree](t)
   operation main() -> Int64 = 0
 end
 "#;
@@ -281,7 +306,7 @@ end
     });
 
     let result = interp
-        .call("anthill.reflect.term_as_entity", &[Value::term(outer_term)])
+        .call("test.wi260_nested.asEntity", &anthill_core::eval::HostValue::all(&[Value::term(outer_term)])).map(|h| h.value)
         .expect("call term_as_entity");
 
     // Unwrap some(value: Outer{name, child: Inner{tag}}).

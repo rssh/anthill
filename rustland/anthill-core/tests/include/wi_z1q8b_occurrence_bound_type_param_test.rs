@@ -89,7 +89,7 @@ fn load_errors(src: &str) -> Vec<String> {
 /// Load `src`, call its zero-argument `probe`, and return the `Int64` it answers.
 fn probe(ns: &str, body: &str) -> i64 {
     let mut interp = common::interp_for(&src(ns, body));
-    match interp.call(&format!("wi_z1q8b.{ns}.probe"), &[]) {
+    match interp.call(&format!("wi_z1q8b.{ns}.probe"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`probe` must load and answer an Int64; got {other:?}"),
     }

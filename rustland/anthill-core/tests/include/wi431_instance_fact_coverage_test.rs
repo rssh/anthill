@@ -136,7 +136,7 @@ fn instance_fact_op_dispatches_at_eval() {
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    match interp.call("test.wi431.eval.runCombine", &[]) {
+    match interp.call("test.wi431.eval.runCombine", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 99,
             "combine(tag, tag) must dispatch to the instance-fact-bound tagCombine (n = 99); got {n}"
@@ -195,7 +195,7 @@ fn instance_fact_op_dispatches_via_threaded_dict() {
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    match interp.call("test.wi431.threaded.runThreaded", &[]) {
+    match interp.call("test.wi431.threaded.runThreaded", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 42,
             "zeroLike must thread a HasZero[T=Tag] dict from the instance fact and dispatch zero to tagZero (n = 42); got {n}"
@@ -266,7 +266,7 @@ fn instance_fact_op_dispatches_when_spec_has_requires() {
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    match interp.call("test.wi431.subreq.run", &[]) {
+    match interp.call("test.wi431.subreq.run", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 7,
             "hzero must dispatch via the threaded instance-fact dict to tagZero even though HasZ requires MyEq (n = 7); got {n}"
@@ -314,7 +314,7 @@ fn instance_fact_eq_powers_list_member() {
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    let hit = match interp.call("test.wi431.member.hasMatch", &[]) {
+    let hit = match interp.call("test.wi431.member.hasMatch", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => n,
         other => panic!("contains([color 1, color 2], color 2) should eval via the instance-fact Eq; got {other:?}"),
     };
@@ -322,7 +322,7 @@ end
         hit, 1,
         "member must find color 2 using the instance-fact-provided colorEq"
     );
-    let miss = match interp.call("test.wi431.member.hasNoMatch", &[]) {
+    let miss = match interp.call("test.wi431.member.hasNoMatch", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => n,
         other => panic!("contains(…, color 9) should eval via the instance-fact Eq; got {other:?}"),
     };
@@ -585,7 +585,7 @@ fn instance_fact_binding_names_the_spec_type_at_the_provisions_bindings() {
 fn instance_fact_binding_denoted_return_type_that_matches_dispatches() {
     let src = denoted_binding_src("sig_denoted_ok", "Foo[T = Int64, N = 3]", "foo(v: 41)");
     let mut interp = crate::common::interp_for(&src);
-    match interp.call("test.wi431.sig_denoted_ok.runOp", &[]) {
+    match interp.call("test.wi431.sig_denoted_ok.runOp", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 41,
             "`op(tag(n: 1))` must dispatch via the instance fact to `boundOp`; got {n}"
@@ -912,7 +912,7 @@ fn instance_fact_carrier_param_after_op_resolves_and_dispatches() {
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    match interp.call("test.wi431.carrier_order.runCombine", &[]) {
+    match interp.call("test.wi431.carrier_order.runCombine", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 99,
             "combine must dispatch to the instance-fact-bound tagCombine even though the carrier \

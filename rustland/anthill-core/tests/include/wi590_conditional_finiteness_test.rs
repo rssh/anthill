@@ -387,7 +387,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let xs = interp
-        .call("wi590.conditional.defaulted.mk", &[])
+        .call("wi590.conditional.defaulted.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build the source list");
     for (op, want) in [
         ("mapped_size", 3),
@@ -399,7 +399,7 @@ end
         assert_eq!(int_of(&mut interp, &qn, &[xs.clone()]), want, "{op}");
     }
     let m = interp
-        .call("wi590.conditional.defaulted.mk_map", &[])
+        .call("wi590.conditional.defaulted.mk_map", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build the map");
     assert_eq!(
         int_of(&mut interp, "wi590.conditional.defaulted.map_size", &[m.clone()]),
@@ -515,7 +515,7 @@ fn defaulted_members_at_a_bare_finite_carrier_load_and_evaluate() {
         );
     let mut interp = crate::common::interp_for(&src);
     let fin = interp
-        .call("wi590.conditional.bare.mk", &[])
+        .call("wi590.conditional.bare.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build the finite carrier");
     for (op, want) in [
         ("probe", 3),
@@ -558,7 +558,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let xs = interp
-        .call("wi590.conditional.eval.mk", &[])
+        .call("wi590.conditional.eval.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build the source list");
     assert_eq!(
         int_of(
@@ -577,7 +577,7 @@ end
 
 fn int_of(interp: &mut Interpreter, op: &str, args: &[Value]) -> i64 {
     interp
-        .call(op, args)
+        .call(op, &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
         .literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("call {op}: expected Int64"))

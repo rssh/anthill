@@ -137,7 +137,7 @@ fn drain_ints(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Vec<i64> {
 fn wi714_project_single_column() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.names", &[])
+        .call("test.wi714project.names", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("names runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -151,7 +151,7 @@ fn wi714_project_single_column() {
 fn wi714_project_distribute_dot_one_member() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.ages", &[])
+        .call("test.wi714project.ages", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("ages runs");
     let mut got = drain_ints(interp.kb(), r);
     got.sort();
@@ -165,7 +165,7 @@ fn wi714_project_distribute_dot_one_member() {
 fn wi714_project_multi_column() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.both", &[])
+        .call("test.wi714project.both", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("both runs");
     let mut rows = 0usize;
     let mut names: Vec<String> = Vec::new();
@@ -216,7 +216,7 @@ fn wi714_project_multi_column() {
 fn wi714_project_rename() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.renamed", &[])
+        .call("test.wi714project.renamed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("renamed runs");
     let mut rows = 0usize;
     let mut cur = r;
@@ -257,7 +257,7 @@ fn wi714_project_rename() {
 fn wi714_project_after_where() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.youngNames", &[])
+        .call("test.wi714project.youngNames", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("youngNames runs");
     let got = drain_strings(interp.kb(), r);
     assert_eq!(got, vec!["bob".to_string()], "only bob is 25");
@@ -271,7 +271,7 @@ fn wi714_project_after_where() {
 fn wi714_project_multi_over_computed_receiver() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.youngRows", &[])
+        .call("test.wi714project.youngRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("youngRows runs");
     let mut rows = 0usize;
     let mut cur = r;
@@ -308,7 +308,7 @@ fn wi714_project_multi_over_computed_receiver() {
 fn wi714_project_named_arg_head() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.namedNames", &[])
+        .call("test.wi714project.namedNames", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("namedNames runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -322,7 +322,7 @@ fn wi714_project_named_arg_head() {
 fn wi714_project_preserves_bag_multiplicity() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.owners", &[])
+        .call("test.wi714project.owners", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("owners runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -348,7 +348,7 @@ fn wi714_project_preserves_bag_multiplicity() {
 fn wi714_project_inline_chain_computed_receiver() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714project.inlineYoung", &[])
+        .call("test.wi714project.inlineYoung", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("inlineYoung runs");
     let mut rows = 0usize;
     let mut cur = r;

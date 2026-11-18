@@ -169,7 +169,7 @@ fn desc_rows(kb: &mut anthill_core::kb::KnowledgeBase) -> Vec<String> {
 fn probe(ns: &str, src: &str) -> i64 {
     let op = format!("{ns}.probe");
     match crate::common::interp_for(src)
-        .call(&op, &[])
+        .call(&op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         Value::Int(i) => i,

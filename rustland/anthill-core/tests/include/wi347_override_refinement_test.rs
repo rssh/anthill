@@ -946,7 +946,7 @@ fn a_sigma_bound_denoted_return_type_that_matches_still_runs() {
     let src = denoted_sigma_ret_src("result_ret_denoted_sigma_ok", "Carrier", "foo(v: x)");
     let mut interp = crate::common::interp_for(&src);
     let out = interp
-        .call("wi347.result_ret_denoted_sigma_ok.Carrier.probe", &[])
+        .call("wi347.result_ret_denoted_sigma_ok.Carrier.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("an override returning exactly what σ grounds the spec's return type to \
                  must load and run");
     assert!(

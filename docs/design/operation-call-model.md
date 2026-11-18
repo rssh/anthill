@@ -933,17 +933,27 @@ Why it is being replaced: a positional slot index is relative to the *current ac
 
 The operation-call model assumes every body runs inside an activation frame whose `requirements` channel is populated by some caller's `apply_within` reduction. That covers all *in-program* calls — but the **outermost** call comes from the host (Rust, in the current realization) and there is no anthill-side caller to populate the frame.
 
-The runtime currently exposes two host APIs for the boundary; the choice depends on whether the entry op's parent sort uses *same-sort* or *cross-sort* requires.
+The runtime exposes two host APIs for the boundary: the typed call, and an untyped entry for a cross-sort chain the host supplies.
 
-### Same-sort recursion → `Interpreter::call(qname, args)`
+### A host call is typed → `Interpreter::call(qname, &[HostValue])`
 
-If the entry op's parent sort declares `requires` only of itself (the dominant CLI case — a bundle's `sort Main { requires anthill.cli.Main; … }` where `anthill.cli.Main` is the same sort the entry is defined inside), the runtime seeds `frame.requirements` with **self-referential placeholders**: each slot is `Requirement { functor: <parent_sort>, sub_requires: [] }`. Body-side `requirement_at_current(slot=k)` reads return a placeholder whose `functor` equals the parent sort — adequate when the body's only dispatch path is back into the same sort's ops.
+A host call is typed as the same call written in an operation body (proposal 074 §1.4): `op(x1, …, xn)`, each `xi` a local at the type the host holds its argument at, typed where an operation body is (the enclosing operation is the host's, `anthill.host.call`, which requires nothing). The typer fixes the call's type parameters and builds its dictionaries, the parent sort's same-sort chain included (`sort Main { requires anthill.cli.Main; … }`), and the typed call runs with each `xi` bound to its value. Nothing in it is chosen by a value.
 
-Slot layout: slot 0 is **Self** (the enclosing op's dispatching dict); slots `1..=N` are the parent sort's flattened `requires` chain, in declaration order. All entries are self-referential placeholders.
+A `HostValue` is a value with the type it is held at. `HostValue::typed(value, ty)` states the type; what `call` returns is one, at the type the typer gave the call; `HostValue::from(value)` (and `HostValue::all(&values)`) is a value at the type it reads as (`interp.host_value(v)` computes it): a scalar at its sort, a construction at its sort with the arguments its fields fix, a name at `Symbol` (at `Type` where the parameter takes one), a run-time handle at its reflect sort (`KB`, `FactRef`, `Substitution`, `OpRef` where the parameter takes one), a function value at its operation's arrow. A value whose type says more than its value — an existential's slot, an opaque sort's carrier, a label in a type parameter — is passed as the call that made it returned it, or at a type the host states:
+
+```rust
+let set = interp.call("pkg.Driver.mkByLength", &[])?;              // at MySet[T = String, O = ByLength]
+let aa = Value::Str("aa".into()).into();                            // at String
+interp.call("pkg.Bulk.has", &[set, aa])?;                           // reads s.O = ByLength
+```
+
+Handed over bare, the set is at `MySet[T = String]`, `O` open, and `has` is refused naming `O`: the value was built with a provider the call cannot read (kernel-language §5.2, the existential return). A result typed at a spec is the instance a body holds; `interp.carried(v)` opens it to its carrier's value.
+
+What the typer refuses about the call, and a requirement it parks for the report after every body is typed, is refused before anything runs (`EvalError::HostCallRefused`), in the sentence the same call's load error has in a body: `zeroOf()` over `zeroOf[X]() -> X requires Additive[T = X]` names `X`, `add2(7, 2, 3)` over `add2(x: Additive, …)` names `add2.x`. An operation with no declared signature (a host function registered by key) has nothing to type and is called with the values.
 
 ### Cross-sort requires → `Interpreter::call_with_requirements(qname, args, chain_dicts)`
 
-When the parent sort declares `requires X[…]` for a different sort `X` (e.g. `sort Main { sort State = ?; requires WorkItemStore[State]; … }`), the self-referential placeholder is **not enough**: the body's `WorkItemStore.lookup(s, id)` call dispatches through slot 1, whose placeholder has `functor = Main` rather than `functor = FileBasedWorkitemStore`. Either the lookup mis-resolves (the dispatching-dict's `sort` is wrong) or the impl's body reads sub-instances that the placeholder's empty `sub_requires` doesn't contain.
+When the parent sort declares `requires X[…]` for a different sort `X` at a type the arguments' types do not fix (e.g. `sort Main { sort State = ?; requires WorkItemStore[State]; … }`), there is no dictionary for the typed call to build: the body's `WorkItemStore.lookup(s, id)` call dispatches through slot 1, which must hold `FileBasedWorkitemStore`'s dictionary, and only the host knows that it does.
 
 The fix is for the host to supply **real impl-rooted dictionaries** for the chain entries:
 
@@ -974,25 +984,10 @@ The host API is value-level only; the **typer** doesn't see the caller's intent.
 
 `Interpreter::alloc_dictionary_unchecked` builds a dictionary of any shape and is NOT the host constructor: it exists for fixtures that drive the value carrier (a projection reading slot `k`, `Dictionary.impl` reading a symbol back), where the pair is not a claim about any spec.
 
-### A parameter's unwritten named slot → `Interpreter::call_with_witnesses(qname, args, witnesses)`
-
-`operation has(s: MySet[T = String], x: String)` over `enum MySet requires O: WeakOrd[T]` leaves `O` unwritten, so the op-scoped slot EE0EP synthesizes for it holds the ARGUMENT's own dictionary — read, at a typed call site, out of the argument's type. A host has only the value, which carries its sort and none of its type arguments. `interp.call` fills the slot only when `WeakOrd[T = String]` has exactly one provider (the value's construction had to choose it); with several, the slot is a recorded absence, and a body that reads it is refused naming `s.O` (WI-20260922-ATFGH). It is never filled by a ranking — specificity or 058 §3.2's default — which answers "which provider wins", not "which one built this value"; the default measurably built `String`'s own ordering for a `ByLength` set.
-
-The host spelling names the WITNESS per slot:
-
-```rust
-interp.call_with_witnesses("pkg.Bulk.has",
-                           &[set, Value::Str("aa".into())],
-                           &[SlotWitness { param: "s", slot: "O", witness: "pkg.ByLength" }])?;
-```
-
-The witness becomes the same bare instance selection a typed call makes for a bare witness, and its own conditions resolve as its sub-goals. A slot the op does not have, a slot named twice, an unknown witness, a goal the arguments do not pin, a witness that does not answer the goal, and an op with no body of its own (entered by value-directed dispatch, which would discard the witness) are each refused at the entry. Everything else is `interp.call`'s. Not by passing types: the dictionary is what runtime needs, and the type is only where a typed call reads the witness from. An entry needing both `call_with_requirements`' cross-sort dictionaries and a witness has no single spelling yet; nothing in tree is both.
-
 ### When to pick which
 
-- `interp.call` is the default. Use it for any op whose parent sort declares only same-sort `requires`, or no `requires` at all. The seeded placeholders sit unused by such bodies and cost nothing.
-- `interp.call_with_requirements` is mandatory when the entry op's parent sort declares cross-sort `requires`. Without it, dispatch through those slots fails at runtime.
-- `interp.call_with_witnesses` is needed when the entry op has a parameter that leaves a named requirement slot unwritten, its body reads that slot, and the slot's goal has more than one provider. Without it, the read is refused naming the slot.
+- `interp.call` is the default: the call is typed, and every dictionary the typer can build at its arguments' types is built.
+- `interp.call_with_requirements` is the untyped entry for a parent sort whose cross-sort `requires` chain the arguments' types do not fix (`requires WorkItemStore[State]` with `State` open): the host supplies the chain's dictionaries.
 
 Inference of the right dictionary from the value-level args (e.g. peek at the `wis(...)` functor inside a `Cell[?S]` argument to deduce `State = WIS` and select FileBasedWorkitemStore) is a future direction — `call_with_requirements` is the explicit-impl baseline that ships first.
 

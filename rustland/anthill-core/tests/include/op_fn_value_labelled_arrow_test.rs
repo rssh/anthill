@@ -97,7 +97,7 @@ end
 /// `Driver.<op>()` on a FRESH interpreter, which panics on a dirty load.
 fn value(src: &str, ns: &str, op: &str) -> i64 {
     let mut interp: Interpreter = crate::common::interp_for(src);
-    match interp.call(&format!("{ns}.Driver.{op}"), &[]) {
+    match interp.call(&format!("{ns}.Driver.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{ns}.Driver.{op}: expected an Int64, got {other:?}"),
     }

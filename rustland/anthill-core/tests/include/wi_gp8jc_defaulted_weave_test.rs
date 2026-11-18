@@ -297,7 +297,7 @@ end
 
 fn drive_rank(entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(RANK_PROGRAM);
-    match interp.call(&format!("gp8jc.rank.Driver.{entry}"), &[]) {
+    match interp.call(&format!("gp8jc.rank.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }

@@ -143,7 +143,7 @@ end
 fn assert_floats(cases: &[(&str, f64)]) {
     let mut interp = crate::common::interp_for(DRIVER);
     for (entry, want) in cases {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Float(got)) => assert!(
                 got == *want || (got - want).abs() < 1e-12,
                 "{entry}: expected {want}, got {got}"
@@ -192,7 +192,7 @@ fn rounding_crosses_to_int64() {
         ("wi881.float.D.dCeil", 2),
         ("wi881.float.D.dRound", 2), // half away from zero
     ] {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "{entry}"),
             other => panic!("call {entry}: expected an Int64, got {other:?}"),
         }
@@ -207,7 +207,7 @@ fn rounding_crosses_to_int64() {
 fn rounding_out_of_int64_domain_raises() {
     for entry in ["wi881.float.D.dFloorNaN", "wi881.float.D.dFloorHuge"] {
         let mut interp = crate::common::interp_for(DRIVER);
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Err(anthill_core::eval::EvalError::Overflow { op }) => {
                 assert_eq!(op, "Float.floor")
             }
@@ -226,7 +226,7 @@ fn ieee_partiality_is_a_value_not_an_error() {
         "wi881.float.D.dLogZeroIsInf",
         "wi881.float.D.dRecipZeroIsInf",
     ] {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Bool(true)) => {}
             other => panic!("call {entry}: expected true, got {other:?}"),
         }
@@ -292,7 +292,7 @@ end
         ("wi881.negLaw.L.drive", -2.5),
         ("wi881.negLaw.L.driveZeroRecip", f64::NEG_INFINITY),
     ] {
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Float(f)) => assert_eq!(f, want, "{entry}"),
             other => panic!("call {entry}: expected a Float, got {other:?}"),
         }
@@ -386,12 +386,12 @@ namespace wi881.nullary
 end
 "#;
     let mut interp = crate::common::interp_for(CONTROL);
-    match interp.call("wi881.nullary.C.driveParenthesized", &[Value::Int(0)]) {
+    match interp.call("wi881.nullary.C.driveParenthesized", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(40)) => {}
         other => panic!("a parenthesized nullary @[simp] head must fire; got {other:?}"),
     }
     let mut interp = crate::common::interp_for(CONTROL);
-    match interp.call("wi881.nullary.C.driveBare", &[Value::Int(0)]) {
+    match interp.call("wi881.nullary.C.driveBare", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(50)) => {}
         other => panic!("a bare nullary @[simp] head must fire too; got {other:?}"),
     }

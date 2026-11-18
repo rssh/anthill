@@ -322,7 +322,7 @@ end
 "#;
     let mut interp = interp_for_files(&[&caller(1), defining]);
     assert!(
-        matches!(interp.call("test.x5sb4.c.go", &[]), Ok(eval::Value::Int(1))),
+        matches!(interp.call("test.x5sb4.c.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(eval::Value::Int(1))),
         "a predicate of another file refutes the guard at 1"
     );
     assert_refused_naming(

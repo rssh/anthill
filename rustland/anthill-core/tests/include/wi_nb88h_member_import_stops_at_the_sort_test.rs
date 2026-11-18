@@ -272,7 +272,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let got = interp
-        .call("nb88h.offered.t", &[])
+        .call("nb88h.offered.t", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`add`/`sub`/`mul` come from `Numeric provides Additive/Multiplicative`");
     // The WHOLE rendering, not a substring: `contains("30")` also accepts `Int(300)`
     // (found by `/code-review`).
@@ -296,8 +296,8 @@ fn a_required_member_still_imports() {
 end
 "#;
     let mut interp = interp_for(src);
-    let hi = interp.call("nb88h.required.hi", &[]).expect("`gte` must run");
-    let lo = interp.call("nb88h.required.lo", &[]).expect("`lt` must run");
+    let hi = interp.call("nb88h.required.hi", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("`gte` must run");
+    let lo = interp.call("nb88h.required.lo", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("`lt` must run");
     assert!(
         format!("{hi:?}").contains("true") && format!("{lo:?}").contains("false"),
         "gte(7,3)=true, lt(7,3)=false; got {hi:?} / {lo:?}"

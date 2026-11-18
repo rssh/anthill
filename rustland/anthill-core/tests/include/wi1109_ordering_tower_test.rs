@@ -84,7 +84,7 @@ fn program(ns: &str, body: &str) -> String {
 /// `Value` is not `PartialEq`, so both readers PROJECT it — the `wi844` shape.
 fn eval_str(src: &str, entry: &str) -> String {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Str(v)) => v,
         other => panic!("{entry} must answer a String; got {other:?}"),
     }
@@ -92,7 +92,7 @@ fn eval_str(src: &str, entry: &str) -> String {
 
 fn eval_int(src: &str, entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(v)) => v,
         other => panic!("{entry} must answer an Int64; got {other:?}"),
     }

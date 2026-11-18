@@ -416,7 +416,7 @@ fn a_dispatch_holds_through_an_unconditioned_clause_beside_duplicate_conditioned
          operation useIt(x: T) -> Int64 = Big.big(x)\n  end\n  \
          operation go() -> Int64 = Caller.useIt(bx(b: 1))\nend\n";
     let mut interp = crate::common::interp_for(src);
-    match interp.call("p5g39.alt.go", &[]) {
+    match interp.call("p5g39.alt.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 7, "`Big[Box]` holds outright and dispatches"),
         other => panic!("the call must dispatch through the outright clause; got {other:?}"),
     }

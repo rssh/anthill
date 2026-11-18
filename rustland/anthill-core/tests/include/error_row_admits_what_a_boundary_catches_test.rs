@@ -119,7 +119,7 @@ fn a_raise_admitted_by_a_wider_row_is_caught_by_its_boundary() {
     );
     let mut interp = crate::common::interp_for(&src);
     for (op, want) in [("atWide", 14), ("atNarrow", 2), ("atAny", 2)] {
-        let v = interp.call(&format!("test.rowcatch.{op}"), &[]).expect("runs");
+        let v = interp.call(&format!("test.rowcatch.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("runs");
         assert!(matches!(v, Value::Int(n) if n == want), "{op}: expected {want}, got {v:?}");
     }
 }

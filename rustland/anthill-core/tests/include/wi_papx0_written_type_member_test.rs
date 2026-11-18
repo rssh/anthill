@@ -95,7 +95,7 @@ fn source(ns: &str, body: &str) -> String {
 fn run(ns: &str, body: &str) -> Value {
     let mut interp = interp_for(&source(ns, body));
     interp
-        .call(&format!("test.{ns}.go"), &[])
+        .call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{ns}: {e:?}"))
 }
 
@@ -309,7 +309,7 @@ fn an_alias_defined_by_a_bracketed_member_in_either_order() {
         "namespace test.papx0wt3f\n  import anthill.prelude.{{Int64, List}}\n  sort CQL = Q[A = Int64].L\n{use_it}\n  sort Q[A]\n    sort L = List[T = A]\n  end\nend\n"
     );
     let mut interp = interp_for(&first);
-    match interp.call("test.papx0wt3f.go", &[]) {
+    match interp.call("test.papx0wt3f.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(1)) => {}
         other => panic!("the alias written first: {other:?}"),
     }

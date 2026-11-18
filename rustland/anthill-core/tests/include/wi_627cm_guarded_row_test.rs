@@ -163,7 +163,7 @@ fn the_stdlib_heads_raise_only_where_the_stream_is_empty() {
     assert_eq!(run_int64(&src, "test.n627.heads.viaList"), Ok(6));
     let mut interp = Interpreter::new(crate::common::load_kb_with(&src));
     eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call("test.n627.heads.ofNil", &[]) {
+    match interp.call("test.n627.heads.ofNil", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised {
             payload: Value::Entity { functor, .. },
             ..

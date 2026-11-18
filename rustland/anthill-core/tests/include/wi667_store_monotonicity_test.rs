@@ -30,6 +30,28 @@ use anthill_core::persistence::{Monotonicity, PersistenceError, Store};
 use crate::common::interp_for;
 use anthill_core::kb::ClauseKind;
 
+/// The mock backends of this file as stores a host call types at (proposal 074 §1.4): a sort
+/// of the program's own that is a realized backend providing `NonMonotonicStore`, as
+/// anthill-stl's binding makes a library backend one. Its operations are the spec's host
+/// functions, which resolve the store value to the mirror the test registers under it.
+const MOCK_STORES: &str = "namespace test.mockstore\n  \
+                           import anthill.persistence.{NonMonotonicStore}\n  \
+                           entity PolicyStore\n  \
+                           entity AppendOnly\n  \
+                           provides PolicyStore language rust\n    \
+                           artifact \"rustland/anthill-core/tests/include/wi667_store_monotonicity_test.rs\"\n  \
+                           end\n  \
+                           provides AppendOnly language rust\n    \
+                           artifact \"rustland/anthill-core/tests/include/wi667_store_monotonicity_test.rs\"\n  \
+                           end\n  \
+                           namespace PolicyStore\n    \
+                           provides NonMonotonicStore\n  \
+                           end\n  \
+                           namespace AppendOnly\n    \
+                           provides NonMonotonicStore\n  \
+                           end\n\
+                           end\n";
+
 // ── A synthetic policy-bearing store ────────────────────────────
 //
 // Unlike the filesystem backends (whose per-functor policy IS the project's
@@ -79,7 +101,7 @@ impl Store for PolicyStore {
 
 /// A `PolicyStore()`-shaped store value (canonical-key basis) + its registration.
 fn register_policy_store(interp: &mut Interpreter, mock: PolicyStore) -> Value {
-    let functor = interp.kb_mut().intern("PolicyStore");
+    let functor = interp.kb().try_resolve_symbol("test.mockstore.PolicyStore").expect("the mock `PolicyStore`");
     let store_val = Value::Entity {
         functor,
         pos: vec![].into(),
@@ -97,26 +119,7 @@ fn register_policy_store(interp: &mut Interpreter, mock: PolicyStore) -> Value {
 /// A `FileStore(root, Flat)` value + its registration (reused from the WI-666
 /// setup shape).
 fn register_file_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
-    let fs = interp.kb_mut().intern("FileStore");
-    let flat = interp.kb_mut().intern("Flat");
-    let root_sym = interp.kb_mut().intern("root");
-    let convention_sym = interp.kb_mut().intern("convention");
-    let store_val = Value::Entity {
-        functor: fs,
-        pos: vec![].into(),
-        named: vec![
-            (root_sym, Value::Str(root.to_str().unwrap().to_string())),
-            (
-                convention_sym,
-                Value::Entity {
-                    functor: flat,
-                    pos: vec![].into(),
-                    named: vec![].into(),
-                },
-            ),
-        ]
-        .into(),
-    };
+    let store_val = crate::common::file_store_value(interp.kb(), "FileStore", root.to_str().unwrap(), "flat");
     let key = interp
         .store_canonical_key(&store_val)
         .expect("canonical key");
@@ -151,15 +154,15 @@ fn monotonicity(
 ) -> Result<Value, EvalError> {
     interp.call(
         "anthill.persistence.Store.monotonicity",
-        &[store.clone(), functor],
-    )
+        &anthill_core::eval::HostValue::all(&[store.clone(), functor]),
+    ).map(|h| h.value)
 }
 
 fn persist(interp: &mut Interpreter, store: &Value, fact: Value) -> Result<Value, EvalError> {
     interp.call(
         "anthill.persistence.Store.persist",
-        &[store.clone(), fact, Value::Unit],
-    )
+        &anthill_core::eval::HostValue::all(&[store.clone(), fact, crate::common::no_meta(interp.kb())]),
+    ).map(|h| h.value)
 }
 
 fn retract(interp: &mut Interpreter, store: &Value, stored: Value) -> Result<Value, EvalError> {
@@ -174,8 +177,8 @@ fn retract(interp: &mut Interpreter, store: &Value, stored: Value) -> Result<Val
     };
     interp.call(
         "anthill.persistence.NonMonotonicStore.retract",
-        &[store.clone(), reference],
-    )
+        &anthill_core::eval::HostValue::all(&[store.clone(), reference]),
+    ).map(|h| h.value)
 }
 
 /// Assert the reflect `Monotonicity` entity `v` is the `<variant>` variant.
@@ -206,7 +209,7 @@ fn monotonicity_query_reads_reflect_rule_without_a_write() {
         entity Widget\n  \
         entity Gadget\n  \
         rule fact_monotonicity(Widget) <=> non_monotone() @[simp]\nend\n";
-    let mut interp = interp_for(src);
+    let mut interp = interp_for(&format!("{}{MOCK_STORES}", src));
     let store = register_file_store(&mut interp, dir.path());
 
     let widget = functor_value(&mut interp, "test.q1.Widget");
@@ -230,7 +233,7 @@ fn external_functor_resolves_to_store_policy_not_default() {
     // declares it non_monotone, materialized at registration — so the facade
     // resolves to the store's policy, not the in-memory `monotone` default.
     let src = "namespace test.syn\n  entity Ghost\nend\n";
-    let mut interp = interp_for(src);
+    let mut interp = interp_for(&format!("{}{MOCK_STORES}", src));
     let store = register_policy_store(
         &mut interp,
         PolicyStore {
@@ -252,7 +255,7 @@ fn store_policy_permits_retract_through_the_guard() {
     // in-memory rule. (Without the store policy it would be the monotone
     // default and the guard would refuse.)
     let src = "namespace test.syn\n  entity Ghost\nend\n";
-    let mut interp = interp_for(src);
+    let mut interp = interp_for(&format!("{}{MOCK_STORES}", src));
     let store = register_policy_store(
         &mut interp,
         PolicyStore {
@@ -274,7 +277,7 @@ fn declared_non_monotone_but_backend_cannot_retract_is_loud_error() {
     // store), but the backend's retract fails — it must surface LOUDLY via the
     // Error effect at the write, not a silent no-op or a static load check.
     let src = "namespace test.syn\n  entity Ghost\nend\n";
-    let mut interp = interp_for(src);
+    let mut interp = interp_for(&format!("{}{MOCK_STORES}", src));
     let store = register_policy_store(
         &mut interp,
         PolicyStore {
@@ -322,8 +325,8 @@ fn append_only_default_store_cannot_retract() {
         // no `retract` override → inherits the NotMutable default gate.
     }
     let src = "namespace test.syn\n  entity Ghost\nend\n";
-    let mut interp = interp_for(src);
-    let functor = interp.kb_mut().intern("AppendOnly");
+    let mut interp = interp_for(&format!("{}{MOCK_STORES}", src));
+    let functor = interp.kb().try_resolve_symbol("test.mockstore.AppendOnly").expect("the mock `AppendOnly`");
     let store = Value::Entity {
         functor,
         pos: vec![].into(),

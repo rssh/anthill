@@ -40,7 +40,7 @@ use crate::wi_xsvcs_op_requires_forward_test::printed_repair;
 pub(crate) fn answers(src: &str, ops: &[&str]) -> Vec<String> {
     let mut interp = interp_for(src);
     ops.iter()
-        .map(|op| match interp.call(op, &[]) {
+        .map(|op| match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(v) => show_value(interp.kb(), &v),
             Err(e) => panic!("{op}: {e:?}"),
         })

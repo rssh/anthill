@@ -135,7 +135,7 @@ end
 #[track_caller]
 fn answers(interp: &mut Interpreter, op: &str, n: i64) -> String {
     let v = interp
-        .call(&format!("test.bdvyw.{op}"), &[Value::Int(n)])
+        .call(&format!("test.bdvyw.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}({n}): {e}"));
     crate::common::scalar_str(interp.kb(), &v).unwrap_or_else(|| panic!("{op}: {v:?}"))
 }
@@ -184,7 +184,7 @@ fn a_boundary_at_one_instance_leaves_the_other_to_its_caller() {
 #[test]
 fn a_brackets_open_slot_over_one_label_is_that_label() {
     let mut interp = crate::common::interp_for(PROGRAM);
-    let v = interp.call("test.bdvyw.oneLength", &[Value::Int(-1)]).expect("caught");
+    let v = interp.call("test.bdvyw.oneLength", &anthill_core::eval::HostValue::all(&[Value::Int(-1)])).map(|h| h.value).expect("caught");
     assert!(matches!(v, Value::Int(3)), "the caught reason is the String \"sss\"; got {v:?}");
 }
 
@@ -203,7 +203,7 @@ fn a_boundary_over_a_sort_and_its_refinement_is_at_the_wider() {
 #[test]
 fn a_brackets_slot_nothing_fills_is_open() {
     let mut interp = crate::common::interp_for(PROGRAM);
-    let v = interp.call("test.bdvyw.nothingRaised", &[]).expect("runs");
+    let v = interp.call("test.bdvyw.nothingRaised", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("runs");
     assert_eq!(crate::common::scalar_str(interp.kb(), &v).as_deref(), Some("ok"));
 }
 
@@ -280,7 +280,7 @@ end
     let errs = crate::common::load_errors_of(&program("err(boom(r)) -> String.length(r)"));
     crate::common::assert_refused_naming(&errs, &["length.s", "expected String, got ?"], "the reason read as a String");
     let mut interp = crate::common::interp_for(&program("err(_) -> 0"));
-    let v = interp.call("test.bdvyw.closed.caught", &[]).expect("caught");
+    let v = interp.call("test.bdvyw.closed.caught", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("caught");
     assert!(matches!(v, Value::Int(0)), "the open boundary catches `boom(5)`; got {v:?}");
 }
 
@@ -387,7 +387,7 @@ end
         ("directOther", false),
     ] {
         let v = interp
-            .call(&format!("test.bdvyw.slot.{op}"), &[])
+            .call(&format!("test.bdvyw.slot.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert!(matches!(v, Value::Bool(b) if b == want), "{op}: want {want}, got {v:?}");
     }
@@ -433,7 +433,7 @@ fn unknown_interp() -> Interpreter {
     // `operation_map` names it.
     let kb = crate::common::try_load_kb_prepared(UNKNOWN, |kb| {
         kb.register_host_fn("bdvyw_go", 0, |interp, _| {
-            let payload = interp.call("test.bdvyw.unknown.mkBoom", &[])?;
+            let payload = interp.call("test.bdvyw.unknown.mkBoom", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
             Err(interp.raise_error(payload))
         })
         .expect("register bdvyw_go");
@@ -455,11 +455,11 @@ fn the_pattern_question_mark_catches_a_raise_of_the_unknown_type() {
     let mut interp = unknown_interp();
     for (op, want) in [("catchAll", "caught"), ("pastBoom", "outer")] {
         let v = interp
-            .call(&format!("test.bdvyw.unknown.{op}"), &[])
+            .call(&format!("test.bdvyw.unknown.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert_eq!(crate::common::scalar_str(interp.kb(), &v).as_deref(), Some(want), "{op}");
     }
-    match interp.call("test.bdvyw.unknown.atBoom", &[]) {
+    match interp.call("test.bdvyw.unknown.atBoom", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { .. }) => {}
         other => panic!("the `Boom` boundary lets the raise of the unknown type pass; got {other:?}"),
     }

@@ -578,7 +578,7 @@ end
          not repeal it"
     );
     match crate::common::interp_for(src)
-        .call("test.wi1076.mixed.probe", &[])
+        .call("test.wi1076.mixed.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the mixed-shape program must still load AND run")
     {
         Value::Int(i) => assert_eq!(i, 2, "the call must reach the witness's `peek`"),
@@ -603,7 +603,7 @@ fn a_self_representing_specs_operation_still_dispatches() {
         BOTH_SHAPES
     );
     match crate::common::interp_for(&src)
-        .call("test.wi1076.drive.probe", &[])
+        .call("test.wi1076.drive.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe")
     {
         Value::Int(i) => assert_eq!(i, 1, "`Feed.next` must reach `Box.next`"),

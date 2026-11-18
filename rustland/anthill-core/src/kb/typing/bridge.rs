@@ -128,7 +128,8 @@ pub(crate) enum NamedSlotTies {
     /// host serves that half with WI-868's stand-ins and discards what the resolution
     /// says of it), while a TYPE-CARRIED op slot's tie is recorded absent as under
     /// [`Self::RecordAbsent`] — WI-20260922-ATFGH: the host has a spelling for that slot
-    /// (`Interpreter::call_with_witnesses`), the marker names it, and a body that never
+    /// (the argument passed with its type, `Interpreter::call`), the marker names it,
+    /// and a body that never
     /// reads the slot must still run.
     HostEntry,
     /// The SLD bridge: report the tie as before (WI-855) — the bridge delays on it,
@@ -299,7 +300,7 @@ fn derive_bridge_requirements(
     // of the discharge would drift from it.
     let entries_have_projection = chain.iter().any(|e| value_contains_projection(kb, &e.spec));
     let (subst, param_arg_types) =
-        pin_params_from_args(kb, op, &rec.params, args, entries_have_projection);
+        pin_params_from_args(kb, op, &rec.params, args, None, entries_have_projection);
     // One resolved tree per requires slot, keyed by the frame requirement-param name.
     let names = chain.names(kb);
     // WI-822 LEG 1 — where the OP half starts. A failure in the SORT half aborts the
@@ -615,7 +616,7 @@ fn derive_bridge_requirements(
         // did not pin it. Recorded as the absence that names `s.O`, for every route that
         // ENTERS a frame whose body may never read the slot — value-directed dispatch,
         // the eval gate, and the host entry, whose repair is
-        // `Interpreter::call_with_witnesses`.
+        // passing the argument with its type (`Interpreter::call`).
         //
         // THE SLD BRIDGE KEEPS THE TIE (`NamedSlotTies::Raise`) and reaches the ordinary
         // tie arm below: it delays on it, where a marker's read would be a `Fault`
@@ -795,22 +796,27 @@ fn derive_bridge_requirements(
 ///
 /// A parameter typed with the parent sort (`b: Box`) binds `Box`'s params from the
 /// arg's type-args (`Box[T = Tag]` ⇒ `Box.T := Tag`); a parameter typed with a
-/// sort-param directly (`x: T`) binds it from the arg's own type. One owner for the two
-/// value-only readers, [`resolve_bridge_requirements`] and [`resolve_param_witnesses`], so
-/// a witness is resolved at exactly the bindings the rest of the frame was.
+/// sort-param directly (`x: T`) binds it from the arg's own type.
 fn pin_params_from_args(
     kb: &mut KnowledgeBase,
     op: Symbol,
     params: &[(Symbol, Value)],
     args: &[Value],
+    arg_types: Option<&[Value]>,
     keep_arg_types: bool,
 ) -> (Substitution, HashMap<Symbol, Value>) {
     let mut subst = Substitution::new();
     let empty = Substitution::new();
     let mut param_arg_types: HashMap<Symbol, Value> = HashMap::new();
     for (i, (pname, ptype)) in params.iter().enumerate() {
-        let Some(arg) = args.get(i) else { continue };
-        let arg_ty = value_type_term(kb, &empty, arg);
+        // The type the argument is known at, where its reader has one, else its value's.
+        let arg_ty = match arg_types.and_then(|t| t.get(i)) {
+            Some(ty) => ty.clone(),
+            None => {
+                let Some(arg) = args.get(i) else { continue };
+                value_type_term(kb, &empty, arg)
+            }
+        };
         if keep_arg_types {
             param_arg_types.insert(*pname, arg_ty.clone());
         }
@@ -822,8 +828,7 @@ fn pin_params_from_args(
 }
 
 /// `entry`'s spec at a call's arguments: δ BEFORE σ, then `Err` if a projection
-/// survived. The one grounding for the two value-only readers,
-/// [`resolve_bridge_requirements`] and [`resolve_param_witnesses`].
+/// survived. The grounding [`resolve_bridge_requirements`] reads.
 ///
 /// WI-20260909-S8CBV — δ BEFORE σ, the same order and the same fallback as
 /// [`build_op_scoped_dicts`]: a projection names a member of the RECEIVER's type,
@@ -893,7 +898,8 @@ fn ground_entry_spec(
 ///
 /// WI-20260925-4ZZKZ — DECISION: KEPT, loud at the read. MEASURED (full workspace,
 /// log-only probe): 4 slots, all HOST ENTRIES (the EE0EP rows), where the host holds a
-/// repair the refusal names — `Interpreter::call_with_witnesses` — and a body that never
+/// repair the refusal names — the argument passed with its type, `Interpreter::call` —
+/// and a body that never
 /// reads the slot answers. The route has argument values only; the witness is in the
 /// argument's TYPE, which the typed call site reads and a value does not carry.
 fn param_slot_marker(spec_sort: Symbol, param: Symbol, binder: Symbol) -> BridgeSlot {
@@ -914,139 +920,58 @@ fn goal_is_fully_pinned(kb: &KnowledgeBase, goal: &SortGoal) -> bool {
     })
 }
 
-/// WI-20260922-ATFGH — the dictionaries for `op`'s type-carried slots
-/// ([`SupplySource::witness_in_argument_type`]), built from the witnesses a HOST names.
-/// `Ok` pairs each frame slot's name with its tree; `Err` is the sentence.
-///
-/// THE HOST SPELLING OF WHAT THE TYPED ROUTE READS. At a typed call the witness is read
-/// out of the argument's TYPE ([`param_slot_witness`]) and pinned as a selection; a host
-/// has no types to hand over, but it can NAME the provider, and that is the only thing
-/// the type was being read for. So each witness becomes the same bare
-/// [`InstanceSelection`] a typed call builds for a bare witness, and the ordinary
-/// resolution does the rest — the witness's own conditions and named slots resolve as
-/// its sub-goals, none of them chosen by the host. NOT BY PASSING TYPES: the dictionary is
-/// what runtime needs, and the type is only where a typed call site reads the witness
-/// from.
-///
-/// THE SAME BINDINGS AS THE REST OF THE FRAME: one σ for the call
-/// ([`pin_params_from_args`]) and the bridge's own δ-then-σ grounding
-/// ([`ground_entry_spec`]), so a witness is checked at exactly the goal the op-half
-/// resolution asked.
-///
-/// LOUD ON EVERY MISMATCH, since a host that names a witness has said what it means: a
-/// slot `op` does not have, a slot named twice, an unknown witness, a goal the arguments
-/// do not pin — where the resolution's wildcard would accept any provider as the
-/// witness, e.g. a generic `size[T](s: MySet[T = T])` whose set VALUE names no `T` — and
-/// a witness that does not answer the goal are each refused here, at the entry.
-pub(crate) fn resolve_param_witnesses(
-    kb: &mut KnowledgeBase,
-    op: Symbol,
-    args: &[Value],
-    witnesses: &[crate::eval::SlotWitness<'_>],
-) -> Result<Vec<(Symbol, ResolvedRequiresNode)>, String> {
-    let chain = op_dict_entries(kb, op);
-    let names = chain.names(kb);
-    let sort_len = chain.sort_len();
-    // The slots a witness can name, as `(frame name, entry, param, binder)`.
-    let carried: Vec<(Symbol, RequiresEntry, Symbol, Symbol)> = chain
-        .iter()
-        .zip(names.iter())
-        .skip(sort_len)
-        .filter_map(|(entry, name)| {
-            let (p, b) = entry.supply.witness_in_argument_type()?;
-            Some((*name, entry.clone(), p, b))
-        })
-        .collect();
-    let op_qn = kb.qualified_name_of(op).to_string();
-    // Every check that needs no resolution first, so a malformed request costs none.
-    // `(frame name, entry, the slot's binder, witness, spelling)`.
-    let mut matched: Vec<(Symbol, RequiresEntry, Symbol, Symbol, String)> =
-        Vec::with_capacity(witnesses.len());
-    for w in witnesses {
-        let spelled = format!("{}.{}", w.param, w.slot);
-        let Some((name, entry, _, binder)) = carried
-            .iter()
-            .find(|(_, _, p, b)| kb.local_name_of(*p) == w.param && kb.local_name_of(*b) == w.slot)
-        else {
-            let have: Vec<String> = carried
-                .iter()
-                .map(|(_, _, p, b)| format!("`{}.{}`", kb.local_name_of(*p), kb.local_name_of(*b)))
-                .collect();
-            return Err(format!(
-                "`{op_qn}` has no slot `{spelled}` whose witness an argument type carries; {}",
-                if have.is_empty() {
-                    "it has none".to_string()
-                } else {
-                    format!("its slots of that kind are {}", have.join(", "))
-                },
-            ));
-        };
-        if matched.iter().any(|(.., sp)| *sp == spelled) {
-            return Err(format!("`{spelled}` is named twice"));
-        }
-        let witness = kb
-            .try_resolve_symbol(w.witness)
-            .ok_or_else(|| format!("unknown witness `{}` for `{spelled}`", w.witness))?;
-        matched.push((*name, entry.clone(), *binder, witness, spelled));
-    }
-    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, op) else {
-        return Err(format!(
-            "`{op_qn}` has no recorded signature, so its arguments cannot pin its slots"
-        ));
+/// Whether `ty` is a callable type: an arrow, a `Function`, or a `∀` over one.
+pub(crate) fn is_callable_type(kb: &mut KnowledgeBase, ty: &Value) -> bool {
+    arrow_parts(kb, ty).is_some()
+}
+
+/// Proposal 074 §1.4 — the type a value the host passes bare reads as: an operation's
+/// application held unevaluated (`insert(insert(empty(), 1), 2)`, a term of a symbolic algebra
+/// no implementation runs) at the operation's declared result at the type parameters its
+/// arguments' types fix — `Set[T = Int64]`; a construction at its constructor's type over its
+/// fields read the same way (`some(insert(…))` at `Option[T = Set[T = Int64]]`); anything
+/// else as [`value_type_term`] reads it.
+pub(crate) fn host_value_type(kb: &mut KnowledgeBase, v: &Value) -> Value {
+    use crate::kb::term_view::{TermView, ViewHead};
+    let ViewHead::Functor { functor, pos_arity, .. } = v.head(kb) else {
+        return value_type_term(kb, &Substitution::new(), v);
     };
-    let keep_arg_types = matched
-        .iter()
-        .any(|(_, e, ..)| value_contains_projection(kb, &e.spec));
-    let (subst, param_arg_types) = pin_params_from_args(kb, op, &rec.params, args, keep_arg_types);
-    let mut out = Vec::with_capacity(matched.len());
-    for (name, entry, binder, witness, spelled) in matched {
-        let concrete = RequiresEntry {
-            required_sort: entry.required_sort,
-            spec: ground_entry_spec(kb, op, &entry, &param_arg_types, &subst)?,
-            supply: entry.supply,
-            binder: entry.binder,
-        };
-        let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
-            return Err(format!(
-                "`{op_qn}`'s slot `{spelled}` carries no readable spec bindings"
-            ));
-        };
-        if !goal_is_fully_pinned(kb, &goal) {
-            return Err(format!(
-                "the arguments do not pin `{spelled}`'s goal `{}` — the values name no \
-                 element type for it — so no witness can be checked against it",
-                format_goal(kb, &goal),
-            ));
-        }
-        // The slot a host names is the parameter's own (`s.O`), by its binder.
-        let selected = InstanceSelection {
-            spec_sort: entry.required_sort,
-            slot: SelectedSlot::Named(binder),
-            provider: SelectedProvider::Witness(witness),
-            slots: Vec::new(),
-        };
-        let scope = ResolutionScope {
-            available_requires: &[],
-            sigma: None,
-            pin: Some(&selected),
-            sub_goal_requires: &[],
-        };
-        // Unranked for the reason `resolve_bridge_requirements` gives. The rung decides
-        // only the top goal, which the selection has already restricted to the witness.
-        match resolve_with_rung(kb, &goal, &scope, DefaultRung::Unranked) {
-            ResolutionResult::Resolved(tree) => out.push((name, tree)),
-            other => {
-                return Err(format!(
-                    "the witness `{}` does not answer `{spelled}`'s goal `{}` at these \
-                     arguments: {}",
-                    kb.qualified_name_of(witness),
-                    format_goal(kb, &goal),
-                    describe_resolution_failure(kb, &other),
-                ))
-            }
+    if matches!(v, Value::Node(_)) || pos_arity + v.named_keys(kb).len() == 0 {
+        return value_type_term(kb, &Substitution::new(), v);
+    }
+    if kb.sort_of_constructor(functor).is_some() {
+        let pos: Vec<Value> = (0..pos_arity)
+            .filter_map(|i| v.pos_arg(kb, i).map(|c| c.to_value()))
+            .collect();
+        let pos_types: Vec<Value> = pos.iter().map(|c| host_value_type(kb, c)).collect();
+        let named: Vec<(Symbol, Value)> = v
+            .named_keys(kb)
+            .into_iter()
+            .filter_map(|k| v.named_arg(kb, k).map(|c| (k, c.to_value())))
+            .collect();
+        let named_types: Vec<(Symbol, Value)> =
+            named.iter().map(|(k, c)| (*k, host_value_type(kb, c))).collect();
+        return constructor_value_type(kb, functor, &pos_types, &named_types);
+    }
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
+        return value_type_term(kb, &Substitution::new(), v);
+    };
+    let mut args: Vec<Value> = (0..pos_arity)
+        .filter_map(|i| v.pos_arg(kb, i).map(|c| c.to_value()))
+        .collect();
+    for (name, _) in rec.params.iter().skip(args.len()) {
+        let key = v
+            .named_keys(kb)
+            .into_iter()
+            .find(|k| same_label(kb, *k, *name));
+        match key.and_then(|k| v.named_arg(kb, k)) {
+            Some(c) => args.push(c.to_value()),
+            None => break,
         }
     }
-    Ok(out)
+    let types: Vec<Value> = args.iter().map(|a| host_value_type(kb, a)).collect();
+    let (subst, _) = pin_params_from_args(kb, functor, &rec.params, &args, Some(&types), false);
+    substitute_spec_via_subst(kb, &rec.return_type, &subst)
 }
 
 /// WI-1091 — does the instance dictionary for `spec` at `provider` carry the requirement

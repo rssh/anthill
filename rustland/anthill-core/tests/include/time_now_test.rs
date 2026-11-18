@@ -21,7 +21,7 @@ fn interp_for(source: &str) -> Interpreter {
 fn time_now_returns_iso_z_timestamp() {
     let mut interp = interp_for("namespace test.time_now end\n");
     let v = interp
-        .call("anthill.prelude.Time.now", &[])
+        .call("anthill.prelude.Time.now", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("Time.now");
     let s = match v {
         Value::Str(s) => s,
@@ -47,7 +47,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.time_now_src.when", &[])
+        .call("test.time_now_src.when", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call when");
     match r {
         Value::Str(s) => assert!(

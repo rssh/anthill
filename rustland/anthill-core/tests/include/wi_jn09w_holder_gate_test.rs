@@ -289,7 +289,7 @@ end
 "#,
     );
     let r = interp
-        .call("wijn09w.stack.go", &[])
+        .call("wijn09w.stack.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("`size(MutableStack.new())` must run: {e:?}"));
     assert_eq!(r.literal_int64(interp.kb()), Some(0));
 }

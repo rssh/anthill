@@ -42,7 +42,7 @@ use crate::common::{interp_for, load_stdlib_kb, sort_provisions};
 fn drive(src: &str, qn: &str) -> String {
     let mut interp = interp_for(src);
     let got = interp
-        .call(qn, &[])
+        .call(qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{qn} must evaluate: {e:?}"));
     format!("{got:?}")
 }
@@ -294,7 +294,7 @@ end
     );
     let mut interp = interp_for(bad);
     let err = interp
-        .call("test.vt8cf.fmodgap.drive", &[])
+        .call("test.vt8cf.fmodgap.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("…and it must RAISE rather than answer a number");
     let text = format!("{err:?}");
     assert!(

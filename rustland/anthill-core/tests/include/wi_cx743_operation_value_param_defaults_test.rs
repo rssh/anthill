@@ -214,7 +214,7 @@ end
 fn value_of(program: &str, ns: &str, op: &str) -> anthill_core::eval::value::Value {
     let mut interp = interp_for(program);
     interp
-        .call(&format!("{ns}.{op}"), &[])
+        .call(&format!("{ns}.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}: {e}"))
 }
 
@@ -330,7 +330,7 @@ fn a_default_is_typed_at_the_calls_instance() {
         |op| {
             let mut interp = interp_for(OPS);
             let v = interp
-                .call(&format!("test.cx743.ops.{op}"), &[])
+                .call(&format!("test.cx743.ops.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
                 .unwrap_or_else(|e| panic!("{op}: {e}"));
             anthill_core::kb::typing::type_display_name_value(interp.kb(), &v)
         },

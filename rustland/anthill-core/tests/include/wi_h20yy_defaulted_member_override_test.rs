@@ -119,7 +119,7 @@ end
 fn eval_type(op: &str) -> String {
     let mut interp = interp_for(SRC);
     let ty = interp
-        .call(&format!("test.h20yy.{op}"), &[])
+        .call(&format!("test.h20yy.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}: {e:?}"));
     TermPrinter::new(interp.kb()).print_value(&ty)
 }

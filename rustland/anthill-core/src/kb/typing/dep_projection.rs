@@ -1488,9 +1488,9 @@ pub enum UnavailableWhy {
     /// NamedSlotNotCarried's sibling one half over, and kept apart from it because the
     /// two differ in both what they can name and what repairs them. This one knows the
     /// PARAMETER (`param`) and the carrier's BINDER (`binder`), so the sentence names the
-    /// slot as the body sees it, `s.O`; and it has a host spelling
-    /// (`Interpreter::call_with_witnesses`), which the sort half's value-directed absence
-    /// has not.
+    /// slot as the body sees it, `s.O`; and it has a host spelling (the argument passed
+    /// with its type, `Interpreter::call`), which the sort half's value-directed
+    /// absence has not.
     ///
     /// Recorded where the goal has SEVERAL providers (a tie under
     /// [`DefaultRung::Unranked`]) or the arguments leave it under-determined — where any

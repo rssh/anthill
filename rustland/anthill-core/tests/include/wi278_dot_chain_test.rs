@@ -184,7 +184,7 @@ end
 fn dot_chain_evaluates_on_literal_receiver() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
     let got = interp
-        .call("wi278.eval.chain_literal", &[])
+        .call("wi278.eval.chain_literal", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call chain_literal: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 345);
 }
@@ -196,10 +196,10 @@ fn dot_chain_evaluates_on_param_receiver() {
     // PARAM value — the WI-280 bare-identifier value-receiver path.
     let mut interp = crate::common::interp_for(EVAL_SRC);
     let arg = interp
-        .call("wi278.eval.mk_list", &[])
+        .call("wi278.eval.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build arg list");
     let got = interp
-        .call("wi278.eval.chain_param_sum", &[arg])
+        .call("wi278.eval.chain_param_sum", &anthill_core::eval::HostValue::all(&[arg])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call chain_param_sum: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 12);
 }
@@ -208,7 +208,7 @@ fn dot_chain_evaluates_on_param_receiver() {
 fn dot_chain_evaluates_on_let_receiver() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
     let got = interp
-        .call("wi278.eval.chain_let", &[])
+        .call("wi278.eval.chain_let", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call chain_let: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 345);
 }
@@ -217,7 +217,7 @@ fn dot_chain_evaluates_on_let_receiver() {
 fn dot_chain_evaluates_to_empty_when_all_filtered() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
     let got = interp
-        .call("wi278.eval.chain_empty", &[])
+        .call("wi278.eval.chain_empty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call chain_empty: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 0);
 }

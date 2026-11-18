@@ -84,7 +84,7 @@ fn field<'v>(interp: &anthill_core::eval::Interpreter, payload: &'v Value, name:
 #[test]
 fn a_faulted_query_raises_evaluation_failure() {
     let mut interp = interp_for(SRC);
-    let payload = match interp.call("test.wi8y5be.probe", &[]) {
+    let payload = match interp.call("test.wi8y5be.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { payload, .. }) => payload,
         other => panic!(
             "a goal the search could not ask must raise the declared Error, not yield a \
@@ -130,22 +130,27 @@ fn a_faulted_query_raises_evaluation_failure() {
 #[test]
 fn a_clean_query_still_yields_its_row() {
     let mut interp = interp_for(SRC);
-    match interp.call("test.wi8y5be.clean_probe", &[]) {
+    match interp.call("test.wi8y5be.clean_probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(1)) => {}
         other => panic!("a healthy query streams its row; got {other:?}"),
     }
 }
 
 /// A query that does not LOWER raises `malformed_query` rather than an internal fault.
-/// The typer refuses a non-`LogicalQuery` argument in source, so this calls the builtin
-/// directly, the way a host embedder or a reflect-built value reaches it.
+/// The typer refuses a non-`LogicalQuery` argument in source, and a host call is typed as
+/// one written in a body is (proposal 074 §1.4), so the value is handed over AT
+/// `LogicalQuery`, the way a reflect-built value reaches the builtin.
 ///
 /// FAILS WHEN BACKED OUT (`kb_execute`'s raise): the call returns `EvalError::Internal`.
 #[test]
 fn a_query_that_does_not_lower_raises_malformed_query() {
     let mut interp = interp_for(SRC);
-    let kb = interp.call("anthill.reflect.KB.kb", &[]).expect("the ambient kb()");
-    let payload = match interp.call("anthill.reflect.KB.execute", &[kb, Value::Int(1)]) {
+    let kb = interp.call("anthill.reflect.KB.kb", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the ambient kb()");
+    let at = crate::common::sort_type(interp.kb_mut(), "anthill.reflect.LogicalQuery");
+    let payload = match interp
+        .call("anthill.reflect.KB.execute", &[kb.into(), anthill_core::eval::HostValue::typed(Value::Int(1), at)])
+        .map(|h| h.value)
+    {
         Err(EvalError::Raised { payload, .. }) => payload,
         other => panic!("a non-query must raise malformed_query; got {other:?}"),
     };
@@ -179,7 +184,7 @@ fn raised_functor(interp: &anthill_core::eval::Interpreter, err: EvalError) -> S
 #[test]
 fn a_pull_after_a_fault_is_refused_not_ended() {
     let mut interp = interp_for(SRC);
-    let handle = match interp.call("test.wi8y5be.faulty_stream", &[]) {
+    let handle = match interp.call("test.wi8y5be.faulty_stream", &[]).map(|h| interp.carried(h.value)) {
         Ok(Value::Stream(h)) => h,
         other => panic!("`execute` returns a stream, got {other:?}"),
     };
@@ -231,7 +236,7 @@ fn a_faulted_query_is_catchable_by_an_error_handler() {
             }),
         )
         .expect("register Error handler");
-    let resumed = interp.call("test.wi8y5be.probe", &[]);
+    let resumed = interp.call("test.wi8y5be.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         matches!(
             &resumed,
@@ -264,7 +269,7 @@ fn a_faulted_query_is_catchable_by_an_error_handler() {
 fn a_faulted_relation_raises_evaluation_failure_not_floundered() {
     let mut interp = interp_for(SRC);
     let err = interp
-        .call("test.wi8y5be.rel_count", &[])
+        .call("test.wi8y5be.rel_count", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a relation over a faulted search must not drain");
     assert_eq!(
         raised_functor(&interp, err),

@@ -38,7 +38,7 @@ fn eval_int(src: &str, op: &str) -> i64 {
         panic!("expected a clean load; got: {errs:?}");
     }
     match interp_for(src)
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,

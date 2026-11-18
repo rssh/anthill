@@ -127,7 +127,7 @@ namespace jr7.ite_control
 end
 "#;
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call("jr7.ite_control.run", &[]) {
+    match interp.call("jr7.ite_control.run", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(1)) => {}
         other => panic!("the deferred `Bool.{{ite}}` import must still evaluate; got {other:?}"),
     }

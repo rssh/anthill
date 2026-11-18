@@ -117,7 +117,7 @@ fn source(ns: &str, prefix: &str, body: &str) -> String {
 /// Load, call `test.<ns>.go()`, and hand back its integer.
 fn run_int(ns: &str, prefix: &str, body: &str) -> i64 {
     let mut interp = interp_for(&source(ns, prefix, body));
-    match interp.call(&format!("test.{ns}.go"), &[]) {
+    match interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{ns}: expected an Int64, got {other:?}"),
     }

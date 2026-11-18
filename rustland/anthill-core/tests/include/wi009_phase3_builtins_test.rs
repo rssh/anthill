@@ -35,8 +35,8 @@ end
     let facts = interp
         .call(
             "anthill.reflect.KB.stored_facts_of",
-            &[Value::Unit, box_ref],
-        )
+            &anthill_core::eval::HostValue::all(&[crate::common::ambient_kb(interp.kb()), box_ref]),
+        ).map(|h| h.value)
         .expect("facts_of");
 
     // Drill down to the first cons head.
@@ -81,7 +81,7 @@ end
             .resolve_qualified_name_term("anthill.prelude.Pair.pair"),
     );
     let facts = interp
-        .call("anthill.reflect.KB.facts_of", &[Value::Unit, pair_ref])
+        .call("anthill.reflect.KB.facts_of", &anthill_core::eval::HostValue::all(&[crate::common::ambient_kb(interp.kb()), pair_ref])).map(|h| h.value)
         .expect("facts_of");
     // Walk the cons-list and pick the head whose `fst` field is the
     // ground Int64 literal — the user fact. (WI-515: facts_of now returns
@@ -132,8 +132,8 @@ end
     let result = interp
         .call(
             "anthill.reflect.replace_named_arg",
-            &[head, Value::Str("snd".into()), new_val],
-        )
+            &anthill_core::eval::HostValue::all(&[head, Value::Str("snd".into()), new_val]),
+        ).map(|h| h.value)
         .expect("replace_named_arg");
 
     // Read the result on whatever carrier it rides: `snd` is now 99, `fst` still 1.

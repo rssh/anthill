@@ -91,7 +91,7 @@ end
 
 fn drive(entry: &str) -> Result<i64, String> {
     let mut interp = crate::common::interp_for(PROGRAM);
-    match interp.call(&format!("shed7.Driver.{entry}"), &[]) {
+    match interp.call(&format!("shed7.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => Ok(n),
         other => Err(format!("{other:?}")),
     }
@@ -223,12 +223,12 @@ end
 #[test]
 fn a_dictionary_the_typer_builds_is_read_at_its_layout() {
     let mut interp = crate::common::interp_for(RIGID);
-    match interp.call("shed7r.Driver.wrapped", &[]) {
+    match interp.call("shed7r.Driver.wrapped", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 3, "`wrap(red())`, `wrap(green())`, `wrap(blue())`"),
         other => panic!("expected an Int64, got {other:?}"),
     }
     let first = interp
-        .call("shed7r.Driver.firstWrapped", &[])
+        .call("shed7r.Driver.firstWrapped", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the first row");
     let rendered = crate::common::show_value(interp.kb(), &first);
     assert_eq!(
@@ -339,7 +339,7 @@ namespace shed7tank
 end
 "#;
     let mut interp = crate::common::interp_for(TANK);
-    match interp.call("shed7tank.Driver.go", &[]) {
+    match interp.call("shed7tank.Driver.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 100, "`Tank`'s own `fill`"),
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -537,7 +537,7 @@ namespace shed7marked
 end
 "#;
     let mut interp = crate::common::interp_for(MARKED);
-    match interp.call("shed7marked.Driver.tagged", &[]) {
+    match interp.call("shed7marked.Driver.tagged", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 3, "`tag(value: red())`, `…green()`, `…blue()`"),
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -552,8 +552,10 @@ fn a_domain_relation_is_no_row_of_the_operation_table() {
     let int64 = interp.kb().resolve_symbol("anthill.prelude.Int64");
     let dict = crate::common::dict(&interp, int64, []).into_value();
     let ops = interp
-        .call("anthill.realization.runtime.Dictionary.ops", &[dict])
+        .call("anthill.realization.runtime.Dictionary.ops", &anthill_core::eval::HostValue::all(&[dict])).map(|h| h.value)
         .expect("`Dictionary.ops` answers");
+    // A `FiniteStream` instance, as a body holds it: the list is its carrier's value.
+    let ops = interp.carried(ops);
     let listed: Vec<String> = crate::common::list_heads(&ops)
         .iter()
         .map(|r| match r {
@@ -616,7 +618,7 @@ end
     }
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call("shed7phase2.Driver.go", &[]) {
+    match interp.call("shed7phase2.Driver.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 42, "the provision's `fill`"),
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -787,7 +789,7 @@ namespace shed7aliascite
 end
 "#;
     let mut interp = crate::common::interp_for(ALIAS_CITE);
-    match interp.call("shed7aliascite.Driver.hues", &[]) {
+    match interp.call("shed7aliascite.Driver.hues", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 3, "`red`, `green`, `blue`"),
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -1043,7 +1045,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(PARAM);
     for (entry, want) in [("sig", 2), ("par", 2)] {
-        match interp.call(&format!("shed7param.Driver.{entry}"), &[]) {
+        match interp.call(&format!("shed7param.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "`{entry}`"),
             other => panic!("`{entry}`: expected {want}, got {other:?}"),
         }
@@ -1082,7 +1084,7 @@ end
     );
     let mut interp = crate::common::interp_for(&repaired);
     for (entry, want) in [("model", 2), ("given", 1), ("refuted", 0)] {
-        match interp.call(&format!("shed7param.Driver.{entry}"), &[]) {
+        match interp.call(&format!("shed7param.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "`{entry}`"),
             other => panic!("`{entry}`: expected {want}, got {other:?}"),
         }

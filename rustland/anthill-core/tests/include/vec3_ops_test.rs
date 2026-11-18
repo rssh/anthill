@@ -107,7 +107,7 @@ fn assert_doubles_123(src: &str, entry: &str, why: &str) {
     let mut interp = crate::common::interp_for(src);
     let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
     let out = interp
-        .call(entry, &[a])
+        .call(entry, &anthill_core::eval::HostValue::all(&[a])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{entry}: {why}; got {e}"));
     assert_eq!(
         components(interp.kb(), &out),
@@ -163,7 +163,7 @@ fn the_four_members_evaluate() {
     let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
     let b = vec3(interp.kb_mut(), 10.0, 20.0, 30.0);
     let out = interp
-        .call("anthill.geometry.Vec3.vec_add", &[a, b])
+        .call("anthill.geometry.Vec3.vec_add", &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value)
         .expect("vec_add runs");
     assert_eq!(components(interp.kb(), &out), (11.0, 22.0, 33.0));
 
@@ -172,7 +172,7 @@ fn the_four_members_evaluate() {
     let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
     let b = vec3(interp.kb_mut(), 10.0, 20.0, 30.0);
     let out = interp
-        .call("anthill.geometry.Vec3.vec_sub", &[a, b])
+        .call("anthill.geometry.Vec3.vec_sub", &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value)
         .expect("vec_sub runs");
     assert_eq!(components(interp.kb(), &out), (-9.0, -18.0, -27.0));
 
@@ -182,14 +182,14 @@ fn the_four_members_evaluate() {
     let mut interp = crate::common::interp_for(MARKER);
     let v = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
     let out = interp
-        .call("anthill.geometry.Vec3.vec_scale", &[Value::Float(2.0), v])
+        .call("anthill.geometry.Vec3.vec_scale", &anthill_core::eval::HostValue::all(&[Value::Float(2.0), v])).map(|h| h.value)
         .expect("vec_scale runs");
     assert_eq!(components(interp.kb(), &out), (2.0, 4.0, 6.0));
 
     // vec_zero() = (0,0,0)
     let mut interp = crate::common::interp_for(MARKER);
     let out = interp
-        .call("anthill.geometry.Vec3.vec_zero", &[])
+        .call("anthill.geometry.Vec3.vec_zero", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("vec_zero runs");
     assert_eq!(components(interp.kb(), &out), (0.0, 0.0, 0.0));
 }
@@ -601,7 +601,7 @@ end
         ),
     ] {
         let mut interp = crate::common::interp_for(src);
-        match interp.call(entry, &[Value::Int(0)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "{entry}: {why}"),
             other => panic!("{entry} must dispatch ({why}); got {other:?}"),
         }
@@ -733,7 +733,7 @@ end
                 )
             });
         let mut interp = crate::common::interp_for(src);
-        match interp.call(entry, &[Value::Float(2.5)]) {
+        match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Float(2.5)])).map(|h| h.value) {
             Ok(Value::Float(f)) => assert_eq!(
                 f, 5.0,
                 "{label}: `Ring.add(2.5, 2.5)` must answer 5.0 off `Float`'s own \

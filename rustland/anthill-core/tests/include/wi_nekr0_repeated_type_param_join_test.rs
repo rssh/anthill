@@ -72,7 +72,7 @@ fn extended(rules: &str) -> String {
 
 fn drive_int(src: &str, entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }

@@ -145,7 +145,7 @@ fn extract_var(kb: &mut KnowledgeBase, v: Var) -> (Symbol, String, i64) {
     let mut interp = Interpreter::new(std::mem::replace(kb, KnowledgeBase::new()));
     register_standard_builtins(&mut interp);
     let r = interp
-        .call("anthill.reflect.extract", &[Value::term(ty)])
+        .call("anthill.reflect.extract", &anthill_core::eval::HostValue::all(&[Value::term(ty)])).map(|h| h.value)
         .expect("extract should evaluate");
     let functor = entity_functor(&r).unwrap_or_else(|| panic!("extract returned {r:?}"));
     let name = match field(&r, name_key) {
@@ -235,7 +235,7 @@ fn the_placeholder_type_var_is_neither_of_them() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp);
     let r = interp
-        .call("anthill.reflect.extract", &[Value::term(tv)])
+        .call("anthill.reflect.extract", &anthill_core::eval::HostValue::all(&[Value::term(tv)])).map(|h| h.value)
         .expect("extract should evaluate");
 
     assert_eq!(
@@ -266,7 +266,7 @@ fn a_de_bruijn_var_is_not_one_of_these_forms() {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp);
     let r = interp
-        .call("anthill.reflect.extract", &[Value::term(ty)])
+        .call("anthill.reflect.extract", &anthill_core::eval::HostValue::all(&[Value::term(ty)])).map(|h| h.value)
         .expect("extract should evaluate");
 
     assert_eq!(

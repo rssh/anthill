@@ -15,26 +15,7 @@ use crate::common::interp_for;
 
 /// A `FileStore(root: <r>, convention: Flat)` value + its registration.
 fn setup_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
-    let fs = interp.kb_mut().intern("FileStore");
-    let flat = interp.kb_mut().intern("Flat");
-    let root_sym = interp.kb_mut().intern("root");
-    let convention_sym = interp.kb_mut().intern("convention");
-    let store_val = Value::Entity {
-        functor: fs,
-        pos: vec![].into(),
-        named: vec![
-            (root_sym, Value::Str(root.to_str().unwrap().to_string())),
-            (
-                convention_sym,
-                Value::Entity {
-                    functor: flat,
-                    pos: vec![].into(),
-                    named: vec![].into(),
-                },
-            ),
-        ]
-        .into(),
-    };
+    let store_val = crate::common::file_store_value(interp.kb(), "FileStore", root.to_str().unwrap(), "flat");
     let key = interp
         .store_canonical_key(&store_val)
         .expect("canonical key");
@@ -70,8 +51,8 @@ fn persist(
 ) -> Result<Value, anthill_core::eval::EvalError> {
     interp.call(
         "anthill.persistence.Store.persist",
-        &[store.clone(), fact, Value::Unit],
-    )
+        &anthill_core::eval::HostValue::all(&[store.clone(), fact, crate::common::no_meta(interp.kb())]),
+    ).map(|h| h.value)
 }
 
 fn stored_reference(interp: &mut Interpreter, stored: &Value) -> Value {
@@ -95,8 +76,8 @@ fn retract(
     // `retract` moved to the NonMonotonicStore trait (proposal 053 / 007 §2).
     interp.call(
         "anthill.persistence.NonMonotonicStore.retract",
-        &[store.clone(), reference],
-    )
+        &anthill_core::eval::HostValue::all(&[store.clone(), reference]),
+    ).map(|h| h.value)
 }
 
 #[test]

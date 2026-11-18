@@ -136,7 +136,7 @@ fn the_accepted_rigid_row_evaluates() {
                \x20   = op4([a(), b()], [1])\n\
                end\n";
     let mut interp = crate::common::interp_for(src);
-    let out = interp.call("zz5g28ae.drive", &[]).expect("drive evaluates");
+    let out = interp.call("zz5g28ae.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("drive evaluates");
     // RENDERED, not `{:?}`-ed. The answer is a `Value::Node`, whose Debug is an occurrence
     // tree of `Symbol(1234)` handles — it contains no `a`, no `b` and no `1` as CONTENT, so
     // a `contains` over it measures the word "Span" and the digits of symbol ids. A first

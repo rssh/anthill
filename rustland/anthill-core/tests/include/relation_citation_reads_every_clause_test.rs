@@ -52,7 +52,7 @@ end
 fn calls<const N: usize>(qns: [&str; N]) -> [i64; N] {
     let mut interp = crate::common::interp_for(PROGRAM);
     qns.map(|qn| {
-        let v = interp.call(qn, &[]).unwrap_or_else(|e| panic!("{qn}: {e:?}"));
+        let v = interp.call(qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).unwrap_or_else(|e| panic!("{qn}: {e:?}"));
         crate::common::scalar_int(interp.kb(), &v)
             .unwrap_or_else(|| panic!("{qn}: not an Int64, {v:?}"))
     })

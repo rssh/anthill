@@ -62,7 +62,7 @@ fn two(decls: &str) -> String {
 /// The `Int64` an operation of no arguments answers, called through the interpreter.
 fn call_int(src: &str, qn: &str) -> i64 {
     let mut interp = interp_for(src);
-    match interp.call(qn, &[]).unwrap_or_else(|e| panic!("call {qn}: {e:?}")) {
+    match interp.call(qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).unwrap_or_else(|e| panic!("call {qn}: {e:?}")) {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {qn}: expected an Int, got {other:?}"),
     }

@@ -114,7 +114,7 @@ fn wi1075_shadowed_head_that_misses_is_loud() {
     // ROW 1 — nothing shadows the head. The relative reading resolves it, as before.
     let mut interp = interp_for(BASE);
     match interp
-        .call("outer.inner.Box.use", &[Value::Int(7)])
+        .call("outer.inner.Box.use", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value)
         .expect("`inner.g(v)` must run with nothing shadowing `inner`")
     {
         Value::Int(n) => assert_eq!(n, 100, "row 1 must reach `outer.inner.g`"),
@@ -193,7 +193,7 @@ end
     });
     let mut interp = interp_for(&src);
     match interp
-        .call("outer.inner.Box.use", &[Value::Int(7)])
+        .call("outer.inner.Box.use", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value)
         .expect("`..inner.g(v)` must run")
     {
         Value::Int(n) => assert_eq!(
@@ -236,7 +236,7 @@ end
     });
     let mut interp = interp_for(&src);
     match interp
-        .call("outer.inner.Box.use", &[Value::Int(7)])
+        .call("outer.inner.Box.use", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value)
         .expect("`..outer.inner.g(v)` must run")
     {
         Value::Int(n) => assert_eq!(n, 100, "`..outer.inner.g` must bind `outer.inner.g`"),
@@ -272,7 +272,7 @@ end
     load::reset_absolute_fallthrough_hits();
     let mut interp = interp_for(SRC);
     match interp
-        .call("elsewhere.use", &[Value::Int(7)])
+        .call("elsewhere.use", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value)
         .expect("an unmarked FQN with nothing shadowing its head must run")
     {
         Value::Int(n) => assert_eq!(n, 100, "`outer.inner.g` must reach `outer.inner.g`"),
@@ -365,7 +365,7 @@ end
          for free"
     );
     match interp
-        .call("test.wi1075vis.callSite", &[])
+        .call("test.wi1075vis.callSite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`lib.util()` must still reach the absolute `lib.util`")
     {
         Value::Int(n) => assert_eq!(

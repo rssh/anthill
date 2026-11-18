@@ -201,7 +201,7 @@ fn wi866_an_unresolvable_parent_is_the_wi234_form() {
 #[test]
 fn wi866_the_two_half_dispatch_still_runs() {
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call("wi866.shapes.Driver.main", &[Value::Int(0)]) {
+    match interp.call("wi866.shapes.Driver.main", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(
             n, 1,
             "compare(7, 3) is 1 for the prelude's ascending Int64 order",

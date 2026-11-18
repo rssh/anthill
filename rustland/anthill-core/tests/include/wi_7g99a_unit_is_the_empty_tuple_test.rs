@@ -403,7 +403,7 @@ fn reflect_answer(name: &str, body: &str, entry: &str) -> String {
     );
     let mut interp = crate::common::interp_for(&src);
     let v = interp
-        .call(&format!("test.{name}.{entry}"), &[])
+        .call(&format!("test.{name}.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{entry}: {e:?}"));
     match v {
         Value::Str(s) => s,
@@ -465,7 +465,7 @@ fn a_raised_tuple_is_named_as_its_literal() {
     let src = "namespace test.g99araise\n  import anthill.prelude.{Int64, Unit, Error}\n  sort Boom\n    entity boom(at: (Int64, Int64), u: Unit)\n  end\n  operation fail() -> Int64 effects {Error[Boom]} = Error.raise(boom(at: (1, 2), u: ()))\nend\n";
     let mut interp = crate::common::interp_for(src);
     let err = interp
-        .call("test.g99araise.fail", &[])
+        .call("test.g99araise.fail", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("the raise escapes");
     let anthill_core::eval::EvalError::Raised { payload, .. } = err else {
         panic!("expected a raise, got {err:?}");

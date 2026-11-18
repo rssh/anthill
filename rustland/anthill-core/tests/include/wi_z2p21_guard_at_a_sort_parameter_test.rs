@@ -195,7 +195,7 @@ fn cited_from_an_operation_body() {
     };
     for (ns, bracket, want) in [("test.z2p21.opb", "Bool", 6), ("test.z2p21.opi", "Int64", 5)] {
         let mut interp = crate::common::interp_for(&src(ns, &format!("Box[P = {bracket}].g(red())")));
-        match interp.call(&format!("{ns}.U.cited"), &[]) {
+        match interp.call(&format!("{ns}.U.cited"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) if n == want => {}
             other => panic!("`Box[P = {bracket}]`: expected {want}, got {other:?}"),
         }
@@ -224,7 +224,7 @@ fn a_generic_callers_bracket_passes_its_requirement() {
     );
     let mut interp = crate::common::interp_for(&program("test.z2p21.gen", &tail));
     for (op, want) in [("atBool", 6), ("atInt", 5)] {
-        match interp.call(&format!("test.z2p21.gen.U.{op}"), &[]) {
+        match interp.call(&format!("test.z2p21.gen.U.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) if n == want => {}
             other => panic!("`{op}`: expected {want}, got {other:?}"),
         }
@@ -274,7 +274,7 @@ fn an_element_at_an_introducer_is_fixed_by_the_citation_either_way() {
     assert_eq!(answers(&src, "test.z2p21.intro.viaBool"), vec![6]);
     let mut interp = crate::common::interp_for(&src);
     for (op, want) in [("rBool", 6), ("rInt", 5)] {
-        match interp.call(&format!("test.z2p21.intro.U.{op}"), &[]) {
+        match interp.call(&format!("test.z2p21.intro.U.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) if n == want => {}
             other => panic!("`{op}`: expected {want}, got {other:?}"),
         }

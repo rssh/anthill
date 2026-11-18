@@ -658,7 +658,7 @@ fn an_equation_subject_is_a_party_to_the_collision_too() {
          namespace zeq5c\n  import zeq5.{f}\n  operation g() -> Int64 = f(false)\nend\n",
     );
     assert_eq!(
-        int_value(owned.call("zeq5c.g", &[]).expect("the operation owner answers")),
+        int_value(owned.call("zeq5c.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the operation owner answers")),
         2,
         "the `operation` owner collects the SORT's equation"
     );
@@ -668,7 +668,7 @@ fn an_equation_subject_is_a_party_to_the_collision_too() {
          namespace zeq6c\n  import zeq6.{Rec}\n  operation g() -> Int64 = Rec.f(false)\nend\n",
     );
     assert_eq!(
-        int_value(split.call("zeq6c.g", &[]).expect("the per-scope declaration answers")),
+        int_value(split.call("zeq6c.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the per-scope declaration answers")),
         2,
         "a declaration in EACH scope keeps the sort's equation AT the sort"
     );

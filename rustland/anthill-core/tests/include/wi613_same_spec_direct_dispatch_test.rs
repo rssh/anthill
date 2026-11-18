@@ -80,7 +80,7 @@ fn repro_loads_clean() {
 #[test]
 fn dispatches_second_same_spec_requirement() {
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call("test.wi613.driveSecond", &[]) {
+    match interp.call("test.wi613.driveSecond", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 2,
             "runSecond dispatches Tag.tagval over B (Blue); the read dict must be \
@@ -100,7 +100,7 @@ fn dispatches_second_same_spec_requirement() {
 #[test]
 fn dispatches_first_same_spec_requirement() {
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call("test.wi613.driveFirst", &[]) {
+    match interp.call("test.wi613.driveFirst", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 1,
             "runFirst dispatches Tag.tagval over A (Red); the read dict must be \

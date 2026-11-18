@@ -168,7 +168,7 @@ fn sole_error_at(src: &str, site: &str) -> String {
 /// a dirty load.
 fn eval_fresh(src: &str, entry: &str) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(0)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 // ── Positive controls ────────────────────────────────────────────────

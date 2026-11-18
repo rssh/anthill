@@ -118,7 +118,7 @@ fn answers(ns: &str, body: &str) -> i64 {
     let src = program(ns, body);
     let mut interp = interp_for(&src);
     let entry = format!("{ns}.go");
-    match interp.call(&entry, &[]) {
+    match interp.call(&entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{entry}` must run to an Int64: {other:?}\n{src}"),
     }
@@ -367,7 +367,7 @@ end
         let mut interp = interp_for(&src);
         let entry = format!("w34822.ownrow_{name}.go");
         assert!(
-            matches!(interp.call(&entry, &[]), Ok(Value::Int(30))),
+            matches!(interp.call(&entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(30))),
             "`{name}`: the provision at `{bound}` answers"
         );
     }

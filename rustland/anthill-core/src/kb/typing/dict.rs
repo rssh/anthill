@@ -2601,7 +2601,41 @@ pub(super) fn build_op_scoped_dicts(
                             out.push(Some(t));
                             continue;
                         }
-                        None
+                        // The argument's type leaves the slot open — an opened existential
+                        // (`let s = mk()` over `mk() -> MySet[T = String]`), or a type that
+                        // does not write it — and the caller's frame holds no requirement of
+                        // the spec to forward (the relay of a caller's own parameter does):
+                        // the value was built with a provider this call cannot read, so none
+                        // is built for it, as for a call result handed straight in
+                        // ([`ErasedSlotReason::NoReceiver`]). Built from the goal, §8.7's
+                        // order chose one the value may not have been built with.
+                        if caller_requires.iter().any(|e| e.required_sort == dep.required_sort) {
+                            None
+                        } else {
+                            kb.unsuppliable_requirements.truncate(parked_mark);
+                            return Err(Box::new(RequirementRefusal {
+                                account_names_every_repair: false,
+                                no_scope_route: false,
+                                construction_carries_repair: false,
+                                dep_text: render_requires_entry(kb, &dep),
+                                unconstrained: Vec::new(),
+                                refused_covers: Vec::new(),
+                                construction: format!(
+                                    "it is supplied from the parameter `{0}`, whose argument's \
+                                     type leaves `{1}` open: the value was built with a provider \
+                                     named nowhere this call can read, and constructing one would \
+                                     answer for this signature and not for the value. Write `{1}` \
+                                     where the value is produced, in the type it is returned or \
+                                     bound at",
+                                    kb.local_name_of(param),
+                                    kb.local_name_of(binder),
+                                ),
+                                pinned: None,
+                                unprovided: None,
+                                untied: None,
+                            })
+                            .into());
+                        }
                     }
                 }
             }

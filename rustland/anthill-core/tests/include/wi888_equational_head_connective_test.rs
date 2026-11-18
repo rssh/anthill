@@ -355,13 +355,13 @@ namespace test.wi888.localunify
 end
 "#;
     let mut interp = interp_for(SRC);
-    match interp.call("test.wi888.localunify.C.drive", &[Value::Int(0)]) {
+    match interp.call("test.wi888.localunify.C.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(10)) => {}
         other => panic!(
             "the `<=>` equation must fire even beside a local `unify` declaration; got {other:?}"
         ),
     }
-    match interp.call("test.wi888.localunify.C.callLocal", &[Value::Int(0)]) {
+    match interp.call("test.wi888.localunify.C.callLocal", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(7)) => {}
         other => panic!("a WRITTEN `unify(a, b, c)` call still reaches the local op; got {other:?}"),
     }

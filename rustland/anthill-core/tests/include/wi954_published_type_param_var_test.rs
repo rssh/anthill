@@ -237,8 +237,8 @@ fn the_fixture_dispatches() {
     let mut interp = crate::common::interp_for(SRC);
     match interp.call(
         "test.wi954.Driver.run",
-        &[anthill_core::eval::Value::Int(3)],
-    ) {
+        &anthill_core::eval::HostValue::all(&[anthill_core::eval::Value::Int(3)]),
+    ).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => {
             assert_eq!(n, 3, "`pick` returns its first argument")
         }

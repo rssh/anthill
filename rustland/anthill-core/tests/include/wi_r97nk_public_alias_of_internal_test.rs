@@ -63,7 +63,7 @@ fn errors(sources: &[&str]) -> Vec<String> {
 }
 
 fn call(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{op}` must run to an Int64: {other:?}"),
     }

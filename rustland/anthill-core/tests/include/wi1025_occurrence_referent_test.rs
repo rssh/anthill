@@ -140,7 +140,7 @@ fn a_parameterized_type_occurrence_names_its_base_sort() {
 
 fn facts_of(interp: &mut Interpreter, sort: Value) -> Result<Value, String> {
     interp
-        .call("anthill.reflect.KB.facts_of", &[Value::Unit, sort])
+        .call("anthill.reflect.KB.facts_of", &anthill_core::eval::HostValue::all(&[crate::common::ambient_kb(interp.kb()), sort])).map(|h| h.value)
         .map_err(|e| format!("{e:?}"))
 }
 

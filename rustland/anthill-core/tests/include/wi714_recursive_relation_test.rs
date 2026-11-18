@@ -136,7 +136,7 @@ fn collect_strings(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<Strin
 fn wi714_recursive_relation_drains_transitive_closure() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714rec.closure", &[])
+        .call("test.wi714rec.closure", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a recursive rule cited by name must load and drain");
     let mut got = collect_pairs(interp.kb(), &r);
     got.sort();
@@ -191,7 +191,7 @@ fn wi714_recursive_column_schema_is_the_base_clause_type() {
 fn wi714_recursive_column_types_from_the_base_clause() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714rec.ofAbe", &[])
+        .call("test.wi714rec.ofAbe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("where over a recursion-typed column must type and run");
     let mut got = collect_pairs(interp.kb(), &r);
     got.sort();
@@ -217,14 +217,14 @@ fn wi714_recursive_column_types_from_the_base_clause() {
 fn wi714_recursive_relation_ground_applied_citation() {
     let mut interp = interp_for(SRC);
     let member = interp
-        .call("test.wi714rec.bartAncAbe", &[])
+        .call("test.wi714rec.bartAncAbe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a ground applied citation of a recursive rule must load and run");
     assert!(
         matches!(member, Value::Int(1)),
         "`anc(\"bart\", \"abe\")` is derivable exactly once (via homer), got {member:?}"
     );
     let non_member = interp
-        .call("test.wi714rec.abeAncBart", &[])
+        .call("test.wi714rec.abeAncBart", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the non-member ground citation must run");
     assert!(
         matches!(non_member, Value::Int(0)),
@@ -238,7 +238,7 @@ fn wi714_recursive_relation_ground_applied_citation() {
 fn wi714_recursive_relation_projects() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714rec.ancestors", &[])
+        .call("test.wi714rec.ancestors", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("projection over a recursive relation must run");
     let mut got = collect_strings(interp.kb(), &r);
     got.sort();
@@ -275,7 +275,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.wi714mutual.closure", &[])
+        .call("test.wi714mutual.closure", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a mutually recursive rule cited by name must load and drain");
     let mut got = collect_pairs(interp.kb(), &r);
     got.sort();

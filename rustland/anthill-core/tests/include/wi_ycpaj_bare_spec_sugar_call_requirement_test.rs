@@ -166,7 +166,7 @@ fn a_row_leaving_the_pinned_element_open_keeps_the_call() {
             &format!("{generic}{decl}"),
             "useB(wis(n: 4), wis(n: 5))",
         ));
-        match interp.call("t.go", &[]) {
+        match interp.call("t.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, 4, "{decl}"),
             other => panic!("{decl}: `t.go` must run to an Int64: {other:?}"),
         }
@@ -221,7 +221,7 @@ fn a_call_whose_conditional_provision_holds_runs() {
             &format!("{CONDITIONAL}{decl}"),
             "usePeek(box(e: wis(n: 1)))",
         ));
-        match interp.call("t.go", &[]) {
+        match interp.call("t.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, 100, "{decl}"),
             other => panic!("{decl}: `t.go` must run to an Int64: {other:?}"),
         }
@@ -274,7 +274,7 @@ fn a_provided_call_runs_in_every_spelling() {
     ];
     for (decl, goal, want) in rows {
         let mut interp = interp_for(&program(decl, goal));
-        match interp.call("t.go", &[]) {
+        match interp.call("t.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "{decl}"),
             other => panic!("{decl}: `t.go` must run to an Int64: {other:?}"),
         }

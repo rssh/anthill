@@ -448,7 +448,7 @@ fn the_reflect_faces_agree_on_a_bodyless_tie() {
     let spec_op = crate::common::symbol_term(&mut interp, &format!("{ns}.Desc.name"));
     for (face, args) in [("resolveOp", vec![d.clone(), spec_op]), ("ops", vec![d])] {
         let err = interp
-            .call(&format!("{DICT}.{face}"), &args)
+            .call(&format!("{DICT}.{face}"), &anthill_core::eval::HostValue::all(&args)).map(|h| h.value)
             .expect_err("the provider supplies `name` twice");
         assert!(
             matches!(

@@ -125,7 +125,7 @@ fn refusal(src: &str) -> String {
 #[test]
 fn one_provider_still_runs() {
     let mut interp = crate::common::interp_for(&src(&[("BaseA", 1)]));
-    match interp.call("wi865.tie.Driver.go", &[Value::Int(0)]) {
+    match interp.call("wi865.tie.Driver.go", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(1)) => {}
         other => panic!(
             "with a unique provider the spec-half slot is filled and `Base.b` \
@@ -307,20 +307,16 @@ fn a_failure_below_on_the_same_spec_names_the_goal_that_failed() {
 #[test]
 fn a_host_entry_stand_in_slot_blames_the_entry_and_not_the_program() {
     let mut interp = crate::common::interp_for(&src(&[("BaseA", 1)]));
-    let err = match interp.call("wi865.tie.Holder.via", &[Value::Int(5)]) {
+    let err = match interp.call("wi865.tie.Holder.via", &anthill_core::eval::HostValue::all(&[Value::Int(5)])).map(|h| h.value) {
         Err(e) => format!("{e}"),
         Ok(v) => panic!("a host entry supplies no dictionary, so the read must fail; got {v:?}"),
     };
+    // Proposal 074 §1.4 (WI-20261113-S4D63): a host call is typed as a body's call is, so it
+    // is no longer entered on a stand-in. `Holder.via` owes `Top` at the argument's type, and
+    // nothing provides `Top[T = Int64]`: the call is refused where it is made, naming the
+    // requirement and the carrier, as the same call in a body is.
     assert!(
-        err.contains("pins no provider") && err.contains("host entry point"),
-        "a stand-in slot must say the FRAME was entered without a dictionary: {err}",
-    );
-    assert!(
-        err.contains("call_with_requirements"),
-        "…and name the entry point that supplies one: {err}",
-    );
-    assert!(
-        !err.contains("nothing provides") && !err.contains("MORE THAN ONE"),
-        "…and must not send the author to fix a program that is not at fault: {err}",
+        err.contains("wi865.tie.Top[T = anthill.prelude.Int64]") && err.contains("provides no"),
+        "the refusal names the requirement nothing provides at the argument's type: {err}",
     );
 }

@@ -88,7 +88,7 @@ fn source(ns: &str, body: &str) -> String {
 /// Load, call `test.<ns>.go()`, and hand back its integer as text.
 fn run(ns: &str, body: &str) -> String {
     let mut interp = interp_for(&source(ns, body));
-    match interp.call(&format!("test.{ns}.go"), &[]) {
+    match interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n.to_string(),
         other => panic!("{ns}: expected an Int64, got {other:?}"),
     }
@@ -234,7 +234,7 @@ fn a_spec_call_at_a_variant_typed_carrier_is_answered_by_its_sort() {
     };
     let answer = |ns: &str, body: &str| -> String {
         let mut interp = interp_for(&specs(ns, body));
-        match interp.call(&format!("test.{ns}.go"), &[]) {
+        match interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => n.to_string(),
             other => panic!("{ns}: expected an Int64, got {other:?}"),
         }

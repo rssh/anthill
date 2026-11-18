@@ -206,7 +206,7 @@ fn expect_str(v: &Value, why: &str) -> String {
 fn a_guard_that_holds_takes_its_arm_and_a_false_one_falls_through() {
     let mut interp = interp_for(SRC);
     let held = interp
-        .call("test.qv5a.pick", &[Value::Int(1)])
+        .call("test.qv5a.pick", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("pick(1): {e:?}"));
     assert_eq!(
         expect_str(&held, "pick(1)"),
@@ -214,7 +214,7 @@ fn a_guard_that_holds_takes_its_arm_and_a_false_one_falls_through() {
         "a guard that holds takes its own arm"
     );
     let declined = interp
-        .call("test.qv5a.pick", &[Value::Int(7)])
+        .call("test.qv5a.pick", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("pick(7): {e:?}"));
     assert_eq!(
         expect_str(&declined, "pick(7)"),
@@ -237,7 +237,7 @@ fn a_false_guard_resumes_at_the_next_arm() {
     let mut interp = interp_for(SRC);
     for (n, want) in [(1, "first"), (2, "second"), (3, "rest")] {
         let v = interp
-            .call("test.qv5a.rank", &[Value::Int(n)])
+            .call("test.qv5a.rank", &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("rank({n}): {e:?}"));
         assert_eq!(
             expect_str(&v, "rank"),
@@ -258,11 +258,11 @@ fn a_false_guard_resumes_at_the_next_arm() {
 fn a_guard_that_calls_an_operation_drives_the_suspend_path() {
     let mut interp = interp_for(SRC);
     let small = interp
-        .call("test.qv5a.classify", &[Value::Int(2)])
+        .call("test.qv5a.classify", &anthill_core::eval::HostValue::all(&[Value::Int(2)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("classify(2): {e:?}"));
     assert_eq!(expect_str(&small, "classify(2)"), "small");
     let big = interp
-        .call("test.qv5a.classify", &[Value::Int(9)])
+        .call("test.qv5a.classify", &anthill_core::eval::HostValue::all(&[Value::Int(9)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("classify(9): {e:?}"));
     assert_eq!(
         expect_str(&big, "classify(9)"),
@@ -279,11 +279,11 @@ fn a_guard_that_calls_an_operation_drives_the_suspend_path() {
 fn an_unguarded_match_is_unmoved() {
     let mut interp = interp_for(SRC);
     let one = interp
-        .call("test.qv5a.plain", &[Value::Int(1)])
+        .call("test.qv5a.plain", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("plain(1): {e:?}"));
     assert_eq!(expect_str(&one, "plain(1)"), "one");
     let other = interp
-        .call("test.qv5a.plain", &[Value::Int(2)])
+        .call("test.qv5a.plain", &anthill_core::eval::HostValue::all(&[Value::Int(2)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("plain(2): {e:?}"));
     assert_eq!(expect_str(&other, "plain(2)"), "other");
 }
@@ -304,7 +304,7 @@ fn an_unguarded_match_is_unmoved() {
 fn a_false_guards_bindings_do_not_reach_a_later_arm() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.qv5a.shadow", &[Value::Int(5)])
+        .call("test.qv5a.shadow", &anthill_core::eval::HostValue::all(&[Value::Int(5)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("shadow(5): {e:?}"));
     assert_eq!(
         v.literal_int64(interp.kb()),
@@ -328,13 +328,13 @@ fn every_arm_guarded_and_declining_raises_match_failed() {
     let mut interp = interp_for(SRC);
     for (n, want) in [(1, "one"), (2, "two")] {
         let v = interp
-            .call("test.qv5a.strict", &[Value::Int(n)])
+            .call("test.qv5a.strict", &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("strict({n}): {e:?}"));
         assert_eq!(expect_str(&v, "strict"), want);
     }
 
     let err = interp
-        .call("test.qv5a.strict", &[Value::Int(3)])
+        .call("test.qv5a.strict", &anthill_core::eval::HostValue::all(&[Value::Int(3)])).map(|h| h.value)
         .expect_err("every arm declined, so the match is exhausted");
     match &err {
         EvalError::Raised { payload, .. } => match payload {
@@ -420,7 +420,7 @@ end
         .expect("register Error handler");
 
     let err = interp
-        .call("test.qv5a.boom", &[Value::Int(1)])
+        .call("test.qv5a.boom", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .expect_err("the guard raises, so the call does not answer");
     assert!(
         matches!(err, EvalError::Raised { .. }),
@@ -455,8 +455,8 @@ fn a_guarded_arm_whose_pattern_does_not_match_never_runs_its_guard() {
     let green = interp
         .call(
             "test.qv5a.only_reached_through_the_pattern",
-            &[Value::Int(1)],
-        )
+            &anthill_core::eval::HostValue::all(&[Value::Int(1)]),
+        ).map(|h| h.value)
         .unwrap_or_else(|e| panic!("a non-matching pattern must not reach its guard: {e:?}"));
     assert_eq!(
         expect_str(&green, "only_reached_through_the_pattern(1)"),
@@ -466,8 +466,8 @@ fn a_guarded_arm_whose_pattern_does_not_match_never_runs_its_guard() {
     let err = interp
         .call(
             "test.qv5a.only_reached_through_the_pattern",
-            &[Value::Int(0)],
-        )
+            &anthill_core::eval::HostValue::all(&[Value::Int(0)]),
+        ).map(|h| h.value)
         .expect_err("a MATCHING pattern reaches its guard, which raises");
     assert!(
         matches!(err, EvalError::Raised { .. }),
@@ -543,15 +543,15 @@ end
     let warm = interp
         .call(
             "test.qv5arel.Ops.rank",
-            &[Value::Entity {
+            &anthill_core::eval::HostValue::all(&[Value::Entity {
                 functor: interp
                     .kb()
                     .try_resolve_symbol("test.qv5arel.Hue.warm")
                     .expect("warm resolves"),
                 pos: Vec::new().into(),
                 named: Vec::new().into(),
-            }],
-        )
+            }]),
+        ).map(|h| h.value)
         .expect_err("every arm declined, so `rank(warm())` raises");
     assert!(
         matches!(warm, EvalError::Raised { .. }),

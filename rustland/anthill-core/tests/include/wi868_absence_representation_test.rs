@@ -141,7 +141,7 @@ fn a_builtin_read_through_a_host_entry_marker_is_refused() {
     for (v1, v2) in [(5, 5), (5, 6)] {
         // A FRESH interpreter per row — a trapped call poisons later calls.
         let mut interp = crate::common::interp_for(BUILTIN_READ_SOUND);
-        let err = match interp.call("wi868.sound.Holder.via", &[Value::Int(v1), Value::Int(v2)])
+        let err = match interp.call("wi868.sound.Holder.via", &anthill_core::eval::HostValue::all(&[Value::Int(v1), Value::Int(v2)])).map(|h| h.value)
         {
             Err(e) => format!("{e}"),
             Ok(v) => panic!(
@@ -150,13 +150,12 @@ fn a_builtin_read_through_a_host_entry_marker_is_refused() {
                  Got {v:?}",
             ),
         };
+        // Proposal 074 §1.4 (WI-20261113-S4D63): a host call is typed as a body's call is, so
+        // no stand-in or marker is entered: `Holder.via` owes `Top` at `Int64`, which nothing
+        // provides, and the call is refused where it is made — before any builtin is read.
         assert!(
-            err.contains("anthill.prelude.PartialEq.eq") && err.contains("pins no provider"),
-            "the refusal must name the op it would not dispatch and say why; got: {err}",
-        );
-        assert!(
-            err.contains("host entry point"),
-            "…and blame the entry, which is WI-865's payload doing its work; got: {err}",
+            err.contains("wi868.sound.Top[T = anthill.prelude.Int64]") && err.contains("provides no"),
+            "the refusal names the requirement nothing provides at the argument's type: {err}",
         );
     }
 }

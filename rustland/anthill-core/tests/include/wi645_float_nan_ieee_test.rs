@@ -30,7 +30,7 @@ fn interp(src: &str) -> anthill_core::eval::Interpreter {
 }
 
 fn call_bool(i: &mut anthill_core::eval::Interpreter, op: &str) -> bool {
-    i.call(op, &[])
+    i.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
         .literal_bool(i.kb())
         .unwrap_or_else(|| panic!("call {op}: not a Bool"))

@@ -211,7 +211,7 @@ fn nested_binding_resolves_all_the_way_down() {
 fn a_constructor_column_on_the_occurrence_carrier_materializes() {
     let mut interp = interp_for(SRC);
     let out = interp
-        .call("probe.wi2yhz3.drained_ctor", &[])
+        .call("probe.wi2yhz3.drained_ctor", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the constructor-valued relation drains");
     assert_eq!(
         as_int(interp.kb(), &out),
@@ -318,7 +318,7 @@ fn ground_queries_decided_correctly_throughout() {
 fn relation_column_bound_by_a_builtin_drains_as_its_value() {
     let mut interp = interp_for(SRC);
     let control = interp
-        .call("probe.wi2yhz3.drained_fact", &[])
+        .call("probe.wi2yhz3.drained_fact", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the fact-backed relation drains");
     assert_eq!(
         as_int(interp.kb(), &control),
@@ -326,7 +326,7 @@ fn relation_column_bound_by_a_builtin_drains_as_its_value() {
         "CONTROL: a fact-bound column always drained correctly; got {control:?}",
     );
     let out = interp
-        .call("probe.wi2yhz3.drained_builtin", &[])
+        .call("probe.wi2yhz3.drained_builtin", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the builtin-backed relation drains");
     assert_eq!(
         as_int(interp.kb(), &out),

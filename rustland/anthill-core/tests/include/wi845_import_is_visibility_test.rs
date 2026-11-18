@@ -155,7 +155,7 @@ fn eval_int(srcs: &[String], why: &str) -> i64 {
     };
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call("wi845.use.Driver.drive", &[Value::Int(0)]) {
+    match interp.call("wi845.use.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{why}; got {other:?}"),
     }

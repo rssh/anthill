@@ -142,7 +142,7 @@ end
 #[test]
 fn wi733_relation_head_option_evaluates() {
     let mut interp = interp_for(SRC);
-    let got = interp.call("test.wi733.oneHeadOption", &[]);
+    let got = interp.call("test.wi733.oneHeadOption", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert_eq!(
         some_string(&mut interp, &got),
         Some("alice".to_string()),
@@ -154,7 +154,7 @@ fn wi733_relation_head_option_evaluates() {
 #[test]
 fn wi733_relation_head_evaluates() {
     let mut interp = interp_for(SRC);
-    let got = interp.call("test.wi733.oneHead", &[]);
+    let got = interp.call("test.wi733.oneHead", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         got.as_ref()
             .ok()
@@ -174,7 +174,7 @@ fn wi733_relation_head_evaluates() {
 #[test]
 fn wi733_a_matching_literal_yields_a_row() {
     let mut interp = interp_for(SRC);
-    let got = interp.call("test.wi733.rareHeadOption", &[]);
+    let got = interp.call("test.wi733.rareHeadOption", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert_eq!(
         some_string(&mut interp, &got),
         Some("carol".to_string()),
@@ -187,7 +187,7 @@ fn wi733_a_matching_literal_yields_a_row() {
 #[test]
 fn wi733_relation_head_option_on_empty_is_none() {
     let mut interp = interp_for(SRC);
-    let got = interp.call("test.wi733.emptyHeadOption", &[]);
+    let got = interp.call("test.wi733.emptyHeadOption", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         entity_functor_is(&mut interp, &got, "anthill.prelude.Option.none"),
         "`.headOption` on a relation with no solution is none; got {got:?}"
@@ -227,7 +227,7 @@ fn wi733_relation_tail_on_empty_raises_empty_stream() {
 #[test]
 fn wi733_relation_head_and_tail_decompose_the_stream() {
     let mut i1 = interp_for(SRC);
-    let got_all = i1.call("test.wi733.all3", &[]);
+    let got_all = i1.call("test.wi733.all3", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     let all = string_list(&mut i1, &got_all);
     let mut sorted = all.clone();
     sorted.sort();
@@ -240,7 +240,7 @@ fn wi733_relation_head_and_tail_decompose_the_stream() {
     // SAME interpreter, so `tailAll` walks the same load's `splitFirst` chain.
     // (Safe reuse: `all3` returned Ok — the poisoning footgun is a TRAPPED call,
     // and a trapped `all3` fails the assertion above before we get here.)
-    let got_tail = i1.call("test.wi733.tailAll", &[]);
+    let got_tail = i1.call("test.wi733.tailAll", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     let tail = string_list(&mut i1, &got_tail);
     assert_eq!(
         tail,
@@ -249,7 +249,7 @@ fn wi733_relation_head_and_tail_decompose_the_stream() {
     );
 
     let mut i3 = interp_for(SRC);
-    let n = i3.call("test.wi733.tailLength", &[]);
+    let n = i3.call("test.wi733.tailLength", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert_eq!(
         n.as_ref()
             .ok()
@@ -301,7 +301,7 @@ namespace test.wi733lazy
 end
 "#;
     let mut i1 = interp_for(src);
-    let got = i1.call("test.wi733lazy.firstReach", &[]);
+    let got = i1.call("test.wi733lazy.firstReach", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         got.as_ref()
             .ok()
@@ -313,7 +313,7 @@ end
     );
 
     let mut i2 = interp_for(src);
-    let n = i2.call("test.wi733lazy.threeRows", &[]);
+    let n = i2.call("test.wi733lazy.threeRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert_eq!(
         n.as_ref()
             .ok()
@@ -536,7 +536,7 @@ fn string_list(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Vec<St
 /// asserting the payload's functor, not merely that something failed, is what
 /// separates the declared partiality from an unrelated eval error.
 fn assert_raises_empty_stream(interp: &mut Interpreter, op: &str) {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { payload, .. }) => match &payload {
             Value::Entity { functor, .. } => assert_eq!(
                 interp.kb().qualified_name_of(*functor),

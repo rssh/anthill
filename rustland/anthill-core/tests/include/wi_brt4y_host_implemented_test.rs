@@ -145,7 +145,7 @@ fn the_same_program_with_its_binding_layer_runs() {
     let kb = crate::common::expect_loaded(load(&[CLAIM, BINDING]));
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call(READING, &[Value::Int(1)]) {
+    match interp.call(READING, &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value) {
         Ok(Value::Int(42)) => {}
         other => panic!("{READING}(1) must run the host function and answer 42, got {other:?}"),
     }

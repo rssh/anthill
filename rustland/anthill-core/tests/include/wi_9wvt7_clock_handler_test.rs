@@ -187,7 +187,7 @@ fn a_declined_clock_read_is_reported() {
 #[test]
 fn a_drained_relation_names_the_declined_effect() {
     let mut interp = crate::common::interp_for(PROGRAM);
-    match interp.call("test.clock.stampCount", &[]) {
+    match interp.call("test.clock.stampCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { payload, .. }) => {
             let reason = crate::common::entity_field(interp.kb(), &payload, "reason", 1);
             let reason = crate::common::scalar_str(interp.kb(), &reason)
@@ -345,7 +345,7 @@ fn a_negation_over_a_declined_effect_is_conditional() {
 #[test]
 fn a_drain_over_a_refuted_branch_fails_naming_the_effect() {
     let mut interp = crate::common::interp_for(REFUTED_AFTER_THE_EFFECT);
-    match interp.call("test.clockrefuted.countEffectFirst", &[]) {
+    match interp.call("test.clockrefuted.countEffectFirst", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { payload, .. }) => {
             let reason = crate::common::entity_field(interp.kb(), &payload, "reason", 1);
             let reason = crate::common::scalar_str(interp.kb(), &reason)
@@ -358,7 +358,7 @@ fn a_drain_over_a_refuted_branch_fails_naming_the_effect() {
         other => panic!("the drain fails, got {other:?}"),
     }
     let v = interp
-        .call("test.clockrefuted.countTestFirst", &[])
+        .call("test.clockrefuted.countTestFirst", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the control drains");
     assert_eq!(v.literal_int64(interp.kb()), Some(0));
 }
@@ -396,7 +396,7 @@ fn a_constraint_over_a_declined_effect_does_not_load() {
 #[test]
 fn an_operation_reads_the_clock_through_its_handler() {
     let mut interp = crate::common::interp_for(PROGRAM);
-    match interp.call("test.clock.plainStamp", &[]) {
+    match interp.call("test.clock.plainStamp", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::UnhandledEffect { name, .. }) => {
             assert_eq!(name, "anthill.prelude.Time.Clock")
         }
@@ -406,7 +406,7 @@ fn an_operation_reads_the_clock_through_its_handler() {
         .register_effect_handler("anthill.prelude.Time.Clock", frozen_clock("2000-01-01T00:00:00Z"))
         .expect("register a frozen Clock");
     let v = interp
-        .call("test.clock.plainStamp", &[])
+        .call("test.clock.plainStamp", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the frozen clock answers");
     assert_eq!(
         crate::common::scalar_str(interp.kb(), &v).as_deref(),
@@ -534,7 +534,7 @@ fn a_clock_const_in_an_operation_body_reads_the_handler() {
     interp
         .register_effect_handler("anthill.prelude.Time.Clock", frozen_clock("2000-01-01T00:00:00Z"))
         .expect("register a frozen Clock");
-    let v = interp.call("test.clockconst.stamp", &[]).expect("the const is read when it runs");
+    let v = interp.call("test.clockconst.stamp", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the const is read when it runs");
     assert_eq!(
         crate::common::scalar_str(interp.kb(), &v).as_deref(),
         Some("2000-01-01T00:00:00Z")

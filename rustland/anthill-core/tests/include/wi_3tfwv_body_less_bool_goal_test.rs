@@ -113,7 +113,7 @@ fn a_cited_guarded_goal_answers_the_passed_dictionary() {
   rule notOtherR() :- not(chkG[A = Leaf, Pred = Other](leaf(v: 3)))
 "#;
     let mut interp = interp_for(&program(extra));
-    let call = |interp: &mut anthill_core::eval::Interpreter, op: &str| match interp.call(&format!("{NS}.{op}"), &[]) {
+    let call = |interp: &mut anthill_core::eval::Interpreter, op: &str| match interp.call(&format!("{NS}.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("`{op}`: expected a Bool, got {other:?}"),
     };

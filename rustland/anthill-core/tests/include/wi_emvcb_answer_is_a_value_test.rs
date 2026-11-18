@@ -124,7 +124,7 @@ fn a_relation_column_answers_the_value() {
     );
     let mut interp = interp_for(&src);
     let row = interp
-        .call("emvcb.rel.firstRow", &[])
+        .call("emvcb.rel.firstRow", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the relation must drain one row");
     let col = crate::common::sole_column(&row);
     assert!(
@@ -174,7 +174,7 @@ fn the_operation_body_twin_is_unmoved() {
          end\n"
     );
     let mut interp = interp_for(&src);
-    let got = interp.call("emvcb.op.w", &[]).expect("w must evaluate");
+    let got = interp.call("emvcb.op.w", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("w must evaluate");
     assert!(
         matches!(got, Value::Int(2)),
         "the operation-body spelling answered 2 before this ticket and must not move; \

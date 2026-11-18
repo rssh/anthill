@@ -297,7 +297,7 @@ fn a_body_computes_a_term_field_as_an_operation_body_does() {
 fn a_query_answers_as_its_rule_body_twin() {
     let mut interp = crate::common::interp_for(SRC);
     for (op, want) in [("runsGoal", 1), ("findsCode", 1), ("codeArg", 0)] {
-        let r = interp.call(&format!("t.mkfn.{op}"), &[]).expect("the query runs");
+        let r = interp.call(&format!("t.mkfn.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the query runs");
         assert!(
             matches!(r, anthill_core::eval::value::Value::Int(n) if n == want),
             "`{op}`: {want} answer(s); got {r:?}"

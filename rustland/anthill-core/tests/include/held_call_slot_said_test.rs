@@ -48,7 +48,7 @@ fn answers(src: &str, entries: &[&str]) -> Vec<String> {
     let mut interp = interp_for(src);
     entries
         .iter()
-        .map(|entry| match interp.call(entry, &[]) {
+        .map(|entry| match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(v) => show_value(interp.kb(), &v),
             Err(e) => panic!("{entry}: {e:?}"),
         })
@@ -207,7 +207,7 @@ end
 "#;
     let mut interp = interp_for(src);
     assert!(load_errors_of(src).is_empty());
-    assert!(matches!(interp.call("test.held.folded.zero", &[]), Ok(Value::Int(0))));
+    assert!(matches!(interp.call("test.held.folded.zero", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(0))));
 }
 
 /// What the value meets says a call in TAIL position of the arm or argument as well: the body

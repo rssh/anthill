@@ -86,7 +86,7 @@ fn load_errors(src: &str) -> Vec<String> {
 
 fn eval_type(src: &str, op: &str) -> String {
     let mut interp = interp_for(src);
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Term { id, .. }) => TermPrinter::new(interp.kb()).print_term(id),
         Ok(other) => panic!("{op}: expected a term-carried type, got {other:?}"),
         Err(e) => panic!("{op}: {e:?}"),
@@ -432,7 +432,7 @@ fn a_rigid_inside_an_application_of_a_programs_spec_is_refused_too() {
     );
     assert_eq!(load_errors(&repaired), Vec::<String>::new());
     let mut interp = interp_for(&repaired);
-    let v = interp.call("test.xsvcs.nestedown.go", &[]).expect("go runs");
+    let v = interp.call("test.xsvcs.nestedown.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("go runs");
     assert_eq!(
         anthill_core::kb::term_view::TermView::literal_int64(&v, interp.kb()),
         Some(5)

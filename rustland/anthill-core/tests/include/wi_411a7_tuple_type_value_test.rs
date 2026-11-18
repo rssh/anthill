@@ -67,13 +67,13 @@ end
 /// The `Type` `entry` answers, printed, on a fresh interpreter.
 fn type_of(interp: &mut Interpreter, entry: &str) -> String {
     let v = interp
-        .call(entry, &[])
+        .call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{entry}: {e:?}"));
     print_type(interp.kb(), &v)
 }
 
 fn bool_of(interp: &mut Interpreter, entry: &str) -> bool {
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
     }
@@ -230,7 +230,7 @@ fn a_tuple_over_a_callers_parameter_needs_its_evidence() {
 /// for `some(…)`.
 fn labels_of(interp: &mut Interpreter, d: Value) -> Option<Vec<String>> {
     let answer = interp
-        .call("anthill.realization.runtime.Dictionary.labels", &[d])
+        .call("anthill.realization.runtime.Dictionary.labels", &anthill_core::eval::HostValue::all(&[d])).map(|h| h.value)
         .expect("Dictionary.labels");
     let kb: &KnowledgeBase = interp.kb();
     let child = |v: &Value, name: &str| match v {
@@ -285,7 +285,7 @@ fn the_dictionary_carries_the_tuples_labels() {
         ("equality", Some(vec!["a", "b"])),
     ] {
         let d = interp
-            .call(&format!("{ns}.{entry}"), &[])
+            .call(&format!("{ns}.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{entry}: {e:?}"));
         let want = want.map(|w| w.into_iter().map(str::to_owned).collect::<Vec<_>>());
         assert_eq!(labels_of(&mut interp, d), want, "`{entry}`");

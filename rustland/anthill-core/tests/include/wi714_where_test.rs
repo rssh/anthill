@@ -45,7 +45,7 @@ end
 fn wi714_where_keeps_matching_rows() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714where.hasAlice", &[])
+        .call("test.wi714where.hasAlice", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("hasAlice runs the where-filtered relation");
     match r {
         Value::Bool(b) => assert!(!b, "name=alice matches → non-empty (isEmpty=false)"),
@@ -59,7 +59,7 @@ fn wi714_where_keeps_matching_rows() {
 fn wi714_where_drops_nonmatching_rows() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714where.hasZed", &[])
+        .call("test.wi714where.hasZed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("hasZed runs the where-filtered relation");
     match r {
         Value::Bool(b) => assert!(b, "name=zed matches nobody → empty (isEmpty=true)"),
@@ -108,7 +108,7 @@ end
 fn wi714_where_single_column_keeps() {
     let mut interp = interp_for(SINGLE_COL_SRC);
     let r = interp
-        .call("test.wi714where1.hasThirty", &[])
+        .call("test.wi714where1.hasThirty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("hasThirty runs the where-filtered single-column relation");
     match r {
         Value::Bool(b) => assert!(!b, "age=30 matches → non-empty (isEmpty=false)"),
@@ -122,7 +122,7 @@ fn wi714_where_single_column_keeps() {
 fn wi714_where_single_column_drops() {
     let mut interp = interp_for(SINGLE_COL_SRC);
     let r = interp
-        .call("test.wi714where1.hasNinetyNine", &[])
+        .call("test.wi714where1.hasNinetyNine", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("hasNinetyNine runs the where-filtered single-column relation");
     match r {
         Value::Bool(b) => assert!(b, "age=99 matches nobody → empty (isEmpty=true)"),

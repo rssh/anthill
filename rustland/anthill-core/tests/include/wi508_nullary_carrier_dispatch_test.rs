@@ -35,10 +35,10 @@ end
 #[test]
 fn wi508_abstract_new_from_return_type() {
     let mut interp = interp_for(SRC_STDLIB);
-    let s = interp.call("test.wi508.freshBare", &[]).expect("freshBare");
+    let s = interp.call("test.wi508.freshBare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("freshBare");
     assert_eq!(
         interp
-            .call("test.wi508.depth", &[s])
+            .call("test.wi508.depth", &anthill_core::eval::HostValue::all(&[s])).map(|h| h.value)
             .unwrap()
             .literal_int64(interp.kb()),
         Some(0),
@@ -181,7 +181,7 @@ fn wi508_concrete_new_element_said_at_the_name() {
     ] {
         let mut interp = interp_for(&concrete_program(ns, bound));
         let r = interp
-            .call(&format!("{ns}.useNew"), &[])
+            .call(&format!("{ns}.useNew"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{bound}: {e:?}"));
         assert_eq!(r.literal_int64(interp.kb()), Some(1), "{bound}");
     }

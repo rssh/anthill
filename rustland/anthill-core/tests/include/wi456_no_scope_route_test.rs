@@ -172,7 +172,7 @@ fn loads_clean(src: &str, why: &str) {
 /// assertion is also a clean-load assertion.
 fn eval_str(src: &str, entry: &str, why: &str) -> String {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Str(s)) => s,
         other => panic!("{why}; got {other:?}\n{src}"),
     }

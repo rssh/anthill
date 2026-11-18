@@ -166,7 +166,7 @@ fn program_with_rules(
 fn outcome(src: &str, ns: &str, op: &str) -> Result<Value, String> {
     let mut interp: Interpreter = crate::common::interp_for(src);
     interp
-        .call(&format!("{ns}.Driver.{op}"), &[])
+        .call(&format!("{ns}.Driver.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .map_err(|e| format!("{e:?}"))
 }
 

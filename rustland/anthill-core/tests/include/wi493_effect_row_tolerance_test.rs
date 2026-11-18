@@ -56,9 +56,9 @@ end
 #[test]
 fn map_then_filter_chain_type_checks_and_evaluates() {
     let mut interp = crate::common::interp_for(SRC);
-    let xs = interp.call("wi493.chain.mk_list", &[]).expect("build list");
+    let xs = interp.call("wi493.chain.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("build list");
     let got = interp
-        .call("wi493.chain.map_then_filter_sum", &[xs])
+        .call("wi493.chain.map_then_filter_sum", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call map_then_filter_sum: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 12);
 }

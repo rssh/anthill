@@ -20,7 +20,7 @@ use anthill_core::eval::{Interpreter, Value};
 use crate::common::{interp_for, load_errors_of, show_value};
 
 fn call(interp: &mut Interpreter, op: &str) -> Value {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(v) => v,
         Err(e) => panic!("`{op}`: {e:?}"),
     }
@@ -193,7 +193,7 @@ end
     );
     let mut interp = interp_for(&src);
     for (n, want) in [(0, 1), (1, 12), (2, 122)] {
-        match interp.call("p074.t8.Poly.drive", &[Value::Int(n)]) {
+        match interp.call("p074.t8.Poly.drive", &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value) {
             Ok(Value::Int(v)) => assert_eq!(v, want, "drive({n})"),
             other => panic!("drive({n}): expected {want}, got {other:?}"),
         }
@@ -526,7 +526,17 @@ namespace p074.opaque.Handle
 end
 "#;
     let mut interp = interp_for(src);
-    match interp.call("p074.opaque.keep", &[Value::Str("h1".into())]) {
+    // A host value of an opaque sort is handed over at that sort: a `String` carries it,
+    // and read off its value it would be at `String`, which is no `Handle`.
+    let handle = {
+        let kb = interp.kb_mut();
+        let sym = kb.try_resolve_symbol("p074.opaque.Handle").expect("`Handle`");
+        Value::term(kb.make_sort_ref(sym))
+    };
+    match interp
+        .call("p074.opaque.keep", &[anthill_core::eval::HostValue::typed(Value::Str("h1".into()), handle)])
+        .map(|h| h.value)
+    {
         Ok(v) => assert_eq!(show_value(interp.kb(), &v), "\"h1\""),
         Err(e) => panic!("`keep`: {e:?}"),
     }

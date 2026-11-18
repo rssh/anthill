@@ -146,7 +146,7 @@ fn a_goal_that_forces_the_const_is_reported_at_it() {
 fn an_operation_body_runs_beside_the_binding() {
     let mut interp = crate::common::interp_for(PROGRAM);
     let v = interp
-        .call("test.zg83.plain", &[Value::Int(1)])
+        .call("test.zg83.plain", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .expect("an operation that reaches no binding runs");
     assert_eq!(int(&interp, &v), 2);
 
@@ -248,7 +248,7 @@ fn the_same_program_runs_once_the_embedder_registers_its_keys() {
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     for (entry, want) in [("test.zg83.viaSquish", 40), ("test.zg83.viaSeed", 10)] {
         let v = interp
-            .call(entry, &[Value::Int(3)])
+            .call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(3)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("`{entry}` runs: {e}"));
         assert_eq!(int(&interp, &v), want, "{entry}");
     }

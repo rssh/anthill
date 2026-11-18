@@ -193,51 +193,10 @@ impl Interpreter {
         result.map(|v| if self.bridge_mode() { v } else { self.carried_for_host(sym, v) })
     }
 
-    /// STAGE 4'S, the host entry only — the dictionary of `op`'s spec at the sort of the
-    /// argument at its receiver (the parameter at `Self` or the spec's carrier), read off the
-    /// value as [`Self::pair_by_own_sort`] reads an instance's. `None` where the operation has
-    /// no receiver, the argument names no sort, or no provision answers at that sort alone
-    /// (a conditional one over the value's type arguments, which a bare value does not carry).
-    pub(super) fn spec_instance_at_the_receiver(
-        &mut self,
-        op: Symbol,
-        args: &[Value],
-    ) -> Result<Option<super::value::Dictionary>, EvalError> {
-        let Some(spec) = crate::kb::typing::spec_op_parent_sort(&self.kb, op) else {
-            return Ok(None);
-        };
-        let Some(info) = crate::kb::op_info::lookup_operation_info(&self.kb, op) else {
-            return Ok(None);
-        };
-        let Some(index) = crate::kb::typing::receiver_param_index(&self.kb, &info.params, spec) else {
-            return Ok(None);
-        };
-        let Some(carrier) = args.get(index).and_then(|a| runtime_carrier_sort(&self.kb, a)) else {
-            return Ok(None);
-        };
-        let carrier = self.kb.canonical_sort_sym(carrier);
-        let carrier_ty = Value::term(self.kb.make_sort_ref(carrier));
-        let spec_ty = Value::term(self.kb.make_sort_ref(spec));
-        let dict_term = crate::kb::typing::dictionary_at_in_scope(
-            &mut self.kb,
-            spec,
-            carrier,
-            &carrier_ty,
-            &spec_ty,
-            &[],
-            &crate::kb::typing::DictChain::empty(),
-            &[],
-        )
-        .ok();
-        let Some(dict_term) = dict_term else {
-            return Ok(None);
-        };
-        let occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_term);
-        Ok(Some(self.eval_requirement_chain_node(&occ)?))
-    }
 
     /// Proposal 073 §6.1, §6.2, STAGE 4'S — is the call being dispatched one with no typed
-    /// caller: the host entry's own call, or a call in text no typer saw (a query's compound
+    /// caller: the untyped host entry's own call (`call_with_requirements`, the resolver's
+    /// bridge; `Interpreter::call` is typed), or a call in text no typer saw (a query's compound
     /// expression, a rule's lambda: [`super::frame::Frame::untyped`])? The only calls whose
     /// implementation is still found from the argument values, until CBRD2.
     fn untyped_caller(&self) -> bool {
@@ -4846,6 +4805,19 @@ impl Interpreter {
             // floundered" for a goal the resolver can now name precisely: a no-order
             // comparison never came near a depth limit, and this face HAS an error
             // channel to say so on.
+            // Under the resolver's bridge an undecided proof is a delay, as every undecided
+            // comparison there is (`Self::reads_unknown`): the rule waits for a binding.
+            // `wi625_sld_eval_bridge_test::bridge_mode_suspends_on_buried_override` fails
+            // without it: the typed `eq` at `Option[T = Set[…]]` reaches `Set.eq` here.
+            crate::kb::resolve::PredicateProof::Undecided { fault: None, truncated } if self.bridge_mode() => {
+                Err(EvalError::Suspended {
+                    detail: format!(
+                        "bridge: rule-backed predicate `{}` is undecided at these arguments",
+                        self.kb.local_name_of(pred)
+                    ),
+                    truncated,
+                })
+            }
             crate::kb::resolve::PredicateProof::Undecided { fault, .. } => {
                 let name = self.kb.local_name_of(pred).to_string();
                 Err(EvalError::Internal(match fault {

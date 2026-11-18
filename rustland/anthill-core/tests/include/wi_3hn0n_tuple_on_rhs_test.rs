@@ -113,10 +113,10 @@ fn assert_the_body_written_value(name: &str, src: &str) {
     let mut interp = Interpreter::new(load_kb_with(src));
     eval::builtins::register_standard_builtins(&mut interp);
     let rewritten = interp
-        .call(&format!("test.{name}.go"), &[])
+        .call(&format!("test.{name}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("the equation's value: {e:?}"));
     let written = interp
-        .call(&format!("test.{name}.gotwin"), &[])
+        .call(&format!("test.{name}.gotwin"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("the body-written value: {e:?}"));
     assert!(
         views_structurally_equal(interp.kb(), &rewritten, &written),

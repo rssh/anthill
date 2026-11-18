@@ -69,7 +69,7 @@ const PROVISION: &str =
     "    provides Store[State = WIS]\n    operation peek(s: WIS) -> Int64 = s.n";
 
 fn run(src: &str) -> i64 {
-    match interp_for(src).call("t.go", &[]) {
+    match interp_for(src).call("t.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`t.go` must run to an Int64: {other:?}"),
     }

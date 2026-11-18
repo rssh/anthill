@@ -27,7 +27,7 @@ use anthill_core::eval::Value;
 
 fn eval_bool(src: &str, op: &str) -> bool {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         Ok(other) => panic!("expected Bool from {op}, got {}", other.type_name()),
         Err(e) => panic!("{op} failed: {e}"),

@@ -1286,13 +1286,14 @@ out, the discipline is:
 * an **unwritten** slot at the TOP LEVEL of a parameter's type is the projection `s.O`,
   which NAMES the parameter — so the caller reads the provider out of that argument's
   type and the dictionary is forwarded like any other (WI-20260921-EE0EP). Writing `O`
-  and omitting it mean the same thing **at a typed call site**. The host boundary passes
-  values and no types, so there the slot takes a provider only when its goal has exactly
-  one, and otherwise is a recorded absence whose READ is refused, naming `s.O` — never a
-  ranking (specificity or 058 §3.2's default, which built `String`'s own ordering for a
-  `ByLength` set until WI-20260922-ATFGH) — and a host that knows the witness names it
-  (`Interpreter::call_with_witnesses`, driven by
-  `wi_ee0ep_param_dictionary_test::the_host_entry_names_the_witness_or_is_refused`).
+  and omitting it mean the same thing **at a typed call site**, a host call among them
+  (`Interpreter::call`, typed as the same call in a body, proposal 074 §1.4), which reads
+  it off the type the argument is passed at. An argument whose type leaves the slot open
+  (a value passed bare, `let s = mk()` over `mk() -> MySet[T = String]`) is the existential
+  return below, refused naming `O`. The resolver's route from a rule body passes no types,
+  so there the slot takes a provider only when its goal has exactly one — never a ranking
+  (specificity or 058 §3.2's default, which built `String`'s own ordering for a `ByLength`
+  set until WI-20260922-ATFGH).
   That is the same §5.5 fence one step out — the channel reads a TYPE, so it reaches
   exactly as far as types do, and past it the evidence must be NAMED.
 * an unwritten slot with **no name** still has no channel and is refused: WI-1061's

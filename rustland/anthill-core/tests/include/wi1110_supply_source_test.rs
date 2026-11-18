@@ -582,7 +582,7 @@ fn eval_int(src: &str, entry: &str) -> i64 {
     // A FRESH interpreter per call — a reused one poisons later calls (WI-1057's
     // measured footgun), and `interp_for` is the owner of the load-then-bind sequence.
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(v)) => v,
         other => panic!("{entry} must answer an Int64; got {other:?}"),
     }
@@ -590,7 +590,7 @@ fn eval_int(src: &str, entry: &str) -> i64 {
 
 fn eval_bool(src: &str, entry: &str) -> bool {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Bool(v)) => v,
         other => panic!("{entry} must answer a Bool; got {other:?}"),
     }

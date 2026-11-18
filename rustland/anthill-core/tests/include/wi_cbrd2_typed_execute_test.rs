@@ -88,13 +88,13 @@ end
 /// `test.cbrd2.exec.<op>()` called from the interpreter.
 fn call(op: &str) -> Result<Value, EvalError> {
     let mut interp = interp_for(SRC);
-    interp.call(&format!("test.cbrd2.exec.{op}"), &[])
+    interp.call(&format!("test.cbrd2.exec.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
 }
 
 /// The constructor and `detail` / `reason` of the `ResolveStreamFailure` `op` raises.
 fn raised(op: &str) -> (String, String) {
     let mut interp = interp_for(SRC);
-    let payload = match interp.call(&format!("test.cbrd2.exec.{op}"), &[]) {
+    let payload = match interp.call(&format!("test.cbrd2.exec.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { payload, .. }) => payload,
         other => panic!("`{op}` must raise a ResolveStreamFailure; got {other:?}"),
     };
@@ -140,7 +140,7 @@ fn a_query_whose_types_do_not_fit_is_refused_before_it_runs() {
 #[test]
 fn a_fault_at_a_goal_built_at_run_time_has_no_position() {
     let mut interp = interp_for(SRC);
-    let payload = match interp.call("test.cbrd2.exec.divZero", &[]) {
+    let payload = match interp.call("test.cbrd2.exec.divZero", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { payload, .. }) => payload,
         other => panic!("`div(1, 0, ?r)` must raise evaluation_failure; got {other:?}"),
     };

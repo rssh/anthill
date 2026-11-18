@@ -151,7 +151,7 @@ end
 #[track_caller]
 fn call(interp: &mut Interpreter, op: &str, args: &[i64]) -> Result<Value, EvalError> {
     let args: Vec<Value> = args.iter().map(|n| Value::Int(*n)).collect();
-    interp.call(op, &args)
+    interp.call(op, &anthill_core::eval::HostValue::all(&args)).map(|h| h.value)
 }
 
 /// The `op` of a `division_by_zero` payload.

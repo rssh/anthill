@@ -79,7 +79,7 @@ fn repro_loads_clean() {
 #[test]
 fn forwards_second_same_spec_requirement() {
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call("test.wi419.driveSecond", &[]) {
+    match interp.call("test.wi419.driveSecond", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 2,
             "runSecond delegates over B (Blue); the forwarded dict must be B's \
@@ -99,7 +99,7 @@ fn forwards_second_same_spec_requirement() {
 #[test]
 fn forwards_first_same_spec_requirement() {
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call("test.wi419.driveFirst", &[]) {
+    match interp.call("test.wi419.driveFirst", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 1,
             "runFirst delegates over A (Red); the forwarded dict must be A's \

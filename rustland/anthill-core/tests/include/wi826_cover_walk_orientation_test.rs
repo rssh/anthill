@@ -113,7 +113,7 @@ fn bindingless_scope_entry_does_not_cover_a_concrete_goal() {
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi826.bare.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi826.bare.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(5010001))),
         "expected Ok(Int(5010001)) = the concrete `Desc[T = Pebble]` goal constructed \
@@ -164,7 +164,7 @@ fn bound_scope_entry_over_the_same_param_still_forwards() {
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi826.bound.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi826.bound.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(1010001))),
         "expected Ok(Int(1010001)) = the Leaf dictionary forwarded by name through \
@@ -225,7 +225,7 @@ fn partially_bound_entry_leaves_the_omitted_param_open() {
   end"#,
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi826.partial.Holder.h", &[Value::Int(0)]);
+    let got = interp.call("wi826.partial.Holder.h", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(matches!(got, Ok(Value::Int(8))), "{got:?}");
 }
 
@@ -280,7 +280,27 @@ fn bindingless_slot_nested_forward_is_refused_and_constructed() {
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi826.slot.Outer.drive", &[Value::Int(0)]);
+    // Proposal 074 §1.4: a host call is typed as a body's call is, and so it is a cross-sort
+    // call into `Outer`, refused for the reason above — no text can denote the `Mid` it owes.
+    let typed = interp.call("wi826.slot.Outer.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)]));
+    assert!(
+        matches!(&typed, Err(anthill_core::eval::EvalError::HostCallRefused { detail, .. })
+            if detail.contains("wi826.slot.Mid")),
+        "a host call into `Outer` owes the `Mid` nothing denotes: {typed:?}"
+    );
+    // The host that passes `Outer`'s chain enters `drive` with `Gem`'s `Mid`, which is what
+    // the subject needs: the nested forward under that bare slot refused, `Desc[T = Gem]`
+    // constructed inside.
+    let mid = interp.kb().try_resolve_symbol("wi826.slot.Mid").expect("`Mid`");
+    let gem = interp.kb().try_resolve_symbol("wi826.slot.Gem").expect("`Gem`");
+    let desc = interp.kb().try_resolve_symbol("wi826.slot.Desc").expect("`Desc`");
+    let gem_desc = interp.alloc_dictionary(desc, gem, []).expect("`Gem`'s `Desc`");
+    let dict = interp.alloc_dictionary(mid, gem, [gem_desc]).expect("`Gem`'s `Mid`");
+    let got = interp.call_with_requirements(
+        "wi826.slot.Outer.drive",
+        &[Value::Int(0)],
+        smallvec::smallvec![dict],
+    );
     assert!(
         matches!(got, Ok(Value::Int(5))),
         "expected Ok(Int(5)) = `Desc[T = Gem]` CONSTRUCTED, the nested forward \

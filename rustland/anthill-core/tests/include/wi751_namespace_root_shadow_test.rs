@@ -125,7 +125,7 @@ end
         });
         let mut interp = interp_for(&source);
         match interp
-            .call(&format!("{ns}.useIt"), &[])
+            .call(&format!("{ns}.useIt"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| {
                 panic!("with {shape} named after the root, the call must run; got {e:?}")
             }) {
@@ -168,7 +168,7 @@ end
                  why WI-1075 cost no migration; got: {errs:?}"
             );
             let mut interp = interp_for(&relative);
-            match interp.call(&format!("{ns}.useIt"), &[]).expect("must run") {
+            match interp.call(&format!("{ns}.useIt"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("must run") {
                 Value::Int(n) => assert_eq!(n, 41, "the unshadowed relative path answers 41"),
                 other => panic!("expected the helper's Int, got {other:?}"),
             }
@@ -201,7 +201,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     match interp
-        .call("outer.user.useIt", &[])
+        .call("outer.user.useIt", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`x.foo()` must run")
     {
         Value::Int(n) => assert_eq!(
@@ -337,7 +337,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     match interp
-        .call("test.wi751field.useIt", &[])
+        .call("test.wi751field.useIt", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`..data.user.name()` must run")
     {
         Value::Int(n) => assert_eq!(
@@ -458,7 +458,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     let got = interp
-        .call("test.wi751label.citeWhole", &[])
+        .call("test.wi751label.citeWhole", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the dotted-label citation must run");
     // WI-20260827-3ZNBC — READ THE COLUMNS, do not grep a Debug rendering. The
     // rendering-based test worked only while a column was reified into a native

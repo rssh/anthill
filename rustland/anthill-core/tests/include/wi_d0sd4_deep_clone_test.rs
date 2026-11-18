@@ -53,7 +53,7 @@ fn box_facts(kb: &KnowledgeBase) -> usize {
 fn doubled(kb: KnowledgeBase, n: i64) -> i64 {
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp);
-    match interp.call("test.d0sd4.double", &[Value::Int(n)]) {
+    match interp.call("test.d0sd4.double", &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value) {
         Ok(Value::Int(doubled)) => doubled,
         other => panic!("`double({n})` did not run to an Int64: {other:?}"),
     }

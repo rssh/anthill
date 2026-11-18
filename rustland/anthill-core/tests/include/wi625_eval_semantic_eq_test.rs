@@ -72,7 +72,7 @@ fn map_val(i: &mut Interpreter, entries: &[(i64, i64)]) -> Value {
 }
 
 fn call2(i: &mut Interpreter, op: &str, a: Value, b: Value) -> bool {
-    i.call(op, &[a, b])
+    i.call(op, &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
         .literal_bool(i.kb())
         .unwrap_or_else(|| panic!("call {op}: not a Bool"))
@@ -83,7 +83,7 @@ fn call2(i: &mut Interpreter, op: &str, a: Value, b: Value) -> bool {
 /// comparison `Set.eq`'s rules make over it has no verdict, and eval — which has no third
 /// truth value — must not invent one. `Set`'s route back is WI-20260926-QCJ0B's.
 fn call2_undecided(i: &mut Interpreter, op: &str, a: Value, b: Value) {
-    match i.call(op, &[a, b]) {
+    match i.call(op, &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value) {
         Err(e) => assert!(
             format!("{e:?}").contains("could not be decided"),
             "call {op}: an undecided comparison, not another error; got {e:?}",
@@ -344,7 +344,7 @@ end
         }))
     };
     let (a, b) = (mk(&mut i, 1), mk(&mut i, 2));
-    let r = i.call(EQ, &[a, b]);
+    let r = i.call(EQ, &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value);
     assert!(
         r.is_err(),
         "an undecidable instance-fact eq (re-entry cap exhausted) must be a loud \

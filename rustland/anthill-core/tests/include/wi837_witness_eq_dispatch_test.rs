@@ -173,7 +173,7 @@ fn witness_eq_dispatches_at_the_interpreter() {
     let a = Value::term(pebble_term(i.kb_mut(), 1));
     let b = Value::term(pebble_term(i.kb_mut(), 2));
     let got = i
-        .call("anthill.prelude.PartialEq.eq", &[a, b])
+        .call("anthill.prelude.PartialEq.eq", &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value)
         .expect("PartialEq.eq")
         .literal_bool(i.kb())
         .expect("PartialEq.eq returns a Bool");

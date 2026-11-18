@@ -109,10 +109,10 @@ end
 fn filtered_stream_iterator_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp
-        .call("wi492.transitive.mk_list", &[])
+        .call("wi492.transitive.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got = interp
-        .call("wi492.transitive.filter_then_map_sum", &[xs])
+        .call("wi492.transitive.filter_then_map_sum", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call filter_then_map_sum: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 9);
 }
@@ -121,10 +121,10 @@ fn filtered_stream_iterator_resolves_transitively() {
 fn mapped_stream_iterator_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp
-        .call("wi492.transitive.mk_list", &[])
+        .call("wi492.transitive.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got = interp
-        .call("wi492.transitive.map_then_size", &[xs])
+        .call("wi492.transitive.map_then_size", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call map_then_size: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 4);
 }
@@ -133,10 +133,10 @@ fn mapped_stream_iterator_resolves_transitively() {
 fn iterable_find_on_mapped_stream_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp
-        .call("wi492.transitive.mk_list", &[])
+        .call("wi492.transitive.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got = interp
-        .call("wi492.transitive.map_then_find", &[xs])
+        .call("wi492.transitive.map_then_find", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call map_then_find: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 3);
 }
@@ -145,10 +145,10 @@ fn iterable_find_on_mapped_stream_resolves_transitively() {
 fn iterable_is_empty_on_filtered_stream_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp
-        .call("wi492.transitive.mk_list", &[])
+        .call("wi492.transitive.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got = interp
-        .call("wi492.transitive.filter_then_is_empty", &[xs])
+        .call("wi492.transitive.filter_then_is_empty", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call filter_then_is_empty: {e:?}"));
     assert_eq!(
         got.literal_bool(interp.kb()),
@@ -168,10 +168,10 @@ fn iterable_is_empty_on_filtered_stream_resolves_transitively() {
 fn iterable_iterator_on_lazy_mapped_stream_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp
-        .call("wi492.transitive.mk_list", &[])
+        .call("wi492.transitive.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got = interp
-        .call("wi492.transitive.lazy_map_iterator_count", &[xs])
+        .call("wi492.transitive.lazy_map_iterator_count", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call lazy_map_iterator_count: {e:?}"));
     assert_eq!(
         expect_int(got, interp.kb()),

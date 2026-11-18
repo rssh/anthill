@@ -152,7 +152,7 @@ fn drive(src: &str, entry: &str) -> i64 {
 }
 
 fn call_int(interp: &mut Interpreter, entry: &str) -> i64 {
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }
@@ -652,7 +652,7 @@ fn a_variable_the_citation_leaves_unfixed_is_an_unknown() {
         let ns = format!("{ns}ok");
         let mut interp = crate::common::interp_for(&read_back(&ns, sort));
         let out = interp
-            .call(&format!("{ns}.f"), &[])
+            .call(&format!("{ns}.f"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("`{rule}` read back as a `{sort}`: {e:?}"));
         let printer = anthill_core::persistence::print::TermPrinter::new(interp.kb());
         let rendered = match &out {
@@ -696,7 +696,7 @@ fn a_rule_goal_fixes_what_the_citation_leaves_unfixed() {
         let ns = format!("{ns}ok");
         let mut interp = crate::common::interp_for(&read_back(&ns, "Wrap[T = Colour]"));
         let out = interp
-            .call(&format!("{ns}.f"), &[])
+            .call(&format!("{ns}.f"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("`{rule}` read back as a `Wrap[T = Colour]`: {e:?}"));
         let printer = anthill_core::persistence::print::TermPrinter::new(interp.kb());
         let rendered = match &out {

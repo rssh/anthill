@@ -158,7 +158,7 @@ fn the_sort_and_the_operation_each_have_their_own_type_parameter() {
         let src = program("tps", &format!("{decls}{uses}"));
         assert_eq!(run_int64(&src, "test.tgaad.tps.goSort"), Ok(1), "{order}: the sort's `T`");
         assert_eq!(run_int64(&src, "test.tgaad.tps.goOp"), Ok(5), "{order}: the operation's `T`");
-        match interp_for(&src).call("test.tgaad.tps.goBracket", &[Value::Int(6)]) {
+        match interp_for(&src).call("test.tgaad.tps.goBracket", &anthill_core::eval::HostValue::all(&[Value::Int(6)])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, 6, "{order}: the operation's `T` written in the call's bracket"),
             other => panic!("{order}: the bracketed call did not run to an Int64: {other:?}"),
         }
@@ -330,7 +330,7 @@ fn an_operations_named_slot_forwards_beside_the_sort() {
             let src = program("fwd", &format!("{ORDERS}{decls}{uses}{drivers}"));
             let mut interp = interp_for(&src);
             for (entry, expected) in [("byLength", "a,cc,bbb,"), ("revLen", "bbb,cc,a,")] {
-                match interp.call(&format!("test.tgaad.fwd.{entry}"), &[]) {
+                match interp.call(&format!("test.tgaad.fwd.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
                     Ok(Value::Str(s)) => assert_eq!(s.as_str(), expected, "{what}, {order}: `{entry}`"),
                     other => panic!("{what}, {order}: `{entry}` did not answer a string: {other:?}"),
                 }

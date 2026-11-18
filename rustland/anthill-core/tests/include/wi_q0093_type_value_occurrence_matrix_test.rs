@@ -214,7 +214,7 @@ fn a_call_argument_denotes_positionally_and_by_name() {
     ] {
         let qn = format!("test.q0093.{op}");
         let v = interp
-            .call(&qn, &[])
+            .call(&qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         if applied {
             assert_applied_cell(interp.kb(), &v, op);
@@ -231,14 +231,14 @@ fn a_call_argument_denotes_positionally_and_by_name() {
 fn a_constructor_field_value_denotes_and_the_head_still_constructs() {
     let mut interp = interp_for(SRC);
     let field = interp
-        .call("test.q0093.ctor_applied_field", &[])
+        .call("test.q0093.ctor_applied_field", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("ctor_applied_field: {e:?}"));
     assert_applied_cell(interp.kb(), &field, "ctor_applied_field");
 
     // THE CONTROL. The head is the adjacent non-value role, so the same source that makes
     // the FIELD a type value must leave the construction alone.
     let built = interp
-        .call("test.q0093.ctor_bare", &[])
+        .call("test.q0093.ctor_bare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("ctor_bare: {e:?}"));
     match &built {
         Value::Entity { functor, named, .. } => {
@@ -256,11 +256,11 @@ fn a_constructor_field_value_denotes_and_the_head_still_constructs() {
 fn both_if_branches_denote() {
     let mut interp = interp_for(SRC);
     let t = interp
-        .call("test.q0093.if_then", &[Value::Bool(true)])
+        .call("test.q0093.if_then", &anthill_core::eval::HostValue::all(&[Value::Bool(true)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("if_then(true): {e:?}"));
     assert_applied_cell(interp.kb(), &t, "the then-branch");
     let f = interp
-        .call("test.q0093.if_then", &[Value::Bool(false)])
+        .call("test.q0093.if_then", &anthill_core::eval::HostValue::all(&[Value::Bool(false)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("if_then(false): {e:?}"));
     assert_bare_cell(interp.kb(), &f, "the else-branch");
 }
@@ -271,16 +271,16 @@ fn both_if_branches_denote() {
 fn a_match_scrutinee_and_a_branch_body_denote() {
     let mut interp = interp_for(SRC);
     let s = interp
-        .call("test.q0093.match_scrutinee", &[])
+        .call("test.q0093.match_scrutinee", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("match_scrutinee: {e:?}"));
     assert_applied_cell(interp.kb(), &s, "the scrutinee");
 
     let hit = interp
-        .call("test.q0093.match_body", &[Value::Int(0)])
+        .call("test.q0093.match_body", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("match_body(0): {e:?}"));
     assert_applied_cell(interp.kb(), &hit, "the first arm's body");
     let miss = interp
-        .call("test.q0093.match_body", &[Value::Int(1)])
+        .call("test.q0093.match_body", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("match_body(1): {e:?}"));
     assert_bare_cell(interp.kb(), &miss, "the wildcard arm's body");
 }
@@ -364,7 +364,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("test.q0093gr.which", &[Value::Int(7)])
+        .call("test.q0093gr.which", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("which(7): {e:?}"));
     assert!(
         matches!(&v, Value::Str(s) if s == "cell"),
@@ -380,11 +380,11 @@ end
 fn a_lambda_body_denotes() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.q0093.lambda_body", &[])
+        .call("test.q0093.lambda_body", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("lambda_body: {e:?}"));
     assert_applied_cell(interp.kb(), &v, "the lambda body");
     let b = interp
-        .call("test.q0093.lambda_body_bare", &[])
+        .call("test.q0093.lambda_body_bare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("lambda_body_bare: {e:?}"));
     assert_bare_cell(interp.kb(), &b, "the lambda body, bare face");
 }
@@ -396,7 +396,7 @@ fn list_set_and_tuple_elements_denote() {
     let mut interp = interp_for(SRC);
 
     let list = interp
-        .call("test.q0093.list_elems", &[])
+        .call("test.q0093.list_elems", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("list_elems: {e:?}"));
     let elems = list_heads(&list);
     assert_eq!(elems.len(), 2, "two list elements");
@@ -404,7 +404,7 @@ fn list_set_and_tuple_elements_denote() {
     assert_applied_cell(interp.kb(), &elems[1], "list element 1");
 
     let set = interp
-        .call("test.q0093.set_elems", &[])
+        .call("test.q0093.set_elems", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("set_elems: {e:?}"));
     match &set {
         Value::Entity { pos, .. } => {
@@ -416,7 +416,7 @@ fn list_set_and_tuple_elements_denote() {
     }
 
     let tuple = interp
-        .call("test.q0093.tuple_elems", &[])
+        .call("test.q0093.tuple_elems", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("tuple_elems: {e:?}"));
     match &tuple {
         Value::Tuple { pos, named } => {
@@ -438,18 +438,18 @@ fn list_set_and_tuple_elements_denote() {
 fn a_parenthesized_expression_and_infix_operands_denote() {
     let mut interp = interp_for(SRC);
     let p = interp
-        .call("test.q0093.paren", &[])
+        .call("test.q0093.paren", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("paren: {e:?}"));
     assert_applied_cell(interp.kb(), &p, "the parenthesized expression");
     let pb = interp
-        .call("test.q0093.paren_bare", &[])
+        .call("test.q0093.paren_bare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("paren_bare: {e:?}"));
     assert_bare_cell(interp.kb(), &pb, "the parenthesized expression, bare face");
 
     for (op, want) in [("infix_same_face", true), ("infix_two_faces", false)] {
         let qn = format!("test.q0093.{op}");
         let v = interp
-            .call(&qn, &[])
+            .call(&qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         assert!(
             matches!(v, Value::Bool(b) if b == want),
@@ -466,11 +466,11 @@ fn a_parenthesized_expression_and_infix_operands_denote() {
 fn a_proof_conclude_goal_and_its_continuation_denote() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.q0093.proof_cont", &[])
+        .call("test.q0093.proof_cont", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("proof_cont: {e:?}"));
     assert_applied_cell(interp.kb(), &v, "the proof continuation");
     let b = interp
-        .call("test.q0093.proof_cont_bare", &[])
+        .call("test.q0093.proof_cont_bare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("proof_cont_bare: {e:?}"));
     assert_bare_cell(interp.kb(), &b, "the proof continuation, bare face");
 }
@@ -483,7 +483,7 @@ fn a_proof_conclude_goal_and_its_continuation_denote() {
 fn a_type_argument_that_is_an_operation_parameter_stays_non_ground_until_the_call() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.q0093.wrapped", &[])
+        .call("test.q0093.wrapped", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("wrapped: {e:?}"));
     assert_applied_cell(interp.kb(), &v, "the substituted type argument");
 }
@@ -924,7 +924,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("test.q0093pat.f", &[])
+        .call("test.q0093pat.f", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("f: {e:?}"));
     assert!(
         matches!(v, Value::Int(7)),
@@ -947,7 +947,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("test.q0093lam.f", &[])
+        .call("test.q0093lam.f", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("f: {e:?}"));
     assert!(
         matches!(v, Value::Int(7)),
@@ -972,7 +972,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("test.q0093lbl.f", &[])
+        .call("test.q0093lbl.f", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("f: {e:?}"));
     assert!(
         matches!(v, Value::Int(7)),
@@ -1023,7 +1023,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("test.q0093ann.f", &[])
+        .call("test.q0093ann.f", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("f: {e:?}"));
     match &v {
         Value::Entity {
@@ -1205,11 +1205,11 @@ end
         // and WAHB6's "the two carriers key alike" would hold in one order only.
         let mut interp = interp_for(&src);
         let bare = interp
-            .call(&format!("test.q0093ord{ns}.f"), &[])
+            .call(&format!("test.q0093ord{ns}.f"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{what}, bare: {e:?}"));
         assert_eq!(bare_sort_name(interp.kb(), &bare).as_deref(), Some("Box"), "{what}: {bare:?}");
         let applied = interp
-            .call(&format!("test.q0093ord{ns}.g"), &[])
+            .call(&format!("test.q0093ord{ns}.g"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{what}, applied: {e:?}"));
         let Some((functor, named)) = type_application(interp.kb(), &applied) else {
             panic!("{what}: expected `Box[V = Int64]`, got {applied:?}");

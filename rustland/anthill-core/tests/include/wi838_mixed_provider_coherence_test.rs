@@ -401,7 +401,7 @@ end
         );
         // A fresh interpreter per program — a trapped call poisons later calls.
         let mut interp = crate::common::interp_for(src);
-        match interp.call(ns, &[]) {
+        match interp.call(ns, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(anthill_core::eval::Value::Int(n)) => {
                 assert_eq!(n, want, "{ns} must dispatch to its sole provider")
             }

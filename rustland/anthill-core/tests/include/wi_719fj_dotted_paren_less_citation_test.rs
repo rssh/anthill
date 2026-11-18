@@ -528,7 +528,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(SRC);
     for (path, want) in [("zz719.rel.emptyOne", true), ("zz719.rel.fullOne", false)] {
-        match interp.call(path, &[]) {
+        match interp.call(path, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Bool(b)) if b == want => {}
             other => panic!(
                 "{path} must answer {want}: a bare `Sort.rule` in an operation body is the \
@@ -996,7 +996,7 @@ end
             "the parenthesised law IS a redex, and `@[simp]` inlines it before dispatch",
         ),
     ] {
-        match interp.call(path, &[]) {
+        match interp.call(path, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) if n == want => {}
             other => panic!("{path} must answer {want}: {why}; got {other:?}"),
         }

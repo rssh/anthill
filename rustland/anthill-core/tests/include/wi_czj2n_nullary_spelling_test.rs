@@ -228,7 +228,7 @@ fn a_nullary_simp_head_defines_in_both_spellings() {
              operation drive(n: Int64) -> Int64 = tau()\nend\n"
         );
         let mut interp = crate::common::interp_for(&src);
-        match interp.call(&format!("zzczj.d{label}.drive"), &[Value::Int(0)]) {
+        match interp.call(&format!("zzczj.d{label}.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(7)) => {}
             other => panic!("{label}: the law must inline and answer 7; got {other:?}"),
         }

@@ -54,7 +54,7 @@ fn assert_refused(src: &str, what: &str) {
 fn run_int(src: &str, op: &str) -> i64 {
     let mut interp = interp_for(src);
     match interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,
@@ -348,7 +348,7 @@ end
     let errs = load_errs(src);
     if errs.is_empty() {
         let mut interp = interp_for(src);
-        let result = interp.call("test.wi803.arity2.drive", &[]);
+        let result = interp.call("test.wi803.arity2.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
         assert!(
             result.is_err(),
             "a 2-binder let over a 3-component tuple must raise, not silently bind \

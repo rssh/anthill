@@ -323,7 +323,7 @@ fn assert_answers(src: &str, ns: &str, rows: &[(&str, &str)]) {
     let wrong: Vec<String> = rows
         .iter()
         .filter_map(|&(entry, want)| {
-            let got = match interp.call(&format!("{ns}.Driver.{entry}"), &[]) {
+            let got = match interp.call(&format!("{ns}.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
                 Ok(Value::Int(n)) => n.to_string(),
                 Ok(v @ Value::Entity { .. }) => {
                     anthill_core::eval::error::render_raised_payload(interp.kb(), &v)

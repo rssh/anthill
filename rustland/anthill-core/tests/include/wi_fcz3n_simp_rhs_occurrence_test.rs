@@ -320,7 +320,7 @@ end
         ("zzfcd.driveNullary", 12),
     ] {
         let got = interp
-            .call(op, &[Value::Int(5)])
+            .call(op, &anthill_core::eval::HostValue::all(&[Value::Int(5)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}(5) must evaluate: {e:?}"));
         assert_eq!(
             matches!(got, Value::Int(n) if n == expected),

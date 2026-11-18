@@ -78,7 +78,7 @@ end
 fn type_of(op: &str) -> String {
     let mut interp = interp_for(PROGRAM);
     let v = interp
-        .call(&format!("test.gbh5f.{op}"), &[])
+        .call(&format!("test.gbh5f.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}: {e}"));
     anthill_core::kb::typing::type_display_name_value(interp.kb(), &v)
 }
@@ -122,7 +122,7 @@ fn a_return_only_parameter_takes_the_evidence_of_its_call_and_the_default_withou
     let mut interp = interp_for(PROGRAM);
     for (op, want) in [("letTakesDefault", 1), ("argTakesEvidence", 2)] {
         let v = interp
-            .call(&format!("test.gbh5f.{op}"), &[])
+            .call(&format!("test.gbh5f.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(want), "{op}");
     }
@@ -301,11 +301,11 @@ end
     let mut interp = interp_for(src);
     for (op, want) in [("inSome", 3), ("coerced", 1), ("generic", 2)] {
         let v = interp
-            .call(&format!("test.gbh5f.ctx.{op}"), &[])
+            .call(&format!("test.gbh5f.ctx.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(want), "{op}");
     }
-    interp.call("test.gbh5f.ctx.inField", &[]).expect("inField");
+    interp.call("test.gbh5f.ctx.inField", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("inField");
 }
 
 const CONSTRUCTIONS: &str = r#"
@@ -349,11 +349,11 @@ end
 #[test]
 fn a_constructions_free_parameter_takes_its_sorts_default_after_its_evidence() {
     let mut interp = interp_for(CONSTRUCTIONS);
-    let v = interp.call("test.gbh5f.ctor.asArgument", &[]).expect("asArgument");
+    let v = interp.call("test.gbh5f.ctor.asArgument", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("asArgument");
     assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(1));
     for (op, want) in [("atLet", "Int64"), ("dependent", "Int64")] {
         let t = interp
-            .call(&format!("test.gbh5f.ctor.{op}"), &[])
+            .call(&format!("test.gbh5f.ctor.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert_eq!(anthill_core::kb::typing::type_display_name_value(interp.kb(), &t), want, "{op}");
     }
@@ -408,7 +408,7 @@ end
 "#;
     let mut interp = interp_for(src);
     for (op, want) in [("useBareQ", 1), ("useBareD", 2)] {
-        let v = interp.call(&format!("test.gbh5f.hole.{op}"), &[]).expect(op);
+        let v = interp.call(&format!("test.gbh5f.hole.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect(op);
         assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(want), "{op}");
     }
     let errs = load_errors_of(
@@ -452,7 +452,7 @@ namespace test.gbh5f.row
 end
 "#;
     let mut interp = interp_for(src);
-    let v = interp.call("test.gbh5f.row.useTick", &[]).expect("useTick");
+    let v = interp.call("test.gbh5f.row.useTick", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("useTick");
     assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(1));
     let errs = load_errors_of(
         r#"
@@ -507,7 +507,7 @@ end
 "#;
     let mut interp = interp_for(src);
     for (op, want) in [("useNoF", 1), ("useNoP", 2)] {
-        let v = interp.call(&format!("test.gbh5f.slot.{op}"), &[]).expect(op);
+        let v = interp.call(&format!("test.gbh5f.slot.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect(op);
         assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(want), "{op}");
     }
     let errs = load_errors_of(
@@ -607,7 +607,7 @@ end
         ("test.gbh5f.fallback_ann", Some("Option[T = Pair[A = Car, B = String]]")),
     ] {
         let mut interp = interp_for(&program(ns, "W = Int64", annotation));
-        let v = interp.call(&format!("{ns}.go"), &[]).expect(ns);
+        let v = interp.call(&format!("{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect(ns);
         assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(7), "{ns}");
     }
     crate::common::assert_refused_naming(
@@ -643,7 +643,7 @@ end
 "#;
     let mut interp = interp_for(src);
     for (op, want) in [("useKind", "Int64"), ("useKindS", "String")] {
-        let v = interp.call(&format!("test.gbh5f.encl.{op}"), &[]).expect(op);
+        let v = interp.call(&format!("test.gbh5f.encl.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect(op);
         assert_eq!(anthill_core::kb::typing::type_display_name_value(interp.kb(), &v), want, "{op}");
     }
     let mut kb = crate::common::load_kb_with(src);

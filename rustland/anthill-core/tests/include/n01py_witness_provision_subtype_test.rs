@@ -187,7 +187,7 @@ end
 fn drive(use_expr: &str) -> i64 {
     let mut interp = interp_for(&fixture(use_expr));
     let v = interp
-        .call("n01py.use", &[])
+        .call("n01py.use", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call n01py.use over `{use_expr}`: {e:?}"));
     v.literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("expected an Int64 from `{use_expr}`, got {v:?}"))
@@ -349,7 +349,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("n01pyrec.use", &[])
+        .call("n01pyrec.use", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call n01pyrec.use: {e:?}"));
     assert_eq!(
         v.literal_int64(interp.kb()),
@@ -476,7 +476,7 @@ fn drive_stdlib(op: &str) -> i64 {
 fn drive_stdlib_in(src: &str, op: &str) -> i64 {
     let mut interp = interp_for(src);
     let v = interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"));
     v.literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("expected an Int64 from {op}, got {v:?}"))

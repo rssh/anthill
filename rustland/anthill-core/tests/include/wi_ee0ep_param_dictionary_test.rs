@@ -47,7 +47,7 @@
 //! replaces), WI-20260921-R10KC (the adjacent half), WI-20260919-N31XX (the `whole_frame`
 //! precedent).
 
-use anthill_core::eval::{Interpreter, SlotWitness, Value};
+use anthill_core::eval::{HostValue, Interpreter, Value};
 
 /// Two rival `WeakOrd[String]`. `ByLength` makes `"zz"` and `"aa"` one class; the
 /// alphabetical one separates them. So `{"zz"}.contains("aa")` is `true` under the first
@@ -121,7 +121,7 @@ fn set_at(ordering: &str) -> String {
 /// value assertion is also a clean-load assertion.
 fn eval_bool(src: &str, entry: &str) -> bool {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("expected a Bool from {entry}; got {other:?}\n{src}"),
     }
@@ -555,38 +555,56 @@ fn host_program(ns: &str) -> String {
     )
 }
 
-/// `s.O` named by `witness`, in the host's spelling.
-fn s_o(witness: &str) -> SlotWitness<'_> {
-    SlotWitness {
-        param: "s",
-        slot: "O",
-        witness,
-    }
+/// `op(n)` through the typed host entry: the value with the type `op` declares for it.
+fn typed_at(interp: &mut Interpreter, op: &str, n: i64) -> HostValue {
+    let arg = interp.host_value(Value::Int(n)).expect("a host value at its own type");
+    interp
+        .call(op, &[arg])
+        .unwrap_or_else(|e| panic!("`{op}` must answer: {e:?}"))
 }
 
-/// **THE HOST ENTRY NAMES THE WITNESS, OR ITS READ IS REFUSED** — WI-20260922-ATFGH.
+/// The refusal of a call whose argument's type leaves `s.O` open: no provider is built for
+/// a value that names none it was built with.
+fn refused_open_slot(got: &Result<Value, String>) -> bool {
+    matches!(got, Err(e) if e.contains("parameter `s`") && e.contains("`O` open"))
+}
+
+/// `has(set, x)` through the typed host entry, `x` at the type its value reads as.
+fn has_typed(interp: &mut Interpreter, op: &str, set: &HostValue, x: Value) -> Result<Value, String> {
+    let x = interp.host_value(x).expect("a host value at its own type");
+    interp
+        .call(op, &[set.clone(), x])
+        .map(|h| h.value)
+        .map_err(|e| e.to_string())
+}
+
+/// **THE HOST ENTRY READS THE WITNESS OFF THE TYPE THE ARGUMENT IS PASSED AT** — proposal
+/// 074 §1.4 (WI-20261113-S4D63), replacing WI-20260922-ATFGH's named witness.
 ///
-/// WHAT THIS ROW ASSERTED BEFORE, since it is the same row turned round. EE0EP landed it
-/// as `the_host_entry_does_not_receive_the_parameters_dictionary`, PINNING a wrong
-/// answer: `interp.call("…Bulk.has", [set, "aa"])` on a set built at `ByLength` returned
-/// `Ok(false)` where the typed route returns `true` — and `false` at `Alphabetical` too,
-/// one answer twice. EE0EP's doc blamed value-direction; MEASURED at pickup, it was a
-/// CONSTRUCTION — the host entry's op-half resolution (`resolve_bridge_requirements`)
-/// broke the tie among `ByLength`, `Alphabetical` and `String`'s own `WeakOrd` with 058
-/// §3.2's default rung, and built `String`'s ordering into the slot.
+/// A host holding `s` holds `s.O`: `mkByLength`'s set comes back from `call_typed` with
+/// its type `MySet[T = String, O = ByLength]`, and `has(s, "aa")` called with it reads
+/// `s.O = ByLength` off that type, as the typed call site reads it off `s`'s.
 ///
-/// NOW, and each half is the ticket's acceptance:
-///  * `call_with_witnesses(…, &[s.O = ByLength])` AGREES with the typed route at BOTH
-///    rival orderings — the witness is the only thing the argument's type was read for;
-///  * plain `interp.call` REFUSES, naming `s.O` and the repair, instead of answering.
+/// WHAT THIS ROW ASSERTED BEFORE. EE0EP pinned a wrong answer here: the host entry's
+/// op-half resolution broke the tie among `ByLength`, `Alphabetical` and `String`'s own
+/// `WeakOrd` with 058 §3.2's default rung and built `String`'s ordering into the slot. ATFGH
+/// refused it and gave the host `call_with_witnesses` to name the provider; 074 §1.4 types
+/// the host call instead, and that entry is gone.
 ///
-/// BACKED OUT — MEASURED: consult the default rung for a type-carried slot again (the
-/// `rung` choice in `resolve_bridge_requirements`) and the plain `interp.call` assertion
-/// fails with `Ok(false)` — the old pinned value — while the witness rows still pass (the
-/// witness replaces whatever the slot held). Drop the replacement in `call_op_sym` and
-/// the witness rows fail with the refusal.
+/// NOW: the host call agrees with the typed route at BOTH rival orderings; handed the bare
+/// value, its type dropped, it is refused at the call, the type naming no `O` — as a body is
+/// refused over a value whose type names none (`let s = mk()` over an existential return).
+///
+/// BACKED OUT, MEASURED: with the open-slot refusal of `build_op_scoped_dicts` removed, the
+/// bare half answers `false` for the `ByLength` set — §8.7's order builds `String`'s own
+/// ordering, the wrong answer this row was made for — and the bare halves of
+/// `with_one_provider_the_set_answers_at_its_type_only`,
+/// `a_value_built_with_the_default_is_refused_while_rivals_are_loaded`,
+/// `specificity_does_not_choose_a_type_carried_slot` and
+/// `the_slot_is_owed_whether_or_not_the_body_reads_it` answer too. The typed halves pass
+/// either way.
 #[test]
-fn the_host_entry_names_the_witness_or_is_refused() {
+fn the_host_entry_reads_the_witness_off_the_type() {
     let src = host_program("ee0ep.host");
     // THE TYPED ROUTE, at both orderings — the answer the host route must agree with.
     assert_discriminates(
@@ -597,44 +615,34 @@ fn the_host_entry_names_the_witness_or_is_refused() {
     );
 
     let mut interp = crate::common::interp_for(&src);
-    let by_length = interp
-        .call("ee0ep.host.Driver.mkByLength", &[Value::Int(0)])
-        .expect("the ByLength set");
-    let alphabetical = interp
-        .call("ee0ep.host.Driver.mkAlphabetical", &[Value::Int(0)])
-        .expect("the Alphabetical set");
-
-    let host = |interp: &mut Interpreter, set: &Value, witness: &str| {
-        interp.call_with_witnesses(
-            "ee0ep.host.Bulk.has",
-            &[set.clone(), Value::Str("aa".into())],
-            &[s_o(witness)],
-        )
-    };
-    let a = host(&mut interp, &by_length, "ee0ep.host.ByLength");
-    let b = host(&mut interp, &alphabetical, "ee0ep.host.Alphabetical");
+    let by_length = typed_at(&mut interp, "ee0ep.host.Driver.mkByLength", 0);
+    let alphabetical = typed_at(&mut interp, "ee0ep.host.Driver.mkAlphabetical", 0);
+    let a = has_typed(&mut interp, "ee0ep.host.Bulk.has", &by_length, Value::Str("aa".into()));
+    let b = has_typed(&mut interp, "ee0ep.host.Bulk.has", &alphabetical, Value::Str("aa".into()));
     assert!(
         matches!(a, Ok(Value::Bool(true))) && matches!(b, Ok(Value::Bool(false))),
-        "the host route, handed each set with the witness its construction chose, must \
-         agree with the typed route: ByLength=true, Alphabetical=false; got {a:?} and {b:?}"
+        "the host route, handed each set at the type its construction gave it, must agree \
+         with the typed route: ByLength=true, Alphabetical=false; got {a:?} and {b:?}"
     );
 
-    let plain = interp.call("ee0ep.host.Bulk.has", &[by_length, Value::Str("aa".into())]);
-    let err = match plain {
-        Err(e) => e.to_string(),
-        other => panic!(
-            "plain `interp.call` has no witness for `s.O` and must refuse at the read — \
-             it answered {other:?}, which is the silent construction this ticket closed"
-        ),
-    };
+    let plain = interp
+        .call("ee0ep.host.Bulk.has", &anthill_core::eval::HostValue::all(&[by_length.value, Value::Str("aa".into())]))
+        .map(|h| h.value)
+        .map_err(|e| e.to_string());
     assert!(
-        err.contains("`s.O`") && err.contains("call_with_witnesses"),
-        "the refusal must name the slot as the body sees it and the host repair: {err}"
+        refused_open_slot(&plain),
+        "handed the set without its type, the call names no `O` and is refused: {plain:?}"
     );
 }
 
-/// **WITH ONE PROVIDER, PLAIN `interp.call` STILL ANSWERS** — the value's construction
-/// had to choose a provider of the slot's goal, and there is only one.
+/// **WITH ONE PROVIDER, THE SET AT ITS TYPE ANSWERS, AND WITHOUT IT IS REFUSED** — proposal
+/// 074 §1.4 (WI-20261113-S4D63). The host holds the set at the type `mk` gives it, `O =
+/// Int64`, and the call reads `s.O` off it. Handed bare, its type names no `O`, and no
+/// provider is chosen for it — not even the one there is, as a body's call over a value
+/// whose type names none is refused (`let s = mk()` over an existential return).
+///
+/// WHAT THIS ROW ASSERTED BEFORE (WI-20260922-ATFGH): the bare set answered, the one provider
+/// taken as the one its construction chose.
 ///
 /// At `T = Int64` with no rivals loaded, `WeakOrd[T = Int64]` has one provider, so the
 /// set `{7}` answers `has(7)` and `has(9)` from plain `interp.call` — both, so the row is
@@ -646,7 +654,7 @@ fn the_host_entry_names_the_witness_or_is_refused() {
 /// this row failed there, refused at the read — a regression on every route that used to
 /// answer correctly when the provider is unique.
 #[test]
-fn with_one_provider_the_host_entry_still_answers() {
+fn with_one_provider_the_set_answers_at_its_type_only() {
     // NO `RIVALS`: their `IntDesc` is a second `WeakOrd[Int64]`. What is left is
     // `Int64`'s own ordering, the one provider — R10KC's single-provider control, and
     // `Int64` rather than `String` for the reason that control's doc measured.
@@ -661,16 +669,18 @@ fn with_one_provider_the_host_entry_still_answers() {
          MySet.insert(MySet.empty[T = Int64, O = Int64](), 7)\n  end\nend\n"
     );
     let mut interp = crate::common::interp_for(&src);
-    let set = interp
-        .call("ee0ep.hostone.Driver.mk", &[Value::Int(0)])
-        .expect("the {7} set");
-    let hit = interp.call("ee0ep.hostone.Bulk.has", &[set.clone(), Value::Int(7)]);
-    let miss = interp.call("ee0ep.hostone.Bulk.has", &[set, Value::Int(9)]);
+    let set = typed_at(&mut interp, "ee0ep.hostone.Driver.mk", 0);
+    let hit = interp.call("ee0ep.hostone.Bulk.has", &[set.clone(), Value::Int(7).into()]).map(|h| h.value);
+    let miss = interp.call("ee0ep.hostone.Bulk.has", &[set.clone(), Value::Int(9).into()]).map(|h| h.value);
     assert!(
         matches!(hit, Ok(Value::Bool(true))) && matches!(miss, Ok(Value::Bool(false))),
-        "one provider of `WeakOrd[T = Int64]` means the value's `O` is known without a \
-         witness: {{7}} holds 7 and not 9; got {hit:?} and {miss:?}"
+        "the set at its type: {{7}} holds 7 and not 9; got {hit:?} and {miss:?}"
     );
+    let bare = interp
+        .call("ee0ep.hostone.Bulk.has", &anthill_core::eval::HostValue::all(&[set.value, Value::Int(7)]))
+        .map(|h| h.value)
+        .map_err(|e| e.to_string());
+    assert!(refused_open_slot(&bare), "the bare set names no `O`: {bare:?}");
 }
 
 /// **SPECIFICITY DOES NOT CHOOSE EITHER** — a value built with a GENERIC witness is not
@@ -743,38 +753,41 @@ fn specificity_does_not_choose_a_type_carried_slot() {
     // The typed route reads `Flat` out of the argument's type — the answer to agree with.
     assert!(
         matches!(
-            one_load().call("ee0ep.hostpair.Driver.typed", &[Value::Int(0)]),
+            one_load().call("ee0ep.hostpair.Driver.typed", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value),
             Ok(Value::Bool(true))
         ),
         "Flat calls every pair equal"
     );
     let mut interp = one_load();
     let set = interp
-        .call("ee0ep.hostpair.Driver.mk", &[Value::Int(0)])
+        .call("ee0ep.hostpair.Driver.mk", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         .expect("the Flat set");
     let probe = interp
-        .call("ee0ep.hostpair.Driver.probe", &[Value::Int(0)])
+        .call("ee0ep.hostpair.Driver.probe", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         .expect("pair(a, b)");
     let args = [set, probe];
-    let plain = interp.call("ee0ep.hostpair.Bulk.has", &args);
+    let plain = interp
+        .call("ee0ep.hostpair.Bulk.has", &anthill_core::eval::HostValue::all(&args))
+        .map(|h| h.value)
+        .map_err(|e| e.to_string());
     assert!(
-        matches!(&plain, Err(e) if e.to_string().contains("`s.O`")),
+        refused_open_slot(&plain),
         "`PairNe` is more specific than `Flat`, and that must not choose for a value built \
          with `Flat`: {plain:?}"
     );
-    let named = interp.call_with_witnesses(
-        "ee0ep.hostpair.Bulk.has",
-        &args,
-        &[s_o("ee0ep.hostpair.Flat")],
-    );
+    // Proposal 074 §1.4: the set at the type `mk` gives it, `O = Flat`, read off that type.
+    let typed = typed_at(&mut interp, "ee0ep.hostpair.Driver.mk", 0);
+    let probe = interp.host_value(args[1].clone()).expect("a host value at its own type");
+    let named = interp
+        .call("ee0ep.hostpair.Bulk.has", &[typed, probe])
+        .map(|h| h.value);
     assert!(
         matches!(named, Ok(Value::Bool(true))),
-        "naming `Flat` answers as the typed route does: {named:?}"
+        "the set at its type, `O = Flat`, answers as the typed route does: {named:?}"
     );
 }
 
-/// **A VALUE BUILT WITH THE DEFAULT IS REFUSED TOO, WHILE RIVALS ARE LOADED** — and names
-/// the default's provider to answer. Raised by /code-review as a loss, and kept as the
+/// **A VALUE BUILT WITH THE DEFAULT IS REFUSED TOO, WHILE RIVALS ARE LOADED**. Raised by /code-review as a loss, and kept as the
 /// decision: before this ticket the default rung filled the slot with `String`'s own
 /// ordering, which is right for THIS value and wrong for a `ByLength` one, and the value
 /// cannot say which it is. Refusing both is the only reading that is never wrong.
@@ -785,7 +798,7 @@ fn specificity_does_not_choose_a_type_carried_slot() {
 /// PASSES ONLY WITH THIS TICKET: before it, plain `interp.call` answered `false` here —
 /// the right answer, by the same default that answered wrong for `ByLength`.
 #[test]
-fn a_value_built_with_the_default_names_the_default_provider() {
+fn a_value_built_with_the_default_is_refused_while_rivals_are_loaded() {
     let src = program(
         "ee0ep.hostdefault",
         "  sort Bulk\n    \
@@ -797,93 +810,74 @@ fn a_value_built_with_the_default_names_the_default_provider() {
     );
     let mut interp = crate::common::interp_for(&src);
     let set = interp
-        .call("ee0ep.hostdefault.Driver.mk", &[Value::Int(0)])
+        .call("ee0ep.hostdefault.Driver.mk", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         .expect("the default-ordered set");
     let args = [set, Value::Str("aa".into())];
-    let plain = interp.call("ee0ep.hostdefault.Bulk.has", &args);
+    let plain = interp
+        .call("ee0ep.hostdefault.Bulk.has", &anthill_core::eval::HostValue::all(&args))
+        .map(|h| h.value)
+        .map_err(|e| e.to_string());
     assert!(
-        matches!(&plain, Err(e) if e.to_string().contains("`s.O`")),
+        refused_open_slot(&plain),
         "with rivals loaded the value cannot say it was built with the default: {plain:?}"
     );
-    let named = interp.call_with_witnesses(
-        "ee0ep.hostdefault.Bulk.has",
-        &args,
-        &[s_o("anthill.prelude.String")],
-    );
-    assert!(
-        matches!(named, Ok(Value::Bool(false))),
-        "naming the default's provider answers with `String`'s ordering: {named:?}"
-    );
+    // Proposal 074 §1.4: `mk` declares `MySet[T = String]`, its `O` unwritten — an
+    // existential return — so the set comes back at a type that names no `O`, and the typed
+    // host call is refused naming `s.O`, as the typed route refuses `has(mk(0), …)`
+    // (`an_existential_return_is_still_refused`).
+    let typed = typed_at(&mut interp, "ee0ep.hostdefault.Driver.mk", 0);
+    let named = has_typed(&mut interp, "ee0ep.hostdefault.Bulk.has", &typed, Value::Str("aa".into()));
+    assert!(refused_open_slot(&named), "a type that names no `O` reads none: {named:?}");
 }
 
-/// **THE ABSENCE IS A MARKER, NOT AN ENTRY REFUSAL** — a body that never reads the slot
-/// still runs from plain `interp.call`.
+/// **THE SLOT IS OWED WHETHER OR NOT THE BODY READS IT** — proposal 074 §1.4
+/// (WI-20261113-S4D63). `has` over an EMPTY set returns at `case nothing()` without
+/// comparing; at its type (`O = ByLength`) it answers `false`, and handed bare it is refused
+/// at the call, as a body's call over a value whose type names no `O` is: the requirement is
+/// the caller's because it is declared.
 ///
-/// `param_derived_requires` synthesizes the slot for every parameter that leaves a named
-/// slot unwritten, whether or not the body reads it; `has` over an EMPTY set returns at
-/// `case nothing()` without comparing. Refusing the whole entry would fail it.
-///
-/// PASSES EITHER WAY with respect to the tie arm (before it, the constructed dictionary
-/// was simply never read). It is the control for the DESIGN: it fails if the refusal is
-/// ever moved from the read to the entry.
+/// WHAT THIS ROW ASSERTED BEFORE (WI-20260922-ATFGH): the bare set answered, the absence a
+/// marker refused only at a read the body never made.
 #[test]
-fn a_body_that_never_reads_the_slot_still_runs_from_the_host() {
+fn the_slot_is_owed_whether_or_not_the_body_reads_it() {
     let src = host_program("ee0ep.hostempty");
     let mut interp = crate::common::interp_for(&src);
-    let empty = interp
-        .call("ee0ep.hostempty.Driver.mkEmpty", &[Value::Int(0)])
-        .expect("the empty set");
-    let got = interp.call("ee0ep.hostempty.Bulk.has", &[empty, Value::Str("aa".into())]);
-    assert!(
-        matches!(got, Ok(Value::Bool(false))),
-        "the empty set's `contains` never reads `O`, so no witness is needed: {got:?}"
-    );
+    let empty = typed_at(&mut interp, "ee0ep.hostempty.Driver.mkEmpty", 0);
+    let got = has_typed(&mut interp, "ee0ep.hostempty.Bulk.has", &empty, Value::Str("aa".into()));
+    assert!(matches!(got, Ok(Value::Bool(false))), "the empty set at its type: {got:?}");
+    let bare = interp
+        .call("ee0ep.hostempty.Bulk.has", &anthill_core::eval::HostValue::all(&[empty.value, Value::Str("aa".into())]))
+        .map(|h| h.value)
+        .map_err(|e| e.to_string());
+    assert!(refused_open_slot(&bare), "the bare empty set names no `O`: {bare:?}");
 }
 
-/// **A HOST THAT NAMES A WITNESS HAS SAID WHAT IT MEANS**, so every mismatch is refused at
-/// the entry rather than entered and discovered at a read — each with the sentence that
-/// names it.
-///
-/// PASSES ONLY WITH `call_with_witnesses` — it is that entry's contract, not a control.
+/// **A VALUE HANDED OVER AT ANOTHER TYPE IS REFUSED AT THE ENTRY** — proposal 074 §1.4. A
+/// host hands the `ByLength` set over at the type of a set of `Int64`s ordered by `IntDesc`,
+/// and the call is typed as a body's is: `has` takes a `MySet[T = String]`, and is refused,
+/// naming both types.
 #[test]
-fn a_misnamed_witness_is_refused_at_the_entry() {
-    let src = host_program("ee0ep.hostbad");
-    let mut interp = crate::common::interp_for(&src);
-    let set = interp
-        .call("ee0ep.hostbad.Driver.mkByLength", &[Value::Int(0)])
-        .expect("the ByLength set");
-    let mut refusal = |op: &str, args: &[Value], witnesses: &[SlotWitness<'_>]| -> String {
-        match interp.call_with_witnesses(op, args, witnesses) {
-            Err(e) => e.to_string(),
-            other => panic!("expected a refusal for {witnesses:?} at {op}; got {other:?}"),
-        }
-    };
-    let has = "ee0ep.hostbad.Bulk.has";
-    let has_args = [set.clone(), Value::Str("aa".into())];
-    let by_length = "ee0ep.hostbad.ByLength";
-
-    // A slot the operation does not have — the message lists the ones it does.
-    let e = refusal(has, &has_args, &[SlotWitness { param: "x", slot: "O", witness: by_length }]);
-    assert!(e.contains("no slot `x.O`") && e.contains("`s.O`"), "{e}");
-    // A witness that provides the spec, but not at this slot's element.
-    let e = refusal(has, &has_args, &[s_o("ee0ep.hostbad.IntDesc")]);
-    assert!(e.contains("does not answer `s.O`"), "{e}");
-    // The same slot twice — refused before either is resolved.
-    let e = refusal(has, &has_args, &[s_o(by_length), s_o(by_length)]);
-    assert!(e.contains("named twice"), "{e}");
-    // A witness name nothing declares.
-    let e = refusal(has, &has_args, &[s_o("ee0ep.hostbad.NoSuchOrder")]);
-    assert!(e.contains("unknown witness `ee0ep.hostbad.NoSuchOrder`"), "{e}");
-    // An operation with no body of its own: it is entered by value-directed dispatch to
-    // a provider's, whose frame is rebuilt from that provider's chain, so a witness laid
-    // over this one would be discarded in silence (found by /code-review).
-    let e = refusal(
-        "anthill.prelude.WeakOrd.compare",
-        &[Value::Str("aa".into()), Value::Str("zz".into())],
-        &[s_o(by_length)],
+fn a_type_whose_witness_does_not_answer_the_slot_is_refused() {
+    let src = program(
+        "ee0ep.hostbad",
+        &format!(
+            "  sort Bulk\n    \
+             operation has(s: MySet[T = String], x: String) -> Bool = MySet.contains(s, x)\n  \
+             end\n  \
+             sort Driver\n    \
+             operation mkByLength(n: Int64) -> MySet[T = String, O = ByLength] = {}\n    \
+             operation mkInts(n: Int64) -> MySet[T = Int64, O = IntDesc] =\n      \
+             MySet.insert(MySet.empty[T = Int64, O = IntDesc](), 7)\n  end",
+            set_at("ByLength"),
+        ),
     );
-    assert!(e.contains("no body of its own"), "{e}");
-    // A host-implemented operation enters no frame, so there is no slot to fill.
-    let e = refusal("anthill.prelude.String.length", &[Value::Str("aa".into())], &[s_o(by_length)]);
-    assert!(e.contains("host-implemented"), "{e}");
+    let mut interp = crate::common::interp_for(&src);
+    let strings = typed_at(&mut interp, "ee0ep.hostbad.Driver.mkByLength", 0);
+    let ints = typed_at(&mut interp, "ee0ep.hostbad.Driver.mkInts", 0);
+    let mislabelled = HostValue::typed(strings.value, ints.ty().expect("a result's type").clone());
+    let got = has_typed(&mut interp, "ee0ep.hostbad.Bulk.has", &mislabelled, Value::Str("aa".into()));
+    assert!(
+        matches!(&got, Err(e) if e.contains("expected MySet[T = String]") && e.contains("IntDesc")),
+        "the type the set is handed over at is no `MySet[T = String]`: {got:?}"
+    );
 }

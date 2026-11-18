@@ -75,7 +75,7 @@ end
 
 fn drive(entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(PROGRAM);
-    match interp.call(&format!("wi5g28a.s3.Driver.{entry}"), &[]) {
+    match interp.call(&format!("wi5g28a.s3.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }

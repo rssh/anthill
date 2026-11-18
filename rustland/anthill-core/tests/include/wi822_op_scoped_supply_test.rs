@@ -110,7 +110,7 @@ const INSTANCES: &str = crate::common::DESC_INSTANCES;
 
 fn eval_fresh(src: &str, entry: &str, n: i64) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(n)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
 }
 
 /// The WI-325 ladder's suggestion for an uncovered spec-op call. One owner beside
@@ -738,12 +738,12 @@ end
         anthill_core::eval::builtins::register_standard_builtins(&mut interp);
         interp.call(
             &format!("{ns}.Holder.probe"),
-            &[Value::Entity {
+            &anthill_core::eval::HostValue::all(&[Value::Entity {
                 functor: tag,
                 pos: Vec::new().into(),
                 named: Vec::new().into(),
-            }],
-        )
+            }]),
+        ).map(|h| h.value)
     };
 
     // ONE completion — `F` has exactly one value any provider gives it at `E = Tag`, so
@@ -757,7 +757,9 @@ end
     );
 
     // TWO completions — `F = Int64` and `F = Tag` both answer at `E = Tag`. Neither may
-    // be picked for the author: the slot stays absent and the body's read reports it.
+    // be picked for the author. Proposal 074 §1.4 (WI-20261113-S4D63): the host call is
+    // typed as the call written in a body is, and refused there, before it runs, `F`
+    // unconstrained; before it, the slot stayed absent and the body's read reported it.
     let tied = program("wi1091.complete.tied", RIVAL);
     let got = enter("wi1091.complete.tied", &tied);
     let err = got.expect_err(
@@ -767,32 +769,31 @@ end
     );
     let msg = err.to_string();
     assert!(
-        msg.contains("__req_pair") && msg.contains("not bound"),
-        "…and the body's read must name the slot it did not get; got {msg}"
+        msg.contains("'F'") && msg.contains("unconstrained"),
+        "…and the call is refused naming the element nothing fixes; got {msg}"
     );
 
-    // AN OPEN-ENDED RIVAL IS THE SAME VERDICT, and it is the row the first cut of this
-    // test could not see (found by /code-review). `Anything` binds `F` to its OWN
-    // parameter, so it answers at EVERY completion rather than proposing one — and a
-    // provider that proposes nothing used to be indistinguishable from a provider that
-    // is not there. MEASURED before the fix: `Ok(Int(1))`, the ground provider's answer,
-    // silently chosen where `F := Tag` was equally available (2). This is the reason the
-    // enumeration RETURNS on an unproposable provider rather than skipping it.
+    // AN OPEN-ENDED RIVAL. `Anything` binds `F` to its OWN parameter, so it answers at
+    // EVERY completion rather than proposing one. On the value-only route (the resolver's
+    // bridge) that declines the completion: no order may choose there (WI-1091, found by
+    // /code-review, which measured `Ok(Int(1))` silently chosen before it).
     const OPEN_ENDED: &str = r#"  sort Anything
     sort A = ?
     provides Pair[E = A, F = A]
     operation combine(x: A) -> Int64 = 2
   end
 "#;
+    //
+    // Proposal 074 §1.4 (WI-20261113-S4D63): the host call is typed as the call written in a
+    // body is, and a body's call completes a requirement the call fixes only in part by
+    // §8.7's order (`dep_completed_by_provisions`): `First`'s ground `F = Int64` is more
+    // specific than `Anything`'s own parameter, so it answers 1, as `probe(tag())` written in
+    // a body does. The value-only route above this keeps declining it.
     let open_ended = program("wi1091.complete.open", OPEN_ENDED);
     let got = enter("wi1091.complete.open", &open_ended);
-    let err = got.expect_err(
-        "CONTROL: a provider that leaves `F` abstract answers at more than one \
-         completion, so the arguments do not decide and no completion may be taken",
-    );
     assert!(
-        err.to_string().contains("__req_pair"),
-        "…and the body's read must name the slot it did not get; got {err}"
+        matches!(got, Ok(Value::Int(1))),
+        "the host call answers as the call in a body does, by §8.7's order; got {got:?}"
     );
 }
 
@@ -841,14 +842,14 @@ fn wi1091_the_op_requirements_accessor_answers_for_both_mints() {
     let call = |i: &mut Interpreter, reqs: Option<Vec<Option<Dictionary>>>| {
         i.call(
             "anthill.realization.runtime.OpRef.opRequirements",
-            &[Value::OpRef {
+            &anthill_core::eval::HostValue::all(&[Value::OpRef {
                 op,
                 dict: None,
                 named: None,
                 spread_labels: None,
                 op_reqs: reqs.map(|r| std::rc::Rc::from(r.as_slice())),
-            }],
-        )
+            }]),
+        ).map(|h| h.value)
         .expect("OpRef.opRequirements")
     };
 

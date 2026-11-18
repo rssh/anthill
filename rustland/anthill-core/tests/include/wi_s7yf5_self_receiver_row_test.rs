@@ -114,14 +114,14 @@ fn s7yf5_declared_callers_execute_effects() {
         for provision in ["{BE}", "BE"] {
             let mut interp = interp_for(&cell_program(provision, "Modify[k]", body));
             let expected = if body.contains("twice") { 1010 } else { 505 };
-            let result = interp.call("s7yf5.main", &[]);
+            let result = interp.call("s7yf5.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
             assert!(
                 matches!(result, Ok(Value::Int(n)) if n == expected),
                 "{body} under {provision}: {result:?}"
             );
 
             let mut interp = interp_for(&error_program(provision, "Error[String]", body));
-            let result = interp.call("s7yf5.main", &[]);
+            let result = interp.call("s7yf5.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
             assert!(
                 matches!(result, Err(EvalError::Raised { payload: Value::Str(ref s), .. }) if s == "boom"),
                 "{body} under {provision}: {result:?}"
@@ -174,7 +174,7 @@ end
 "#
     );
     let mut interp = interp_for(&src);
-    let result = interp.call("s7yf5.main", &[]);
+    let result = interp.call("s7yf5.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(matches!(result, Ok(Value::Int(101020))), "{result:?}");
 }
 
@@ -207,7 +207,7 @@ end
 
 fn assert_provision_runs(src: &str) {
     let mut interp = interp_for(src);
-    let result = interp.call("s7yf5provision.main", &[]);
+    let result = interp.call("s7yf5provision.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(matches!(result, Ok(Value::Int(3))), "{result:?}");
 }
 

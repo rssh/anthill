@@ -107,7 +107,7 @@ fn loaded_each_way() -> Vec<(&'static str, KnowledgeBase)> {
 }
 
 fn call(interp: &mut Interpreter, op: &str) -> i64 {
-    match interp.call(&format!("wiank4x.derive.D.{op}"), &[Value::Int(0)]) {
+    match interp.call(&format!("wiank4x.derive.D.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{op}: expected an Int, got {other:?}"),
     }

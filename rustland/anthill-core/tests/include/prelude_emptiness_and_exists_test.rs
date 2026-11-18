@@ -32,7 +32,7 @@ end
 
 fn eval_bool(body: &str) -> bool {
     let v = crate::common::interp_for(&probe(body))
-        .call("probe.run", &[])
+        .call("probe.run", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("probe.run failed for `{body}`: {e:?}"));
     match v {
         Value::Bool(b) => b,

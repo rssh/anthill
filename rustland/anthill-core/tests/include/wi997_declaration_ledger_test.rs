@@ -40,7 +40,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(SRC);
     assert!(
-        matches!(interp.call("wi997.epo.drive", &[]), Ok(Value::Int(7))),
+        matches!(interp.call("wi997.epo.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(7))),
         "the eponymous constructor must stay legal AND keep constructing",
     );
 }
@@ -63,7 +63,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(SRC);
     assert!(
-        matches!(interp.call("wi997.sec.drive", &[]), Ok(Value::Int(5))),
+        matches!(interp.call("wi997.sec.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(5))),
         "a secondary entry adds members without redefining the type",
     );
 }
@@ -206,7 +206,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(SRC);
     assert!(
-        matches!(interp.call("wi997.b.drive", &[]), Ok(Value::Int(3))),
+        matches!(interp.call("wi997.b.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(3))),
         "one name in two scopes is two types, not a duplicate",
     );
 }

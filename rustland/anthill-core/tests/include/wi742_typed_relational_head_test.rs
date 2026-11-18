@@ -277,7 +277,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(DRAIN_SRC);
     let err = interp
-        .call("test.wi742.drain.drainLoose", &[])
+        .call("test.wi742.drain.drainLoose", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a never-discharged typed guard must RAISE, not materialize a row");
     assert!(
         matches!(err, anthill_core::eval::EvalError::Raised { .. }),
@@ -290,7 +290,7 @@ end
     // call whatever that call does (measured).
     let mut fresh = crate::common::interp_for(DRAIN_SRC);
     fresh
-        .call("test.wi742.drain.drainSettled", &[])
+        .call("test.wi742.drain.drainSettled", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a discharged guard drains normally");
 }
 

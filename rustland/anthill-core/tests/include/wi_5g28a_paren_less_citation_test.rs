@@ -101,7 +101,7 @@ fn a_bracketed_chain_followed_by_a_projection_is_a_citation() {
         "  operation first() -> Wrap[T = Colour] effects {Error, Error[EmptyStream]}\n\
          \x20   = Wrap[T = Colour].tag.head.x\n",
     ));
-    let out = interp.call("zz5g28al3.first", &[]).expect("first evaluates");
+    let out = interp.call("zz5g28al3.first", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("first evaluates");
     let rendered = match &out {
         anthill_core::eval::Value::Node(occ) => {
             TermPrinter::new(interp.kb()).print_occurrence(occ)
@@ -124,7 +124,7 @@ fn a_let_bound_citation_is_a_relation_value() {
          \x20   let r = Wrap[T = Colour].tag\n\
          \x20   r.takeN(5).length()\n",
     ));
-    match interp.call("zz5g28al3.viaLet", &[]) {
+    match interp.call("zz5g28al3.viaLet", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 2, "both rows of `tag`"),
         other => panic!("viaLet: expected Int(2), got {other:?}"),
     }
@@ -139,7 +139,7 @@ fn both_spellings_answer_the_same_count() {
          \x20 operation n_applied() -> Int64 effects {Error} = Wrap[T = Colour].tag().takeN(5).length()\n",
     ));
     for op in ["zz5g28al3.n_bare", "zz5g28al3.n_applied"] {
-        match interp.call(op, &[]) {
+        match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 2, "{op}"),
             other => panic!("{op}: expected Int(2), got {other:?}"),
         }
@@ -235,7 +235,7 @@ fn a_paren_less_bracket_on_an_operation_is_its_call() {
          \x20 operation go() -> Int64 = Box[T = Int64].zero\n\
          end\n",
     );
-    match interp.call("zz5g28al3o.go", &[]) {
+    match interp.call("zz5g28al3o.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 4),
         other => panic!("go: expected Int(4), got {other:?}"),
     }
@@ -263,7 +263,7 @@ fn a_nested_sort_after_the_bracket_is_its_member() {
              \x20 operation go() -> Int64 = {expr}\n\
              end\n",
         ));
-        match interp.call(&format!("{ns}.go"), &[]) {
+        match interp.call(&format!("{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(anthill_core::eval::Value::Int(n)) => n,
             other => panic!("{expr}: expected an Int64, got {other:?}"),
         }

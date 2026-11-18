@@ -149,7 +149,7 @@ fn result_carrier_dispatches_to_instance_impl() {
          match o\n      case some(x) -> x\n      case none() -> 0",
     );
     let mut interp = crate::common::interp_for(&src);
-    match interp.call("test.wi453.runResult", &[]) {
+    match interp.call("test.wi453.runResult", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 42,
             "unit(42) must dispatch to optionUnit ⟹ some(42) ⟹ 42; got {n}"
@@ -170,7 +170,7 @@ fn arg_carrier_dispatches_to_instance_impl() {
          match r\n      case some(x) -> x\n      case none() -> 0",
     );
     let mut interp = crate::common::interp_for(&src);
-    match interp.call("test.wi453.runArg", &[]) {
+    match interp.call("test.wi453.runArg", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 5,
             "flatMap(some(5), mkSome) must dispatch to optionFlatMap ⟹ some(5) ⟹ 5; got {n}"

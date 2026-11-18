@@ -76,7 +76,7 @@ fn op_body_boolean_ops_eval_as_bool_values() {
     let mut interp = interp_for(EVAL_SRC);
     let call = |interp: &mut anthill_core::eval::Interpreter, name: &str| {
         interp
-            .call(name, &[])
+            .call(name, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("call {name}: {e:?}"))
     };
 
@@ -114,12 +114,12 @@ fn op_body_boolean_ops_eval_as_bool_values() {
 fn neg_evals_via_numeric_neg() {
     let mut interp = interp_for(EVAL_SRC);
     let neg = interp
-        .call("test.wi529.eval.t_neg", &[])
+        .call("test.wi529.eval.t_neg", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call t_neg");
     assert_eq!(expect_int(neg, interp.kb()), -7, "neg(7) = -7");
 
     let negvar = interp
-        .call("test.wi529.eval.t_negvar", &[Value::Int(7)])
+        .call("test.wi529.eval.t_negvar", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value)
         .expect("call t_negvar");
     assert_eq!(expect_int(negvar, interp.kb()), -7, "neg(x) with x=7 is -7");
 }
@@ -142,7 +142,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.wi529.shadow.flip", &[])
+        .call("test.wi529.shadow.flip", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call flip");
     assert!(
         !expect_bool(r),

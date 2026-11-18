@@ -83,7 +83,7 @@ use anthill_core::eval::Value;
 /// operation — the whole subject here is which declaration a bare name found.
 fn eval_int(src: &str, op: &str, arg: i64) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(op, &[Value::Int(arg)]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[Value::Int(arg)])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         Ok(other) => panic!("expected Int from {op}, got {}", other.type_name()),
         Err(e) => panic!("{op} failed to evaluate: {e}"),
@@ -92,7 +92,7 @@ fn eval_int(src: &str, op: &str, arg: i64) -> i64 {
 
 fn eval_int_files(srcs: &[&str], op: &str, arg: i64) -> i64 {
     let mut interp = crate::common::interp_for_files(srcs);
-    match interp.call(op, &[Value::Int(arg)]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[Value::Int(arg)])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         Ok(other) => panic!("expected Int from {op}, got {}", other.type_name()),
         Err(e) => panic!("{op} failed to evaluate: {e}"),

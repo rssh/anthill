@@ -187,7 +187,7 @@ end
 #[test]
 fn eval_runs_the_spec_default_when_the_only_implementation_is_cpp() {
     let mut interp = crate::common::interp_for(CPP_ONLY_MEMBER);
-    match interp.call("wi886.cpponly.Driver.maxV", &[Value::Int(0)]) {
+    match interp.call("wi886.cpponly.Driver.maxV", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(9)) => {}
         other => panic!(
             "WeakOrd.max must fall back to the spec default body and pick the \

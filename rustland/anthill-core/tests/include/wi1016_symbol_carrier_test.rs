@@ -43,7 +43,7 @@ fn minted_symbol(interp: &mut Interpreter, qn: &str) -> Value {
     let s = resolve(interp, qn);
     let dict = crate::common::dict(&interp, s, []).into_value();
     let got = interp
-        .call(&format!("{DICT}.impl"), &[dict])
+        .call(&format!("{DICT}.impl"), &anthill_core::eval::HostValue::all(&[dict])).map(|h| h.value)
         .expect("Dictionary.impl");
     assert!(
         matches!(got, Value::SymbolRef(m) if m == s),
@@ -80,18 +80,18 @@ fn a_map_keyed_by_a_symbol_finds_it_through_either_carrier() {
     let interned = interned_symbol(&mut interp, "anthill.prelude.Int64");
 
     let empty = interp
-        .call("test.wi1016.emptyOf", &[minted.clone()])
+        .call("test.wi1016.emptyOf", &anthill_core::eval::HostValue::all(&[minted.clone()])).map(|h| h.value)
         .expect("emptyOf");
     let m = interp
         .call(
             &format!("{MAP}.put"),
-            &[empty, minted.clone(), Value::Int(7)],
-        )
+            &anthill_core::eval::HostValue::all(&[empty, minted.clone(), Value::Int(7)]),
+        ).map(|h| h.value)
         .expect("a minted Symbol is a usable Map key");
 
     // Stored through `SymbolRef`, read through `Term::Ref`.
     let got = interp
-        .call(&format!("{MAP}.get"), &[m.clone(), interned])
+        .call(&format!("{MAP}.get"), &anthill_core::eval::HostValue::all(&[m.clone(), interned])).map(|h| h.value)
         .expect("Map.get");
     assert_eq!(
         option_int(&interp, &got),
@@ -102,11 +102,11 @@ fn a_map_keyed_by_a_symbol_finds_it_through_either_carrier() {
     // …and the reverse direction, so neither carrier is merely the privileged one.
     let bool_interned = interned_symbol(&mut interp, "anthill.prelude.Bool");
     let m2 = interp
-        .call(&format!("{MAP}.put"), &[m, bool_interned, Value::Int(9)])
+        .call(&format!("{MAP}.put"), &anthill_core::eval::HostValue::all(&[m, bool_interned, Value::Int(9)])).map(|h| h.value)
         .expect("Map.put via the interned carrier");
     let bool_minted = minted_symbol(&mut interp, "anthill.prelude.Bool");
     let got2 = interp
-        .call(&format!("{MAP}.get"), &[m2, bool_minted])
+        .call(&format!("{MAP}.get"), &anthill_core::eval::HostValue::all(&[m2, bool_minted])).map(|h| h.value)
         .expect("Map.get");
     assert_eq!(option_int(&interp, &got2), Some(9));
 }
@@ -120,14 +120,14 @@ fn a_symbol_key_read_back_out_of_a_map_addresses_its_own_slot() {
     let mut interp = interp();
     let minted = minted_symbol(&mut interp, "anthill.prelude.Int64");
     let empty = interp
-        .call("test.wi1016.emptyOf", &[minted.clone()])
+        .call("test.wi1016.emptyOf", &anthill_core::eval::HostValue::all(&[minted.clone()])).map(|h| h.value)
         .expect("emptyOf");
     let m = interp
-        .call(&format!("{MAP}.put"), &[empty, minted, Value::Int(7)])
+        .call(&format!("{MAP}.put"), &anthill_core::eval::HostValue::all(&[empty, minted, Value::Int(7)])).map(|h| h.value)
         .expect("Map.put");
 
     let keys = interp
-        .call(&format!("{MAP}.keys"), &[m.clone()])
+        .call(&format!("{MAP}.keys"), &anthill_core::eval::HostValue::all(&[m.clone()])).map(|h| h.value)
         .expect("Map.keys");
     let first = crate::common::list_heads(&keys)
         .into_iter()
@@ -138,7 +138,7 @@ fn a_symbol_key_read_back_out_of_a_map_addresses_its_own_slot() {
         "a symbol key spells itself carrier-free on the way out, got {first:?}",
     );
     let got = interp
-        .call(&format!("{MAP}.get"), &[m, first])
+        .call(&format!("{MAP}.get"), &anthill_core::eval::HostValue::all(&[m, first])).map(|h| h.value)
         .expect("Map.get");
     assert_eq!(option_int(&interp, &got), Some(7));
 }

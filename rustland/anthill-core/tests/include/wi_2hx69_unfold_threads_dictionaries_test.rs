@@ -188,7 +188,7 @@ fn answered(kb: &mut KnowledgeBase, rels: &[&str]) -> Vec<((usize, usize), Vec<S
 
 /// `(cited with Descending, uncited)` of one driver pair — `1` is `red`, `2` is `green`.
 fn cited(interp: &mut anthill_core::eval::Interpreter, which: &str) -> (i64, i64) {
-    let mut run = |entry: String| match interp.call(&format!("wi2hx69.Driver.{entry}"), &[]) {
+    let mut run = |entry: String| match interp.call(&format!("wi2hx69.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     };

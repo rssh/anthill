@@ -38,7 +38,7 @@ namespace test.wi084p3.basic
 end
 "#,
     );
-    match i.call("test.wi084p3.basic.go", &[]) {
+    match i.call("test.wi084p3.basic.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(-1)) => {}
         other => panic!("expected Int(-1) from a const reference, got {other:?}"),
     }
@@ -58,7 +58,7 @@ namespace test.wi084p3.compose
 end
 "#,
     );
-    match i.call("test.wi084p3.compose.go", &[]) {
+    match i.call("test.wi084p3.compose.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Float(f)) => assert_eq!(f, 6.0, "2.0 * 3.0 should fold to 6.0"),
         other => panic!("expected Float(6.0) from a composed const, got {other:?}"),
     }
@@ -77,7 +77,7 @@ namespace test.wi084p3.cycle
 end
 "#,
     );
-    match i.call("test.wi084p3.cycle.go", &[]) {
+    match i.call("test.wi084p3.cycle.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::ConstCycle { .. }) => {}
         other => panic!("expected ConstCycle for a self-dependent const pair, got {other:?}"),
     }
@@ -98,7 +98,7 @@ end
 "#,
     );
     i.config_mut().step_cap = Some(10_000);
-    match i.call("test.wi084p3.budget.go", &[]) {
+    match i.call("test.wi084p3.budget.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::StepsExhausted { .. }) => {}
         other => panic!("expected StepsExhausted for an over-budget const fold, got {other:?}"),
     }
@@ -121,7 +121,7 @@ namespace test.wi084p3.shadow
 end
 "#,
     );
-    match i.call("test.wi084p3.shadow.go", &[]) {
+    match i.call("test.wi084p3.shadow.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(99)) => {}
         other => panic!("a let-local must shadow the const at eval (expected 99), got {other:?}"),
     }
@@ -144,7 +144,7 @@ end
         Ok(Value::Int(-1))
     })
     .expect("register host const builtin");
-    match i.call("test.wi084p3.host.go", &[]) {
+    match i.call("test.wi084p3.host.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(-1)) => {}
         other => panic!("expected the host builtin's Int(-1), got {other:?}"),
     }
@@ -164,7 +164,7 @@ namespace test.wi084p3.unavail
 end
 "#,
     );
-    match i.call("test.wi084p3.unavail.go", &[]) {
+    match i.call("test.wi084p3.unavail.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::ConstValueUnavailable { .. }) => {}
         other => panic!(
             "expected ConstValueUnavailable for a bodyless const with no builtin, got {other:?}"

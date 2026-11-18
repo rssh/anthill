@@ -53,7 +53,7 @@ end
 fn a_spec_half_is_answered_two_hops_into_a_requirement() {
     for (entry, want) in [("lt", -1), ("gt", 1)] {
         let mut interp = crate::common::interp_for(TWO_HOP);
-        match interp.call(&format!("wi4zzkz.twohop.Driver.{entry}"), &[Value::Int(0)]) {
+        match interp.call(&format!("wi4zzkz.twohop.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "`{entry}` compares lexicographically"),
             other => panic!("`{entry}` must answer {want}; got {other:?}"),
         }

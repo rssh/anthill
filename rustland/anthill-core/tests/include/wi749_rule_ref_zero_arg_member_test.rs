@@ -66,7 +66,7 @@ end
 
 fn call_bool(interp: &mut anthill_core::eval::Interpreter, op: &str) -> bool {
     interp
-        .call(&format!("test.wi749.{op}"), &[])
+        .call(&format!("test.wi749.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("`{op}` must run; got {e:?}"))
         .literal_bool(interp.kb())
         .unwrap_or_else(|| panic!("`{op}` must answer a Bool"))
@@ -200,7 +200,7 @@ end
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let call = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
         interp
-            .call(&format!("test.wi749ns.use.{op}"), &[])
+            .call(&format!("test.wi749ns.use.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("`{op}` must run; got {e:?}"))
             .literal_bool(interp.kb())
             .unwrap_or_else(|| panic!("`{op}` must answer a Bool"))
@@ -301,7 +301,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi749shadow.shadowed", &[])
+        .call("test.wi749shadow.shadowed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the shadowed receiver runs");
     match r {
         Value::Int(n) => assert_eq!(

@@ -57,7 +57,7 @@ const W: &str = "  sort W\n    entity w\n    provides PartialEq[T = (Int64, Stri
                  operation eq(a: (Int64, String), b: (Int64, String)) -> Bool = true\n  end\n";
 
 fn bool_of(interp: &mut anthill_core::eval::Interpreter, entry: &str) -> bool {
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
     }
@@ -134,7 +134,7 @@ fn a_spec_of_the_programs_at_a_tuple_answers() {
          operation g() -> String = sh((1, \"s\"))",
     );
     let mut interp = interp_for(&program);
-    match interp.call(&format!("{ns}.g"), &[]) {
+    match interp.call(&format!("{ns}.g"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Str(s)) => assert_eq!(&*s, "pair"),
         other => panic!("expected \"pair\", got {other:?}"),
     }

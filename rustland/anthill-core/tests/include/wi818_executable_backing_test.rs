@@ -99,7 +99,7 @@ end
             "wi818.b.Widget.widget",
             &[("id", Value::Int(1))],
         );
-        let got = interp.call(op, &[widget]);
+        let got = interp.call(op, &anthill_core::eval::HostValue::all(&[widget])).map(|h| h.value);
         assert!(
             matches!(got, Ok(Value::Int(n)) if n == expect),
             "{op} must evaluate to {expect}; got {got:?}"
@@ -203,11 +203,17 @@ end
     for op in ["wi818.e.Nameable.tag", "wi818.e.Box.same"] {
         let mut interp = crate::common::interp_for(src);
         let thing = entity(&mut interp, "wi818.e.Thing.thing", &[("id", Value::Int(1))]);
-        let got = interp.call(op, &[thing]);
+        let got = interp.call(op, &anthill_core::eval::HostValue::all(&[thing])).map(|h| h.value);
         match got {
             Err(EvalError::OperationBodyMissing { ref name, .. }) => assert_eq!(
                 name, "wi818.e.Nameable.tag",
                 "{op}: the missing implementation must be named QUALIFIED"
+            ),
+            // Proposal 074 §1.4: the host call is typed as a body's call is, and refused there,
+            // naming the spec nothing provides at the argument's type, qualified.
+            Err(EvalError::HostCallRefused { ref detail, .. }) => assert!(
+                detail.contains("wi818.e.Nameable") && detail.contains("wi818.e.Thing"),
+                "{op}: the refusal names the spec and the carrier, qualified: {detail}"
             ),
             other => panic!(
                 "{op}: expected OperationBodyMissing naming wi818.e.Nameable.tag \
@@ -258,7 +264,7 @@ end
     ];
     for (op, ok) in cases {
         let mut interp = crate::common::interp_for(src);
-        let got = interp.call(&format!("wi818.stdlib.Use.{op}"), &[]);
+        let got = interp.call(&format!("wi818.stdlib.Use.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
         assert!(ok(&mut interp, &got), "Use.{op}: unexpected result {got:?}");
     }
 }
@@ -282,7 +288,7 @@ namespace wi818.boom
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    let got = interp.call("wi818.boom.Use.boom", &[]);
+    let got = interp.call("wi818.boom.Use.boom", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     match got {
         Err(EvalError::Raised { ref payload, .. }) => {
             let Value::Entity { functor, .. } = payload else {
@@ -335,13 +341,13 @@ namespace wi818.comb
 end
 "#;
     let mut i1 = crate::common::interp_for(src);
-    let got = i1.call("wi818.comb.Use.mh", &[]);
+    let got = i1.call("wi818.comb.Use.mh", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(107))),
         "head over a MappedStream must run the spec default over MappedStream.splitFirst; got {got:?}"
     );
     let mut i2 = crate::common::interp_for(src);
-    let got = i2.call("wi818.comb.Use.fho", &[]);
+    let got = i2.call("wi818.comb.Use.fho", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         entity_functor_is(&mut i2, &got, "anthill.prelude.Option.none"),
         "headOption over a FilteredStream dropping everything must be none; got {got:?}"
@@ -402,7 +408,7 @@ end
             Box::new(|_i, _op, _args| Ok(HandlerAction::Pure(Value::Int(0)))),
         )
         .expect("register Error handler");
-    let got = interp.call("wi818.resume.Use.raiser", &[]);
+    let got = interp.call("wi818.resume.Use.raiser", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     match got {
         Err(ref err @ EvalError::HandlerError {
             reason: anthill_core::eval::HandlerErrorReason::ResumedARaise { .. },

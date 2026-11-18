@@ -36,9 +36,9 @@ namespace test.wi850.decl
 end
 "#;
     let mut interp = interp_for(src);
-    let v = interp.call("test.wi850.decl.useFoo", &[]).expect("useFoo");
+    let v = interp.call("test.wi850.decl.useFoo", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("useFoo");
     assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(7));
-    let t = interp.call("test.wi850.decl.useMk", &[]).expect("useMk");
+    let t = interp.call("test.wi850.decl.useMk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("useMk");
     assert_eq!(anthill_core::kb::typing::type_display_name_value(interp.kb(), &t), "Int64");
 }
 
@@ -60,7 +60,7 @@ namespace test.wi850.block
 end
 "#;
     let mut interp = interp_for(src);
-    let t = interp.call("test.wi850.block.Driver.useMk", &[]).expect("useMk");
+    let t = interp.call("test.wi850.block.Driver.useMk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("useMk");
     assert_eq!(anthill_core::kb::typing::type_display_name_value(interp.kb(), &t), "Int64");
 }
 
@@ -87,7 +87,7 @@ end
     let mut interp = interp_for(src);
     for (op, want) in [("b", "Int64"), ("c", "String"), ("a", "Bool")] {
         let t = interp
-            .call(&format!("test.wi850.several.{op}"), &[])
+            .call(&format!("test.wi850.several.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert_eq!(anthill_core::kb::typing::type_display_name_value(interp.kb(), &t), want, "{op}");
     }
@@ -109,7 +109,7 @@ end
     parses_clean(src);
     let mut interp = interp_for(src);
     match interp
-        .call("test.wi850.bare.Driver.drive", &[])
+        .call("test.wi850.bare.Driver.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("drive")
     {
         anthill_core::eval::Value::Int(7) => {}
@@ -133,7 +133,7 @@ end
 "#;
     let mut interp = interp_for(src);
     match interp
-        .call("test.wi850.pinned.Driver.drive", &[])
+        .call("test.wi850.pinned.Driver.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("drive")
     {
         anthill_core::eval::Value::Int(7) => {}

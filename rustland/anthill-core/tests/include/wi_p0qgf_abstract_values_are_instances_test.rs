@@ -23,14 +23,14 @@ use anthill_core::eval::{Interpreter, Value};
 use crate::common::{interp_for, one_definite_int, show_value};
 
 fn int(interp: &mut Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{op}`: expected an Int64, got {other:?}"),
     }
 }
 
 fn shown(interp: &mut Interpreter, op: &str) -> String {
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(v) => show_value(interp.kb(), &v),
         Err(e) => panic!("`{op}`: {e:?}"),
     }

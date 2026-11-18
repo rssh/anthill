@@ -115,7 +115,7 @@ end
 fn wi714_relation_folds_into_a_set() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714drain.nameSet", &[])
+        .call("test.wi714drain.nameSet", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("nameSet() drains the relation and folds it into a Map set");
     assert!(
         matches!(r, Value::Map(_)),
@@ -123,7 +123,7 @@ fn wi714_relation_folds_into_a_set() {
     );
     // Read the set back through `size` rather than destructuring Map's internals.
     let n = interp
-        .call("test.wi714drain.nameSetSize", &[])
+        .call("test.wi714drain.nameSetSize", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("nameSetSize() runs");
     assert_eq!(
         n.literal_int64(interp.kb()),
@@ -138,7 +138,7 @@ fn wi714_relation_folds_into_a_set() {
 fn wi714_set_dedups_while_the_drain_keeps_the_bag() {
     let mut interp = interp_for(SRC);
     let rows = interp
-        .call("test.wi714drain.dupNameCount", &[])
+        .call("test.wi714drain.dupNameCount", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("dupNameCount() runs");
     assert_eq!(
         rows.literal_int64(interp.kb()),
@@ -146,7 +146,7 @@ fn wi714_set_dedups_while_the_drain_keeps_the_bag() {
         "the drain is a BAG: clause 1 yields alice+carol (age 30), clause 2 yields all three"
     );
     let distinct = interp
-        .call("test.wi714drain.dupNameSetSize", &[])
+        .call("test.wi714drain.dupNameSetSize", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("dupNameSetSize() runs");
     assert_eq!(
         distinct.literal_int64(interp.kb()),
@@ -161,10 +161,10 @@ fn wi714_set_dedups_while_the_drain_keeps_the_bag() {
 fn wi714_collected_set_answers_membership() {
     let mut interp = interp_for(SRC);
     let hit = interp
-        .call("test.wi714drain.aliceIsSatisfied", &[])
+        .call("test.wi714drain.aliceIsSatisfied", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("aliceIsSatisfied() runs");
     let miss = interp
-        .call("test.wi714drain.zedIsSatisfied", &[])
+        .call("test.wi714drain.zedIsSatisfied", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("zedIsSatisfied() runs");
     // `some(x)`'s payload rides positionally OR as the single named field,
     // depending on how the producer built it — `get` builds it named.
@@ -195,7 +195,7 @@ fn wi714_collected_set_answers_membership() {
 fn wi714_drain_composes_with_the_algebra() {
     let mut interp = interp_for(SRC);
     let n = interp
-        .call("test.wi714drain.filteredSetSize", &[])
+        .call("test.wi714drain.filteredSetSize", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("filteredSetSize() runs the where+project pipeline and folds it");
     assert_eq!(
         n.literal_int64(interp.kb()),

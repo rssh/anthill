@@ -186,7 +186,7 @@ fn load_errs(src: &str) -> Vec<String> {
 /// trapped call.
 fn eval_int(src: &str, ns: &str, why: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)]) {
+    match interp.call(&format!("{ns}.Driver.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{why}; got {other:?}\n{src}"),
     }
@@ -581,7 +581,7 @@ end
 "#
     );
     let mut interp = crate::common::interp_for(&src);
-    match interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)]) {
+    match interp.call(&format!("{ns}.Driver.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(
             n, 42,
             "a parameter named `default` must still be readable in a body"

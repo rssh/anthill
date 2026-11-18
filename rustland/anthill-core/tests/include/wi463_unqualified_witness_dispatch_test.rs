@@ -79,7 +79,7 @@ fn unqualified_witness_call_loads_clean() {
 #[test]
 fn unqualified_call_dispatches_to_witness() {
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call("test.wi463.eval.runUnqualified", &[]) {
+    match interp.call("test.wi463.eval.runUnqualified", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
             n, 99,
             "unqualified combine(tag, tag) must dispatch to the witness \

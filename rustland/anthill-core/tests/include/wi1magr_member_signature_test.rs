@@ -224,7 +224,7 @@ fn the_conforming_carrier_loads_and_its_members_evaluate() {
     let src = bad_vec("good", &probe);
     let mut interp = common::interp_for(&src);
     let out = interp
-        .call("wi1magr.good.BadVec.sumX", &[])
+        .call("wi1magr.good.BadVec.sumX", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the conforming provision's member must RUN, not merely load");
     assert!(
         matches!(out, Value::Float(f) if (f - 11.0).abs() < 1e-9),
@@ -273,8 +273,8 @@ end
     let out = interp
         .call(
             "wi1magr.sametype.Marker.combine",
-            &[Value::Int(1), Value::Int(2)],
-        )
+            &anthill_core::eval::HostValue::all(&[Value::Int(1), Value::Int(2)]),
+        ).map(|h| h.value)
         .expect("the swapped-but-indistinguishable member must load and run");
     assert!(
         matches!(out, Value::Int(2)),
@@ -317,7 +317,7 @@ end
 "#;
     let mut interp = common::interp_for(src);
     let out = interp
-        .call("wi1magr.receiver.IntBox.peeked", &[])
+        .call("wi1magr.receiver.IntBox.peeked", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a receiver-narrowing override must DISPATCH, not merely load");
     assert!(
         matches!(out, Value::Int(7)),
@@ -596,7 +596,7 @@ fn a_denoted_return_type_that_matches_loads_and_runs() {
     );
     let mut interp = common::interp_for(&src);
     let out = interp
-        .call("wi1magr.denoted_ret_ok.Carrier.probe", &[])
+        .call("wi1magr.denoted_ret_ok.Carrier.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the conforming member must RUN, not merely load");
     assert!(
         matches!(out, Value::Int(7)),
@@ -669,7 +669,7 @@ fn two_denoted_parameters_of_the_same_type_swapped_are_still_not_decidable() {
     );
     let mut interp = common::interp_for(&src);
     let out = interp
-        .call("wi1magr.denoted_sametype.Carrier.probe", &[])
+        .call("wi1magr.denoted_sametype.Carrier.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the swapped-but-indistinguishable member must load and run");
     assert!(
         matches!(out, Value::Int(2)),
@@ -722,7 +722,7 @@ fn a_spec_parameter_beneath_a_denoted_grounds_to_the_carrier_and_loads() {
     );
     let mut interp = common::interp_for(&src);
     let out = interp
-        .call("wi1magr.denoted_sigma_ok.Carrier.probe", &[])
+        .call("wi1magr.denoted_sigma_ok.Carrier.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the member σ grounds the spec to must load and RUN");
     assert!(
         matches!(out, Value::Int(7)),

@@ -401,7 +401,7 @@ fn bridge_mode_suspends_on_buried_override() {
         some_of_set(plain.kb_mut(), &[1, 2]),
         some_of_set(plain.kb_mut(), &[2, 1]),
     );
-    let r = plain.call(EQ, &[a, b]);
+    let r = plain.call(EQ, &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value);
     assert!(
         matches!(&r, Err(e) if format!("{e:?}").contains("could not be decided")),
         "top-level eval reports the undecided `Set.eq`, got {r:?}",
@@ -412,7 +412,7 @@ fn bridge_mode_suspends_on_buried_override() {
         some_of_set(bridged.kb_mut(), &[1, 2]),
         some_of_set(bridged.kb_mut(), &[2, 1]),
     );
-    let r = bridged.call(EQ, &[a, b]);
+    let r = bridged.call(EQ, &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value);
     assert!(
         matches!(r, Err(EvalError::Suspended { .. })),
         "under the resolver bridge an undecided inner `eq` must SUSPEND, got {r:?}",
@@ -756,7 +756,7 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
     for (x, y) in [(&[1, 2][..], &[2, 1][..]), (&[1, 2], &[1, 3])] {
         let a = Value::term(set_term(i.kb_mut(), x));
         let b = Value::term(set_term(i.kb_mut(), y));
-        match i.call("test.wi625.typedeq.setsEqual", &[a, b]) {
+        match i.call("test.wi625.typedeq.setsEqual", &anthill_core::eval::HostValue::all(&[a, b])).map(|h| h.value) {
             Err(e) => assert!(
                 format!("{e:?}").contains("could not be decided"),
                 "setsEqual({x:?}, {y:?}): an undecided comparison; got {e:?}",

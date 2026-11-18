@@ -1044,7 +1044,7 @@ fn goal_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> SortGoal 
 /// clean-load assertion.
 fn eval_int(src: &str, entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(v)) => v,
         other => panic!("{entry} must answer an Int64; got {other:?}"),
     }

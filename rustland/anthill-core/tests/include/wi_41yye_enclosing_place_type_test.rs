@@ -97,7 +97,7 @@ fn matching_enclosing_cell_executes_write_and_join() {
 "#
         ));
         let mut interp = interp_for(&src);
-        let result = interp.call("enclosing.main", &[]);
+        let result = interp.call("enclosing.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
         assert!(matches!(result, Ok(Value::Int(505))), "{body}: {result:?}");
     }
 }
@@ -114,7 +114,7 @@ fn callback_own_binders_still_align_and_execute() {
 "#,
     );
     let mut interp = interp_for(&src);
-    let result = interp.call("enclosing.main", &[]);
+    let result = interp.call("enclosing.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(matches!(result, Ok(Value::Int(505))), "{result:?}");
 }
 
@@ -176,7 +176,7 @@ fn pure_stream_provider_executes_control() {
 "#,
     );
     let mut interp = interp_for(&src);
-    let result = interp.call("enclosingStream.main", &[]);
+    let result = interp.call("enclosingStream.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(matches!(result, Ok(Value::Int(5))), "{result:?}");
 }
 
@@ -209,7 +209,7 @@ fn let_local_cell_is_checked() {
         "let local place is a determined identity",
     );
     let mut interp = interp_for(&source(&body("runAt(k, b, 5) + Cell.get(k)")));
-    let result = interp.call("enclosing.use", &[]);
+    let result = interp.call("enclosing.use", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(matches!(result, Ok(Value::Int(40))), "{result:?}");
     // The annotated spelling names the let-local where a row type argument is written.
     assert_refused_naming(

@@ -70,7 +70,7 @@ fn load_errors(src: &str) -> Vec<String> {
 
 fn eval_type(src: &str, op: &str) -> String {
     let mut interp = interp_for(src);
-    match interp.call(op, &[]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(ty) => TermPrinter::new(interp.kb()).print_value(&ty),
         Err(e) => panic!("{op}: {e:?}"),
     }
@@ -773,7 +773,7 @@ end
     // DRIVEN, not merely loaded: a signature-only assertion would stay green if the
     // operation resolved to nothing.
     assert!(matches!(
-        interp.call("test.n31xx.typepos.ask", &[]),
+        interp.call("test.n31xx.typepos.ask", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value),
         Ok(Value::Int(1))
     ));
 }
@@ -829,7 +829,7 @@ end
     );
     let mut interp = interp_for(src);
     assert!(
-        matches!(interp.call("test.n31xx.simp.ask", &[]), Ok(Value::Int(1))),
+        matches!(interp.call("test.n31xx.simp.ask", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Int(1))),
         "and the program still answers"
     );
     assert_eq!(
@@ -1214,7 +1214,7 @@ end
 "#,
     );
     let v = interp
-        .call("test.n31xx.withinok.caught", &[])
+        .call("test.n31xx.withinok.caught", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the boundary catches the payload");
     assert_eq!(crate::common::scalar_str(interp.kb(), &v).as_deref(), Some("caught"));
 }

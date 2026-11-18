@@ -83,7 +83,7 @@ end
     }
     // The flagged names still serve their own namespace: `api` runs.
     let mut interp = crate::common::interp_for(LIB);
-    match interp.call("test.z73fx.lib.api", &[]) {
+    match interp.call("test.z73fx.lib.api", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(3)) => {}
         other => panic!("`api` uses its namespace's internal names; got {other:?}"),
     }
@@ -154,7 +154,7 @@ fn both_spellings_publish_the_flag() {
     // an anthill body calling `anthill.reflect.meta_has_flag`, which is how a renderer
     // of a candidate's view reads a block.
     let mut has = |meta: &Value, key: &str| -> bool {
-        match interp.call("test.z73fx.probe.has", &[meta.clone(), Value::Str(key.into())]) {
+        match interp.call("test.z73fx.probe.has", &anthill_core::eval::HostValue::all(&[meta.clone(), Value::Str(key.into())])).map(|h| h.value) {
             Ok(Value::Bool(b)) => b,
             other => panic!("meta_has_flag from a body: {other:?}"),
         }
@@ -297,7 +297,7 @@ fn visible_from_answers_where_it_is_asked() {
             ),
         ] {
             let args = [crate::common::symbol_term(&mut interp, s), crate::common::symbol_term(&mut interp, scope)];
-            match interp.call("test.z73fx.probe.vis", &args) {
+            match interp.call("test.z73fx.probe.vis", &anthill_core::eval::HostValue::all(&args)).map(|h| h.value) {
                 Ok(Value::Bool(b)) => assert_eq!(b, want, "`{decl}`: {s} from {scope} ({why})"),
                 other => panic!("`{decl}`: {s} from {scope}: {other:?}"),
             }
@@ -315,8 +315,8 @@ fn probe_call(
     interp
         .call(
             &format!("test.z73fx.probe.{op}"),
-            &[meta.clone(), Value::Str(key.into())],
-        )
+            &anthill_core::eval::HostValue::all(&[meta.clone(), Value::Str(key.into())]),
+        ).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}({key}): {e:?}"))
 }
 
@@ -354,7 +354,7 @@ fn meta_readers_answer_from_a_body() {
     // THE REFUSAL, asserted on its MESSAGE and not merely on `Err`: `Err(_)` is also what
     // an unregistered `as_term`, or an unmapped `meta_has_flag`, would produce, so the row
     // would stay green with the refusal backed out (/code-review).
-    match interp.call("test.z73fx.probe.not_meta", &[]) {
+    match interp.call("test.z73fx.probe.not_meta", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(e) => {
             let msg = format!("{e:?}");
             assert!(

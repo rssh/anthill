@@ -636,7 +636,7 @@ fn a_minted_capability_is_a_value_the_program_can_carry() {
     );
     let mut interp = crate::common::interp_for(&src);
     let got = interp
-        .call("cbrsw.run_it", &[])
+        .call("cbrsw.run_it", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call run_it: {e:?}"));
     assert_eq!(
         got.literal_int64(interp.kb()),
@@ -668,7 +668,7 @@ fn a_nullary_capability_handle_carries_no_identity_of_its_own() {
     );
     let mut interp = crate::common::interp_for(&src);
     let got = interp
-        .call("cbrsw.twice", &[])
+        .call("cbrsw.twice", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call twice: {e:?}"));
     assert_eq!(
         got.literal_bool(interp.kb()),

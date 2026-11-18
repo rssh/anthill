@@ -361,7 +361,7 @@ fn ok_value(interp: &Interpreter, result: &Value) -> i64 {
 fn a_raise_inside_the_boundary_becomes_the_err_arm() {
     let mut interp = interp();
     let r = interp
-        .call("test.reify.caught", &[])
+        .call("test.reify.caught", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a raise inside a reify boundary is caught, not propagated");
     assert_eq!(err_why(&interp, &r), "negative");
 }
@@ -372,7 +372,7 @@ fn a_raise_inside_the_boundary_becomes_the_err_arm() {
 fn a_body_that_does_not_raise_becomes_the_ok_arm() {
     let mut interp = interp();
     let r = interp
-        .call("test.reify.returned", &[])
+        .call("test.reify.returned", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a body that does not raise returns normally");
     assert_eq!(ok_value(&interp, &r), 42);
 }
@@ -386,12 +386,12 @@ fn a_body_that_does_not_raise_becomes_the_ok_arm() {
 fn anthill_destructures_the_recovered_result() {
     let mut interp = interp();
     let why = interp
-        .call("test.reify.caughtWhy", &[])
+        .call("test.reify.caughtWhy", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the err arm destructures in anthill");
     assert_eq!(str_of(&interp, &why), "negative");
 
     let tag = interp
-        .call("test.reify.returnedTag", &[])
+        .call("test.reify.returnedTag", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the ok arm destructures in anthill");
     assert_eq!(str_of(&interp, &tag), "ok");
 }
@@ -405,7 +405,7 @@ fn anthill_destructures_the_recovered_result() {
 fn an_unreified_raise_still_escapes() {
     let mut interp = interp();
     let err = interp
-        .call("test.reify.uncaught", &[])
+        .call("test.reify.uncaught", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a raise outside every boundary propagates");
     match err {
         EvalError::Raised { payload, .. } => {
@@ -427,7 +427,7 @@ fn an_unreified_raise_still_escapes() {
 fn the_innermost_boundary_catches() {
     let mut interp = interp();
     let r = interp
-        .call("test.reify.nestedInnerWins", &[])
+        .call("test.reify.nestedInnerWins", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the inner boundary catches, the outer returns normally");
     assert_eq!(ok_value(&interp, &r), 8);
 }
@@ -439,7 +439,7 @@ fn the_innermost_boundary_catches() {
 fn a_completed_boundary_does_not_catch_a_later_raise() {
     let mut interp = interp();
     let r = interp
-        .call("test.reify.nestedOuterCatches", &[])
+        .call("test.reify.nestedOuterCatches", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the outer boundary catches what the inner one no longer can");
     assert_eq!(err_why(&interp, &r), "negative");
 }
@@ -453,12 +453,12 @@ fn a_completed_boundary_does_not_catch_a_later_raise() {
 fn the_reified_result_is_a_monad() {
     let mut interp = interp();
     let ok = interp
-        .call("test.reify.mappedOk", &[])
+        .call("test.reify.mappedOk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("map over a reified ok");
     assert_eq!(ok_value(&interp, &ok), 84);
 
     let bad = interp
-        .call("test.reify.mappedErr", &[])
+        .call("test.reify.mappedErr", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("map over a reified err short-circuits");
     assert_eq!(err_why(&interp, &bad), "negative");
 
@@ -467,12 +467,12 @@ fn the_reified_result_is_a_monad() {
     // left `resultFlatMap` / `resultPure` resolving at nothing would keep the suite
     // green, since `map` alone is what the boundary tests exercise.
     let chained = interp
-        .call("test.reify.flatMappedOk", &[])
+        .call("test.reify.flatMappedOk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("flatMap over a reified ok, through pure");
     assert_eq!(ok_value(&interp, &chained), 84);
 
     let short = interp
-        .call("test.reify.flatMappedErr", &[])
+        .call("test.reify.flatMappedErr", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("flatMap over a reified err short-circuits");
     assert_eq!(err_why(&interp, &short), "negative");
 }
@@ -485,7 +485,7 @@ fn the_reified_result_is_a_monad() {
 fn reify_of_reflect_returns_the_same_result() {
     let mut interp = interp();
     let r = interp
-        .call("test.reify.reifiedReflect", &[])
+        .call("test.reify.reifiedReflect", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("reflect raises inside the boundary and is caught again");
     assert_eq!(err_why(&interp, &r), "negative");
 }
@@ -506,7 +506,7 @@ fn reify_of_reflect_returns_the_same_result() {
 fn a_scoped_loads_diagnostics_are_caught_in_anthill() {
     let mut interp = interp();
     let good = interp
-        .call("test.reify.goodSource", &[])
+        .call("test.reify.goodSource", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a source that loads takes the ok arm");
     assert_eq!(
         str_of(&interp, &good),
@@ -517,7 +517,7 @@ fn a_scoped_loads_diagnostics_are_caught_in_anthill() {
     // A PARSE failure: located, and it says WHICH candidate — a checker handed several
     // sources needs that to attribute the failure, and a model needs it to find the line.
     let unparsable = interp
-        .call("test.reify.unparsableSource", &[])
+        .call("test.reify.unparsableSource", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a source that does NOT parse is caught, not propagated");
     let unparsable = str_of(&interp, &unparsable);
     for want in ["source 0", "1:1", "syntax error", "namespace broken."] {
@@ -532,7 +532,7 @@ fn a_scoped_loads_diagnostics_are_caught_in_anthill() {
     // is a repair instruction, not a verdict — and it is what a COUNT would have thrown
     // away.
     let ill_typed = interp
-        .call("test.reify.illTypedSource", &[])
+        .call("test.reify.illTypedSource", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a source that does not TYPE is caught the same way");
     let ill_typed = str_of(&interp, &ill_typed);
     for want in ["f.return", "op-return", "expected String", "got Int64"] {
@@ -559,7 +559,7 @@ fn a_scoped_loads_diagnostics_are_caught_in_anthill() {
 fn a_boundary_declines_a_payload_it_is_not_typed_at() {
     let mut interp = interp();
     let err = interp
-        .call("test.reify.declinedEscapes", &[])
+        .call("test.reify.declinedEscapes", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a payload the boundary is not typed at must travel past it");
     match err {
         EvalError::Raised { payload, .. } => {
@@ -588,7 +588,7 @@ fn each_raise_reaches_the_boundary_typed_at_it() {
 
     // `Boom` — the INNER boundary's payload. The outer sees a normal return.
     let inner = interp
-        .call("test.reify.boomGoesToInner", &[])
+        .call("test.reify.boomGoesToInner", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a Boom is caught by the inner boundary");
     assert_eq!(
         short_name(&interp, &inner),
@@ -600,7 +600,7 @@ fn each_raise_reaches_the_boundary_typed_at_it() {
 
     // `Other` — declined by the inner, caught by the OUTER.
     let outer = interp
-        .call("test.reify.otherGoesToOuter", &[])
+        .call("test.reify.otherGoesToOuter", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("an Other travels past the inner boundary to the outer");
     assert_eq!(
         short_name(&interp, &outer),
@@ -625,7 +625,7 @@ fn each_raise_reaches_the_boundary_typed_at_it() {
 fn a_host_raise_is_not_mistaken_for_the_declared_payload() {
     let mut interp = interp();
     let err = interp
-        .call("test.reify.hostRaiseInsideBoundary", &[])
+        .call("test.reify.hostRaiseInsideBoundary", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a MatchFailed is not a Boom, so the boundary must decline it");
     match err {
         EvalError::Raised { payload, .. } => assert_eq!(
@@ -652,7 +652,7 @@ fn a_host_raise_is_not_mistaken_for_the_declared_payload() {
 fn a_local_named_reify_does_not_capture_the_boundary() {
     let mut interp = interp();
     let r = interp
-        .call("test.reify.shadowTest", &[])
+        .call("test.reify.shadowTest", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the qualified Error.reify is not captured by a same-named local");
     assert_eq!(err_why(&interp, &r), "negative");
 }
@@ -684,7 +684,7 @@ fn a_non_raised_error_is_not_caught() {
     );
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let err = interp
-        .call("test.reify.deepInsideBoundary", &[])
+        .call("test.reify.deepInsideBoundary", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a depth overflow is not an Error effect and must not be caught");
     assert!(
         matches!(err, EvalError::DepthExceeded { .. }),
@@ -739,19 +739,19 @@ fn a_reify_at_an_operations_own_type_parameter_catches() {
     let mut interp = interp();
 
     let caught = interp
-        .call("test.reify.viaGeneric", &[])
+        .call("test.reify.viaGeneric", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a boundary typed at the enclosing operation's `P` catches a `Boom`");
     assert_eq!(short_name(&interp, &caught), "err");
     assert_eq!(err_why(&interp, &caught), "negative");
 
     let fine = interp
-        .call("test.reify.viaGenericOk", &[])
+        .call("test.reify.viaGenericOk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the same generic boundary still delivers `ok` when nothing raises");
     assert_eq!(short_name(&interp, &fine), "ok");
     assert_eq!(int_of(&interp, &field(&interp, &fine, "value", 0)), 42);
 
     let outer = interp
-        .call("test.reify.genericDeclineOuter", &[])
+        .call("test.reify.genericDeclineOuter", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the label the generic boundary does not discharge reaches the outer one");
     assert_eq!(
         short_name(&interp, &outer),
@@ -783,7 +783,7 @@ fn a_reify_at_an_operations_own_type_parameter_catches() {
 /// say the second call is well-formed independently of what preceded it.
 #[test]
 fn a_declined_raise_leaves_the_interpreter_usable() {
-    let fresh = interp().call("test.reify.returned", &[]);
+    let fresh = interp().call("test.reify.returned", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         fresh.is_ok(),
         "control: the call is fine on a fresh interpreter"
@@ -791,10 +791,10 @@ fn a_declined_raise_leaves_the_interpreter_usable() {
 
     let mut interp = interp();
     interp
-        .call("test.reify.declinedEscapes", &[])
+        .call("test.reify.declinedEscapes", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("the Other is declined and escapes");
     let again = interp
-        .call("test.reify.returned", &[])
+        .call("test.reify.returned", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the same interpreter must still answer after a raise walked past a boundary");
     assert_eq!(short_name(&interp, &again), "ok");
     assert_eq!(int_of(&interp, &field(&interp, &again, "value", 0)), 42);
@@ -868,7 +868,7 @@ fn a_clock_handler_s_throw_is_refused_where_now_declares_no_error() {
         )
         .expect("register a throwing Clock handler");
 
-    match interp.call("test.reify.clockInnerAtBoom", &[Value::Int(7)]) {
+    match interp.call("test.reify.clockInnerAtBoom", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value) {
         Err(err @ EvalError::HandlerError {
             reason: anthill_core::eval::HandlerErrorReason::ThrowNotAdmitted {
                 raise_point: anthill_core::eval::RaisePoint::Row { label: None },
@@ -889,7 +889,7 @@ fn a_clock_handler_s_throw_is_refused_where_now_declares_no_error() {
 
     // The control: the boundary's OWN payload still answers through it.
     let own = interp
-        .call("test.reify.clockInnerAtBoom", &[Value::Int(-1)])
+        .call("test.reify.clockInnerAtBoom", &anthill_core::eval::HostValue::all(&[Value::Int(-1)])).map(|h| h.value)
         .expect("a Boom is the boundary's own payload");
     assert_eq!(short_name(&interp, &own), "err");
     assert_eq!(err_why(&interp, &own), "neg");
@@ -955,7 +955,7 @@ fn evidence_that_names_no_payload_sort_is_refused() {
 fn a_boundary_catches_a_payload_whose_sort_refines_its_own() {
     let mut interp = interp();
     let caught = interp
-        .call("test.reify.wideCatch", &[])
+        .call("test.reify.wideCatch", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a `Narrow` value is caught by a boundary typed at `Boom`, which it refines");
     assert_eq!(short_name(&interp, &caught), "err");
     let payload = field(&interp, &caught, "error", 0);
@@ -969,7 +969,7 @@ fn a_boundary_catches_a_payload_whose_sort_refines_its_own() {
     // The control — same value, raised under its own label, so the boundary is at
     // `Narrow` and equality suffices.
     let same = interp
-        .call("test.reify.narrowCatch", &[])
+        .call("test.reify.narrowCatch", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a boundary typed at `Narrow` catches a `Narrow` by equality alone");
     assert_eq!(short_name(&interp, &same), "err");
     assert_eq!(

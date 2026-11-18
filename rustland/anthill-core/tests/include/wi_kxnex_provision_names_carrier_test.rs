@@ -197,7 +197,7 @@ fn a_bound_carrier_loads_and_the_abstract_call_dispatches() {
         load_errors(&src)
     );
     match crate::common::interp_for(&src)
-        .call("test.kxnex.probe", &[])
+        .call("test.kxnex.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call test.kxnex.probe: {e:?}"))
     {
         Value::Int(i) => assert_eq!(

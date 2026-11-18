@@ -81,15 +81,15 @@ fn mutable_stack_carrier_loads_clean() {
 fn mutable_stack_lifecycle_push_pop_lifo() {
     let mut interp = interp_for(SRC);
 
-    let s = interp.call("test.wi364.stack.fresh", &[]).expect("fresh");
+    let s = interp.call("test.wi364.stack.fresh", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("fresh");
 
     let depth = |i: &mut anthill_core::eval::Interpreter, h: &Value| {
-        i.call("test.wi364.stack.depth", &[h.clone()])
+        i.call("test.wi364.stack.depth", &anthill_core::eval::HostValue::all(&[h.clone()])).map(|h| h.value)
             .expect("depth")
             .literal_int64(i.kb())
     };
     let pop = |i: &mut anthill_core::eval::Interpreter, h: &Value| {
-        i.call("test.wi364.stack.popOr", &[h.clone(), Value::Int(-1)])
+        i.call("test.wi364.stack.popOr", &anthill_core::eval::HostValue::all(&[h.clone(), Value::Int(-1)])).map(|h| h.value)
             .expect("pop")
             .literal_int64(i.kb())
     };
@@ -101,14 +101,14 @@ fn mutable_stack_lifecycle_push_pop_lifo() {
     // push 10, 20, 30 (30 ends on top)
     for x in [10, 20, 30] {
         interp
-            .call("test.wi364.stack.pushN", &[s.clone(), Value::Int(x)])
+            .call("test.wi364.stack.pushN", &anthill_core::eval::HostValue::all(&[s.clone(), Value::Int(x)])).map(|h| h.value)
             .expect("push");
     }
     assert_eq!(depth(&mut interp, &s), Some(3), "three pushes -> depth 3");
 
     // top peeks without removing
     let peek = interp
-        .call("test.wi364.stack.peekOr", &[s.clone(), Value::Int(-1)])
+        .call("test.wi364.stack.peekOr", &anthill_core::eval::HostValue::all(&[s.clone(), Value::Int(-1)])).map(|h| h.value)
         .expect("peek");
     assert_eq!(
         peek.literal_int64(interp.kb()),
@@ -124,7 +124,7 @@ fn mutable_stack_lifecycle_push_pop_lifo() {
 
     // clear empties the rest
     interp
-        .call("test.wi364.stack.wipe", &[s.clone()])
+        .call("test.wi364.stack.wipe", &anthill_core::eval::HostValue::all(&[s.clone()])).map(|h| h.value)
         .expect("clear");
     assert_eq!(
         depth(&mut interp, &s),
@@ -141,10 +141,10 @@ fn mutable_stack_lifecycle_push_pop_lifo() {
 fn mutable_stack_collection_view_insert_walk_clear() {
     let mut interp = interp_for(SRC);
 
-    let s = interp.call("test.wi364.stack.fresh", &[]).expect("fresh");
+    let s = interp.call("test.wi364.stack.fresh", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("fresh");
     assert_eq!(
         interp
-            .call("test.wi364.stack.depth", &[s.clone()])
+            .call("test.wi364.stack.depth", &anthill_core::eval::HostValue::all(&[s.clone()])).map(|h| h.value)
             .unwrap()
             .literal_int64(interp.kb()),
         Some(0),
@@ -153,7 +153,7 @@ fn mutable_stack_collection_view_insert_walk_clear() {
 
     // insert via the MutableCollection op; the witness is true (stack/bag)
     let w1 = interp
-        .call("test.wi364.stack.addColl", &[s.clone(), Value::Int(10)])
+        .call("test.wi364.stack.addColl", &anthill_core::eval::HostValue::all(&[s.clone(), Value::Int(10)])).map(|h| h.value)
         .expect("insert 10");
     assert_eq!(
         w1.literal_bool(interp.kb()),
@@ -161,13 +161,13 @@ fn mutable_stack_collection_view_insert_walk_clear() {
         "insert returns the 'was new' witness"
     );
     interp
-        .call("test.wi364.stack.addColl", &[s.clone(), Value::Int(20)])
+        .call("test.wi364.stack.addColl", &anthill_core::eval::HostValue::all(&[s.clone(), Value::Int(20)])).map(|h| h.value)
         .expect("insert 20");
 
     // walk via iterator
     assert_eq!(
         interp
-            .call("test.wi364.stack.depth", &[s.clone()])
+            .call("test.wi364.stack.depth", &anthill_core::eval::HostValue::all(&[s.clone()])).map(|h| h.value)
             .unwrap()
             .literal_int64(interp.kb()),
         Some(2),
@@ -176,11 +176,11 @@ fn mutable_stack_collection_view_insert_walk_clear() {
 
     // clear empties
     interp
-        .call("test.wi364.stack.wipe", &[s.clone()])
+        .call("test.wi364.stack.wipe", &anthill_core::eval::HostValue::all(&[s.clone()])).map(|h| h.value)
         .expect("clear");
     assert_eq!(
         interp
-            .call("test.wi364.stack.depth", &[s])
+            .call("test.wi364.stack.depth", &anthill_core::eval::HostValue::all(&[s])).map(|h| h.value)
             .unwrap()
             .literal_int64(interp.kb()),
         Some(0),
@@ -215,15 +215,15 @@ fn mutable_stack_collection_view_insert_walk_clear() {
 fn iterable_map_snapshots_the_source_it_does_not_capture_it_live() {
     let mut interp = interp_for(SRC);
 
-    let s = interp.call("test.wi364.stack.fresh", &[]).expect("fresh");
+    let s = interp.call("test.wi364.stack.fresh", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("fresh");
     for v in [1i64, 2] {
         interp
-            .call("test.wi364.stack.pushN", &[s.clone(), Value::Int(v)])
+            .call("test.wi364.stack.pushN", &anthill_core::eval::HostValue::all(&[s.clone(), Value::Int(v)])).map(|h| h.value)
             .expect("push");
     }
 
     let counted = interp
-        .call("test.wi364.stack.map_then_push_then_count", &[s])
+        .call("test.wi364.stack.map_then_push_then_count", &anthill_core::eval::HostValue::all(&[s])).map(|h| h.value)
         .expect("map, mutate, walk");
     assert_eq!(
         counted.literal_int64(interp.kb()),
@@ -237,18 +237,18 @@ fn iterable_map_snapshots_the_source_it_does_not_capture_it_live() {
 fn mutable_stack_new_returns_distinct_handles() {
     let mut interp = interp_for(SRC);
 
-    let a = interp.call("test.wi364.stack.fresh", &[]).expect("fresh a");
-    let b = interp.call("test.wi364.stack.fresh", &[]).expect("fresh b");
+    let a = interp.call("test.wi364.stack.fresh", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("fresh a");
+    let b = interp.call("test.wi364.stack.fresh", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("fresh b");
 
     interp
-        .call("test.wi364.stack.pushN", &[a.clone(), Value::Int(1)])
+        .call("test.wi364.stack.pushN", &anthill_core::eval::HostValue::all(&[a.clone(), Value::Int(1)])).map(|h| h.value)
         .expect("push into a");
 
     let depth_a = interp
-        .call("test.wi364.stack.depth", &[a])
+        .call("test.wi364.stack.depth", &anthill_core::eval::HostValue::all(&[a])).map(|h| h.value)
         .expect("depth a");
     let depth_b = interp
-        .call("test.wi364.stack.depth", &[b])
+        .call("test.wi364.stack.depth", &anthill_core::eval::HostValue::all(&[b])).map(|h| h.value)
         .expect("depth b");
     assert_eq!(
         depth_a.literal_int64(interp.kb()),

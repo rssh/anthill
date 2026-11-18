@@ -293,7 +293,7 @@ fn the_matching_key_is_accepted_and_computes() {
 
     let mut interp = crate::common::interp_for(&program(RIGHT));
     let got = interp
-        .call("zzh.dr", &[])
+        .call("zzh.dr", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("dr() must evaluate: {e:?}"));
     assert!(
         matches!(got, Value::Int(1)),

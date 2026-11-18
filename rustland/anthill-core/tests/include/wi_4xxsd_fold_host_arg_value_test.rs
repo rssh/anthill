@@ -238,7 +238,7 @@ fn the_rule_answers_what_the_interpreter_answers() {
         .iter()
         .map(|(rel, op, args)| {
             let v = interp
-                .call(&format!("t4x.fold.{op}"), args)
+                .call(&format!("t4x.fold.{op}"), &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
                 .unwrap_or_else(|e| panic!("the interpreter runs `{op}`: {e}"));
             (rel.to_string(), vec![(crate::common::show_value(interp.kb(), &v), true)])
         })

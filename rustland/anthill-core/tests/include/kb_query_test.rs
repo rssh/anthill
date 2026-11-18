@@ -80,7 +80,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.kb_query.admin_name", &[])
+        .call("test.kb_query.admin_name", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call admin_name");
     match r {
         Value::Str(s) => assert_eq!(

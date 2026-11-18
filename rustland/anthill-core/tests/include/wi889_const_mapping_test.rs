@@ -183,15 +183,15 @@ fn the_float_ieee_specials_evaluate_through_the_const_map_channel() {
          operation negInf() -> Float = negativeInfinity\n  \
          operation theNan() -> Float = nan\nend\n",
     );
-    match i.call("wi889.eval.posInf", &[]).expect("posInf") {
+    match i.call("wi889.eval.posInf", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("posInf") {
         Value::Float(v) => assert!(v.is_infinite() && v > 0.0, "got {v}"),
         other => panic!("expected +∞, got {other:?}"),
     }
-    match i.call("wi889.eval.negInf", &[]).expect("negInf") {
+    match i.call("wi889.eval.negInf", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("negInf") {
         Value::Float(v) => assert!(v.is_infinite() && v < 0.0, "got {v}"),
         other => panic!("expected -∞, got {other:?}"),
     }
-    match i.call("wi889.eval.theNan", &[]).expect("theNan") {
+    match i.call("wi889.eval.theNan", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("theNan") {
         Value::Float(v) => assert!(v.is_nan(), "got {v}"),
         other => panic!("expected NaN, got {other:?}"),
     }

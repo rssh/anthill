@@ -82,7 +82,7 @@ fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
 fn eval_int(consumer: &str) -> i64 {
     let mut interp = crate::common::interp_for(SRC);
     match interp
-        .call(consumer, &[])
+        .call(consumer, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{consumer} evaluates: {e:?}"))
     {
         Value::Int(n) => n,
@@ -199,7 +199,7 @@ fn sub_occurrence_labels_pairs_with_the_children() {
     );
     let mut interp = crate::common::interp_for(LABELS_SRC);
     match interp
-        .call("test.wi722labels.consumer_d", &[])
+        .call("test.wi722labels.consumer_d", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("consumer_d evaluates")
     {
         Value::Int(n) => assert_eq!(n, 107, "lbl_1b(5, 2) = add(add(5, 2), 100)"),

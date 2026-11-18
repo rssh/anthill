@@ -288,7 +288,7 @@ end
 fn general_free_op_grounds_its_element_from_the_arguments_provision() {
     let mut interp = crate::common::interp_for(&general_free_op("Sc", ""));
     let got = interp
-        .call("test.wi70xvh.call.mapped_list", &[])
+        .call("test.wi70xvh.call.mapped_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("mapped_list");
     assert!(
         matches!(got, anthill_core::eval::Value::Int(2468)),
@@ -394,7 +394,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(SRC);
     let got = interp
-        .call("test.wi70xvh.sortcarrier.drive", &[])
+        .call("test.wi70xvh.sortcarrier.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("drive");
     assert!(
         matches!(got, anthill_core::eval::Value::Int(2468)),
@@ -452,7 +452,7 @@ end
     let mut interp = crate::common::interp_for(SRC);
     let run = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> i64 {
         match interp
-            .call(&format!("test.wi70xvh.stdlib.{op}"), &[])
+            .call(&format!("test.wi70xvh.stdlib.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
         {
             anthill_core::eval::Value::Int(i) => i,

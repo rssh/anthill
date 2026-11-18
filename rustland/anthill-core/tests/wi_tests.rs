@@ -23,6 +23,9 @@ mod wi639_distributive_projection_test;
 #[path = "include/wi009_phase3_builtins_test.rs"]
 mod wi009_phase3_builtins_test;
 
+#[path = "include/wi_s4d63_host_boundary_test.rs"]
+mod wi_s4d63_host_boundary_test;
+
 #[path = "include/wi_papx0_dot_receiver_split_test.rs"]
 mod wi_papx0_dot_receiver_split_test;
 #[path = "include/wi_papx0_written_type_member_test.rs"]

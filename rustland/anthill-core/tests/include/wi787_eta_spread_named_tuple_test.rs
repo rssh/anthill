@@ -38,7 +38,7 @@ use crate::common::{interp_for, list_ints};
 fn run(src: &str, op: &str) -> anthill_core::eval::Value {
     let mut interp = interp_for(src);
     interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
 }
 

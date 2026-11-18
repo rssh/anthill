@@ -70,7 +70,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.wi531_residual.ghost_residual", &[])
+        .call("test.wi531_residual.ghost_residual", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call ghost_residual");
     match r {
         Value::Int(n) => assert!(

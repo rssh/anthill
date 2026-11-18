@@ -654,7 +654,7 @@ const A_PROVIDER_OF_THE_LIBRARYS_SORT: &str = "namespace test.dyr6seal\n  import
 fn value(kb: KnowledgeBase, entry: &str) -> i64 {
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{entry}` did not run to an Int64: {other:?}"),
     }

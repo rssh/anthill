@@ -63,7 +63,7 @@ end
 
 fn drive(src: &str) -> Result<Value, EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call("wi1092.ruledef.Driver.drive", &[Value::Int(0)])
+    interp.call("wi1092.ruledef.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 /// A rule-defined `eq` decides BOTH routes, and the clauses are what decides them.
@@ -169,7 +169,7 @@ end
         let got = {
             let program = src.replace("CALL", call);
             let mut interp = crate::common::interp_for(&program);
-            interp.call("wi1092.spec87.Driver.drive", &[Value::Int(0)])
+            interp.call("wi1092.spec87.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         };
         assert!(
             matches!(got, Ok(Value::Int(n)) if n == want),
@@ -260,7 +260,7 @@ end
         let got = {
             let program = src.replace("CALL", call);
             let mut interp = crate::common::interp_for(&program);
-            interp.call("wi1092.witness.Driver.drive", &[Value::Int(0)])
+            interp.call("wi1092.witness.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         };
         assert!(
             matches!(&got, Err(EvalError::OperationBodyMissing { name, .. })

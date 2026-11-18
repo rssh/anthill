@@ -126,7 +126,7 @@ end
 /// clean-load assertion.
 fn drive(entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(ORD_PROGRAM);
-    match interp.call(&format!("wi5g28a.ord.Driver.{entry}"), &[]) {
+    match interp.call(&format!("wi5g28a.ord.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }
@@ -255,7 +255,7 @@ end
 
 fn drive_rank(entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(RANK_PROGRAM);
-    match interp.call(&format!("wi5g28a.rank.Driver.{entry}"), &[]) {
+    match interp.call(&format!("wi5g28a.rank.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }
@@ -379,7 +379,7 @@ fn demo2(projected: bool) -> String {
 fn raises_relation_floundered(program: &str, entry: &str) {
     let mut interp = crate::common::interp_for(program);
     let err = interp
-        .call(&format!("wi5g28a.demo2.Driver.{entry}"), &[])
+        .call(&format!("wi5g28a.demo2.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("PINNED: the relation is undecided; if an answer comes back, flip this row");
     match &err {
         anthill_core::eval::EvalError::Raised { payload, .. } => {

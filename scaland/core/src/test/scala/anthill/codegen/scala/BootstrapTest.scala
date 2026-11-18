@@ -5517,3 +5517,33 @@ class BootstrapTest extends munit.FunSuite:
       assert(src.contains(want), s"expected `$want` in:\n$src")
     ScalaCompile.assertCompiles("a sort used at its defaults", files)
   }
+
+  /** Proposal 074 §1.4 (WI-20261113-S4D63): a parameter typed at a spec over its parameter,
+    * `x: Additive`, is the dictionary of the instance the caller passes, its `T` read as
+    * `x.T`. Scala has no spelling for it here — a bare `Additive` is a type constructor —
+    * and the emitter refuses it loudly. Written at an application, the parameter is a value
+    * of the spec's trait, which is the dictionary in Scala, and `x.T` is the application's
+    * argument. The refusal is the existing one for a bare parameterized sort; the two
+    * emissions are controls. */
+  test("WI-20261113-S4D63: a parameter typed at a spec is refused bare and is the trait written") {
+    def emit(op: String) = Bootstrap.generate(parseSource(
+      s"""namespace anthill.s4d63
+        |  import anthill.prelude.{Int64, Additive}
+        |  $op
+        |end
+        |""".stripMargin, "s4d63.anthill"), scalaTypes)
+    val bare = emit("operation add2(x: Additive, a: x.T, b: x.T) -> x.T")
+    assert(bare.files.isEmpty, s"nothing emitted for the bare spec: ${bare.files.map(_.contents)}")
+    assert(bare.refusals.exists(e => e.getMessage.contains("`Additive`") &&
+      e.getMessage.contains("no bare type constructor")),
+      s"refused, naming `Additive`: ${bare.refusals.map(_.getMessage)}")
+    for (op, want) <- Seq(
+        "operation add2(x: Additive[T = Int64], a: x.T, b: x.T) -> x.T" ->
+          "def add2(x: _root_.anthill.prelude.Additive[_root_.scala.Long], a: _root_.scala.Long, b: _root_.scala.Long): _root_.scala.Long",
+        "operation add2[P](x: Additive[T = P], a: P, b: P) -> P" ->
+          "def add2[P](x: _root_.anthill.prelude.Additive[P], a: P, b: P): P") do
+      val written = emit(op)
+      assert(written.refusals.isEmpty, s"$op: ${written.refusals.map(_.getMessage)}")
+      val src = written.files.map(_.contents).mkString("\n")
+      assert(src.contains(want), s"expected `$want` in:\n$src")
+  }

@@ -62,7 +62,7 @@ end
 fn wi714_join_keeps_matching_rows() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714join.aliceJoin", &[])
+        .call("test.wi714join.aliceJoin", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("aliceJoin runs the join");
     match r {
         Value::Bool(b) => assert!(!b, "alice is in both rows → non-empty (isEmpty=false)"),
@@ -77,7 +77,7 @@ fn wi714_join_keeps_matching_rows() {
 fn wi714_join_drops_nonmatching_rows() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714join.noMatch", &[])
+        .call("test.wi714join.noMatch", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("noMatch runs the join");
     match r {
         Value::Bool(b) => assert!(b, "no name equals a dept → empty (isEmpty=true)"),
@@ -96,7 +96,7 @@ fn wi714_join_drops_nonmatching_rows() {
 fn wi714_join_merged_schema_rows() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714join.joinedRows", &[])
+        .call("test.wi714join.joinedRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("joinedRows drains the join");
     // Walk the cons list; each element is the merged 4-field `Value::Tuple`. There is one
     // joined row (alice); collect its String and Int64 column values by kind — the three

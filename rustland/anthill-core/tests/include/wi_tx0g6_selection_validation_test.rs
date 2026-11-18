@@ -184,7 +184,7 @@ fn sole_message(body: &str) -> String {
 /// `interp.call(entry)` must answer a string.
 fn eval_str(src: &str, entry: &str, what: &str) -> String {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Str(s)) => s.to_string(),
         other => panic!("{what}: expected a string from {entry}; got {other:?}"),
     }
@@ -458,7 +458,7 @@ fn a_spec_key_naming_an_enclosing_requirement_hands_it_on() {
     };
     for (oe, expected) in [("ByLength", -2), ("RevLen", 2)] {
         let mut interp = crate::common::interp_for(&program(&body(oe)));
-        match interp.call("probe.tx0g6.run", &[Value::Int(0)]) {
+        match interp.call("probe.tx0g6.run", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, expected, "`OE = {oe}`, handed on as `[WeakOrd = OE]`"),
             other => panic!("`OE = {oe}`: expected an Int64, got {other:?}"),
         }
@@ -535,7 +535,7 @@ fn a_type_may_carry_a_concrete_witness_and_it_is_honoured() {
     // WI-1094 writes `O = Pair`, a concrete self-provider, into the type, and the next
     // call reads it back through the producer.
     let mut interp = crate::common::interp_for(&src);
-    match interp.call("probe.tx0g6.viaInference", &[Value::Int(0)]) {
+    match interp.call("probe.tx0g6.viaInference", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 2, "two distinct pairs were inserted"),
         other => panic!("the inferred `O = Pair` must run; got {other:?}"),
     }

@@ -97,7 +97,7 @@ fn source(ns: &str, prefix: &str, body: &str) -> String {
 fn run(ns: &str, prefix: &str, body: &str) -> Value {
     let mut interp = interp_for(&source(ns, prefix, body));
     interp
-        .call(&format!("test.{ns}.go"), &[])
+        .call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{ns}: {e:?}"))
 }
 
@@ -700,7 +700,7 @@ fn an_internal_member_is_hidden_as_its_written_name_is() {
     }
     let mut interp = interp_for(&lib("papx0hidinside", "  operation go() -> Int64 = Vault.inside()"));
     let got = interp
-        .call("test.papx0hidinside.go", &[])
+        .call("test.papx0hidinside.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("inside: {e:?}"));
     assert!(matches!(got, Value::Int(13)), "got {got:?}");
 }

@@ -283,11 +283,18 @@ fn an_effectful_thunk_is_refused_at_load() {
 /// no slot is derived, as at a rule body's generic catcher below. The refusal leaves no
 /// frame behind — entering is the run's first step, read by the loop, so the run truncates
 /// to its floor — and the interpreter answers its next call.
+///
+/// WI-20261113-S4D63 (proposal 074 §1.4): a host call is typed as the same call in a body, so
+/// it is refused before any frame is pushed: the thunk, a reference to a host-implemented
+/// operation handed over bare, has no type a bare reference to it gives (no anthill body to
+/// lift). Handed over at its arrow it would fix `T1`, as `Error.reify(raiseNow)` does in a body.
+/// FAILS, MEASURED, with the check that the reference's type is an arrow removed: the bare
+/// reference reads as a call of `boomNow`, at `Int64`, and the call is refused naming `Rho`.
 #[test]
 fn an_unpinned_host_entry_is_refused_and_leaves_no_frame() {
     let kb = crate::common::try_load_kb_prepared(HOST_PROGRAM, |kb| {
         kb.register_host_fn("rrb_boom_now", 0, |interp, _| {
-            interp.call("test.rrb.raiseNow", &[])
+            interp.call("test.rrb.raiseNow", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         })
         .expect("register rrb_boom_now");
     })
@@ -305,15 +312,15 @@ fn an_unpinned_host_entry_is_refused_and_leaves_no_frame() {
         spread_labels: None,
         op_reqs: None,
     };
-    match interp.call("anthill.prelude.Error.reify", &[thunk]) {
-        Err(e @ anthill_core::eval::EvalError::ReifyPayloadUnread { .. }) => {
-            assert!(e.to_string().contains("its caller had none to hand"), "{e}")
+    match interp.call("anthill.prelude.Error.reify", &anthill_core::eval::HostValue::all(&[thunk])).map(|h| h.value) {
+        Err(e @ anthill_core::eval::EvalError::HostCallRefused { .. }) => {
+            assert!(e.to_string().contains("boomNow") && e.to_string().contains("HostValue::typed"), "{e}")
         }
-        other => panic!("the unpinned payload is refused at the boundary, got {other:?}"),
+        other => panic!("the bare thunk is refused at the boundary, got {other:?}"),
     }
     assert_eq!(interp.activation_depth(), 0, "the refused entry leaves no frame");
     let v = interp
-        .call("test.rrb.fortyTwo", &[])
+        .call("test.rrb.fortyTwo", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the interpreter answers its next call");
     assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(42));
 }

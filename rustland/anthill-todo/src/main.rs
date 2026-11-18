@@ -2506,7 +2506,7 @@ fn string_op(
     text: &str,
     width: i64,
 ) -> Result<String, String> {
-    match interp.call(op, &[Value::Str(text.to_string()), Value::Int(width)]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[Value::Str(text.to_string()), Value::Int(width)])).map(|h| h.value) {
         Ok(Value::Str(out)) => Ok(out),
         Ok(other) => Err(format!("`{op}` answered {other:?}, which is not a string")),
         Err(e) => Err(format!("`{op}`: {e}")),
@@ -5348,8 +5348,8 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         // above.
         let wis_value = match interp.call(
             "anthill.todo.store.FileBasedWorkitemStore.open",
-            &[store_value.clone()],
-        ) {
+            &anthill_core::eval::HostValue::all(&[store_value.clone()]),
+        ).map(|h| h.value) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("error: building the store's initial state: {e}");

@@ -42,7 +42,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let result = interp
-        .call("test.wi218.Driver.main_test", &[Value::Int(42)])
+        .call("test.wi218.Driver.main_test", &anthill_core::eval::HostValue::all(&[Value::Int(42)])).map(|h| h.value)
         .expect("main_test should run");
     assert_eq!(
         crate::common::scalar_str(interp.kb(), &result).as_deref(),

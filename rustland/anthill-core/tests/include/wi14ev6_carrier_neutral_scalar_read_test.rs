@@ -100,7 +100,7 @@ fn fixture() -> (Interpreter, std::rc::Rc<std::cell::RefCell<String>>, Value) {
 /// Run `shout` with `s`. The handler's buffer is what the caller then reads.
 fn shout(interp: &mut Interpreter, console: Value, s: Value) {
     interp
-        .call("test.wi14ev6.shout", &[console, s])
+        .call("test.wi14ev6.shout", &anthill_core::eval::HostValue::all(&[console, s])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("shout must run: {e:?}"));
 }
 
@@ -182,7 +182,7 @@ end
 
     let mut interp = interp_for(src);
     let column = interp
-        .call("test.wi14ev6rel.theName", &[])
+        .call("test.wi14ev6rel.theName", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the column must reach the body");
     assert_eq!(
         crate::common::scalar_str(interp.kb(), &column).as_deref(),
@@ -205,7 +205,7 @@ end
         named: Vec::new().into(),
     };
     interp
-        .call("test.wi14ev6rel.announce", &[console])
+        .call("test.wi14ev6rel.announce", &anthill_core::eval::HostValue::all(&[console])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("printing a relation column must run: {e:?}"));
     assert_eq!(
         buf.borrow().as_str(),

@@ -208,7 +208,7 @@ fn make_fn_refuses_a_bare_prelude_name_and_takes_the_qualified_one() {
     let mut interp = interp_for(FIXTURE);
     let args = one_term_arg(&mut interp);
     let err = interp
-        .call("anthill.reflect.make_fn", &[Value::Str("cons".into()), args])
+        .call("anthill.reflect.make_fn", &anthill_core::eval::HostValue::all(&[Value::Str("cons".into()), args])).map(|h| h.value)
         .expect_err("a bare `cons` denotes nothing since the tier was emptied");
     assert!(
         format!("{err:?}").contains("cons"),
@@ -218,8 +218,8 @@ fn make_fn_refuses_a_bare_prelude_name_and_takes_the_qualified_one() {
     let built = interp
         .call(
             "anthill.reflect.make_fn",
-            &[Value::Str("anthill.prelude.List.cons".into()), args],
-        )
+            &anthill_core::eval::HostValue::all(&[Value::Str("anthill.prelude.List.cons".into()), args]),
+        ).map(|h| h.value)
         .expect("control: the qualified name is the migration and still resolves");
     assert_eq!(
         term_fn_functor_name(&interp, &built),
@@ -237,8 +237,8 @@ fn make_fn_still_resolves_a_qualified_functor() {
     let built = interp
         .call(
             "anthill.reflect.make_fn",
-            &[Value::Str("test.wi913.Mark.mark".into()), args],
-        )
+            &anthill_core::eval::HostValue::all(&[Value::Str("test.wi913.Mark.mark".into()), args]),
+        ).map(|h| h.value)
         .expect("make_fn accepts a qualified name");
     assert_eq!(
         term_fn_functor_name(&interp, &built),
@@ -256,11 +256,17 @@ fn make_fn_takes_a_native_literal_as_its_term_twin() {
     let mut interp = interp_for(FIXTURE);
     for native in [Value::Str("alice".into()), Value::Int(7)] {
         let args = one_arg_list(&mut interp, native.clone());
+        // At the parameter's type, `List[T = Term]`: a literal is a term's (proposal 074 §1.4,
+        // the host saying what a value its own type does not).
+        let at = crate::common::list_type(interp.kb_mut(), "anthill.reflect.Term");
         let built = interp
             .call(
                 "anthill.reflect.make_fn",
-                &[Value::Str("test.wi913.Mark.mark".into()), args],
-            )
+                &[
+                    Value::Str("test.wi913.Mark.mark".into()).into(),
+                    anthill_core::eval::HostValue::typed(args, at),
+                ],
+            ).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{native:?} is a term's literal, not a refusal: {e}"));
         let want = match &native {
             Value::Str(s) => Term::Const(Literal::String(s.clone())),
@@ -269,11 +275,15 @@ fn make_fn_takes_a_native_literal_as_its_term_twin() {
         };
         let twin = Value::term(interp.kb_mut().alloc(want));
         let twin_args = one_arg_list(&mut interp, twin);
+        let at = crate::common::list_type(interp.kb_mut(), "anthill.reflect.Term");
         let built_from_twin = interp
             .call(
                 "anthill.reflect.make_fn",
-                &[Value::Str("test.wi913.Mark.mark".into()), twin_args],
-            )
+                &[
+                    Value::Str("test.wi913.Mark.mark".into()).into(),
+                    anthill_core::eval::HostValue::typed(twin_args, at),
+                ],
+            ).map(|h| h.value)
             .expect("make_fn takes the Term::Const twin");
         assert!(
             anthill_core::kb::term_view::views_structurally_equal(
@@ -315,16 +325,19 @@ fn make_apply_resolves_a_qualified_functor() {
         None,
     ));
     let args = one_arg_list(&mut interp, arg);
+    // At the parameters' types: an occurrence is a `NodeOccurrence` (proposal 074 §1.4).
+    let list_at = crate::common::list_type(interp.kb_mut(), "anthill.reflect.NodeOccurrence");
+    let from_at = crate::common::sort_type(interp.kb_mut(), "anthill.reflect.NodeOccurrence");
 
     let built = interp
         .call(
             "anthill.reflect.make_apply",
             &[
-                Value::Str("anthill.prelude.List.cons".into()),
-                args,
-                from,
+                Value::Str("anthill.prelude.List.cons".into()).into(),
+                anthill_core::eval::HostValue::typed(args, list_at),
+                anthill_core::eval::HostValue::typed(from, from_at),
             ],
-        )
+        ).map(|h| h.value)
         .expect("WI-909: the tier is empty, so the QUALIFIED name is the one that resolves");
     let Value::Node(occ) = &built else {
         panic!("make_apply returns a NodeOccurrence, got {built:?}");
@@ -349,6 +362,9 @@ fn make_apply_resolves_a_qualified_functor() {
 ///
 /// The store argument is a `FileStore`-shaped value only because `monotonicity`
 /// validates its shape; it selects nothing (1-to-1 routing binds the functor).
+///
+/// FAILS, measured, with a host name read at the type its value reads as rather than at
+/// `Symbol` (WI-20261113-S4D63's typed host call).
 #[test]
 fn monotonicity_resolves_a_qualified_functor_name() {
     use anthill_core::persistence::file_store::{FileConvention, FileStore};
@@ -356,29 +372,7 @@ fn monotonicity_resolves_a_qualified_functor_name() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut interp = interp_for(FIXTURE);
     let store_val = {
-        let fs = interp.kb_mut().intern("FileStore");
-        let flat = interp.kb_mut().intern("Flat");
-        let root_sym = interp.kb_mut().intern("root");
-        let convention_sym = interp.kb_mut().intern("convention");
-        Value::Entity {
-            functor: fs,
-            pos: vec![].into(),
-            named: vec![
-                (
-                    root_sym,
-                    Value::Str(dir.path().to_str().unwrap().to_string()),
-                ),
-                (
-                    convention_sym,
-                    Value::Entity {
-                        functor: flat,
-                        pos: vec![].into(),
-                        named: vec![].into(),
-                    },
-                ),
-            ]
-            .into(),
-        }
+        crate::common::file_store_value(interp.kb(), "FileStore", dir.path().to_str().unwrap(), "flat")
     };
     let key = interp
         .store_canonical_key(&store_val)
@@ -394,8 +388,13 @@ fn monotonicity_resolves_a_qualified_functor_name() {
     let answer = interp
         .call(
             "anthill.persistence.Store.monotonicity",
-            &[store_val, Value::Str("anthill.prelude.List.cons".into())],
-        )
+            // The functor as the `Symbol` the parameter takes (proposal 074 §1.4); its qualified
+            // name's resolution is the reader the builtin shares with `make_fn`'s.
+            &anthill_core::eval::HostValue::all(&[
+                store_val,
+                Value::SymbolRef(interp.kb().try_resolve_symbol("anthill.prelude.List.cons").expect("`cons`")),
+            ]),
+        ).map(|h| h.value)
         .expect("WI-909: the tier is empty, so `monotonicity` takes the QUALIFIED name");
     let expected = interp
         .kb_mut()
@@ -596,8 +595,8 @@ fn make_fn_is_loud_about_a_name_that_denotes_nothing() {
     let err = interp
         .call(
             "anthill.reflect.make_fn",
-            &[Value::Str("no.such.Functor".into()), args],
-        )
+            &anthill_core::eval::HostValue::all(&[Value::Str("no.such.Functor".into()), args]),
+        ).map(|h| h.value)
         .expect_err("an unresolvable functor name is an error");
     match err {
         EvalError::HostNameUnresolved { detail } => assert!(

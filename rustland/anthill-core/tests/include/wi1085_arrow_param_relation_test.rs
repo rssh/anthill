@@ -73,7 +73,7 @@ fn drive_int(src: &str, op: &str) -> i64 {
     // A FRESH interpreter per call: reusing one after a trapped call returns a bogus
     // `Internal(...)` on every later call, which reads as an unrelated second failure.
     match crate::common::interp_for(src)
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,
@@ -188,7 +188,7 @@ fn a_function_typed_argument_at_an_arrow_slot_meets_it_only_by_the_one_relation(
         "`(a: Int64, b: Int64)` and `(p: Acc, q: Int64)` carry unrelated labels: {msg}",
     );
     let mut interp = crate::common::interp_for(&case("test.wi1085.mirrorpos", "(Int64, Int64)"));
-    match interp.call("test.wi1085.mirrorpos.drive", &[]) {
+    match interp.call("test.wi1085.mirrorpos.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(v)) => assert_eq!(v, -1, "`sub(1, 2)`"),
         other => panic!("drive: expected Int(-1), got {other:?}"),
     }

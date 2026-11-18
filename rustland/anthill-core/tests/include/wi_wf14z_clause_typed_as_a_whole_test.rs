@@ -585,7 +585,7 @@ fn a_column_of_some_type_is_an_unknown_at_each_citation() {
         ),
     ));
     let at = |interp: &mut anthill_core::eval::Interpreter, op: &str| match interp
-        .call(&format!("{ns}.{op}"), &[])
+        .call(&format!("{ns}.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
     {
         Ok(anthill_core::eval::Value::Int(n)) => n,
         other => panic!("{op}: {other:?}"),
@@ -629,12 +629,12 @@ fn a_column_nothing_in_its_clause_names_is_read_at_the_type_asked() {
     );
     let mut interp = crate::common::interp_for(&src);
     assert!(
-        matches!(interp.call(&format!("{ns}.f"), &[]), Ok(anthill_core::eval::Value::Var(_))),
+        matches!(interp.call(&format!("{ns}.f"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(anthill_core::eval::Value::Var(_))),
         "the column's value is the solution's unbound variable"
     );
     let mut interp = crate::common::interp_for(&src);
     assert!(matches!(
-        interp.call(&format!("{ns}.g"), &[]),
+        interp.call(&format!("{ns}.g"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value),
         Ok(anthill_core::eval::Value::Int(1))
     ));
 }

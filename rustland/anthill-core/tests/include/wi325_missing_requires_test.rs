@@ -190,7 +190,7 @@ end
     );
     let mut interp = crate::common::interp_for(&driven);
     let v = interp
-        .call("test.wi325.user_self_receiver_no_provider.go", &[])
+        .call("test.wi325.user_self_receiver_no_provider.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("drive(pane()): {e:?}"));
     assert!(matches!(v, anthill_core::eval::Value::Bool(true)), "{v:?}");
 }

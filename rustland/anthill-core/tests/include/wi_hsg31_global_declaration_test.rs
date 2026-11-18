@@ -135,7 +135,7 @@ fn a_namespace_equation_defines_its_own_operation_beside_a_global_predicate() {
     let kb = crate::common::load_kb_with(src);
     assert!(kb.try_resolve_symbol("pg.f").is_some(), "`pg.f` must exist");
     let mut interp = crate::common::interp_for(src);
-    match interp.call("pgc.g", &[]).expect("the namespace's operation answers by its name") {
+    match interp.call("pgc.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the namespace's operation answers by its name") {
         anthill_core::eval::Value::Int(i) => assert_eq!(i, 7),
         other => panic!("expected an Int, got {other:?}"),
     }

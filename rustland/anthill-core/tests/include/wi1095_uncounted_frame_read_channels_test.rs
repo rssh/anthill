@@ -308,7 +308,7 @@ fn refusal(src: &str, what: &str, run: impl FnOnce(&str) -> String) -> String {
 fn drive_outcome_vec3(src: &str, ns: &str) -> String {
     let mut interp = crate::common::interp_for(src);
     let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
-    match interp.call(&format!("{ns}.Driver.drive"), &[a]) {
+    match interp.call(&format!("{ns}.Driver.drive"), &anthill_core::eval::HostValue::all(&[a])).map(|h| h.value) {
         Ok(v) => format!("an ANSWER, {v:?}"),
         Err(e) => format!("{e}"),
     }
@@ -317,7 +317,7 @@ fn drive_outcome_vec3(src: &str, ns: &str) -> String {
 /// The same for the `Int64`-valued op-half fixture.
 fn drive_outcome_int(src: &str, ns: &str) -> String {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)]) {
+    match interp.call(&format!("{ns}.Driver.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(v) => format!("an ANSWER, {v:?}"),
         Err(e) => format!("{e}"),
     }
@@ -330,7 +330,7 @@ fn drive_123(src: &str, ns: &str, want: (f64, f64, f64), why: &str) {
     let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
     let entry = format!("{ns}.Driver.drive");
     let out = interp
-        .call(&entry, &[a])
+        .call(&entry, &anthill_core::eval::HostValue::all(&[a])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{entry}: {why}; got {e}"));
     assert_eq!(components(interp.kb(), &out), want, "{entry}: {why}");
 }
@@ -477,7 +477,7 @@ fn control_the_op_half_eta_at_a_provided_carrier_still_runs() {
     let mut interp = crate::common::interp_for(&src);
     let entry = format!("{ns}.Driver.drive");
     let out = interp
-        .call(&entry, &[Value::Int(0)])
+        .call(&entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{entry}: a provided carrier must still run; got {e}"));
     assert!(
         matches!(out, Value::Int(7)),

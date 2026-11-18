@@ -47,7 +47,7 @@ use smallvec::SmallVec;
 /// clean-load assertion.
 fn eval_int(src: &str, entry: &str, why: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{why}; got {other:?}"),
     }

@@ -129,7 +129,7 @@ end
         load_errs(src)
     );
     let mut interp = interp_for(src);
-    match interp.call("test.wi808.ok.drive", &[]).expect("drive") {
+    match interp.call("test.wi808.ok.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("drive") {
         anthill_core::eval::Value::Int(1) => {}
         other => panic!("`.a` must read the `a` field; got {other:?}"),
     }

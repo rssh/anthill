@@ -92,7 +92,7 @@ end
 /// clean-load assertion.
 fn drive(entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(ORD_PROGRAM);
-    match interp.call(&format!("wip7vp4.ord.Driver.{entry}"), &[]) {
+    match interp.call(&format!("wip7vp4.ord.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }
@@ -322,7 +322,7 @@ end
 
 fn drive_slots(entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(SLOT_PROGRAM);
-    match interp.call(&format!("wip7vp4.slots.Driver.{entry}"), &[]) {
+    match interp.call(&format!("wip7vp4.slots.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }
@@ -605,7 +605,7 @@ fn a_woven_slot_call_that_waits_keeps_its_slots() {
                   citeLate[A = Int64, WeakOrd = Descending](1, 5)\n  \
                   end\n";
     let mut interp = crate::common::interp_for(&fix_program("wip7vp4.waits", driver));
-    match interp.call("wip7vp4.waits.Driver.lateDesc", &[]) {
+    match interp.call("wip7vp4.waits.Driver.lateDesc", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 4, "`Descending`'s compare(1, 5), after `?a` is bound"),
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -626,7 +626,7 @@ fn a_slot_routes_whichever_parameter_pins_it() {
                   citeOrder[A = Int64, WeakOrd = Descending](1, 5)\n  \
                   end\n";
     let mut interp = crate::common::interp_for(&fix_program("wip7vp4.order", driver));
-    match interp.call("wip7vp4.order.Driver.orderDesc", &[]) {
+    match interp.call("wip7vp4.order.Driver.orderDesc", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, -4, "`Descending`'s compare(5, 1)"),
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -686,7 +686,7 @@ namespace wip7vp4.partial
 end
 "#;
     let mut interp = crate::common::interp_for(PROGRAM);
-    match interp.call("wip7vp4.partial.Driver.heat", &[]) {
+    match interp.call("wip7vp4.partial.Driver.heat", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 3, "`ByHeat`'s score of `red`"),
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -858,7 +858,7 @@ fn a_bool_view_call_answers_through_the_callers_dictionary() {
                   citeLess[A = Int64, WeakOrd = Ascending](1, 5)\n  \
                   end\n";
     let mut interp = crate::common::interp_for(&fix_program("wip7vp4.boolview", driver));
-    let mut empty = |entry: &str| match interp.call(&format!("wip7vp4.boolview.Driver.{entry}"), &[]) {
+    let mut empty = |entry: &str| match interp.call(&format!("wip7vp4.boolview.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
     };
@@ -926,7 +926,7 @@ namespace wip7vp4.negated
 end
 "#;
     let mut interp = crate::common::interp_for(PROGRAM);
-    let mut empty = |entry: &str| match interp.call(&format!("wip7vp4.negated.Driver.{entry}"), &[]) {
+    let mut empty = |entry: &str| match interp.call(&format!("wip7vp4.negated.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
     };
@@ -975,7 +975,7 @@ fn a_subtype_argument_does_not_block_a_slot_route() {
                   citeS[A = Int64, WeakOrd = Descending](1, 5)\n  \
                   end\n";
     let mut interp = crate::common::interp_for(&fix_program("wip7vp4.subtype", driver));
-    match interp.call("wip7vp4.subtype.Driver.subtypeDesc", &[]) {
+    match interp.call("wip7vp4.subtype.Driver.subtypeDesc", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 4, "`Descending`'s compare(1, 5)"),
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -1207,7 +1207,7 @@ namespace wip7vp4.split
 end
 "#;
     let mut interp = crate::common::interp_for(SPLIT);
-    let cited = interp.call("wip7vp4.split.Driver.warmCool", &[]).expect("`warmCool` answers");
+    let cited = interp.call("wip7vp4.split.Driver.warmCool", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("`warmCool` answers");
     let shown = crate::common::show_value(interp.kb(), &cited);
     assert!(shown.ends_with("blue"), "`Cool`'s `warm` holds at `blue()`, not `red()`: {shown}");
     let mut kb = crate::common::load_kb_with(SPLIT);
@@ -1236,7 +1236,7 @@ fn a_named_argument_bool_view_call_answers_through_the_callers_dictionary() {
                   citeLessN[A = Int64, WeakOrd = Ascending](1, 5)\n  \
                   end\n";
     let mut interp = crate::common::interp_for(&fix_program("wip7vp4.named", driver));
-    let mut empty = |entry: &str| match interp.call(&format!("wip7vp4.named.Driver.{entry}"), &[]) {
+    let mut empty = |entry: &str| match interp.call(&format!("wip7vp4.named.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
     };
@@ -1299,7 +1299,7 @@ fn cite_driver(sort: &str, rule: &str) -> String {
 /// `(desc, asc, plain)` of a [`cite_driver`] sort of the loaded program — one interpreter for
 /// the three: none of them may trap, and a trap fails the row at its own call.
 fn cited(interp: &mut anthill_core::eval::Interpreter, ns: &str, sort: &str) -> (i64, i64, i64) {
-    let mut run = |entry: &str| match interp.call(&format!("{ns}.{sort}.{entry}"), &[]) {
+    let mut run = |entry: &str| match interp.call(&format!("{ns}.{sort}.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{sort}.{entry}: expected an Int64, got {other:?}"),
     };

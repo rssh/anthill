@@ -279,7 +279,7 @@ fn a_condition_leaving_a_slot_unwritten_is_its_spec_at_any_binding_of_it() {
     for (tag, bound, condition) in BOUNDS {
         let ns = format!("wi_dnx0e.open.{tag}");
         let mut interp = interp_for(&wrap_program(&ns, bound, condition, ""));
-        match interp.call(&format!("{ns}.main"), &[]) {
+        match interp.call(&format!("{ns}.main"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Str(s)) => assert_eq!(s, "dog-pa", "{tag}"),
             other => panic!("{tag}: `main` should answer \"dog-pa\", got {other:?}"),
         }

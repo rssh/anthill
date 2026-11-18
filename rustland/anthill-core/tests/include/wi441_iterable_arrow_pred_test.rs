@@ -236,7 +236,7 @@ namespace wi441.eval
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    match interp.call("wi441.eval.found", &[]).expect("eval find") {
+    match interp.call("wi441.eval.found", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("eval find") {
         anthill_core::eval::Value::Int(3) => {}
         other => panic!("expected Int(3), got {other:?}"),
     }

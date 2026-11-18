@@ -249,7 +249,7 @@ fn a_field_needs_no_order() {
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
-        .call("test.f5.F5.probe_recip", &[])
+        .call("test.f5.F5.probe_recip", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe_recip");
     assert_eq!(
         r.literal_int64(interp.kb()),
@@ -257,7 +257,7 @@ fn a_field_needs_no_order() {
         "recip(2) must be 3 in F_5, got {r:?}"
     );
     let d = interp
-        .call("test.f5.F5.probe_div", &[])
+        .call("test.f5.F5.probe_div", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe_div");
     assert_eq!(
         d.literal_int64(interp.kb()),
@@ -355,7 +355,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
 
     let mut interp = crate::common::interp_for(&src);
     let t2 = interp
-        .call("test.f5.L.probe_t_squared", &[])
+        .call("test.f5.L.probe_t_squared", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe_t_squared");
     assert_eq!(
         t2.literal_int64(interp.kb()),
@@ -363,7 +363,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
         "t^2 must be 2, the defining relation of L = F_5[t]/(t^2 - 2); got {t2:?}"
     );
     let s = interp
-        .call("test.f5.L.probe_scale", &[])
+        .call("test.f5.L.probe_scale", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe_scale");
     assert_eq!(
         s.literal_int64(interp.kb()),
@@ -375,7 +375,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
     // wrong while `recip` was the identity and `eq` read one component: `div` was
     // `mul`, so `Field`'s inverse law was false of the carrier that provides it.
     let r = interp
-        .call("test.f5.L.probe_recip_b", &[])
+        .call("test.f5.L.probe_recip_b", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe_recip_b");
     assert_eq!(
         r.literal_int64(interp.kb()),
@@ -383,10 +383,10 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
         "recip(t) must be 3t, since t * 3t = 3t^2 = 6 = 1; got {r:?}"
     );
     let la = interp
-        .call("test.f5.L.probe_inv_law_a", &[])
+        .call("test.f5.L.probe_inv_law_a", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe_inv_law_a");
     let lb = interp
-        .call("test.f5.L.probe_inv_law_b", &[])
+        .call("test.f5.L.probe_inv_law_b", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe_inv_law_b");
     assert_eq!(
         (la.literal_int64(interp.kb()), lb.literal_int64(interp.kb())),
@@ -394,7 +394,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
         "mul(recip(t), t) must be `one` = 1 + 0t; got {la:?} + {lb:?}t"
     );
     let neq = interp
-        .call("test.f5.L.probe_t_not_2t", &[])
+        .call("test.f5.L.probe_t_not_2t", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call probe_t_not_2t");
     assert_eq!(
         neq.literal_bool(interp.kb()),

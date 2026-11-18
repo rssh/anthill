@@ -102,7 +102,7 @@ end
 /// What `entry` answers, shown, on a fresh interpreter's run of it.
 fn shown(interp: &mut Interpreter, entry: &str) -> String {
     let v = interp
-        .call(entry, &[])
+        .call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{entry}: {e:?}"));
     show_value(interp.kb(), &v)
 }
@@ -115,14 +115,14 @@ fn qualified(ns: &str, goal: &str) -> String {
 }
 
 fn int_of(interp: &mut Interpreter, entry: &str) -> i64 {
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }
 }
 
 fn bool_of(interp: &mut Interpreter, entry: &str) -> bool {
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
     }

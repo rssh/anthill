@@ -86,7 +86,7 @@ fn type_value_arg(interp: &Interpreter, args: &[Value]) -> Dictionary {
 
 fn c(interp: &mut Interpreter) -> Result<String, EvalError> {
     interp
-        .call("test.wgjfn.c", &[Value::Int(1)])
+        .call("test.wgjfn.c", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .map(|v| crate::common::scalar_str(interp.kb(), &v).expect("c answers a String"))
 }
 
@@ -129,13 +129,13 @@ fn a_re_raise_at_the_type_value_it_was_handed_is_caught() {
 fn a_value_of_the_raise_s_type_replaces_it() {
     let mut interp = interp_with_error_handler(|i, args| {
         let type_value = type_value_arg(i, args);
-        let logged = i.call("test.wgjfn.logged", &[])?;
+        let logged = i.call("test.wgjfn.logged", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
         Ok(HandlerAction::Throw(logged, type_value))
     });
     assert_eq!(c(&mut interp).expect("caught"), "x [logged]");
 
     let mut interp = interp_with_error_handler(|i, _args| {
-        let logged = i.call("test.wgjfn.logged", &[])?;
+        let logged = i.call("test.wgjfn.logged", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
         let type_value = i.type_value_of(&logged)?;
         Ok(HandlerAction::Throw(logged, type_value))
     });
@@ -148,7 +148,7 @@ fn a_value_of_the_raise_s_type_replaces_it() {
 #[test]
 fn a_value_the_raise_s_type_does_not_admit_is_refused() {
     let mut interp = interp_with_error_handler(|i, _args| {
-        let fatal = i.call("test.wgjfn.mkFatal", &[])?;
+        let fatal = i.call("test.wgjfn.mkFatal", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
         let type_value = i.type_value_of(&fatal)?;
         Ok(HandlerAction::Throw(fatal, type_value))
     });
@@ -178,7 +178,7 @@ fn a_value_the_raise_s_type_does_not_admit_is_refused() {
 fn a_re_raise_through_err_is_caught() {
     let mut interp = interp_with_error_handler(|i, args| {
         Err(i
-            .call("anthill.prelude.Error.raise", &[args[0].clone()])
+            .call("anthill.prelude.Error.raise", &anthill_core::eval::HostValue::all(&[args[0].clone()])).map(|h| h.value)
             .expect_err("a raise returns no value"))
     });
     assert_eq!(c(&mut interp).expect("caught"), "x");

@@ -187,7 +187,7 @@ fn drain_int_pairs(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Vec<(i64, 
 fn wi727_fix_restrict_and_drop_to_one_column() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.names_at_30", &[])
+        .call("test.wi727fix.names_at_30", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("names_at_30 runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -199,7 +199,7 @@ fn wi727_fix_restrict_and_drop_to_one_column() {
 fn wi727_fix_restrict_other_column() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.ages_of_alice", &[])
+        .call("test.wi727fix.ages_of_alice", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("ages_of_alice runs");
     assert_eq!(drain_ints(interp.kb(), r), vec![30]);
 }
@@ -209,7 +209,7 @@ fn wi727_fix_restrict_other_column() {
 fn wi727_fix_named_arg_head() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.named_head_at_30", &[])
+        .call("test.wi727fix.named_head_at_30", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("named_head_at_30 runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -223,7 +223,7 @@ fn wi727_fix_named_arg_head() {
 fn wi727_fix_mixed_prefix() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.mixed_prefix_at_30", &[])
+        .call("test.wi727fix.mixed_prefix_at_30", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("mixed_prefix_at_30 runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -236,7 +236,7 @@ fn wi727_fix_mixed_prefix() {
 fn wi727_fix_empty_is_identity() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.identity_fix", &[])
+        .call("test.wi727fix.identity_fix", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("identity_fix runs");
     let mut rows = 0usize;
     let mut cur = r;
@@ -272,7 +272,7 @@ fn wi727_fix_empty_is_identity() {
 fn wi727_fix_drop_one_of_three() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.bc_where_a1", &[])
+        .call("test.wi727fix.bc_where_a1", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("bc_where_a1 runs");
     let mut got = drain_int_pairs(interp.kb(), r);
     got.sort();
@@ -285,7 +285,7 @@ fn wi727_fix_drop_one_of_three() {
 fn wi727_fix_two_constants() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.b_where_a1_c3", &[])
+        .call("test.wi727fix.b_where_a1_c3", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("b_where_a1_c3 runs");
     assert_eq!(drain_ints(interp.kb(), r), vec![2]);
 }
@@ -298,7 +298,7 @@ fn wi727_fix_two_constants() {
 fn wi727_fix_value_may_be_a_computed_expression() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.names_at_computed", &[])
+        .call("test.wi727fix.names_at_computed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("names_at_computed runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -312,7 +312,7 @@ fn wi727_fix_value_may_be_a_computed_expression() {
 fn wi727_fix_value_may_be_a_runtime_parameter() {
     let mut interp = interp_for(SRC);
     let at30 = interp
-        .call("test.wi727fix.names_at", &[Value::Int(30)])
+        .call("test.wi727fix.names_at", &anthill_core::eval::HostValue::all(&[Value::Int(30)])).map(|h| h.value)
         .expect("names_at(30) runs");
     let mut got30 = drain_strings(interp.kb(), at30);
     got30.sort();
@@ -320,7 +320,7 @@ fn wi727_fix_value_may_be_a_runtime_parameter() {
 
     let mut interp = interp_for(SRC);
     let at25 = interp
-        .call("test.wi727fix.names_at", &[Value::Int(25)])
+        .call("test.wi727fix.names_at", &anthill_core::eval::HostValue::all(&[Value::Int(25)])).map(|h| h.value)
         .expect("names_at(25) runs");
     assert_eq!(drain_strings(interp.kb(), at25), vec!["bob".to_string()]);
 }
@@ -334,7 +334,7 @@ fn wi727_fix_value_may_be_a_runtime_parameter() {
 fn wi727_fix_value_may_be_a_let_bound_value() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi727fix.names_at_letbound", &[])
+        .call("test.wi727fix.names_at_letbound", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("names_at_letbound runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -371,7 +371,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp
-        .call("test.wi727fixpt.atOrigin", &[])
+        .call("test.wi727fixpt.atOrigin", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("atOrigin runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
@@ -412,7 +412,7 @@ namespace test.wi727fixctor
 end
 "#;
     let mut interp = interp_for(src);
-    let r = interp.call("test.wi727fixctor.reds", &[]).expect("reds runs");
+    let r = interp.call("test.wi727fixctor.reds", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("reds runs");
     let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["a".to_string(), "c".to_string()]);

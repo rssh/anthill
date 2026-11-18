@@ -132,7 +132,7 @@ fn probe_entity(ns: &str, extra: &str, ctor: &str) -> Result<Value, EvalError> {
         pos: Vec::new().into(),
         named: Vec::new().into(),
     };
-    interp.call(&format!("{ns}.Holder.probe"), &[recv])
+    interp.call(&format!("{ns}.Holder.probe"), &anthill_core::eval::HostValue::all(&[recv])).map(|h| h.value)
 }
 
 fn probe_leaf(ns: &str, extra: &str) -> Result<Value, EvalError> {
@@ -180,6 +180,17 @@ fn probe_leaf(ns: &str, extra: &str) -> Result<Value, EvalError> {
 fn a_two_provider_value_directed_dispatch_names_both_candidates() {
     let ns = "wi842.vd.tie";
     let err = probe_entity(ns, TWIG, "Twig.twig").unwrap_err();
+    // Proposal 074 §1.4 (WI-20261113-S4D63): the host call is typed as a body's call is, and
+    // the tie is refused there, before the call runs, naming both providers.
+    if let EvalError::HostCallRefused { detail, .. } = &err {
+        assert!(
+            detail.contains("ambiguous among providers")
+                && detail.contains("TwigA")
+                && detail.contains("TwigB"),
+            "the tie names both providers: {detail}"
+        );
+        return;
+    }
     let EvalError::AmbiguousRequirement {
         op,
         requirement,

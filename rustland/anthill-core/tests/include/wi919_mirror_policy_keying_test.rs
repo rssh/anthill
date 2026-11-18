@@ -53,6 +53,28 @@ use anthill_core::persistence::{Monotonicity, PersistenceError, Store};
 use crate::common::interp_for;
 use anthill_core::kb::ClauseKind;
 
+/// The mock backends of this file as stores a host call types at (proposal 074 §1.4): a sort
+/// of the program's own that is a realized backend providing `NonMonotonicStore`, as
+/// anthill-stl's binding makes a library backend one. Its operations are the spec's host
+/// functions, which resolve the store value to the mirror the test registers under it.
+const MOCK_STORES: &str = "namespace test.mockstore\n  \
+                           import anthill.persistence.{NonMonotonicStore}\n  \
+                           entity PolicyStore\n  \
+                           entity AppendOnly\n  \
+                           provides PolicyStore language rust\n    \
+                           artifact \"rustland/anthill-core/tests/include/wi919_mirror_policy_keying_test.rs\"\n  \
+                           end\n  \
+                           provides AppendOnly language rust\n    \
+                           artifact \"rustland/anthill-core/tests/include/wi919_mirror_policy_keying_test.rs\"\n  \
+                           end\n  \
+                           namespace PolicyStore\n    \
+                           provides NonMonotonicStore\n  \
+                           end\n  \
+                           namespace AppendOnly\n    \
+                           provides NonMonotonicStore\n  \
+                           end\n\
+                           end\n";
+
 /// A store that is the authority for its own functor, declaring the policy intrinsically
 /// rather than through the project's reflect rules — the WI-667 `PolicyStore` shape,
 /// reduced to what this suite needs (its retract always succeeds, so a refusal here can
@@ -91,7 +113,7 @@ fn register_declaring(
     interp: &mut Interpreter,
     functor: &str,
 ) -> (Value, Result<(), ExtentRegError>) {
-    let store_functor = interp.kb_mut().intern("PolicyStore");
+    let store_functor = interp.kb().try_resolve_symbol("test.mockstore.PolicyStore").expect("the mock `PolicyStore`");
     let store_val = Value::Entity {
         functor: store_functor,
         pos: vec![].into(),
@@ -129,8 +151,8 @@ fn persist_then_retract(interp: &mut Interpreter, store: &Value, fact: Value) ->
     let stored = interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store.clone(), fact, Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store.clone(), fact, crate::common::no_meta(interp.kb())]),
+        ).map(|h| h.value)
         .expect("persist ok");
     let reference_field = interp.kb_mut().intern("reference");
     let reference = match &stored {
@@ -144,8 +166,8 @@ fn persist_then_retract(interp: &mut Interpreter, store: &Value, fact: Value) ->
     interp
         .call(
             "anthill.persistence.NonMonotonicStore.retract",
-            &[store.clone(), reference],
-        )
+            &anthill_core::eval::HostValue::all(&[store.clone(), reference]),
+        ).map(|h| h.value)
         .expect("the store declared non_monotone, so the guard passes")
 }
 
@@ -156,7 +178,7 @@ const GHOST: &str = "namespace test.syn\n  entity Ghost\nend\n";
 /// disagreement was invisible until a retract reported it as a policy verdict.
 #[test]
 fn a_store_policy_named_by_an_unmatched_spelling_is_refused_at_registration() {
-    let mut interp = interp_for(GHOST);
+    let mut interp = interp_for(&format!("{}{MOCK_STORES}", GHOST));
 
     let (_store, outcome) = register_declaring(&mut interp, "Ghost");
 
@@ -185,10 +207,8 @@ fn a_store_policy_naming_a_contested_functor_is_refused_as_ambiguous() {
     // the program text: a file's import no longer reaches a host-supplied name, which has
     // no file of its own. What is under test is unchanged — the short name still denotes
     // two functors at `<global>`, and the registration must refuse it as ambiguous.
-    let mut interp = interp_for(
-        "namespace wi919.alpha\n  entity Widget919\nend\n\
-         namespace wi919.beta\n  entity Widget919\nend\n",
-    );
+    let mut interp = interp_for(&format!("{}{MOCK_STORES}", "namespace wi919.alpha\n  entity Widget919\nend\n\
+         namespace wi919.beta\n  entity Widget919\nend\n",));
     crate::common::supply_invocation_imports(interp.kb_mut(), &["wi919.alpha.*", "wi919.beta.*"]);
 
     let (_store, outcome) = register_declaring(&mut interp, "Widget919");
@@ -214,7 +234,7 @@ fn a_store_policy_naming_a_contested_functor_is_refused_as_ambiguous() {
 /// path — and it is the end-to-end assertion that a `Symbol`-keyed table still answers.
 #[test]
 fn the_matching_declaration_registers_and_still_reaches_the_retract_guard() {
-    let mut interp = interp_for(GHOST);
+    let mut interp = interp_for(&format!("{}{MOCK_STORES}", GHOST));
 
     let (store, outcome) = register_declaring(&mut interp, "test.syn.Ghost");
     outcome.expect("the declared name is exactly the functor's qualified name");

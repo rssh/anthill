@@ -126,7 +126,7 @@ fn eval_all(src: &str, entries: &[&str]) -> Vec<Value> {
         .iter()
         .map(|e| {
             interp
-                .call(e, &[Value::Int(0)])
+                .call(e, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
                 .unwrap_or_else(|err| panic!("call {e}: {err:?}"))
         })
         .collect()
@@ -134,7 +134,7 @@ fn eval_all(src: &str, entries: &[&str]) -> Vec<Value> {
 
 fn eval_one(src: &str, entry: &str) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(0)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 fn as_int(v: &Value, why: &str) -> i64 {

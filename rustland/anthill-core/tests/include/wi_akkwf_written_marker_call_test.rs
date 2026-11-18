@@ -260,7 +260,7 @@ end
     let mut interp = crate::common::interp_for(SRC);
     assert_eq!(
         expect_int(
-            interp.call("akkwf.real.main", &[]).expect("call main"),
+            interp.call("akkwf.real.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("call main"),
             interp.kb()
         ),
         112,
@@ -288,7 +288,7 @@ end
     let mut interp = crate::common::interp_for(SRC);
     assert_eq!(
         expect_int(
-            interp.call("akkwf.letlam.main", &[]).expect("call main"),
+            interp.call("akkwf.letlam.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("call main"),
             interp.kb()
         ),
         7,
@@ -318,7 +318,7 @@ end
     let mut interp = crate::common::interp_for(SRC);
     assert_eq!(
         expect_int(
-            interp.call("akkwf.named.main", &[]).expect("call main"),
+            interp.call("akkwf.named.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("call main"),
             interp.kb()
         ),
         41,
@@ -403,7 +403,7 @@ end
     assert_eq!(
         expect_int(
             interp
-                .call("akkwf.dotrule.Box.main", &[])
+                .call("akkwf.dotrule.Box.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
                 .expect("call main"),
             interp.kb()
         ),

@@ -128,7 +128,7 @@ end
     );
     let mut interp = interp_for(&src);
     let r = interp
-        .call("test.wi762desugared.cols", &[])
+        .call("test.wi762desugared.cols", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("cols runs");
     let rows = list_heads(&r);
     assert_eq!(rows.len(), 2, "both rows project to the (name, age) schema");
@@ -160,7 +160,7 @@ end
     );
     let mut interp = interp_for(&src);
     let r = interp
-        .call("test.wi762computed.youngCols", &[])
+        .call("test.wi762computed.youngCols", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("youngCols runs");
     let rows = list_heads(&r);
     assert_eq!(

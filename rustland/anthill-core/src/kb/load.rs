@@ -53911,7 +53911,7 @@ end
         let member_sym = sym(interp.kb(), member);
         let member_ref = Value::term(interp.kb_mut().alloc(Term::Ref(member_sym)));
         let got = interp
-            .call("anthill.reflect.scope", &[member_ref])
+            .call("anthill.reflect.scope", &crate::eval::HostValue::all(&[member_ref])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("reflect.scope({member}): {e:?}"));
         let kb = interp.kb();
         let Value::Entity { functor, named, .. } = &got else {
@@ -54066,7 +54066,7 @@ end
             .iter()
             .map(|&(op, arg)| {
                 let got = interp
-                    .call(op, &[Value::Int(arg)])
+                    .call(op, &crate::eval::HostValue::all(&[Value::Int(arg)])).map(|h| h.value)
                     .unwrap_or_else(|e| panic!("{op}({arg}): {e:?}"));
                 let Value::Int(n) = got else {
                     panic!("{op}({arg}) returned a non-Int {got:?}");

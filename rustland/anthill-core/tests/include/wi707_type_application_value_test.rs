@@ -52,7 +52,7 @@ end
         ("nested", true),
     ] {
         let got = interp
-            .call(&format!("test.wi707.{op}"), &[])
+            .call(&format!("test.wi707.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         assert!(
             matches!(got, Value::Bool(b) if b == want),
@@ -78,7 +78,7 @@ end
 "#;
     let mut interp = interp_for(src);
     interp
-        .call("test.wi707b.facts", &[])
+        .call("test.wi707b.facts", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("facts_of with a parameterized type");
 }
 
@@ -103,7 +103,7 @@ end
     let mut interp = interp_for(src);
     let value_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
         interp
-            .call(&format!("test.wi707c.{op}"), &[])
+            .call(&format!("test.wi707c.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"))
     };
     let named_form = value_of(&mut interp, "named_form");

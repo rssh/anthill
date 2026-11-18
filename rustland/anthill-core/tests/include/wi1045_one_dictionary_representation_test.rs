@@ -159,7 +159,7 @@ fn sigma_dictionary(carrier: &str) -> (Interpreter, Value) {
 /// hand — so the value that reaches `Driver.run` is the one the language makes.
 fn carrier(interp: &mut Interpreter, sort: &str) -> Value {
     interp
-        .call(&format!("test.wi1045.{sort}.mk"), &[])
+        .call(&format!("test.wi1045.{sort}.mk"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{sort}.mk() must run, got {e:?}"))
 }
 
@@ -317,8 +317,8 @@ fn a_conditional_provisions_sub_dictionary_projects_by_index_on_both_sides() {
     let via_builtin = interp
         .call(
             "anthill.realization.runtime.Dictionary.sub",
-            &[bound.clone(), Value::Int(0)],
-        )
+            &anthill_core::eval::HostValue::all(&[bound.clone(), Value::Int(0)]),
+        ).map(|h| h.value)
         .expect("Dictionary.sub must project slot 0");
     assert_eq!(
         as_dictionary(&interp, &via_builtin),
@@ -370,8 +370,8 @@ fn the_marker_is_refused_at_every_dispatch_read() {
     let err = interp
         .call(
             "anthill.realization.runtime.Dictionary.resolveOp",
-            &[marker.clone(), Value::SymbolRef(eq_op)],
-        )
+            &anthill_core::eval::HostValue::all(&[marker.clone(), Value::SymbolRef(eq_op)]),
+        ).map(|h| h.value)
         .expect_err("resolveOp MINTS A CALLABLE, so a marker must not resolve one");
     assert!(
         format!("{err}").contains("no provider"),
@@ -379,7 +379,7 @@ fn the_marker_is_refused_at_every_dispatch_read() {
     );
 
     let err = interp
-        .call("anthill.realization.runtime.Dictionary.ops", &[marker])
+        .call("anthill.realization.runtime.Dictionary.ops", &anthill_core::eval::HostValue::all(&[marker])).map(|h| h.value)
         .expect_err("the BULK face must refuse the marker up front, not answer `nil`");
     assert!(
         format!("{err}").contains("no provider"),

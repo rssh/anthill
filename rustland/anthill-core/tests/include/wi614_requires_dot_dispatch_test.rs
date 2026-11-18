@@ -75,10 +75,10 @@ end
 fn find_on_finite_collection_map_result() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp
-        .call("wi614.requires_dispatch.mk_list", &[])
+        .call("wi614.requires_dispatch.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got = interp
-        .call("wi614.requires_dispatch.map_then_find", &[xs])
+        .call("wi614.requires_dispatch.map_then_find", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call map_then_find: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 3);
 }
@@ -88,10 +88,10 @@ fn find_on_finite_collection_map_result() {
 fn is_empty_on_finite_collection_filter_result() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp
-        .call("wi614.requires_dispatch.mk_list", &[])
+        .call("wi614.requires_dispatch.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got = interp
-        .call("wi614.requires_dispatch.filter_then_is_empty", &[xs])
+        .call("wi614.requires_dispatch.filter_then_is_empty", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call filter_then_is_empty: {e:?}"));
     assert_eq!(
         got.literal_bool(interp.kb()),
@@ -106,10 +106,10 @@ fn is_empty_on_finite_collection_filter_result() {
 fn iterator_on_finite_collection_map_result() {
     let mut interp = crate::common::interp_for(SRC);
     let xs = interp
-        .call("wi614.requires_dispatch.mk_list", &[])
+        .call("wi614.requires_dispatch.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got = interp
-        .call("wi614.requires_dispatch.map_then_iterator_count", &[xs])
+        .call("wi614.requires_dispatch.map_then_iterator_count", &anthill_core::eval::HostValue::all(&[xs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call map_then_iterator_count: {e:?}"));
     assert_eq!(
         expect_int(got, interp.kb()),
@@ -125,10 +125,10 @@ fn iterator_on_finite_collection_map_result() {
 fn is_empty_on_concrete_list_via_provides() {
     let mut interp = crate::common::interp_for(SRC);
     let empty = interp
-        .call("wi614.requires_dispatch.mk_empty", &[])
+        .call("wi614.requires_dispatch.mk_empty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build empty list");
     let got = interp
-        .call("wi614.requires_dispatch.list_is_empty", &[empty])
+        .call("wi614.requires_dispatch.list_is_empty", &anthill_core::eval::HostValue::all(&[empty])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call list_is_empty(empty): {e:?}"));
     assert_eq!(
         got.literal_bool(interp.kb()),
@@ -136,10 +136,10 @@ fn is_empty_on_concrete_list_via_provides() {
         "[] is empty; got {got:?}"
     );
     let full = interp
-        .call("wi614.requires_dispatch.mk_list", &[])
+        .call("wi614.requires_dispatch.mk_list", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build list");
     let got2 = interp
-        .call("wi614.requires_dispatch.list_is_empty", &[full])
+        .call("wi614.requires_dispatch.list_is_empty", &anthill_core::eval::HostValue::all(&[full])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call list_is_empty(full): {e:?}"));
     assert_eq!(
         got2.literal_bool(interp.kb()),

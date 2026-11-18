@@ -28,7 +28,7 @@ use crate::common::{interp_for, parse_errs, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     match interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         Value::Int(i) => i,
@@ -41,7 +41,7 @@ fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
 /// [`crate::common::sole_column`]: a bare `Int64` here would mean the collapse came back.
 fn run_int_column(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     let v = interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"));
     match crate::common::sole_column(&v) {
         Value::Int(i) => i,

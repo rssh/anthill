@@ -86,7 +86,7 @@ end
         ("test.g9ea9.rules.drive_sigma", 8),
         ("test.g9ea9.rules.drive_rho", 1),
     ] {
-        match interp.call(path, &[]) {
+        match interp.call(path, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) if n == want => {}
             other => panic!("{path} must answer {want}; got {other:?}"),
         }
@@ -114,8 +114,8 @@ namespace test.g9ea9.trap
 end
 "#;
     let mut interp = crate::common::interp_for(SRC);
-    let bare = interp.call("test.g9ea9.trap.bare", &[]).expect("bare RHS fires");
-    let paren = interp.call("test.g9ea9.trap.paren", &[]).expect("parenthesised RHS fires");
+    let bare = interp.call("test.g9ea9.trap.bare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("bare RHS fires");
+    let paren = interp.call("test.g9ea9.trap.paren", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("parenthesised RHS fires");
     assert_eq!(format!("{bare:?}"), format!("{paren:?}"));
 }
 

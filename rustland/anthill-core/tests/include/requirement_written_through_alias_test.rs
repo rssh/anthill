@@ -151,7 +151,7 @@ fn levels(at: &str, param: &str, arg: &str) -> [(&'static str, String); 2] {
 /// Load, call `test.<ns>.go()`, and hand back the integer it answers.
 fn run(ns: &str, body: &str) -> i64 {
     let mut interp = interp_for(&source(ns, body));
-    match interp.call(&format!("test.{ns}.go"), &[]) {
+    match interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{ns}: expected an Int64, got {other:?}"),
     }

@@ -128,7 +128,7 @@ end
             src
         };
         let mut interp = common::interp_for(&src);
-        let result = interp.call("test.dxvkRigid.Driver.selected", &[]);
+        let result = interp.call("test.dxvkRigid.Driver.selected", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
         assert!(
             matches!(result, Ok(anthill_core::eval::Value::Int(17))),
             "{result:?}"
@@ -187,7 +187,7 @@ end
         panic!("the RHS must retain its dictionary call")
     };
     kb.set_op_body_node(answer, rhs);
-    let result = interp.call("test.dxvkEquation.Lib.answer", &[]);
+    let result = interp.call("test.dxvkEquation.Lib.answer", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
     assert!(
         matches!(result, Ok(anthill_core::eval::Value::Int(7))),
         "{result:?}"

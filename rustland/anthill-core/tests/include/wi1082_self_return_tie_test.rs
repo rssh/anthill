@@ -388,7 +388,7 @@ fn an_elided_self_return_still_threads_the_element() {
          \x20 operation size() -> Int64 = length(grown())\n\
          end\n",
     );
-    let size = interp.call("test.wi1082.thread.size", &[]).expect("length");
+    let size = interp.call("test.wi1082.thread.size", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("length");
     assert!(
         matches!(size, Value::Int(2)),
         "the elided `-> List` is this instance's element, so the grown list is still a \
@@ -470,7 +470,7 @@ fn a_sibling_called_at_another_element_runs() {
          end\n",
     );
     let n = interp
-        .call("test.wi1082.mapped.n", &[])
+        .call("test.wi1082.mapped.n", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("mapElems runs");
     assert!(
         matches!(n, Value::Int(1)),

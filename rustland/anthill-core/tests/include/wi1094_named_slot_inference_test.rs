@@ -131,7 +131,7 @@ fn load_errs(src: &str) -> Vec<String> {
 /// clean-load assertion.
 fn eval_int(src: &str, entry: &str, why: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[Value::Int(0)]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{why}; got {other:?}\n{src}"),
     }
@@ -783,7 +783,7 @@ fn an_op_scoped_named_slot_keeps_its_own_reading() {
     // bracket that were accepted and dropped — WI-841's measured defect — would show as
     // the default's number rather than as an error.
     let mut interp = crate::common::interp_for(&driver("wi1094.opslot.pinned", "[d = LoudDesc]"));
-    let got = interp.call("wi1094.opslot.pinned.Driver.run", &[Value::Int(0)]);
+    let got = interp.call("wi1094.opslot.pinned.Driver.run", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(99))),
         "the written binder must select `LoudDesc` — a 1 is `Widget`'s own provision, \

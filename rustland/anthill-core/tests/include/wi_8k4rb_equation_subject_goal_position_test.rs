@@ -341,7 +341,7 @@ fn an_operation_body_citation_still_inlines_and_answers() {
              operation drive(n: Int64) -> Int64 = tauV()\nend\n"
         );
         let mut interp = crate::common::interp_for(&src);
-        match interp.call(&format!("zz8K4RB.val{label}.drive"), &[Value::Int(0)]) {
+        match interp.call(&format!("zz8K4RB.val{label}.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(7)) => {}
             other => panic!(
                 "{label}: the op-body citation must inline the law and answer 7 — the \
@@ -362,7 +362,7 @@ fn an_operation_body_citation_still_inlines_and_answers() {
          namespace zz8K4RB.xouter\n  import anthill.prelude.Int64\n  \
          operation drive(n: Int64) -> Int64 = zz8K4RB.xinner.tauX()\nend\n",
     );
-    match interp.call("zz8K4RB.xouter.drive", &[Value::Int(0)]) {
+    match interp.call("zz8K4RB.xouter.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(7)) => {}
         other => panic!(
             "the repair the message prescribes — the QUALIFIED name with its parentheses, \

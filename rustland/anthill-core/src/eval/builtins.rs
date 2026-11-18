@@ -4274,6 +4274,7 @@ fn kb_loaded(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
             // live KB, so whatever invalidation it does is the established contract here
             // too. These two are the pair no loader ever sees.
             interp.op_body_cache.clear();
+            interp.host_calls.clear();
             // Same rule as the discard side (`Interpreter::sweep_layers`): an in-flight
             // `Forcing` sentinel is control state, not a memo, and dropping it disables
             // const-cycle detection for a const whose body is being evaluated right now.

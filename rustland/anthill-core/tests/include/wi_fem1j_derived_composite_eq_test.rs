@@ -93,7 +93,7 @@ end
 }
 
 fn call_bool(interp: &mut Interpreter, op: &str) -> bool {
-    match interp.call(&format!("{NS}.{op}"), &[]) {
+    match interp.call(&format!("{NS}.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("`{op}`: expected a Bool, got {other:?}"),
     }

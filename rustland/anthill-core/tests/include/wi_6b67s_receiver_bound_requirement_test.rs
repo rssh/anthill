@@ -372,7 +372,7 @@ fn a_correct_selection_still_loads_and_runs() {
            firstOf(SortedSet.toList(SortedSet.insert(SortedSet.insert(s, \"aaa\"), \"zz\")))",
     );
     let mut interp = crate::common::interp_for(&src);
-    match interp.call("probe.b6.drive", &[Value::Int(0)]) {
+    match interp.call("probe.b6.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Str(s)) => assert_eq!(
             &*s, "zz",
             "the receiver bracket must still select ByLength, which orders by length — \

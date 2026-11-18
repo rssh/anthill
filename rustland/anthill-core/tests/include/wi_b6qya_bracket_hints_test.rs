@@ -64,7 +64,7 @@ fn source(ns: &str, body: &str) -> String {
 /// The integer `go() -> Int64 = <expr>` answers, as text.
 fn run(ns: &str, expr: &str) -> String {
     let mut interp = interp_for(&source(ns, &format!("  operation go() -> Int64 = {expr}")));
-    match interp.call(&format!("test.{ns}.go"), &[]) {
+    match interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n.to_string(),
         other => panic!("{ns}: expected an Int64, got {other:?}"),
     }
@@ -106,7 +106,7 @@ fn a_bracket_that_pins_an_arrow_lifts_an_operation_name() {
     ] {
         let body = format!("  operation go() -> Int64 =\n    let h = {held}\n    run(h, 41)");
         let mut interp = interp_for(&source(ns, &body));
-        match interp.call(&format!("test.{ns}.go"), &[]) {
+        match interp.call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(42)) => {}
             other => panic!("{ns}: expected 42, got {other:?}"),
         }

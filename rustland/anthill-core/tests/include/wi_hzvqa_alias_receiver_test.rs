@@ -116,7 +116,7 @@ fn run(ns: &str, body: &str) -> String {
 fn run_source(ns: &str, source: &str) -> String {
     let mut interp = interp_for(source);
     let value = interp
-        .call(&format!("test.{ns}.go"), &[])
+        .call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{ns}: {e:?}"));
     shown(value)
 }

@@ -77,7 +77,7 @@ fn dot_rule_macro_expands_at_compile_time() {
 fn dot_rule_macro_output_re_types_and_evaluates() {
     let mut interp = interp_for(EXPANDS);
     let got = interp
-        .call("test.wi902.Holder.run", &[])
+        .call("test.wi902.Holder.run", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("run evaluates");
     match got {
         Value::Int(n) => assert_eq!(n, 105, "wrapped(h, 5) = add(5, 100) = 105"),

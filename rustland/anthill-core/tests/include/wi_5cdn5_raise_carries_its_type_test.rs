@@ -135,7 +135,7 @@ end
 #[track_caller]
 fn answers(interp: &mut Interpreter, op: &str, args: &[Value]) -> String {
     let v = interp
-        .call(&format!("test.c5.{op}"), args)
+        .call(&format!("test.c5.{op}"), &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}({args:?}): {e}"));
     crate::common::scalar_str(interp.kb(), &v).unwrap_or_else(|| panic!("{op}: {v:?}"))
 }
@@ -216,7 +216,7 @@ fn an_error_handler_that_rethrows_keeps_the_raise_s_type() {
             }),
         )
         .expect("register a replacing Error handler");
-    match interp.call("test.c5.nestedS", &[Value::Int(5)]) {
+    match interp.call("test.c5.nestedS", &anthill_core::eval::HostValue::all(&[Value::Int(5)])).map(|h| h.value) {
         Err(EvalError::HandlerError {
             reason: anthill_core::eval::HandlerErrorReason::ThrowNotAdmitted { thrown, thrown_type, .. },
             ..
@@ -252,7 +252,7 @@ end
     interp
         .register_standard_effect_handlers()
         .expect("register the standard effect handlers");
-    let v = interp.call("test.c5cl.caught", &[]).expect("caught answers");
+    let v = interp.call("test.c5cl.caught", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("caught answers");
     assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(7));
 }
 
@@ -520,7 +520,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
     // `operation_map` names it.
     let kb = crate::common::try_load_kb_prepared(HOST_PROGRAM, |kb| {
         kb.register_host_fn("c5h_box_s", 0, |interp, _| {
-            let payload = interp.call("test.c5h.mkBox", &[])?;
+            let payload = interp.call("test.c5h.mkBox", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
             Err(interp.raise_error(payload))
         })
         .expect("register c5h_box_s");
@@ -533,7 +533,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
         })
         .expect("register c5h_silent");
         kb.register_host_fn("c5h_box_s1", 1, |interp, _| {
-            let payload = interp.call("test.c5h.mkBox", &[])?;
+            let payload = interp.call("test.c5h.mkBox", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
             Err(interp.raise_error(payload))
         })
         .expect("register c5h_box_s1");
@@ -555,7 +555,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
         .register_effect_handler(
             "test.c5h.Ticker",
             Box::new(|i, _op, _args| {
-                let payload = i.call("test.c5h.mkBox", &[])?;
+                let payload = i.call("test.c5h.mkBox", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
                 let type_value = i.type_value_of(&payload)?;
                 Ok(anthill_core::eval::effects::HandlerAction::Throw(payload, type_value))
             }),
@@ -567,7 +567,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
     // hands each member a channel of its own.
     for op in ["nestedH", "nestedP", "nestedQ", "nestedT"] {
         let v = interp
-            .call(&format!("test.c5h.{op}"), &[])
+            .call(&format!("test.c5h.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert_eq!(crate::common::scalar_str(interp.kb(), &v).as_deref(), Some("outer"), "{op}");
     }
@@ -576,7 +576,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
     // boundary caught it instead of declining: an inner boundary swallowed a label the row had
     // assigned to the outer. BACK-OUT: a raise of the unknown type answered as a type every
     // pattern admits (`Interpreter::raised_type_value`), and `atBox` answers "stolen".
-    match interp.call("test.c5h.atBox", &[]) {
+    match interp.call("test.c5h.atBox", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised { payload, raised_type: anthill_core::eval::RaisedType::Unknown }) => {
             assert_eq!(crate::common::scalar_str(interp.kb(), &payload).as_deref(), Some("tick"))
         }
@@ -586,7 +586,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
     // A host function raising for `silent`, whose row declares no `Error`, is refused where it
     // raises (WI-20261027-WGJFN's review). BACK-OUT: the raise of the unknown type, and
     // `viaSilent` — typed as raising nothing — answers `Err(Raised)`.
-    match interp.call("test.c5h.viaSilent", &[]) {
+    match interp.call("test.c5h.viaSilent", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::RaiseTypeUnread { detail }) => {
             assert!(detail.contains("`test.c5h.Host.silent` raised, and its row declares no `Error`"), "{detail}")
         }
@@ -606,7 +606,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
             }),
         )
         .expect("register a Ticker handler throwing a String");
-    match interp.call("test.c5h.nestedT", &[]) {
+    match interp.call("test.c5h.nestedT", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::HandlerError {
             reason:
                 anthill_core::eval::HandlerErrorReason::ThrowNotAdmitted {
@@ -635,7 +635,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
             }),
         )
         .expect("register an Error handler");
-    match interp.call("test.c5h.atBox", &[]) {
+    match interp.call("test.c5h.atBox", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(EvalError::Raised {
             payload,
             raised_type: anthill_core::eval::RaisedType::Evidence(_),
@@ -673,7 +673,7 @@ fn a_division_by_zero_is_caught_at_its_sort() {
     let mut interp = crate::common::interp_for(RUNTIME);
     for (op, n, want) in [("caughtDiv", 0, -1), ("caughtDiv", 5, 2)] {
         let v = interp
-            .call(&format!("test.c5rt.{op}"), &[Value::Int(n)])
+            .call(&format!("test.c5rt.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}({n}): {e}"));
         assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(want), "{op}({n})");
     }
@@ -684,7 +684,7 @@ fn a_failed_match_is_caught_at_its_sort() {
     let mut interp = crate::common::interp_for(RUNTIME);
     for (n, want) in [(7, -2), (1, 10)] {
         let v = interp
-            .call("test.c5rt.caughtMatch", &[Value::Int(n)])
+            .call("test.c5rt.caughtMatch", &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("caughtMatch({n}): {e}"));
         assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(want), "caughtMatch({n})");
     }
@@ -860,7 +860,7 @@ fn a_division_through_a_spec_dictionary_is_caught() {
     let mut interp = crate::common::interp_for(F1_PROGRAM);
     for (n, want) in [(0, -1), (5, 2)] {
         let v = interp
-            .call("test.c5f1.viaValue", &[Value::Int(n)])
+            .call("test.c5f1.viaValue", &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("viaValue({n}): {e}"));
         assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(want), "viaValue({n})");
     }
@@ -881,7 +881,7 @@ fn an_error_handler_raising_its_own_value_through_err_is_refused() {
             Box::new(|i, _op, _args| Err(i.raise_error(Value::Str("wrapped".into())))),
         )
         .expect("register a wrapping Error handler");
-    match interp.call("test.c5.nestedS", &[Value::Int(-1)]) {
+    match interp.call("test.c5.nestedS", &anthill_core::eval::HostValue::all(&[Value::Int(-1)])).map(|h| h.value) {
         Err(EvalError::HandlerError {
             reason:
                 anthill_core::eval::HandlerErrorReason::ThrowNotAdmitted {
@@ -937,7 +937,7 @@ fn a_host_raise_under_a_projected_row_is_refused() {
     // NOT THE RECIPE, BY NAME: the host function must be registered before the load.
     let kb = crate::common::try_load_kb_prepared(PROJECTED, |kb| {
         kb.register_host_fn("c5p_pull", 1, |interp, _| {
-            let payload = interp.call("test.c5p.mkBoom", &[])?;
+            let payload = interp.call("test.c5p.mkBoom", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
             Err(interp.raise_error(payload))
         })
         .expect("register c5p_pull");
@@ -945,7 +945,7 @@ fn a_host_raise_under_a_projected_row_is_refused() {
     .unwrap_or_else(|errs| panic!("the fixture must load: {errs:#?}"));
     let mut interp = Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
-    match interp.call("test.c5p.caughtPull", &[]) {
+    match interp.call("test.c5p.caughtPull", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Err(e @ EvalError::RaiseTypeUnread { .. }) => assert!(
             e.to_string().contains("through a projection or a row variable"),
             "{e}"

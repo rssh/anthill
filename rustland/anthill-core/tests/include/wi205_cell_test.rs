@@ -28,7 +28,7 @@ end
     let mut interp = interp_for(src);
 
     let r = interp
-        .call("test.wi205_round_trip.make_and_read", &[Value::Int(42)])
+        .call("test.wi205_round_trip.make_and_read", &anthill_core::eval::HostValue::all(&[Value::Int(42)])).map(|h| h.value)
         .expect("make_and_read");
     assert_eq!(r.literal_int64(interp.kb()), Some(42));
 }
@@ -47,16 +47,16 @@ end
     let mut interp = interp_for(src);
 
     let cell = interp
-        .call("test.wi205_overwrite.make", &[Value::Int(1)])
+        .call("test.wi205_overwrite.make", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .expect("make");
     interp
         .call(
             "test.wi205_overwrite.overwrite",
-            &[cell.clone(), Value::Int(99)],
-        )
+            &anthill_core::eval::HostValue::all(&[cell.clone(), Value::Int(99)]),
+        ).map(|h| h.value)
         .expect("overwrite");
     let r = interp
-        .call("test.wi205_overwrite.read", &[cell])
+        .call("test.wi205_overwrite.read", &anthill_core::eval::HostValue::all(&[cell])).map(|h| h.value)
         .expect("read");
     assert_eq!(r.literal_int64(interp.kb()), Some(99));
 }
@@ -78,24 +78,24 @@ end
     let mut interp = interp_for(src);
 
     let a = interp
-        .call("test.wi205_distinct.make", &[Value::Int(1)])
+        .call("test.wi205_distinct.make", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .expect("make a");
     let b = interp
-        .call("test.wi205_distinct.make", &[Value::Int(2)])
+        .call("test.wi205_distinct.make", &anthill_core::eval::HostValue::all(&[Value::Int(2)])).map(|h| h.value)
         .expect("make b");
 
     interp
         .call(
             "test.wi205_distinct.set_value",
-            &[a.clone(), Value::Int(100)],
-        )
+            &anthill_core::eval::HostValue::all(&[a.clone(), Value::Int(100)]),
+        ).map(|h| h.value)
         .expect("set a");
 
     let read_a = interp
-        .call("test.wi205_distinct.read", &[a])
+        .call("test.wi205_distinct.read", &anthill_core::eval::HostValue::all(&[a])).map(|h| h.value)
         .expect("read a");
     let read_b = interp
-        .call("test.wi205_distinct.read", &[b])
+        .call("test.wi205_distinct.read", &anthill_core::eval::HostValue::all(&[b])).map(|h| h.value)
         .expect("read b");
     assert_eq!(
         read_a.literal_int64(interp.kb()),
@@ -123,7 +123,7 @@ end
 
     let before = interp.cell_arena_live_count();
     let cell = interp
-        .call("test.wi205_refcount.make", &[Value::Int(7)])
+        .call("test.wi205_refcount.make", &anthill_core::eval::HostValue::all(&[Value::Int(7)])).map(|h| h.value)
         .expect("make");
     assert_eq!(
         interp.cell_arena_live_count(),
@@ -152,7 +152,7 @@ end
 
     let before = interp.cell_arena_live_count();
     let h1 = interp
-        .call("test.wi205_clone.make", &[Value::Int(0)])
+        .call("test.wi205_clone.make", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         .expect("make");
     let h2 = h1.clone();
     drop(h1);
@@ -196,7 +196,7 @@ end
     // overwrites our cell with a smaller n; Cell.get(c) - n becomes
     // negative on at least some frames and the sum is strictly < 0.
     let r = interp
-        .call("test.wi205_recursive.chain", &[Value::Int(100)])
+        .call("test.wi205_recursive.chain", &anthill_core::eval::HostValue::all(&[Value::Int(100)])).map(|h| h.value)
         .expect("chain");
     assert_eq!(
         r.literal_int64(interp.kb()),

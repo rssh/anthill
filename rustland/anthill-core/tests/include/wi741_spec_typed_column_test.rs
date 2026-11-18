@@ -276,16 +276,16 @@ fn wi741_a_spec_typed_column_joins_a_concrete_one() {
     // "root" satisfies BOTH clauses: `eq("root", "root")`, and `parent(of: "root")`.
     // A schema that silently dropped a clause would answer 1.
     let rows = interp
-        .call("test.wi741.ground.rootRows", &[])
+        .call("test.wi741.ground.rootRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a spec-typed column must not veto the relation's schema");
     assert_eq!(int_of(&rows, "rootRows"), 2, "both clauses derive `root`");
     // "bart" satisfies only the `parent` clause — the `eq` clause is a real filter.
     let rows = interp
-        .call("test.wi741.ground.bartRows", &[])
+        .call("test.wi741.ground.bartRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call bartRows");
     assert_eq!(int_of(&rows, "bartRows"), 1);
     let rows = interp
-        .call("test.wi741.ground.missingRows", &[])
+        .call("test.wi741.ground.missingRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call missingRows");
     assert_eq!(int_of(&rows, "missingRows"), 0);
 }
@@ -326,7 +326,7 @@ fn wi741_the_joined_column_is_typed_string_not_a_wildcard() {
 fn wi741_a_spec_typed_column_drains_its_values() {
     let mut interp = interp_for(GENERATED);
     let v = interp
-        .call("test.wi741.generated.rows", &[])
+        .call("test.wi741.generated.rows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a spec-filtered column must drain");
     let mut got = list_column_strings(interp.kb(), &v);
     got.sort();
@@ -349,7 +349,7 @@ fn wi741_a_spec_typed_column_drains_its_values() {
 fn wi741_a_single_clause_spec_typed_column_still_drains() {
     let mut interp = interp_for(SOLO);
     let v = interp
-        .call("test.wi741.solo.rows", &[])
+        .call("test.wi741.solo.rows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a one-clause spec-typed relation must load and drain");
     assert_eq!(list_column_strings(interp.kb(), &v), vec!["root".to_string()]);
 }

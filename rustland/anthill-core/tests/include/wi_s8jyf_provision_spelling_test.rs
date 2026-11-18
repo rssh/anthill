@@ -193,7 +193,7 @@ end
     let drive = |ns: &str, claim: &str| {
         let src = program(ns, claim);
         let mut interp = crate::common::interp_for(&src);
-        format!("{:?}", interp.call(&format!("{ns}.Driver.drive"), &[]))
+        format!("{:?}", interp.call(&format!("{ns}.Driver.drive"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value))
     };
     assert_eq!(
         drive("s8jyf.disp.yes", "    provides Sp[T = Carrier]"),

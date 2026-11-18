@@ -577,7 +577,7 @@ end
 
 fn drive_int(src: &str, entry: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }
@@ -715,7 +715,7 @@ fn an_operation_run_by_the_bridge_queries_a_rule_with_its_parameter() {
 #[test]
 fn the_same_operation_called_from_the_interpreter_answers_as_before() {
     let mut interp = crate::common::interp_for(BRIDGE);
-    match interp.call("wiprva2.bridge.Driver.fInt", &[Value::Int(3)]) {
+    match interp.call("wiprva2.bridge.Driver.fInt", &anthill_core::eval::HostValue::all(&[Value::Int(3)])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 3),
         other => panic!("expected an Int64, got {other:?}"),
     }

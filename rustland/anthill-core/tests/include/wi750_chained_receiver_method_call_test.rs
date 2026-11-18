@@ -105,7 +105,7 @@ end
     let mut interp = interp_for(SRC);
     let call = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> i64 {
         match interp
-            .call(&format!("test.wi750local.{op}"), &[])
+            .call(&format!("test.wi750local.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("`{op}` must run; got {e:?}"))
         {
             Value::Int(n) => n,
@@ -190,7 +190,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     match interp
-        .call("test.wi750shadow.shadowed", &[])
+        .call("test.wi750shadow.shadowed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the shadowed chained receiver runs")
     {
         Value::Int(n) => assert_eq!(
@@ -571,7 +571,7 @@ end
     let mut interp = interp_for(SRC);
     let call = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> i64 {
         match interp
-            .call(&format!("test.wi750depth2.{op}"), &[])
+            .call(&format!("test.wi750depth2.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("`{op}` must run; got {e:?}"))
         {
             Value::Int(n) => n,

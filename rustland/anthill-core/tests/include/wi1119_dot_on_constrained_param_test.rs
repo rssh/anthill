@@ -57,7 +57,7 @@ end
 /// call; fresh per program because a trapped call poisons later calls on one interpreter.
 fn eval_fresh(src: &str, entry: &str) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(entry, &[Value::Int(0)])
+    interp.call(entry, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 fn assert_int(src: &str, entry: &str, want: i64, why: &str) {

@@ -73,9 +73,9 @@ end
 #[test]
 fn covariant_return_yields_receiver_type() {
     let mut interp = crate::common::interp_for(SRC);
-    let b = interp.call("wi491.covariant.mk", &[]).expect("build box");
+    let b = interp.call("wi491.covariant.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("build box");
     let got = interp
-        .call("wi491.covariant.roundtrip", &[b])
+        .call("wi491.covariant.roundtrip", &anthill_core::eval::HostValue::all(&[b])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call roundtrip: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 7);
 }
@@ -85,9 +85,9 @@ fn covariant_return_yields_receiver_type() {
 #[test]
 fn covariant_return_admissible_where_provided_spec_expected() {
     let mut interp = crate::common::interp_for(SRC);
-    let b = interp.call("wi491.covariant.mk", &[]).expect("build box");
+    let b = interp.call("wi491.covariant.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("build box");
     let got = interp
-        .call("wi491.covariant.via_spec", &[b])
+        .call("wi491.covariant.via_spec", &anthill_core::eval::HostValue::all(&[b])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call via_spec: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 7);
 }

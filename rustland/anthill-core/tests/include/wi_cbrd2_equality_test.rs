@@ -230,7 +230,7 @@ end
         assert_eq!(answers(&mut kb, &format!("test.cbrd2eq.term.{goal}")), want, "`{goal}`");
     }
     let mut interp = crate::common::interp_for(src);
-    let got = interp.call("test.cbrd2eq.term.opBare", &[]).expect("runs");
+    let got = interp.call("test.cbrd2eq.term.opBare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("runs");
     assert_eq!(got.literal_bool(interp.kb()), Some(false), "`as_term(nan) = as_term(nan)`");
 }
 
@@ -259,7 +259,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     for (op, want) in [("withNan", false), ("plain", true), ("units", true)] {
-        let got = interp.call(&format!("test.cbrd2eq.tuple.{op}"), &[]).expect("runs");
+        let got = interp.call(&format!("test.cbrd2eq.tuple.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("runs");
         assert_eq!(got.literal_bool(interp.kb()), Some(want), "`{op}`");
     }
     let mut kb = crate::common::load_kb_with(src);
@@ -293,7 +293,7 @@ namespace test.cbrd2eq.hk
 end
 ";
     let mut interp = crate::common::interp_for(src);
-    let got = interp.call("test.cbrd2eq.hk.go", &[]).expect("runs");
+    let got = interp.call("test.cbrd2eq.hk.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("runs");
     assert_eq!(crate::common::scalar_int(interp.kb(), &got), Some(5));
     let compared = src.replace(
         "end\n",

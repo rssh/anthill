@@ -151,7 +151,7 @@ end
 "#,
     );
     let r = interp
-        .call("test.wi426.eval1.main", &[])
+        .call("test.wi426.eval1.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call main");
     assert_eq!(
         expect_int(r, interp.kb()),
@@ -174,7 +174,7 @@ end
 "#,
     );
     let r = interp
-        .call("test.wi426.eval2.main", &[])
+        .call("test.wi426.eval2.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call main");
     assert_eq!(
         expect_int(r, interp.kb()),
@@ -224,9 +224,9 @@ fn carrier_param_spec_op_by_name_typechecks_and_evaluates() {
         load_errors(SIBLING_SRC),
     );
     let mut interp = interp_for(SIBLING_SRC);
-    let b = interp.call("test.wi426.sib.mk", &[]).expect("mk");
+    let b = interp.call("test.wi426.sib.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("mk");
     let n = interp
-        .call("test.wi426.sib.bag_size_byname", &[b.clone()])
+        .call("test.wi426.sib.bag_size_byname", &anthill_core::eval::HostValue::all(&[b.clone()])).map(|h| h.value)
         .expect("size(c: b)");
     assert_eq!(
         expect_int(n, interp.kb()),
@@ -234,7 +234,7 @@ fn carrier_param_spec_op_by_name_typechecks_and_evaluates() {
         "size(c: b) over a 3-element bag"
     );
     let f = interp
-        .call("test.wi426.sib.bag_find_byname", &[b])
+        .call("test.wi426.sib.bag_find_byname", &anthill_core::eval::HostValue::all(&[b])).map(|h| h.value)
         .expect("find(c: b, pred: big)");
     assert_eq!(
         expect_int(f, interp.kb()),
@@ -292,13 +292,13 @@ end
         load_errors(src),
     );
     let mut interp = interp_for(src);
-    let a = interp.call("test.wi426.dup.caller", &[]).expect("caller");
+    let a = interp.call("test.wi426.dup.caller", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("caller");
     assert_eq!(
         expect_int(a, interp.kb()),
         1,
         "`two(7, a: 1)` gives parameter `a` the LABELLED 1"
     );
-    let b = interp.call("test.wi426.dup.callerb", &[]).expect("callerb");
+    let b = interp.call("test.wi426.dup.callerb", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("callerb");
     assert_eq!(
         expect_int(b, interp.kb()),
         7,

@@ -185,7 +185,7 @@ end
 
 fn call(entry: &str) -> Result<eval::Value, eval::EvalError> {
     let mut interp = crate::common::interp_for(THIRD);
-    interp.call(&format!("test.dey66.third.{entry}"), &[])
+    interp.call(&format!("test.dey66.third.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
 }
 
 /// WI-20261102-6GAS1's row: `Desc.describe(leaf())` dispatches to `LeafDesc.describeLeaf`,

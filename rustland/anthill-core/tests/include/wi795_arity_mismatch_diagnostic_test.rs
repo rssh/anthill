@@ -241,7 +241,7 @@ namespace test.wi795.onebinder
 end
 "#,
     );
-    match interp.call("test.wi795.onebinder.drive", &[]) {
+    match interp.call("test.wi795.onebinder.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(v)) => assert_eq!(v, 2, "`x.b` of `(a: 1, b: 2)`"),
         other => panic!("drive: expected Int(2), got {other:?}"),
     }

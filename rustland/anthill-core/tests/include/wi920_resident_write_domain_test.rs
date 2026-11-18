@@ -58,26 +58,7 @@ const SRC: &str = "namespace test.alpha\n  entity Widget920\n  fact Widget920()\
 /// output file after the fact's domain — the one convention that makes the domain
 /// visible from outside the KB.
 fn by_domain_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
-    let fs = interp.kb_mut().intern("FileStore");
-    let by_domain = interp.kb_mut().intern("ByDomain");
-    let root_sym = interp.kb_mut().intern("root");
-    let convention_sym = interp.kb_mut().intern("convention");
-    let store_val = Value::Entity {
-        functor: fs,
-        pos: vec![].into(),
-        named: vec![
-            (root_sym, Value::Str(root.to_str().unwrap().to_string())),
-            (
-                convention_sym,
-                Value::Entity {
-                    functor: by_domain,
-                    pos: vec![].into(),
-                    named: vec![].into(),
-                },
-            ),
-        ]
-        .into(),
-    };
+    let store_val = crate::common::file_store_value(interp.kb(), "FileStore", root.to_str().unwrap(), "by_domain");
     let key = interp
         .store_canonical_key(&store_val)
         .expect("canonical key");
@@ -109,8 +90,8 @@ fn persist(interp: &mut Interpreter, store: &Value, qname: &str) {
     interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store.clone(), fact, Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store.clone(), fact, crate::common::no_meta(interp.kb())]),
+        ).map(|h| h.value)
         .expect("persist ok");
 }
 
@@ -186,8 +167,8 @@ fn facts_from_two_namespaces_are_filed_under_their_own_domains() {
     interp
         .call(
             "anthill.persistence.Store.flush",
-            &[store.clone(), Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store.clone(), crate::common::nil_value(interp.kb())]),
+        ).map(|h| h.value)
         .expect("flush ok");
 
     assert_eq!(
@@ -211,8 +192,8 @@ fn the_persisted_content_is_unchanged() {
     interp
         .call(
             "anthill.persistence.Store.flush",
-            &[store.clone(), Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store.clone(), crate::common::nil_value(interp.kb())]),
+        ).map(|h| h.value)
         .expect("flush ok");
 
     let written = files_written(dir.path());
@@ -244,8 +225,8 @@ fn a_head_that_declares_no_scope_is_filed_under_global() {
     interp
         .call(
             "anthill.persistence.Store.persist",
-            &[store.clone(), fact, Value::Unit],
-        )
+            &anthill_core::eval::HostValue::all(&[store.clone(), fact, crate::common::no_meta(interp.kb())]),
+        ).map(|h| h.value)
         .expect("an undeclared head still persists");
 
     let kb = interp.kb();

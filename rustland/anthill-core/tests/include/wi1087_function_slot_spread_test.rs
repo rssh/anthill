@@ -80,7 +80,7 @@ use crate::wi1012_static_supplier_tie_test::refusal;
 fn drive_int(src: &str, op: &str) -> i64 {
     // A FRESH interpreter per call — a reused one poisons later calls after a trap.
     match crate::common::interp_for(src)
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,

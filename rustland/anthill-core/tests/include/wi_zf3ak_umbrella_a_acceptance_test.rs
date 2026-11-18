@@ -95,7 +95,7 @@ fn a_generic_identity_infers_type_for_every_face() {
         ("via_let", true),
     ] {
         let v = interp
-            .call(&format!("test.zf3ak.{op}"), &[])
+            .call(&format!("test.zf3ak.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         if applied {
             assert_applied_cell(interp.kb(), &v, op);
@@ -104,7 +104,7 @@ fn a_generic_identity_infers_type_for_every_face() {
         }
     }
     let list = interp
-        .call("test.zf3ak.elems", &[])
+        .call("test.zf3ak.elems", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("elems: {e:?}"));
     let elems = list_heads(&list);
     assert_eq!(elems.len(), 2, "two list elements, got {list:?}");
@@ -227,7 +227,7 @@ fn the_same_inference_without_a_type_value() {
 fn a_bracket_on_the_callee_keeps_its_meaning() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.zf3ak.typed_callee", &[])
+        .call("test.zf3ak.typed_callee", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("typed_callee: {e:?}"));
     assert_applied_cell(interp.kb(), &v, "typed_callee");
 

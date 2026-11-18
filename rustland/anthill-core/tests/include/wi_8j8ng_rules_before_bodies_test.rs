@@ -314,8 +314,8 @@ namespace test.s8j.simp
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    let main = interp.call("test.s8j.simp.main", &[]);
-    let big = interp.call("test.s8j.simp.big", &[anthill_core::eval::Value::Int(1)]);
+    let main = interp.call("test.s8j.simp.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value);
+    let big = interp.call("test.s8j.simp.big", &anthill_core::eval::HostValue::all(&[anthill_core::eval::Value::Int(1)])).map(|h| h.value);
     assert!(matches!(main, Ok(anthill_core::eval::Value::Int(2))), "main(): {main:?}");
     assert!(matches!(big, Ok(anthill_core::eval::Value::Bool(true))), "big(1): {big:?}");
 }

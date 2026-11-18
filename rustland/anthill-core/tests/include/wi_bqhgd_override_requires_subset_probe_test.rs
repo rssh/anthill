@@ -90,7 +90,7 @@ fn loads_and_answers(spec: &str, imp: &str, bx: &str) {
         ("viaGenericCall", 1),
         ("viaBox", 2),
     ] {
-        match interp.call(&format!("test.bqhgd.{op}"), &[]) {
+        match interp.call(&format!("test.bqhgd.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "{op}"),
             other => panic!("{op}: {other:?}"),
         }

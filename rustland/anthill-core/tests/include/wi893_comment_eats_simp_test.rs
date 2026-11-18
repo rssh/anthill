@@ -98,7 +98,7 @@ fn a_comment_above_a_tagged_law_leaves_it_firing() {
         ("driveFlipElse", 40),
     ] {
         let path = format!("wi893.commentEatsTag.C.{op}");
-        match interp.call(&path, &[Value::Int(0)]) {
+        match interp.call(&path, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
             Ok(Value::Int(n)) if n == expected => {}
             other => panic!(
                 "{path} must reduce to {expected} — its `@[simp]` law is its whole \

@@ -85,7 +85,7 @@ end
 fn answers(ns: &str, body: &str) -> i64 {
     let mut interp = interp_for(&program(ns, body));
     let entry = format!("{ns}.go");
-    match interp.call(&entry, &[]) {
+    match interp.call(&entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`{entry}` must run to an Int64: {other:?}"),
     }
@@ -249,7 +249,7 @@ end
 fn an_existential_return_takes_the_positional_binding() {
     let ns = "wi9snr2.ensures";
     let mut interp = interp_for(&existential(ns, "Buf[Int64]"));
-    match interp.call(&format!("{ns}.go"), &[]) {
+    match interp.call(&format!("{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => assert_eq!(n, 42),
         other => panic!("`{ns}.go` must run to an Int64: {other:?}"),
     }
@@ -303,7 +303,7 @@ end
     };
     for (inner, expected) in [("Pair[String, Bool]", 11), ("Pair[Bool, String]", 0)] {
         let mut interp = interp_for(&src(inner));
-        match interp.call(&format!("{ns}.go"), &[]) {
+        match interp.call(&format!("{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(Value::Int(n)) => assert_eq!(n, expected, "`Pair[Int64, {inner}]`"),
             other => panic!("`{ns}.go` must run to an Int64: {other:?}"),
         }

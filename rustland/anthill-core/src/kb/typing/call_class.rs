@@ -1064,9 +1064,9 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
                          argument's construction chose for `{b}` cannot be read here, and \
                          the arguments fix no single provider of its goal, so picking one \
                          would answer for this signature rather than for the value. A host \
-                         that knows it names the witness: `call_with_witnesses` with \
-                         `SlotWitness {{ param: \"{p}\", slot: \"{b}\", witness: \
-                         <provider> }}`; otherwise reach the operation through a typed call.",
+                         passes the argument with its type, as `Interpreter::call` returned \
+                         it (its `{b}` written there); otherwise reach the operation through \
+                         a typed call.",
                         p = kb.local_name_of(*param),
                         b = kb.local_name_of(*binder),
                     )

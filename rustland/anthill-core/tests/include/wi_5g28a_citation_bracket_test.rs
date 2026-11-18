@@ -200,7 +200,7 @@ fn a_bound_value_pins_the_parameter_per_activation() {
     let mut interp = crate::common::interp_for(&program(
         "  operation a() -> Int64 effects {Error} = Wrap.dom(wrap(red())).takeN(5).length()\n",
     ));
-    match interp.call("zz5g28as1.a", &[]) {
+    match interp.call("zz5g28as1.a", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 1, "`wrap(red())` is the one row"),
         other => panic!("expected the one row, got {other:?}"),
     }

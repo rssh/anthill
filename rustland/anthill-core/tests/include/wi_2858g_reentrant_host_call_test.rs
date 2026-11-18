@@ -105,15 +105,15 @@ end
 fn interp() -> Interpreter {
     let kb = crate::common::try_load_kb_prepared(PROGRAM, |kb| {
         kb.register_host_fn("w2858g_bounce", 1, |interp, args| {
-            interp.call("test.w2858g.inner", args)
+            interp.call("test.w2858g.inner", &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         })
         .expect("register w2858g_bounce");
         kb.register_host_fn("w2858g_bounce_twice", 1, |interp, args| {
-            interp.call("test.w2858g.continued", args)
+            interp.call("test.w2858g.continued", &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         })
         .expect("register w2858g_bounce_twice");
         kb.register_host_fn("w2858g_bounce_raising", 1, |interp, args| {
-            interp.call("test.w2858g.innerRaises", args)
+            interp.call("test.w2858g.innerRaises", &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         })
         .expect("register w2858g_bounce_raising");
     })
@@ -126,7 +126,7 @@ fn interp() -> Interpreter {
 #[track_caller]
 fn int_answer(interp: &mut Interpreter, op: &str, n: i64) -> i64 {
     let v = interp
-        .call(op, &[Value::Int(n)])
+        .call(op, &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}({n}) must answer: {e:?}"));
     v.literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("{op}({n}) must answer an Int64, got {v:?}"))
@@ -201,7 +201,7 @@ fn a_loop_of_re_entrant_calls_still_exhausts_the_step_cap() {
     std::thread::spawn(move || {
         let mut interp = interp();
         interp.config_mut().step_cap = Some(20_000);
-        let outcome = match interp.call("test.w2858g.spin", &[Value::Int(1)]) {
+        let outcome = match interp.call("test.w2858g.spin", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value) {
             Err(EvalError::StepsExhausted { .. }) => Ok(()),
             other => Err(format!("expected StepsExhausted, got {other:?}")),
         };
@@ -223,7 +223,7 @@ fn a_loop_of_re_entrant_calls_still_exhausts_the_step_cap() {
 fn a_raise_inside_the_nested_call_reaches_the_outer_boundary() {
     let mut interp = interp();
     let r = interp
-        .call("test.w2858g.caughtAcross", &[])
+        .call("test.w2858g.caughtAcross", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("the outer boundary must catch it: {e:?}"));
     let kb = interp.kb();
     let arm = crate::common::entity_functor(kb, &r).map(|s| kb.qualified_name_of(s).to_string());
@@ -242,7 +242,7 @@ fn a_raise_inside_the_nested_call_reaches_the_outer_boundary() {
 #[test]
 fn an_uncaught_raise_inside_the_nested_call_reaches_the_host() {
     let mut interp = interp();
-    match interp.call("test.w2858g.uncaughtAcross", &[Value::Int(0)]) {
+    match interp.call("test.w2858g.uncaughtAcross", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Err(EvalError::Raised { .. }) => {}
         other => panic!("expected the raise itself, got {other:?}"),
     }

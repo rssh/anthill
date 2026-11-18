@@ -91,7 +91,7 @@ fn direct_dispatch_sole_cover_constructs_deeper_dict() {
   end"#,
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi829.d2.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi829.d2.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(122))),
         "expected Ok(Int(122)) = the deeper dict constructed around the frame's \
@@ -120,7 +120,7 @@ fn exact_depth_sole_cover_still_defers() {
   end"#,
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi829.exact.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi829.exact.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(12))),
         "expected Ok(Int(12)) from the exact-depth sole cover still deferring; got {got:?}"
@@ -147,7 +147,7 @@ fn scalar_param_sole_cover_still_defers() {
   end"#,
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi829.scalar.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi829.scalar.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(1))),
         "expected Ok(Int(1)) from the scalar-param sole cover still deferring; got {got:?}"
@@ -173,7 +173,7 @@ fn direct_dispatch_sole_cover_constructs_depth3() {
   end"#,
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi829.d3.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi829.d3.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(1222))),
         "expected Ok(Int(1222)) = the depth-3 dict constructed around the frame's \

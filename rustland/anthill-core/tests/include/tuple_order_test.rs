@@ -37,7 +37,7 @@ end
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
     let v = interp
-        .call("test.tuple_order.pair", &[Value::Int(1)])
+        .call("test.tuple_order.pair", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
         .expect("call pair");
     match v {
         Value::Tuple { named, .. } => {

@@ -27,7 +27,7 @@ use crate::common::{interp_for, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     match interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,

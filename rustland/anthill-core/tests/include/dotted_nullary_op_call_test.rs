@@ -190,7 +190,7 @@ fn an_operation_body_calls_it_too() {
 end
 ",
     );
-    match interp.call("zzdnco.go", &[]) {
+    match interp.call("zzdnco.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 3),
         other => panic!("go: expected Int(3), got {other:?}"),
     }

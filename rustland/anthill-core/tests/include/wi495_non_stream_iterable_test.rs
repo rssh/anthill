@@ -81,9 +81,9 @@ end
 #[test]
 fn non_stream_iterable_size_evaluates() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
-    let b = interp.call("wi495.nonstream.mk", &[]).expect("build bag");
+    let b = interp.call("wi495.nonstream.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("build bag");
     let got = interp
-        .call("wi495.nonstream.bag_size", &[b])
+        .call("wi495.nonstream.bag_size", &anthill_core::eval::HostValue::all(&[b])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call bag_size: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 3);
 }
@@ -91,15 +91,15 @@ fn non_stream_iterable_size_evaluates() {
 #[test]
 fn non_stream_iterable_is_empty_evaluates() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
-    let full = interp.call("wi495.nonstream.mk", &[]).expect("build bag");
+    let full = interp.call("wi495.nonstream.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("build bag");
     let empty = interp
-        .call("wi495.nonstream.mk_empty", &[])
+        .call("wi495.nonstream.mk_empty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("build empty bag");
     let got_full = interp
-        .call("wi495.nonstream.bag_is_empty", &[full])
+        .call("wi495.nonstream.bag_is_empty", &anthill_core::eval::HostValue::all(&[full])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call bag_is_empty(full): {e:?}"));
     let got_empty = interp
-        .call("wi495.nonstream.bag_is_empty", &[empty])
+        .call("wi495.nonstream.bag_is_empty", &anthill_core::eval::HostValue::all(&[empty])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call bag_is_empty(empty): {e:?}"));
     assert_eq!(
         got_full.literal_bool(interp.kb()),
@@ -112,9 +112,9 @@ fn non_stream_iterable_is_empty_evaluates() {
 #[test]
 fn non_stream_iterable_find_evaluates() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
-    let b = interp.call("wi495.nonstream.mk", &[]).expect("build bag");
+    let b = interp.call("wi495.nonstream.mk", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("build bag");
     let got = interp
-        .call("wi495.nonstream.bag_find_big", &[b])
+        .call("wi495.nonstream.bag_find_big", &anthill_core::eval::HostValue::all(&[b])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call bag_find_big: {e:?}"));
     assert_eq!(expect_int(got, interp.kb()), 2, "first element > 1 is 2");
 }

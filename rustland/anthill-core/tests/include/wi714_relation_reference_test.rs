@@ -137,7 +137,7 @@ end
 fn wi714_bare_rule_reference_split_first() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.firstName", &[])
+        .call("test.wi714ref.firstName", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("firstName() runs the relation via splitFirst");
     // `some(<name>)` — the payload rides positionally (`some(h)`); unwrap it.
     let inner = match &r {
@@ -161,7 +161,7 @@ fn wi714_bare_rule_reference_split_first() {
 fn wi714_bare_rule_reference_drains_via_takeN() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.allNames", &[])
+        .call("test.wi714ref.allNames", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("allNames() drains the relation via takeN");
     let mut got = crate::common::list_column_strings(interp.kb(), &r);
     got.sort();
@@ -178,7 +178,7 @@ fn wi714_bare_rule_reference_drains_via_takeN() {
 fn wi714_multi_column_rows_are_named_tuples() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.allRows", &[])
+        .call("test.wi714ref.allRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("allRows() drains the 2-column relation");
     // Walk the cons list; each element is a `Value::Tuple { named: [(name,…),(age,…)] }`.
     let kb = interp.kb();
@@ -226,7 +226,7 @@ fn wi714_multi_column_rows_are_named_tuples() {
 fn wi714_zero_column_membership_relation() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.aliceIsEmpty", &[])
+        .call("test.wi714ref.aliceIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("aliceIsEmpty() runs the 0-column relation");
     assert_eq!(
         r.literal_bool(interp.kb()),
@@ -246,7 +246,7 @@ fn wi714_zero_column_membership_relation() {
 fn wi714_negate_of_provable_is_empty() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.negateProvableIsEmpty", &[])
+        .call("test.wi714ref.negateProvableIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("negate(has_alice).isEmpty");
     assert_eq!(
         r.literal_bool(interp.kb()),
@@ -261,7 +261,7 @@ fn wi714_negate_of_provable_is_empty() {
 fn wi714_negate_of_empty_is_nonempty() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.negateEmptyIsEmpty", &[])
+        .call("test.wi714ref.negateEmptyIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("negate(has_zed).isEmpty");
     assert_eq!(
         r.literal_bool(interp.kb()),
@@ -279,7 +279,7 @@ fn wi714_negate_of_empty_is_nonempty() {
 fn wi714_negate_materializes_unit() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.negateEmptyHead", &[])
+        .call("test.wi714ref.negateEmptyHead", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("negate(has_zed) yields its one row via splitFirst");
     // some(unit) — payload rides positionally (some) or as the single named field.
     let inner = match &r {
@@ -343,7 +343,7 @@ end
 fn wi714_negate_composes_double_negation() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.doubleNegateIsEmpty", &[])
+        .call("test.wi714ref.doubleNegateIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("negate(negate(has_alice)).isEmpty");
     assert_eq!(
         r.literal_bool(interp.kb()),
@@ -364,7 +364,7 @@ fn wi714_negate_composes_double_negation() {
 fn wi714_union_combines_solutions() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.unionNames", &[])
+        .call("test.wi714ref.unionNames", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("union(alice_name, bob_name).takeN");
     let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
@@ -381,7 +381,7 @@ fn wi714_union_combines_solutions() {
 fn wi714_union_is_a_bag() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.unionBag", &[])
+        .call("test.wi714ref.unionBag", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("union(alice_name, alice_name).takeN");
     let got = collect_string_list(interp.kb(), &r);
     assert_eq!(
@@ -397,7 +397,7 @@ fn wi714_union_is_a_bag() {
 fn wi714_union_of_membership_relations() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.unionMembershipIsEmpty", &[])
+        .call("test.wi714ref.unionMembershipIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("union(has_alice, has_zed).isEmpty");
     assert_eq!(
         r.literal_bool(interp.kb()),
@@ -413,7 +413,7 @@ fn wi714_union_of_membership_relations() {
 fn wi714_union_composes_under_negate() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714ref.negateUnionIsEmpty", &[])
+        .call("test.wi714ref.negateUnionIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("negate(union(has_zed, has_zed)).isEmpty");
     assert_eq!(
         r.literal_bool(interp.kb()),
@@ -534,7 +534,7 @@ end
 fn wi714_nonlinear_head_var_is_single_column() {
     let mut interp = interp_for(SRC2);
     let r = interp
-        .call("test.wi714edge.twins", &[])
+        .call("test.wi714edge.twins", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("twins() drains the nonlinear relation");
     let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
@@ -551,7 +551,7 @@ fn wi714_nonlinear_head_var_is_single_column() {
 fn wi714_uniform_multiclause_unions_solutions() {
     let mut interp = interp_for(SRC2);
     let r = interp
-        .call("test.wi714edge.anyNames", &[])
+        .call("test.wi714edge.anyNames", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("anyNames() drains the two-clause relation");
     let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
@@ -676,7 +676,7 @@ end
 fn wi714_applied_full_binding_is_membership() {
     let mut interp = interp_for(SRC3);
     let present = interp
-        .call("test.wi714applied.aliceRowPresent", &[])
+        .call("test.wi714applied.aliceRowPresent", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("aliceRowPresent runs the fully-bound relation");
     assert_eq!(
         present.literal_bool(interp.kb()),
@@ -684,7 +684,7 @@ fn wi714_applied_full_binding_is_membership() {
         "a fully-bound relation matching a fact is a non-empty membership relation"
     );
     let ghost = interp
-        .call("test.wi714applied.ghostRowPresent", &[])
+        .call("test.wi714applied.ghostRowPresent", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("ghostRowPresent runs the fully-bound relation");
     assert_eq!(
         ghost.literal_bool(interp.kb()),
@@ -704,7 +704,7 @@ fn wi714_applied_full_binding_is_membership() {
 fn wi714_applied_positional_binding_narrows_schema() {
     let mut interp = interp_for(SRC3);
     let r = interp
-        .call("test.wi714applied.alicesAges", &[])
+        .call("test.wi714applied.alicesAges", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("alicesAges drains the partially-bound relation");
     let mut got = collect_int_list(interp.kb(), &r);
     got.sort();
@@ -722,7 +722,7 @@ fn wi714_applied_positional_binding_narrows_schema() {
 fn wi714_applied_named_binding_narrows_schema() {
     let mut interp = interp_for(SRC3);
     let r = interp
-        .call("test.wi714applied.namesAged30", &[])
+        .call("test.wi714applied.namesAged30", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("namesAged30 drains the named-bound relation");
     let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
@@ -739,7 +739,7 @@ fn wi714_applied_named_binding_narrows_schema() {
 fn wi714_applied_binding_from_local() {
     let mut interp = interp_for(SRC3);
     let r = interp
-        .call("test.wi714applied.agesOf", &[Value::Str("bob".into())])
+        .call("test.wi714applied.agesOf", &anthill_core::eval::HostValue::all(&[Value::Str("bob".into())])).map(|h| h.value)
         .expect("agesOf drains the relation bound to a local");
     let got = collect_int_list(interp.kb(), &r);
     assert_eq!(got, vec![25], "the local's value binds the name column");
@@ -856,7 +856,7 @@ end
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
-        .call("test.wi714q.use.bobsAges", &[])
+        .call("test.wi714q.use.bobsAges", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("bobsAges runs the qualified-applied relation");
     assert_eq!(
         collect_int_list(interp.kb(), &r),
@@ -917,7 +917,7 @@ end
 fn wi714_applied_nonlinear_column_binds_as_one() {
     let mut interp = interp_for(SRC4);
     let alice = interp
-        .call("test.wi714cols.aliceIsTwin", &[])
+        .call("test.wi714cols.aliceIsTwin", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("aliceIsTwin runs the nonlinear-bound relation");
     assert_eq!(
         alice.literal_bool(interp.kb()),
@@ -925,7 +925,7 @@ fn wi714_applied_nonlinear_column_binds_as_one() {
         "binding the single nonlinear column gives a provable (non-empty) membership relation"
     );
     let ghost = interp
-        .call("test.wi714cols.ghostIsTwin", &[])
+        .call("test.wi714cols.ghostIsTwin", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("ghostIsTwin runs the nonlinear-bound relation");
     assert_eq!(
         ghost.literal_bool(interp.kb()),
@@ -941,7 +941,7 @@ fn wi714_applied_nonlinear_column_binds_as_one() {
 fn wi714_applied_positional_skips_ground_slot() {
     let mut interp = interp_for(SRC4);
     let alice = interp
-        .call("test.wi714cols.aliceIsRankOne", &[])
+        .call("test.wi714cols.aliceIsRankOne", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("aliceIsRankOne binds the free column past the ground slot");
     assert_eq!(
         alice.literal_bool(interp.kb()),
@@ -949,7 +949,7 @@ fn wi714_applied_positional_skips_ground_slot() {
         "alice is rank 1 — the positionally-bound membership relation is non-empty"
     );
     let bob = interp
-        .call("test.wi714cols.bobIsRankOne", &[])
+        .call("test.wi714cols.bobIsRankOne", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("bobIsRankOne runs the relation");
     assert_eq!(
         bob.literal_bool(interp.kb()),
@@ -1078,7 +1078,7 @@ end
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
-        .call("test.wi714bq.use.rows", &[])
+        .call("test.wi714bq.use.rows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("rows() drains the bare-qualified relation");
     let mut rows = collect_named_rows(interp.kb(), &r);
     rows.sort();
@@ -1119,7 +1119,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     let bare = interp
-        .call("test.wi714bqsort.bareRows", &[])
+        .call("test.wi714bqsort.bareRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("bareRows drains the sort-scoped bare relation");
     let mut got = collect_int_list(interp.kb(), &bare);
     got.sort();
@@ -1129,7 +1129,7 @@ end
         "a bare `Sort.rule` value (the proposal's `Queen.find`) drains its rows"
     );
     let applied = interp
-        .call("test.wi714bqsort.appliedRows", &[])
+        .call("test.wi714bqsort.appliedRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("appliedRows drains the sort-scoped applied relation");
     let mut got2 = collect_int_list(interp.kb(), &applied);
     got2.sort();
@@ -1206,7 +1206,7 @@ end
     let mut interp = interp_for(SRC);
     for op in ["viaBareLabel", "viaQualifiedLabel"] {
         let r = interp
-            .call(&format!("test.wi714label.{op}"), &[])
+            .call(&format!("test.wi714label.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op} runs the labeled relation: {e:?}"));
         let mut got = collect_string_list(interp.kb(), &r);
         got.sort();
@@ -1248,7 +1248,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi714lm.everyName", &[])
+        .call("test.wi714lm.everyName", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("everyName drains the labeled same-functor relation");
     let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
@@ -1347,7 +1347,7 @@ end
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
-        .call("test.wi714xsort.q2Rows", &[])
+        .call("test.wi714xsort.q2Rows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("q2Rows drains the relation whose clause calls a cross-sort rule");
     let mut got = collect_int_list(interp.kb(), &r);
     got.sort();

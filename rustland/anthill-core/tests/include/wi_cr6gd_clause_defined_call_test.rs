@@ -569,11 +569,13 @@ fn a_host_entry_is_told_the_operation_is_defined_by_clauses() {
         "namespace test.cr6gdhost\n  import anthill.prelude.Int64\n  operation four() -> Int64\n  rule four(4) :- true\nend\n",
     );
     let err = interp
-        .call("test.cr6gdhost.four", &[])
+        .call("test.cr6gdhost.four", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("nothing runs a call of it");
+    // Proposal 074 §1.4: the host call is typed as a body's call is, and refused where it is
+    // written, with the sentence a body's call gets.
     let msg = err.to_string();
-    assert!(msg.contains("operation has no body: test.cr6gdhost.four"), "{msg}");
-    assert!(msg.contains("defined by the clauses indexed under it"), "{msg}");
+    assert!(msg.contains("test.cr6gdhost.four`, which is defined by clauses alone"), "{msg}");
+    assert!(msg.contains("To call it, give the operation a body"), "{msg}");
     assert!(!msg.contains("no rule clause"), "{msg}");
     assert!(!msg.contains("No clause is indexed"), "{msg}");
 }
@@ -599,12 +601,14 @@ fn an_operation_with_nothing_is_told_it_has_no_clause() {
         "namespace test.cr6gdnone\n  import anthill.prelude.Int64\n  sort Spec\n    sort T = ?\n    operation ping() -> Int64\n  end\nend\n",
     );
     let err = interp
-        .call("test.cr6gdnone.Spec.ping", &[])
+        .call("test.cr6gdnone.Spec.ping", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("nothing defines it");
+    // Proposal 074 §1.4: the host call is typed as a body's call is, and refused where it is
+    // written, with the sentence a body's call gets.
     let msg = err.to_string();
-    assert!(msg.contains("operation has no body: test.cr6gdnone.Spec.ping"), "{msg}");
-    assert!(msg.contains("No clause is indexed under it either"), "{msg}");
-    assert!(!msg.contains("defined by the clauses"), "{msg}");
+    assert!(msg.contains("test.cr6gdnone.Spec.ping` that nothing can run"), "{msg}");
+    assert!(msg.contains("has no body, host mapping or builtin"), "{msg}");
+    assert!(!msg.contains("defined by clauses"), "{msg}");
 }
 
 // ── a constructor written with positional arguments ─────────────────────────

@@ -113,7 +113,7 @@ end
 }
 
 fn run_go(mut interp: anthill_core::eval::Interpreter) -> i64 {
-    match interp.call("t.go", &[]) {
+    match interp.call("t.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("`t.go` must run to an Int64: {other:?}"),
     }

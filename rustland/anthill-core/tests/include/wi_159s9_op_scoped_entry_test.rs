@@ -116,7 +116,7 @@ const DRIVERS: &str = "  sort Driver\n    \
 /// assertion is also a clean-load assertion.
 fn eval_str(src: &str, entry: &str, why: &str) -> String {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Str(s)) => s,
         other => panic!("{why}; got {other:?}\n{src}"),
     }
@@ -223,12 +223,12 @@ end
         crate::common::DESC_INSTANCES
     );
     let mut interp = crate::common::interp_for(&src);
-    let shallow = interp.call("wi159s9.instchan.Driver.shallow", &[Value::Int(0)]);
+    let shallow = interp.call("wi159s9.instchan.Driver.shallow", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(shallow, Ok(Value::Int(1))),
         "`Leaf.describe` through the caller's OP slot; got {shallow:?}"
     );
-    let deep = interp.call("wi159s9.instchan.Driver.deep", &[Value::Int(0)]);
+    let deep = interp.call("wi159s9.instchan.Driver.deep", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(deep, Ok(Value::Int(12))),
         "expected 12 = `WrapDesc.describe` (10·`Leaf.describe` + 2), which needs the \
@@ -298,7 +298,7 @@ end
         crate::common::DESC_INSTANCES
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi159s9.defer.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi159s9.defer.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(101))),
         "expected Ok(Int(101)) = 100 + `Coll.size(leaf())` 1, where `Coll`'s SORT-level \

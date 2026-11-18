@@ -135,7 +135,7 @@ end
 fn wi9c2pz_two_independent_eq_calls_are_two_columns() {
     let mut interp = interp_for(TWO_EQ_GOOD);
     let rows = interp
-        .call("test.wi9c2pz.two.matchedRows", &[])
+        .call("test.wi9c2pz.two.matchedRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("two independent `eq` calls must not correlate the two columns");
     assert_eq!(
         int_of(&rows, "matchedRows"),
@@ -145,7 +145,7 @@ fn wi9c2pz_two_independent_eq_calls_are_two_columns() {
     // The filters are REAL — a citation that agrees with the relation on neither clause
     // drains nothing, so the row above is not an artefact of an unfiltered drain.
     let rows = interp
-        .call("test.wi9c2pz.two.missedRows", &[])
+        .call("test.wi9c2pz.two.missedRows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call missedRows");
     assert_eq!(int_of(&rows, "missedRows"), 0);
 }
@@ -237,7 +237,7 @@ end
 fn wi9c2pz_eq_propagates_a_concrete_type_to_both_columns() {
     let mut interp = interp_for(EQ_PROPAGATES_STR);
     let v = interp
-        .call("test.wi9c2pz.propstr.rows", &[])
+        .call("test.wi9c2pz.propstr.rows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a relation whose columns `eq` links must publish both as String");
     let rows = list_heads(&v);
     assert_eq!(rows.len(), 1, "one `parent` fact, so one linked row");
@@ -379,7 +379,7 @@ end
 fn wi9c2pz_a_transitively_linked_relation_still_drains() {
     let mut interp = interp_for(CHAIN_OK);
     let rows = interp
-        .call("test.wi9c2pz.ch.rows", &[])
+        .call("test.wi9c2pz.ch.rows", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a consistently-cited chain relation must load and drain");
     assert_eq!(int_of(&rows, "rows"), 1, "`chain(2, 2, 1)` satisfies it");
 }

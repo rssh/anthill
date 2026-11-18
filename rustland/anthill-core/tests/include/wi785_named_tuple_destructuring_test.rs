@@ -37,7 +37,7 @@ fn run_int(src: &str, op: &str) -> i64 {
     // later call, which reads as an unrelated second failure.
     let mut interp = interp_for(src);
     match interp
-        .call(op, &[])
+        .call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
     {
         anthill_core::eval::Value::Int(i) => i,

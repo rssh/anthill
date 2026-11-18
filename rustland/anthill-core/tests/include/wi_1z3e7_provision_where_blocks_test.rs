@@ -55,7 +55,7 @@ end
 
 fn eval_int(src: &str, op: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(op, &[Value::Int(0)]) {
+    match interp.call(op, &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{op}: expected an Int, got {other:?}"),
     }

@@ -159,7 +159,7 @@ fn an_embedder_registered_function_is_callable_from_an_operation_map() {
     let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
 
     let v = interp
-        .call("wi1122.ok.Driver.ask", &[Value::Int(0)])
+        .call("wi1122.ok.Driver.ask", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
         .expect("the mapped operation must run");
     assert_eq!(
         v.literal_int64(interp.kb()),
@@ -199,7 +199,7 @@ fn an_embedder_function_survives_a_fresh_interpreter_over_the_same_kb() {
 
     assert_eq!(
         second
-            .call("wi1122.fresh.Driver.ask", &[Value::Int(0)])
+            .call("wi1122.fresh.Driver.ask", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
             .expect(
                 "the mapped operation must run on the second interpreter too; an \
                  UnrunnableHostBinding naming the key here means the embedder table did \
@@ -235,7 +235,7 @@ fn an_embedder_entry_of_the_wrong_arity_is_refused() {
     let mut interp = interp_with_host_fn(&src, "embedder_pair", 2, embedder_pair);
     assert_eq!(
         interp
-            .call("wi1122.arity.Driver.sibling", &[Value::Int(1)])
+            .call("wi1122.arity.Driver.sibling", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
             .expect("an operation that reaches no binding runs beside the disagreement")
             .literal_int64(interp.kb()),
         Some(2),
@@ -272,7 +272,7 @@ fn the_control_a_matching_arity_runs() {
     let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
     assert_eq!(
         interp
-            .call("wi1122.arityok.Driver.ask", &[Value::Int(0)])
+            .call("wi1122.arityok.Driver.ask", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
             .expect("must run")
             .literal_int64(interp.kb()),
         Some(407),
@@ -382,7 +382,7 @@ fn the_control_the_same_registration_before_load_is_accepted() {
     let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
     assert_eq!(
         interp
-            .call("wi1122.ontime.Driver.ask", &[Value::Int(0)])
+            .call("wi1122.ontime.Driver.ask", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
             .expect("must run")
             .literal_int64(interp.kb()),
         Some(407),
@@ -422,7 +422,7 @@ fn an_embedder_function_may_close_over_its_own_state() {
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     assert_eq!(
         interp
-            .call("wi1122.closure.Driver.ask", &[Value::Int(0)])
+            .call("wi1122.closure.Driver.ask", &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
             .expect("the closure must run")
             .literal_int64(interp.kb()),
         Some(9407),
@@ -447,7 +447,7 @@ fn an_unregistered_key_is_still_refused_at_the_call() {
     let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
     assert_eq!(
         interp
-            .call("wi1122.missing.Driver.sibling", &[Value::Int(1)])
+            .call("wi1122.missing.Driver.sibling", &anthill_core::eval::HostValue::all(&[Value::Int(1)])).map(|h| h.value)
             .expect("an operation that reaches no binding runs beside the unknown key")
             .literal_int64(interp.kb()),
         Some(2),

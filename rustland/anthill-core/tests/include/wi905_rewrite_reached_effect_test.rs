@@ -76,7 +76,7 @@ const REPLACED: &str = "dot rule not to replace a call of potentially effectful 
 const MACRO: &str = "rewrite not to build, by its macro, a call of potentially effectful operation";
 
 fn int_of(src: &str, op: &str) -> i64 {
-    match interp_for(src).call(op, &[]).expect("the entry point evaluates") {
+    match interp_for(src).call(op, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the entry point evaluates") {
         Value::Int(n) => n,
         other => panic!("expected an Int64, got {other:?}"),
     }
@@ -411,7 +411,7 @@ fn a_callers_effectful_argument_a_macro_gives_back_is_not_refused() {
         ),
     );
     let raised = interp_for(&src)
-        .call(&format!("test.{ns}.Holder.run"), &[])
+        .call(&format!("test.{ns}.Holder.run"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("the caller's `risky` raises");
     assert!(format!("{raised:?}").contains("risky ran"), "not the caller's raise: {raised:?}");
 }

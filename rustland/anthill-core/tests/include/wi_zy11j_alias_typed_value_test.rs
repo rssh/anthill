@@ -149,7 +149,7 @@ fn source(ns: &str, body: &str) -> String {
 fn run(ns: &str, body: &str) -> String {
     let mut interp = interp_for(&source(ns, body));
     let value = interp
-        .call(&format!("test.{ns}.go"), &[])
+        .call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{ns}: {e:?}"));
     shown(value)
 }
@@ -756,7 +756,7 @@ fn an_alias_with_an_open_slot_is_its_type_in_another_namespace() {
         );
         let mut interp = interp_for(&src);
         let value = interp
-            .call(&format!("test.{ns}.go"), &[])
+            .call(&format!("test.{ns}.go"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{ns}: {e:?}"));
         assert_eq!(shown(value), "1", "{ns}");
     }

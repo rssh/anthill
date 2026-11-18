@@ -113,7 +113,7 @@ end
     );
     let mut interp = interp_for(&src);
     let rows = interp
-        .call("test.yqb1y.joined", &[])
+        .call("test.yqb1y.joined", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the join runs");
     let got = rows_of(&interp, &rows);
     assert_eq!(
@@ -158,7 +158,7 @@ end
     );
     let mut interp = interp_for(&src);
     let rows = interp
-        .call("test.yqb1y.filtered", &[])
+        .call("test.yqb1y.filtered", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the membership join runs");
     let alice = vec!["name=alice".to_string(), "age=30".to_string()];
     assert_eq!(
@@ -193,7 +193,7 @@ end
     );
     let mut interp = interp_for(&src);
     match interp
-        .call("test.yqb1y.aliceIsAdult", &[])
+        .call("test.yqb1y.aliceIsAdult", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("aliceIsAdult runs")
     {
         Value::Bool(b) => assert!(!b, "alice is an adult, so the restricted relation is NON-empty"),
@@ -201,7 +201,7 @@ end
     }
     let mut interp = interp_for(&src);
     match interp
-        .call("test.yqb1y.zedIsAdult", &[])
+        .call("test.yqb1y.zedIsAdult", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("zedIsAdult runs")
     {
         Value::Bool(b) => assert!(b, "zed is nobody, so the restricted relation is empty"),
@@ -237,7 +237,7 @@ end
     );
     let mut interp = interp_for(&src);
     let rows = interp
-        .call("test.yqb1y.renamed", &[])
+        .call("test.yqb1y.renamed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the projection runs");
     assert_eq!(
         rows_of(&interp, &rows),
@@ -314,7 +314,7 @@ end
     );
     let mut interp = interp_for(&right);
     let rows = interp
-        .call("test.yqb1ynested.joined", &[])
+        .call("test.yqb1ynested.joined", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the join runs");
     let Value::Entity { named, .. } = &rows else {
         panic!("expected a cons list, got {rows:?}")

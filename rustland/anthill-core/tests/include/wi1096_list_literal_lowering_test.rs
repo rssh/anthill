@@ -207,10 +207,10 @@ end
         other => panic!("expected Bool, got {}", other.type_name()),
     };
     assert!(bool_of(
-        interp.call("wi1096.eval.yes", &[]).expect("yes runs")
+        interp.call("wi1096.eval.yes", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("yes runs")
     ));
     assert!(!bool_of(
-        interp.call("wi1096.eval.no", &[]).expect("no runs")
+        interp.call("wi1096.eval.no", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("no runs")
     ));
 }
 

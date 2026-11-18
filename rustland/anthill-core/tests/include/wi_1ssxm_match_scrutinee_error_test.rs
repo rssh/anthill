@@ -168,7 +168,7 @@ fn control_a_well_typed_match_still_runs() {
              case some(_) -> true\n      \
              case none() -> false",
     ));
-    let v = interp.call("wi1ssxm.good", &[]).expect("good must run");
+    let v = interp.call("wi1ssxm.good", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("good must run");
     assert_eq!(
         crate::common::scalar_bool(interp.kb(), &v),
         Some(true),

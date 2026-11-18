@@ -175,7 +175,7 @@ fn rows(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<String> {
 
 fn drain(interp: &mut Interpreter, ns: &str, op: &str, args: &[Value]) -> Vec<String> {
     let v = interp
-        .call(&format!("{ns}.{op}"), args)
+        .call(&format!("{ns}.{op}"), &anthill_core::eval::HostValue::all(args)).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op} runs the filtered relation: {e:?}"));
     rows(interp.kb(), &v)
 }
@@ -342,7 +342,7 @@ end
     // CONTROL: the same call shape with a row-INDEPENDENT argument is captured and runs.
     let mut interp = interp_for(CONTROL);
     let got = interp
-        .call("test.wi1127ok.good", &[])
+        .call("test.wi1127ok.good", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a call whose argument does not read the row is a capturable parameter");
     assert_eq!(rows(interp.kb(), &got), vec!["alice/30/30".to_string()]);
 

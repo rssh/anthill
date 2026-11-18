@@ -30,7 +30,7 @@ fn answers(src: &str, entries: &[&str]) -> Vec<String> {
     let mut interp = interp_for(src);
     entries
         .iter()
-        .map(|entry| match interp.call(entry, &[]) {
+        .map(|entry| match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
             Ok(v) => show_value(interp.kb(), &v),
             Err(e) => panic!("{entry}: {e:?}"),
         })

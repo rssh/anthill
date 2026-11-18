@@ -99,7 +99,7 @@ end
 fn call_main(ops: &str) -> i64 {
     let mut interp: Interpreter = interp_for(&program(ops));
     expect_int(
-        interp.call("wiybbc3.main", &[]).expect("call main"),
+        interp.call("wiybbc3.main", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("call main"),
         interp.kb(),
     )
 }

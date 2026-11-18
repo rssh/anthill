@@ -115,7 +115,7 @@ fn program(ns: &str, decls: &[&str], body: &str) -> String {
 /// The value of the nullary operation `qn`, run by the interpreter.
 fn run(src: &str, qn: &str) -> i64 {
     let mut interp = crate::common::interp_for(src);
-    match interp.call(qn, &[]) {
+    match interp.call(qn, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{qn}: expected an Int64, got {other:?}"),
     }
@@ -501,7 +501,7 @@ fn cited_counts(ns: &str, rules: &str, rel: &str) -> [(i64, Option<i64>); 3] {
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let mut at = |entry: &str| match interp.call(&format!("{ns}.Driver.{entry}"), &[]) {
+    let mut at = |entry: &str| match interp.call(&format!("{ns}.Driver.{entry}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => Some(n),
         _ => None,
     };

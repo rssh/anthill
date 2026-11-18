@@ -182,7 +182,7 @@ end
 
 fn eval(op: &str) -> Result<String, EvalError> {
     let mut interp = interp_for(SRC);
-    let ty = interp.call(&format!("test.r541x.{op}"), &[])?;
+    let ty = interp.call(&format!("test.r541x.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)?;
     Ok(TermPrinter::new(interp.kb()).print_value(&ty))
 }
 
@@ -318,7 +318,7 @@ fn two_clauses_over_one_spec_are_refused_at_load() {
         "two clauses and a call that names neither",
     );
     let mut i = interp_for(&with_call("TypeTerm.valueOf[T = Q]()"));
-    let v = i.call("test.r541x.d1", &[]).expect("the bracketed call runs");
+    let v = i.call("test.r541x.d1", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the bracketed call runs");
     assert_eq!(TermPrinter::new(i.kb()).print_value(&v), "Boom");
 }
 

@@ -60,7 +60,7 @@ end
     // Back the un-gate out and this fails at LOAD — `type mismatch in merge.apply:
     // … got unknown functor`.
     let got = interp
-        .call("wi994.boot.row", &[])
+        .call("wi994.boot.row", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("row() must evaluate");
     assert_built(
         &interp,
@@ -85,7 +85,7 @@ end
 "#,
     );
     assert!(
-        matches!(interp.call("wi994.ctrl.two", &[]), Ok(Value::Bool(true))),
+        matches!(interp.call("wi994.ctrl.two", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value), Ok(Value::Bool(true))),
         "CONTROL: bare `pair` resolves with or without this change",
     );
 }
@@ -228,7 +228,7 @@ end
     );
     let cond = Value::term(interp.kb_mut().make_name_term("wi994_condition"));
     let got = interp
-        .call("wi994.uniq.p", &[cond])
+        .call("wi994.uniq.p", &anthill_core::eval::HostValue::all(&[cond])).map(|h| h.value)
         .expect("p() must evaluate");
     assert_built(
         &interp,

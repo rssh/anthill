@@ -150,7 +150,7 @@ fn pair_driver(ns: &str, ops: &str, expr: &str) -> String {
 /// so a value here is also a clean-load assertion.
 fn drive(src: &str, entry: &str) -> i64 {
     let mut interp: Interpreter = crate::common::interp_for(src);
-    match interp.call(entry, &[]) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(n)) => n,
         other => panic!("{entry}: expected an Int64, got {other:?}"),
     }

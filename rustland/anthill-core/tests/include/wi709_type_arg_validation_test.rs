@@ -150,7 +150,7 @@ end
 
     let value_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
         interp
-            .call(&format!("test.wi709.ok.{op}"), &[])
+            .call(&format!("test.wi709.ok.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"))
     };
     let (named, positional) = (value_of(&mut interp, "named"), value_of(&mut interp, "positional"));

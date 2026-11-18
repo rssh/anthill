@@ -182,7 +182,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let empty_operand = interp
-        .call("test.wi728ok.negateEmptyIsEmpty", &[])
+        .call("test.wi728ok.negateEmptyIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("negate(has_zed).isEmpty");
     assert_eq!(
         empty_operand.literal_bool(interp.kb()),
@@ -190,7 +190,7 @@ end
         "negate of an UNPROVABLE membership relation is non-empty (NAF succeeds)"
     );
     let provable_operand = interp
-        .call("test.wi728ok.negateProvableIsEmpty", &[])
+        .call("test.wi728ok.negateProvableIsEmpty", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("negate(has_alice).isEmpty");
     assert_eq!(
         provable_operand.literal_bool(interp.kb()),
@@ -290,7 +290,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("test.wi728bare.useIt", &[])
+        .call("test.wi728bare.useIt", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a bare-parameter wrapper must load AND run");
     assert_eq!(
         v.literal_bool(interp.kb()),
@@ -387,7 +387,7 @@ end
     let mut interp = interp_for(src);
     // A membership operand still runs through the wrapper.
     let closed = interp
-        .call("test.wi728abs.closedThroughWrapper", &[])
+        .call("test.wi728abs.closedThroughWrapper", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("wrapNegate(has_zed).isEmpty");
     assert_eq!(
         closed.literal_bool(interp.kb()),
@@ -397,7 +397,7 @@ end
     // A free-column operand escaped the load-time check, so the RUNTIME guard catches it.
     let mut interp = interp_for(src);
     let err = interp
-        .call("test.wi728abs.openThroughWrapper", &[])
+        .call("test.wi728abs.openThroughWrapper", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect_err("a free-column operand that escaped the type check must still be refused");
     let msg = format!("{err:?}");
     assert!(
@@ -449,7 +449,7 @@ end
     // call reduces to `Unit` and runs.
     let mut interp = interp_for(&program("has_zed"));
     let closed = interp
-        .call("test.wi728defer.useIt", &[])
+        .call("test.wi728defer.useIt", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("a propagating wrapper over a membership relation still runs");
     assert_eq!(
         closed.literal_bool(interp.kb()),

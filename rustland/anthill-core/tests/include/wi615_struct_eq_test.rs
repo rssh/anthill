@@ -116,7 +116,7 @@ fn struct_eq_evaluates_in_an_operation_body() {
                end\n";
     let mut interp = crate::common::interp_for(src);
     let t = interp
-        .call("test.wi615.eval.same", &[Value::Int(4), Value::Int(4)])
+        .call("test.wi615.eval.same", &anthill_core::eval::HostValue::all(&[Value::Int(4), Value::Int(4)])).map(|h| h.value)
         .expect("same(4,4) must evaluate");
     assert_eq!(
         t.literal_bool(interp.kb()),
@@ -124,7 +124,7 @@ fn struct_eq_evaluates_in_an_operation_body() {
         "4 === 4 in an op body must be true"
     );
     let f = interp
-        .call("test.wi615.eval.same", &[Value::Int(4), Value::Int(5)])
+        .call("test.wi615.eval.same", &anthill_core::eval::HostValue::all(&[Value::Int(4), Value::Int(5)])).map(|h| h.value)
         .expect("same(4,5) must evaluate");
     assert_eq!(
         f.literal_bool(interp.kb()),

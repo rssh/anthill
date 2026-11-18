@@ -215,7 +215,7 @@ fn the_two_arms_agree_about_the_sorts_operation() {
     assert!(!present(&kb, "qlib.f"), "CONTROL: and the namespace has no `f`");
     let mut interp = crate::common::interp_for(&format!("{renamed}{CITE_REC}"));
     assert_eq!(
-        int_value(interp.call("qcall.g", &[]).expect("the control's citation answers")),
+        int_value(interp.call("qcall.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the control's citation answers")),
         1,
         "CONTROL: `Rec.f()` rewrites through the sort's own equation"
     );
@@ -240,7 +240,7 @@ fn the_two_prescribed_repairs_both_answer() {
          namespace qcall\n  import qlib.{f}\n  operation g() -> Int64 = f()\nend\n",
     );
     assert_eq!(
-        int_value(owner.call("qcall.g", &[]).expect("the operation owner answers")),
+        int_value(owner.call("qcall.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the operation owner answers")),
         1,
         "an `operation` in the predicate's scope collects the sort's equation"
     );
@@ -252,7 +252,7 @@ fn the_two_prescribed_repairs_both_answer() {
          namespace qcall\n  import qlib.{Rec}\n  operation g() -> Int64 = Rec.f()\nend\n",
     );
     assert_eq!(
-        int_value(per_scope.call("qcall.g", &[]).expect("the per-scope repair answers")),
+        int_value(per_scope.call("qcall.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the per-scope repair answers")),
         1,
         "a declaration in the equation's own scope keeps the operation AT the sort"
     );
@@ -307,7 +307,7 @@ fn a_predicate_declared_where_the_equation_is_written_is_not_refused() {
          namespace zec\n  import ze.{Rec}\n  operation g() -> Int64 = Rec.f(false)\nend\n",
     );
     assert_eq!(
-        int_value(interp.call("zec.g", &[]).expect("the same-scope pair answers")),
+        int_value(interp.call("zec.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the same-scope pair answers")),
         2,
         "a subject landing on its OWN scope's declaration still rewrites"
     );
@@ -325,7 +325,7 @@ fn an_operation_is_still_what_an_equation_defines() {
          namespace zfc\n  import zf.{f}\n  operation g() -> Int64 = f(false)\nend\n",
     );
     assert_eq!(
-        int_value(interp.call("zfc.g", &[]).expect("the operation answers")),
+        int_value(interp.call("zfc.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the operation answers")),
         2,
         "the SORT's equation defines the NAMESPACE's operation"
     );
@@ -438,7 +438,7 @@ fn an_ambiguous_name_is_refused_only_when_every_candidate_is_a_predicate() {
          rule f(true) <=> 7 @[simp]\n  operation g() -> Int64 = f(true)\nend\n",
     ]);
     assert_eq!(
-        int_value(interp.call("bm3.g", &[]).expect("the prescribed declaration answers")),
+        int_value(interp.call("bm3.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the prescribed declaration answers")),
         7,
         "the head-scope declaration keeps the equation where it was written"
     );
@@ -631,7 +631,7 @@ fn a_mixed_collision_groups_prescribed_owner_answers() {
         "{REPAIRED}namespace mx2c\n  import mx2.{{f}}\n  operation g() -> Int64 = f(true)\nend\n"
     ));
     assert_eq!(
-        int_value(interp.call("mx2c.g", &[]).expect("the equation rewrites")),
+        int_value(interp.call("mx2c.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the equation rewrites")),
         1,
         "and the SORT's equation defines the operation"
     );
@@ -674,8 +674,8 @@ fn two_files_reaching_two_relations_is_not_an_ambiguity() {
         "namespace pzz\n  import pzb.*\n  rule f(false) <=> 8 @[simp]\n  \
          operation h() -> Int64 = f(false)\nend\n",
     ]);
-    assert_eq!(int_value(interp.call("pzz.g", &[]).expect("first clause")), 7);
-    assert_eq!(int_value(interp.call("pzz.h", &[]).expect("second clause")), 8);
+    assert_eq!(int_value(interp.call("pzz.g", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("first clause")), 7);
+    assert_eq!(int_value(interp.call("pzz.h", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("second clause")), 8);
 }
 
 #[test]

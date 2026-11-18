@@ -93,7 +93,7 @@ end
 /// `wic580v.<op>()`'s answer, a `Bool`.
 fn answer(body: &str, op: &str) -> bool {
     let mut interp = interp_for(&program(body));
-    match interp.call(&format!("wic580v.{op}"), &[]) {
+    match interp.call(&format!("wic580v.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{op}: expected a Bool, got {other:?}"),
     }
@@ -127,7 +127,7 @@ fn a_call_reads_its_type_argument_through_the_clause() {
   operation callersStr() -> Bool = callers(narrow2[String]())
   operation callersInt() -> Bool = callers(narrow2[Int64]())"#;
     let mut interp = interp_for(&program(body));
-    match interp.call("wic580v.fixed", &[]) {
+    match interp.call("wic580v.fixed", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(4)) => {}
         other => panic!("fixed: expected 4, got {other:?}"),
     }
@@ -168,7 +168,7 @@ fn a_bare_parameter_is_read_at_its_own_instance() {
     let mut interp = interp_for(&program(
         "  operation bare(n: Narrow2) -> Int64 = takeAt(n)\n  operation go() -> Int64 = bare(narrow2[String]())",
     ));
-    match interp.call("wic580v.go", &[]) {
+    match interp.call("wic580v.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Int(4)) => {}
         other => panic!("go: expected 4, got {other:?}"),
     }
@@ -210,7 +210,7 @@ fn a_callback_parameter_reads_the_clause() {
     let mut interp = interp_for(&program(&format!(
         "{decl}  operation go() -> Option[T = String] = ap(optOf)"
     )));
-    match interp.call("wic580v.go", &[]) {
+    match interp.call("wic580v.go", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Entity { .. }) => {}
         other => panic!("go: expected none(), got {other:?}"),
     }

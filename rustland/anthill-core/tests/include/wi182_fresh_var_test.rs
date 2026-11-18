@@ -30,15 +30,19 @@ fn fresh_var_builtin_returns_distinct_term_per_call() {
     let src = r#"
 namespace test.wi182_distinct
   import anthill.reflect.{Term, fresh_var}
+  import anthill.prelude.{String}
   operation main() -> Int64 = 0
+  -- `fresh_var`'s `T` is fixed by the result it is read at: a host call writes no bracket
+  -- and is typed as a body's call is (proposal 074 §1.4), so it calls this.
+  operation freshTerm(name: String) -> Term = fresh_var[T = Term](name)
 end
 "#;
     let mut interp = interp_for(src);
     let v1 = interp
-        .call("anthill.reflect.fresh_var", &[Value::Str("x".into())])
+        .call("test.wi182_distinct.freshTerm", &anthill_core::eval::HostValue::all(&[Value::Str("x".into())])).map(|h| h.value)
         .expect("fresh_var #1");
     let v2 = interp
-        .call("anthill.reflect.fresh_var", &[Value::Str("x".into())])
+        .call("test.wi182_distinct.freshTerm", &anthill_core::eval::HostValue::all(&[Value::Str("x".into())])).map(|h| h.value)
         .expect("fresh_var #2");
     let t1 = match v1 {
         Value::Term { id: t, .. } => t,
@@ -123,7 +127,7 @@ end
     // declaration used to ride along as a nondeterministically-ordered
     // second match, forcing this test to also accept "no-string".)
     let r = interp
-        .call("test.wi182_query.first_parent_name", &[])
+        .call("test.wi182_query.first_parent_name", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("call first_parent_name");
     match r {
         Value::Str(s) => assert_eq!(s, "alice", "the user-fact match must bind the parent name",),

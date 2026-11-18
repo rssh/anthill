@@ -75,18 +75,18 @@ end
 fn wi507_concrete_bare_clear_empties() {
     let mut interp = interp_for(SRC);
 
-    let s = interp.call("test.wi507.fresh", &[]).expect("fresh");
+    let s = interp.call("test.wi507.fresh", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("fresh");
     for x in [10, 20, 30] {
         interp
-            .call("test.wi507.pushN", &[s.clone(), Value::Int(x)])
+            .call("test.wi507.pushN", &anthill_core::eval::HostValue::all(&[s.clone(), Value::Int(x)])).map(|h| h.value)
             .expect("push");
     }
     interp
-        .call("test.wi507.wipeBare", &[s.clone()])
+        .call("test.wi507.wipeBare", &anthill_core::eval::HostValue::all(&[s.clone()])).map(|h| h.value)
         .expect("bare clear (concrete)");
     assert_eq!(
         interp
-            .call("test.wi507.depth", &[s])
+            .call("test.wi507.depth", &anthill_core::eval::HostValue::all(&[s])).map(|h| h.value)
             .unwrap()
             .literal_int64(interp.kb()),
         Some(0),
@@ -98,7 +98,7 @@ fn wi507_concrete_bare_clear_empties() {
 #[test]
 fn wi507_abstract_carrier_only_clear_empties() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi507.driveBare", &[]).expect("driveBare");
+    let r = interp.call("test.wi507.driveBare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("driveBare");
     assert_eq!(
         r.literal_int64(interp.kb()),
         Some(0),
@@ -112,7 +112,7 @@ fn wi507_abstract_carrier_only_clear_empties() {
 fn wi507_abstract_insert_still_works() {
     let mut interp = interp_for(SRC);
     let r = interp
-        .call("test.wi507.driveInsert", &[])
+        .call("test.wi507.driveInsert", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("driveInsert");
     assert_eq!(
         r.literal_int64(interp.kb()),

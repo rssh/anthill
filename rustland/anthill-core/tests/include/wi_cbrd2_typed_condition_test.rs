@@ -122,7 +122,7 @@ fn a_relation_condition_is_compared_at_its_column() {
     for (op, rows) in [("whereAlice", 1), ("joined", 1), ("fixed", 1)] {
         let before = untyped_equalities_by_this_thread();
         let v = interp
-            .call(&format!("test.cbrd2.relc.{op}"), &[])
+            .call(&format!("test.cbrd2.relc.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("`{op}` runs: {e:?}"));
         untyped.push((op, untyped_equalities_by_this_thread() - before));
         assert_eq!(crate::common::list_heads(&v).len(), rows, "`{op}`");

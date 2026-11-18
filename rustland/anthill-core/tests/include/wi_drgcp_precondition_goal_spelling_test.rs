@@ -313,7 +313,7 @@ fn term_to_string_prints_an_entity_without_interning() {
         anthill_core::kb::term::Literal::Int(1),
     ));
     let before = interp.kb().term_store_len();
-    let printed = text(interp.call("anthill.reflect.term_to_string", &[Value::term(one)]));
+    let printed = text(interp.call("anthill.reflect.term_to_string", &anthill_core::eval::HostValue::all(&[Value::term(one)])).map(|h| h.value));
     assert_eq!(printed, "1");
     let call_growth = interp.kb().term_store_len() - before;
 
@@ -323,7 +323,7 @@ fn term_to_string_prints_an_entity_without_interning() {
         named: vec![(raw, Value::Str("fresh-drgcp-text".into()))].into(),
     };
     let before = interp.kb().term_store_len();
-    let printed = text(interp.call("anthill.reflect.term_to_string", &[entity]));
+    let printed = text(interp.call("anthill.reflect.term_to_string", &anthill_core::eval::HostValue::all(&[entity])).map(|h| h.value));
     assert_eq!(printed, "mk(raw: \"fresh-drgcp-text\")");
     let grew = interp.kb().term_store_len() - before;
     assert!(
@@ -334,7 +334,7 @@ fn term_to_string_prints_an_entity_without_interning() {
 
     // `Unit` is the tuple of no components, a term (WI-20261011-7G99A); an operation
     // reference has no term reading, and raises.
-    let printed = text(interp.call("anthill.reflect.term_to_string", &[Value::Unit]));
+    let printed = text(interp.call("anthill.reflect.term_to_string", &anthill_core::eval::HostValue::all(&[Value::Unit])).map(|h| h.value));
     assert_eq!(printed, "()");
     let op_ref = Value::OpRef {
         op_reqs: None,
@@ -343,6 +343,6 @@ fn term_to_string_prints_an_entity_without_interning() {
         dict: None,
         named: None,
     };
-    let refused = interp.call("anthill.reflect.term_to_string", &[op_ref]);
+    let refused = interp.call("anthill.reflect.term_to_string", &anthill_core::eval::HostValue::all(&[op_ref])).map(|h| h.value);
     assert!(refused.is_err(), "a value with no term reading raises: {refused:?}");
 }

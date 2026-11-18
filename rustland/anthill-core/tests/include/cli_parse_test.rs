@@ -96,7 +96,7 @@ fn text(interp: &anthill_core::eval::Interpreter, v: &Value) -> String {
 fn parses_update_subcommand_with_flag_and_repeated() {
     let mut interp = interp_for(PROGRAM);
     let result = interp
-        .call("test.cli_demo.parse_update", &[])
+        .call("test.cli_demo.parse_update", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("parse_update runs");
 
     // Expect: parse_ok(ParsedArgs("update", [Binding("acceptance","cargo-test"),
@@ -162,7 +162,7 @@ fn parses_update_subcommand_with_flag_and_repeated() {
 fn unknown_subcommand_returns_parse_err() {
     let mut interp = interp_for(PROGRAM);
     let result = interp
-        .call("test.cli_demo.parse_unknown", &[])
+        .call("test.cli_demo.parse_unknown", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("parse_unknown runs");
     assert_eq!(
         entity_short_name(&interp, &result).as_deref(),
@@ -195,7 +195,7 @@ const EXPECTED_HELP: &str = "update an item\n\nUSAGE: update <id> [--description
 fn help_renders_subcommand_spec() {
     let mut interp = interp_for(PROGRAM);
     let result = interp
-        .call("test.cli_demo.help_for_update", &[])
+        .call("test.cli_demo.help_for_update", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("help_for_update runs");
     assert_eq!(text(&interp, &result), EXPECTED_HELP);
 }
@@ -204,7 +204,7 @@ fn help_renders_subcommand_spec() {
 fn missing_required_positional_returns_parse_err() {
     let mut interp = interp_for(PROGRAM);
     let result = interp
-        .call("test.cli_demo.parse_missing_required", &[])
+        .call("test.cli_demo.parse_missing_required", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("parse_missing runs");
     assert_eq!(
         entity_short_name(&interp, &result).as_deref(),

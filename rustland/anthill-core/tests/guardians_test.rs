@@ -715,7 +715,7 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
     // the carrier `args[1]` names, exactly as `summarize`'s `llm.complete(p)` does, so
     // this binding holds no list of models.
     kb.register_host_fn("guardians_generate", 3, |interp, args| {
-        let reply = interp.call("guardians.Llm.complete", &[args[1].clone(), args[2].clone()])?;
+        let reply = interp.call("guardians.Llm.complete", &anthill_core::eval::HostValue::all(&[args[1].clone(), args[2].clone()])).map(|h| h.value)?;
         let text = str_field(interp.kb(), &reply, "raw", 0)?;
         entity0(
             interp.kb(),
@@ -746,7 +746,7 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
 
         let text = Value::Str(source_text(interp.kb(), &args[1])?);
         let sources = interp.build_list_value(vec![text], &[])?;
-        let layer = match interp.call("anthill.reflect.KB.loaded", &[sources]) {
+        let layer = match interp.call("anthill.reflect.KB.loaded", &anthill_core::eval::HostValue::all(&[sources])).map(|h| h.value) {
             Ok(v) => v,
             // THE LOAD'S OWN VERDICT, AS THE CHECKER'S. `KB.loaded` raises an
             // `anthill.reflect.LoadFailed.load_failed(diagnostics)` payload, which is
@@ -754,7 +754,7 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
             // contract diagnostics reach the model as prose without being rebuilt.
             Err(e) => return load_failure_to_rejected(interp, e),
         };
-        interp.call("guardians.gate", &[layer, spec, budget])
+        interp.call("guardians.gate", &anthill_core::eval::HostValue::all(&[layer, spec, budget])).map(|h| h.value)
     })
     .expect("register guardians_check");
 }
@@ -2222,7 +2222,7 @@ fn check_candidate(candidate: &str) -> Result<Verdict, Vec<String>> {
             .alloc(anthill_core::kb::term::Term::Ref(spec_sym)),
     );
     let verdict = interp
-        .call("guardians.LoadChecker.check", &[chk, src, spec])
+        .call("guardians.LoadChecker.check", &anthill_core::eval::HostValue::all(&[chk, src, spec])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("the checker must answer a CheckResult, not fail: {e:?}"));
     read_verdict(&interp, &verdict)
 }
@@ -2516,7 +2516,7 @@ fn one_round_of_the_generation_loop_answers_the_same_verdict() {
     let args = [p.harness.clone(), llm, p.checker.clone(), p.spec.clone(), tools, feedback, none];
     let verdict = p
         .interp
-        .call("guardians.attempt", &args)
+        .call("guardians.attempt", &anthill_core::eval::HostValue::all(&args)).map(|h| h.value)
         .unwrap_or_else(|e| panic!("attempt: {e:?}"));
     let v = read_verdict(&p.interp, &verdict).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
     assert_eq!(v.carrier, "guardians.agent.GoodTriage");
@@ -2627,14 +2627,14 @@ impl Pipeline {
         .expect("build an Option[T = Source]");
         let args = [self.harness.clone(), self.spec.clone(), tools, feedback, previous];
         self.interp
-            .call("guardians.FileHarness.render_task", &args)
+            .call("guardians.FileHarness.render_task", &anthill_core::eval::HostValue::all(&args)).map(|h| h.value)
             .unwrap_or_else(|e| panic!("render_task: {e:?}"))
     }
 
     fn generate(&mut self, llm: &Value, prompt: &Value) -> Value {
         let args = [self.harness.clone(), llm.clone(), prompt.clone()];
         self.interp
-            .call("guardians.FileHarness.generate", &args)
+            .call("guardians.FileHarness.generate", &anthill_core::eval::HostValue::all(&args)).map(|h| h.value)
             .unwrap_or_else(|e| panic!("generate: {e:?}"))
     }
 
@@ -2642,7 +2642,7 @@ impl Pipeline {
         let args = [self.checker.clone(), src.clone(), self.spec.clone()];
         let verdict = self
             .interp
-            .call("guardians.LoadChecker.check", &args)
+            .call("guardians.LoadChecker.check", &anthill_core::eval::HostValue::all(&args)).map(|h| h.value)
             .unwrap_or_else(|e| panic!("check: {e:?}"));
         read_verdict(&self.interp, &verdict)
     }
@@ -2699,16 +2699,34 @@ fn a_fake_model_answers_from_its_own_value_and_sends_nothing() {
     let msgs = p.interp.build_list_value(vec![msg], &[]).unwrap();
     let summary = p
         .interp
-        .call("guardians.summarize", &[summary_fake, instruction, msgs])
+        .call("guardians.summarize", &anthill_core::eval::HostValue::all(&[summary_fake, instruction, msgs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("summarize over FakeLlm: {e:?}"));
     let kb = p.interp.kb();
     assert_eq!(str_field(kb, &summary, "raw", 0).unwrap(), "a summary");
     assert_eq!(live_requests(), before, "a fake model must never enter the live binding");
 
+    // A host call is typed as the same call in a body, and `prompt_with`'s `?t` is fixed by
+    // its content's label: the host hands each text over at the type a body would hold it
+    // at — the instruction at the parameter's own `Text[Trusted]`, the content at what
+    // `untrusted` answers, `Text[Untrusted]`. Handed over bare, the label is open and the
+    // call is refused, as `prompt_with(text(raw: …), text(raw: …))` is in a body.
+    let declared = |kb: &anthill_core::kb::KnowledgeBase, op: &str| {
+        let sym = kb.try_resolve_symbol(op).unwrap_or_else(|| panic!("{op}"));
+        anthill_core::kb::op_info::lookup_operation_info(kb, sym).unwrap_or_else(|| panic!("{op} has an OperationInfo"))
+    };
+    let trusted_ty = declared(kb, "guardians.prompt_with").params[0].1.clone();
+    let untrusted_ty = declared(kb, "guardians.Text.untrusted").return_type;
     let (instruction, content) = (text_value(kb, "Summarize.").unwrap(), text_value(kb, "hello").unwrap());
     let joined = p
         .interp
-        .call("guardians.prompt_with", &[instruction, content])
+        .call(
+            "guardians.prompt_with",
+            &[
+                anthill_core::eval::HostValue::typed(instruction, trusted_ty),
+                anthill_core::eval::HostValue::typed(content, untrusted_ty),
+            ],
+        )
+        .map(|h| h.value)
         .unwrap_or_else(|e| panic!("prompt_with: {e:?}"));
     let kb = p.interp.kb();
     assert_eq!(prompt_text(kb, &joined).unwrap(), "Summarize.\n\nhello");
@@ -2796,7 +2814,7 @@ fn a_live_reply_reaches_summarize() {
     let before = live_requests();
     let reply = p
         .interp
-        .call("guardians.summarize", &[llm, instruction, msgs])
+        .call("guardians.summarize", &anthill_core::eval::HostValue::all(&[llm, instruction, msgs])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("summarize over LiveLlm({}): {e:?}", cfg.model));
     let text = str_field(p.interp.kb(), &reply, "raw", 0).unwrap();
     assert_eq!(live_requests(), before + 1, "exactly one request went out");
@@ -2858,7 +2876,7 @@ fn a_live_model_generates_a_triage_through_the_repair_loop() {
         // it is recorded and the next round retries with the same inputs. Anything else
         // is a fault in this harness and stays a panic.
         let args = [p.harness.clone(), llm.clone(), prompt.clone()];
-        let src = match p.interp.call("guardians.FileHarness.generate", &args) {
+        let src = match p.interp.call("guardians.FileHarness.generate", &anthill_core::eval::HostValue::all(&args)).map(|h| h.value) {
             Ok(src) => src,
             Err(anthill_core::eval::EvalError::Raised { payload, .. }) => {
                 let why = format!("RAISED by the model call: {payload:?}");
@@ -3300,7 +3318,7 @@ fn checking_a_candidate_leaves_no_trace_of_it_in_the_trusted_base() {
             .alloc(anthill_core::kb::term::Term::Ref(spec_sym)),
     );
     let verdict = interp
-        .call("guardians.LoadChecker.check", &[chk, src, spec])
+        .call("guardians.LoadChecker.check", &anthill_core::eval::HostValue::all(&[chk, src, spec])).map(|h| h.value)
         .expect("the checker answers");
     assert!(
         read_verdict(&interp, &verdict).is_ok(),
@@ -3596,6 +3614,10 @@ fn probe_interp() -> anthill_core::eval::Interpreter {
 /// `false` for everything passes "text is hidden", and one answering "same scope only"
 /// passes it too. `Text.untrusted` (public, same sort) and `Email.send` (public, another
 /// namespace) fail both of those.
+///
+/// A host call is typed as the same call in a body (WI-20261113-S4D63): each name is at
+/// `Symbol`, the parameter's type. FAILS, measured, with a name read at the type its value
+/// reads as (`expected Symbol, got Text`), as do eighteen other rows of this file.
 #[test]
 fn a_candidates_view_leaves_out_what_it_may_not_name() {
     let mut interp = probe_interp();
@@ -3613,7 +3635,7 @@ fn a_candidates_view_leaves_out_what_it_may_not_name() {
         ("guardians.Email.send", "guardians.agent", true, "CONTROL: public, another namespace"),
     ] {
         let args = [common::symbol_term(&mut interp, name), common::symbol_term(&mut interp, scope)];
-        match interp.call("guardians.probe.vis", &args) {
+        match interp.call("guardians.probe.vis", &anthill_core::eval::HostValue::all(&args)).map(|h| h.value) {
             Ok(Value::Bool(b)) => assert_eq!(b, want, "{name} from {scope} — {why}"),
             other => panic!("{name} from {scope}: {other:?}"),
         }
@@ -3648,7 +3670,7 @@ fn a_type_term_out_of_operation_info_decodes_to_its_sort() {
         .expect("a declared parameter type is a term");
     let ty = Value::term(term);
 
-    let sort = match interp.call("guardians.probe.sort_of", &[ty.clone()]) {
+    let sort = match interp.call("guardians.probe.sort_of", &anthill_core::eval::HostValue::all(&[ty.clone()])).map(|h| h.value) {
         Ok(v @ Value::Entity { .. }) => v,
         other => panic!("term_as_sort on `Text[Trusted]`: {other:?}"),
     };
@@ -3664,7 +3686,7 @@ fn a_type_term_out_of_operation_info_decodes_to_its_sort() {
     // operation": `Email.send` is not in it.
     let names = |interp: &mut anthill_core::eval::Interpreter, op: &str, arg: &Value| -> Vec<String> {
         let list = interp
-            .call(op, std::slice::from_ref(arg))
+            .call(op, &anthill_core::eval::HostValue::all(std::slice::from_ref(arg))).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         let mut out = Vec::new();
         collect_named_symbols(interp.kb(), &list, "name", &mut out);
@@ -3687,7 +3709,7 @@ fn a_type_term_out_of_operation_info_decodes_to_its_sort() {
     // descends only `Value::Entity`, so a carrier it does not understand also yields an
     // empty vec and the negative claim would hold vacuously (/code-review).
     let fields = interp
-        .call("guardians.probe.fields_of", std::slice::from_ref(&inner))
+        .call("guardians.probe.fields_of", &anthill_core::eval::HostValue::all(std::slice::from_ref(&inner))).map(|h| h.value)
         .expect("fields_of runs");
     let empty = match &fields {
         Value::Entity { functor, pos, named, .. } => {

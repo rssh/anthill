@@ -60,7 +60,7 @@ end
 "#;
     let mut interp = crate::common::interp_for(SRC);
     let v = interp
-        .call("wi3g1yt.route4.drive", &[])
+        .call("wi3g1yt.route4.drive", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("drive: {e:?}"));
     assert_eq!(
         v.literal_int64(interp.kb()),

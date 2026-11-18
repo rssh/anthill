@@ -97,7 +97,7 @@ end
 
 fn drive(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     match interp
-        .call(&format!("test.wi1129.{op}"), &[])
+        .call(&format!("test.wi1129.{op}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}: {e}"))
     {
         Value::Int(n) => n,
@@ -332,7 +332,7 @@ end
 fn the_dot_surface_reaches_the_capture() {
     let mut interp = crate::common::interp_for(DOT_SRC);
     match interp
-        .call("test.wi1129dot.drive_dot", &[])
+        .call("test.wi1129dot.drive_dot", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("drive_dot evaluates")
     {
         // kept_a(box(v: 5), 7) = add(add(5, 7), 100)

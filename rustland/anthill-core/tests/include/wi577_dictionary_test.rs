@@ -11,6 +11,13 @@
 //!
 //! Reference: docs/design/requirement-dictionaries.md §2 (runtime sorts) / §2.4
 //! (OpRef) / §4 (phasing).
+//!
+//! `Interpreter::call` is typed as the same call in a body (WI-20261113-S4D63, proposal 074
+//! §1.4), each bare argument at the type its value reads as against its parameter: a symbol
+//! at `Symbol`, an `OpRef` at `OpRef` where the parameter takes one. MEASURED: with a name
+//! read at the type its value reads as, the four rows passing a spec operation's symbol fail
+//! (`resolveOp`'s `specOp` refused as no `Symbol`); with an `OpRef` read as a function value
+//! at an `OpRef` parameter, the four rows passing one to an accessor fail.
 
 use smallvec::SmallVec;
 
@@ -98,35 +105,35 @@ fn dictionary_impl_arity_sub() {
 
     // impl(d) — the resolved impl identity.
     let got = interp
-        .call(&format!("{DICT}.impl"), &[dict.clone()])
+        .call(&format!("{DICT}.impl"), &anthill_core::eval::HostValue::all(&[dict.clone()])).map(|h| h.value)
         .unwrap();
     assert_eq!(sym_qn(&interp, &got), "anthill.prelude.Int64");
 
     // arity(d) — one sub-requirement.
     let got = interp
-        .call(&format!("{DICT}.arity"), &[dict.clone()])
+        .call(&format!("{DICT}.arity"), &anthill_core::eval::HostValue::all(&[dict.clone()])).map(|h| h.value)
         .unwrap();
     assert_eq!(expect_int(&got), 1);
 
     // sub(d, 0) — the child dict; impl(child) == Bool, arity 0.
     let child_dict = interp
-        .call(&format!("{DICT}.sub"), &[dict.clone(), Value::Int(0)])
+        .call(&format!("{DICT}.sub"), &anthill_core::eval::HostValue::all(&[dict.clone(), Value::Int(0)])).map(|h| h.value)
         .unwrap();
     assert!(
         Dictionary::from_value(interp.kb(), &child_dict).is_some(),
         "sub must return a dictionary, got {child_dict:?}"
     );
     let child_impl = interp
-        .call(&format!("{DICT}.impl"), &[child_dict.clone()])
+        .call(&format!("{DICT}.impl"), &anthill_core::eval::HostValue::all(&[child_dict.clone()])).map(|h| h.value)
         .unwrap();
     assert_eq!(sym_qn(&interp, &child_impl), "anthill.prelude.Bool");
     let child_arity = interp
-        .call(&format!("{DICT}.arity"), &[child_dict])
+        .call(&format!("{DICT}.arity"), &anthill_core::eval::HostValue::all(&[child_dict])).map(|h| h.value)
         .unwrap();
     assert_eq!(expect_int(&child_arity), 0);
 
     // Out-of-range projection is a loud error, not a panic.
-    let err = interp.call(&format!("{DICT}.sub"), &[dict, Value::Int(5)]);
+    let err = interp.call(&format!("{DICT}.sub"), &anthill_core::eval::HostValue::all(&[dict, Value::Int(5)])).map(|h| h.value);
     assert!(err.is_err(), "out-of-range sub must error");
 }
 
@@ -141,7 +148,7 @@ fn resolve_op_real_impl_yields_callable_opref() {
     let eq_eq = sym_val(&mut interp, "anthill.prelude.PartialEq.eq");
     let dict = crate::common::dict(&interp, int64, []).into_value();
     let opref = interp
-        .call(&format!("{DICT}.resolveOp"), &[dict, eq_eq])
+        .call(&format!("{DICT}.resolveOp"), &anthill_core::eval::HostValue::all(&[dict, eq_eq])).map(|h| h.value)
         .unwrap();
 
     // The result carries the dispatch dict — so it stays callable.
@@ -158,7 +165,7 @@ fn resolve_op_real_impl_yields_callable_opref() {
 
     // op(r) — a fully-qualified resolved-op identity.
     let op_id = interp
-        .call(&format!("{OPREF}.op"), &[opref.clone()])
+        .call(&format!("{OPREF}.op"), &anthill_core::eval::HostValue::all(&[opref.clone()])).map(|h| h.value)
         .unwrap();
     assert!(
         sym_qn(&interp, &op_id).contains('.'),
@@ -166,7 +173,7 @@ fn resolve_op_real_impl_yields_callable_opref() {
     );
 
     // dict(r) — some(Dictionary).
-    let d = interp.call(&format!("{OPREF}.dict"), &[opref]).unwrap();
+    let d = interp.call(&format!("{OPREF}.dict"), &anthill_core::eval::HostValue::all(&[opref])).map(|h| h.value).unwrap();
     match &d {
         Value::Entity { functor, named, .. } => {
             assert!(
@@ -194,9 +201,9 @@ fn resolve_op_no_table_row_falls_back_to_spec_op() {
     let dict = crate::common::dict(&interp, bool_sym, []).into_value();
 
     let opref = interp
-        .call(&format!("{DICT}.resolveOp"), &[dict, add])
+        .call(&format!("{DICT}.resolveOp"), &anthill_core::eval::HostValue::all(&[dict, add])).map(|h| h.value)
         .unwrap();
-    let op_id = interp.call(&format!("{OPREF}.op"), &[opref]).unwrap();
+    let op_id = interp.call(&format!("{OPREF}.op"), &anthill_core::eval::HostValue::all(&[opref])).map(|h| h.value).unwrap();
     assert_eq!(sym_qn(&interp, &op_id), "anthill.prelude.Additive.add");
 }
 
@@ -213,7 +220,10 @@ fn ops_enumerates_dict_operations_as_oprefs() {
     );
 
     let dict = crate::common::dict(&interp, int64, []).into_value();
-    let list = interp.call(&format!("{DICT}.ops"), &[dict]).unwrap();
+    // `ops` answers a `FiniteStream`, a spec: the call's value is the instance a body holds,
+    // and the list is its carrier's value.
+    let list = interp.call(&format!("{DICT}.ops"), &anthill_core::eval::HostValue::all(&[dict])).map(|h| h.value).unwrap();
+    let list = interp.carried(list);
 
     // A non-empty cons list whose head is a dict-bearing OpRef.
     match &list {
@@ -260,8 +270,24 @@ fn opref_backed_by_builtin_is_callable() {
         dict: None,
         named: None,
     };
+    // A host call is typed as the same call in a body, where a bare `abs` has no
+    // function-value form (no anthill body to lift): the host, which holds the value, hands
+    // it over at the parameter's own arrow.
+    let apply = resolve(&interp, "test.wi577.apply.applyUnary");
+    let arrow = anthill_core::kb::op_info::lookup_operation_info(interp.kb(), apply)
+        .expect("applyUnary has an OperationInfo")
+        .params[0]
+        .1
+        .clone();
     let got = interp
-        .call("test.wi577.apply.applyUnary", &[opref, Value::Int(-5)])
+        .call(
+            "test.wi577.apply.applyUnary",
+            &[
+                anthill_core::eval::HostValue::typed(opref, arrow),
+                Value::Int(-5).into(),
+            ],
+        )
+        .map(|h| h.value)
         .unwrap();
     match got {
         Value::Int(n) => assert_eq!(
@@ -306,7 +332,7 @@ fn resolve_op_remembers_the_named_spec_op() {
     let dict = crate::common::dict(&interp, desc, subs).into_value();
     let cmp = sym_val(&mut interp, "anthill.prelude.WeakOrd.compare");
     let opref = interp
-        .call(&format!("{DICT}.resolveOp"), &[dict, cmp])
+        .call(&format!("{DICT}.resolveOp"), &anthill_core::eval::HostValue::all(&[dict, cmp])).map(|h| h.value)
         .unwrap();
     match &opref {
         Value::OpRef {
@@ -347,7 +373,7 @@ fn opref_dict_none_for_dictless_ref() {
         dict: None,
         named: None,
     };
-    let d = interp.call(&format!("{OPREF}.dict"), &[opref]).unwrap();
+    let d = interp.call(&format!("{OPREF}.dict"), &anthill_core::eval::HostValue::all(&[opref])).map(|h| h.value).unwrap();
     match &d {
         Value::Entity { functor, named, .. } => {
             assert!(
@@ -394,10 +420,10 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
     let dict = crate::common::dict(&interp, desc, subs).into_value();
     let cmp = sym_val(&mut interp, "anthill.prelude.WeakOrd.compare");
     let opref = interp
-        .call(&format!("{DICT}.resolveOp"), &[dict, cmp])
+        .call(&format!("{DICT}.resolveOp"), &anthill_core::eval::HostValue::all(&[dict, cmp])).map(|h| h.value)
         .unwrap();
 
-    let got = interp.call(&format!("{OPREF}.named"), &[opref]).unwrap();
+    let got = interp.call(&format!("{OPREF}.named"), &anthill_core::eval::HostValue::all(&[opref])).map(|h| h.value).unwrap();
     match &got {
         Value::Entity { functor, named, .. } => {
             assert!(
@@ -425,7 +451,7 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
         dict: None,
         named: None,
     };
-    let got = interp.call(&format!("{OPREF}.named"), &[bare]).unwrap();
+    let got = interp.call(&format!("{OPREF}.named"), &anthill_core::eval::HostValue::all(&[bare])).map(|h| h.value).unwrap();
     match &got {
         Value::Entity { functor, named, .. } => {
             assert!(

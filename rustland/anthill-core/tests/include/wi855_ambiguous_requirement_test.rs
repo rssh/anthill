@@ -146,7 +146,7 @@ end
 /// dirty load, so building the interpreter IS the clean-load gate.
 fn drive(src: &str, ns: &str) -> Result<Value, EvalError> {
     let mut interp = crate::common::interp_for(src);
-    interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)])
+    interp.call(&format!("{ns}.Driver.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value)
 }
 
 /// THE PIN, and the claim is unchanged by WI-1091: a genuine two-provider tie surfaces
@@ -345,7 +345,7 @@ end
   end
 "#;
     let mut interp = crate::common::interp_for(&program(REPAIRED));
-    let got = interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)]);
+    let got = interp.call(&format!("{ns}.Driver.drive"), &anthill_core::eval::HostValue::all(&[Value::Int(0)])).map(|h| h.value);
     assert!(
         matches!(got, Ok(Value::Int(5))),
         "expected Ok(Int(5)) once the unused clause is gone; got {got:?}"

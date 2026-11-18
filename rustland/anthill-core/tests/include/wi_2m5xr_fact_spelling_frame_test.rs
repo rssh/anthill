@@ -88,7 +88,7 @@ fn errs(src: &str) -> Vec<String> {
 fn drive(src: &str, op: &str, arg: i64) -> Value {
     let mut interp = interp_for(src);
     interp
-        .call(op, &[Value::Int(arg)])
+        .call(op, &anthill_core::eval::HostValue::all(&[Value::Int(arg)])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("{op}({arg}) must evaluate: {e:?}"))
 }
 

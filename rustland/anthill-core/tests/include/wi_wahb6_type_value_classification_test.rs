@@ -161,7 +161,7 @@ fn a_type_argument_is_itself_classified() {
 fn an_unannotated_let_denotes_and_evaluates() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.wahb6.via_let", &[])
+        .call("test.wahb6.via_let", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("via_let: {e:?}"));
     let Some((functor, named)) = type_application(interp.kb(), &v) else {
         panic!("expected the parameterized `Cell[V = …]` type, got {v:?}");
@@ -180,7 +180,7 @@ fn an_unannotated_let_denotes_and_evaluates() {
 fn a_bare_type_value_evaluates_to_a_ref_not_an_empty_application() {
     let mut interp = interp_for(SRC);
     let v = interp
-        .call("test.wahb6.bare_via_let", &[])
+        .call("test.wahb6.bare_via_let", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("bare_via_let: {e:?}"));
     let Value::Term { id, .. } = v else {
         panic!("expected a Term-carried type, got {v:?}")
@@ -222,7 +222,7 @@ end
         .expect("Leaf resolves");
     // The APPLIED surface constructs: the instance, headed by the constructor itself.
     let built = interp
-        .call("test.wahb6c.build", &[])
+        .call("test.wahb6c.build", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("build: {e:?}"));
     assert!(
         matches!(built.head(interp.kb()), ViewHead::Functor { functor, .. }
@@ -234,7 +234,7 @@ end
     // this row pinned only that `-> Type = Leaf` LOADED). The type is a value naming the
     // constructor by its type face, never the instance.
     let ty = interp
-        .call("test.wahb6c.as_type", &[])
+        .call("test.wahb6c.as_type", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .unwrap_or_else(|e| panic!("as_type: {e:?}"));
     let Value::Term { id, .. } = ty else {
         panic!("`Leaf[]` must be a Term-carried type, got {ty:?}")

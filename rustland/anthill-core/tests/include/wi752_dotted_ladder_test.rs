@@ -80,7 +80,7 @@ end
 
     let mut interp = interp_for(SRC);
     match interp
-        .call("app.callSite", &[])
+        .call("app.callSite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`util.f()` must run")
     {
         Value::Int(n) => assert_eq!(n, 41, "`util.f()` must reach `app.util.f`"),
@@ -89,7 +89,7 @@ end
     // The rule citation reaches a NON-empty relation — proof the name bound the
     // relation `app.util.rel` (extent {7}) rather than merely loading.
     match interp
-        .call("app.citeSite", &[])
+        .call("app.citeSite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`util.rel.isEmpty` must run")
     {
         Value::Bool(b) => assert!(
@@ -169,7 +169,7 @@ end
     });
 
     let mut interp = interp_for(SRC);
-    match interp.call("app2.callSite", &[]).expect("`Mid.f()` must run") {
+    match interp.call("app2.callSite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("`Mid.f()` must run") {
         Value::Int(n) => assert_eq!(
             n, 41,
             "`Mid.f()` must reach `app2.base.Base.f` through the conversion"
@@ -179,7 +179,7 @@ end
     // The citation reaches a NON-empty relation — proof the name bound `Base.rel` rather
     // than merely loading.
     match interp
-        .call("app2.citeSite", &[])
+        .call("app2.citeSite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`Mid.rel.isEmpty` must run")
     {
         Value::Bool(b) => assert!(
@@ -237,7 +237,7 @@ end
 
     let mut interp = interp_for(SRC);
     match interp
-        .call("test.wi752abs.callSite", &[])
+        .call("test.wi752abs.callSite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("the absolute call must run")
     {
         Value::Int(n) => assert_eq!(n, 41, "must reach `myroot.inner.helper`"),
@@ -464,7 +464,7 @@ end
     });
     let mut interp = interp_for(COLLIDING);
     match interp
-        .call("test.wi752int.callSite", &[])
+        .call("test.wi752int.callSite", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
         .expect("`lib.util()` must run")
     {
         Value::Int(n) => assert_eq!(

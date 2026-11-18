@@ -526,7 +526,7 @@ end
         ("drive_prod", 5, 1),
     ] {
         let got = interp
-            .call(&format!("test.nar1x.entry.Driver.{op}"), &[Value::Int(n)])
+            .call(&format!("test.nar1x.entry.Driver.{op}"), &anthill_core::eval::HostValue::all(&[Value::Int(n)])).map(|h| h.value)
             .unwrap_or_else(|e| panic!("{op}({n}): {e:?}"));
         assert_eq!(
             crate::common::scalar_int(interp.kb(), &got),
