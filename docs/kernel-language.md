@@ -2307,8 +2307,9 @@ slot is the projection `s.O` (§"How the slot is named"), so it names the
 parameter, and the *caller* reads the provider out of that argument's type, where
 it is written.  The call therefore answers with the comparator the value's own
 construction site chose, so at **a typed call site** writing `O` and leaving it out
-mean the same thing at run time.  A host call is such a call site (§8.2).  The
-resolver's route into the operation, from a rule body, has **no types** and cannot read
+mean the same thing at run time.  A rule body's call (§5.3) and a host call (§8.2) are
+such call sites.  A call no typer reads — a goal a program builds and hands to the
+resolver, an operation applied inside a data term — has **no types** and cannot read
 it: a runtime value carries none of its type arguments (§4.7).  It takes the slot's
 spec's provider only when there is exactly **one**, never by a ranking among several
 (neither specificity nor §3.2's default rung), and delays on a tie.
@@ -2776,7 +2777,11 @@ from every position that declares a type. These are the head's bound; an operati
 parameters and its result, in a value slot and as the result column of `f(a₁…aₙ, ?r)`; a
 constructor's fields and its result; an entity goal's fields; a rule goal's columns; and a
 field read — each a goal the clause commits to, not one inside a `|` branch, a quantifier's
-body or a negation. A rule goal reads the callee's columns as the callee's clauses type
+body or a negation. A parameter that leaves a named slot of its type unwritten is open there
+(§5.2), and a position that writes the slot fixes it for the variable: with `byLength() ->
+MySet[T = String, O = ByLength]` and `has(s: MySet[T = String], x: String)`, `?s` in `rule
+r(?b) :- ?s <=> byLength(), ?b <=> Bulk.has(?s, "aa")` is a `MySet[T = String, O = ByLength]`,
+and the call reads `s.O` off it as a body's call reads it off `let s = byLength()`. A rule goal reads the callee's columns as the callee's clauses type
 them, the same for a written and an inferred column, fresh at each goal: a column's type is
 the join of its clauses', and a tie two clauses make between columns differently is not kept.
 A clause holds no type at a column whose variable's only other position is a goal on the

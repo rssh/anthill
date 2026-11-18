@@ -135,6 +135,8 @@ enum LatePosition {
         position: Value,
         result: CallResult,
         at: crate::span::SourceSpan,
+        /// The application, which a [`Self::CalledValue`] names.
+        call: Rc<NodeOccurrence>,
     },
     /// `f(a₁…aₙ, ?r)` at goal position, read as the call (§5.3): the last argument is the
     /// call's result.
@@ -168,6 +170,14 @@ enum LatePosition {
         construction: Rc<NodeOccurrence>,
         var: u32,
     },
+    /// A variable on one side of an equality whose other side is an operation's call (`?s <=>
+    /// byLength()`): the variable takes what the call's result writes and its other positions
+    /// leave unwritten, as an operation body's `let` is of its value's type
+    /// ([`with_written_bindings`]). Read once every other position is.
+    CalledValue {
+        call: Rc<NodeOccurrence>,
+        var: u32,
+    },
     /// A bounded quantifier's binder (`(forall ?e in ?xs: …)`): an element of the collection,
     /// once the clause types it.
     Element {
@@ -179,6 +189,7 @@ enum LatePosition {
 /// An operation application's result type at the application's instantiation, and the
 /// argument each parameter is filled with — what a projection the result names (`head(s:
 /// Self) -> s.T`) is read off.
+#[derive(Clone)]
 pub(super) struct CallResult {
     op: Symbol,
     ty: Value,
@@ -187,6 +198,7 @@ pub(super) struct CallResult {
 
 /// The type of a call's argument as a projection reads it: a variable's, once the clause is
 /// typed, or the type the argument is known at where it is read.
+#[derive(Clone)]
 enum ArgType {
     Var(u32),
     Of(Value),
@@ -796,10 +808,8 @@ fn constrain_vid(
     let existing_from_param = st.param_backed.contains(&vid);
     // Unify either way: that is what binds a call's parameter to the variable's concrete
     // type, so a SIBLING argument of the same call inherits it.
-    if !unify_types(kb, &mut st.subst, &existing, expected_type)
-        && !from_param
-        && !existing_from_param
-    {
+    let unified = unify_types(kb, &mut st.subst, &existing, expected_type);
+    if !unified && !from_param && !existing_from_param {
         st.subst.contradiction = true;
     }
     // A declared position takes over from a placeholder — including when the two just
@@ -808,7 +818,63 @@ fn constrain_vid(
     if !from_param && existing_from_param {
         st.var_types.insert(vid, expected_type.clone());
         st.param_backed.remove(&vid);
+    } else if unified {
+        // A binding this position writes and the recorded type leaves unwritten is the
+        // variable's ([`with_written_bindings`]).
+        let existing = walk_type_deep_value(kb, &st.subst, &existing);
+        if let Some(written) = with_written_bindings(kb, &existing, expected_type) {
+            st.var_types.insert(vid, written);
+        }
     }
+}
+
+/// `existing` with each binding `written` writes and it leaves unwritten, where the two are
+/// applications of one sort that unify: a parameter a position leaves unwritten is open there
+/// (kernel-language §5.2), and a position that writes it says which. `MySet[T = String]` and
+/// `MySet[T = String, O = ByLength]` give `MySet[T = String, O = ByLength]`; a binding both
+/// write is merged the same way. `None` where `written` adds nothing.
+pub(super) fn with_written_bindings(
+    kb: &mut KnowledgeBase,
+    existing: &Value,
+    written: &Value,
+) -> Option<Value> {
+    let TypeExtractor::Parameterized { base, bindings: has } = extract_type(kb, existing) else {
+        return None;
+    };
+    let TypeExtractor::Parameterized { base: other, bindings: adds } = extract_type(kb, written) else {
+        return None;
+    };
+    if kb.canonical_sort_sym(base) != kb.canonical_sort_sym(other) {
+        return None;
+    }
+    let mut out = has;
+    let mut changed = false;
+    for (key, value) in adds {
+        match out.iter().position(|(k, _)| same_label(kb, *k, key)) {
+            Some(at) => {
+                let inner = out[at].1.clone();
+                if let Some(merged) = with_written_bindings(kb, &inner, &value) {
+                    out[at].1 = merged;
+                    changed = true;
+                }
+            }
+            None => {
+                out.push((key, value));
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return None;
+    }
+    let base = kb.make_sort_ref(base);
+    Some(parameterized_value(
+        kb,
+        base,
+        &out,
+        crate::kb::node_occurrence::empty_span(),
+        None,
+    ))
 }
 
 /// WI-246: occurrence-body twin of [`collect_term_type_constraints`] — walk a
@@ -920,9 +986,7 @@ pub(super) fn collect_occurrence_type_constraints(
             // call's side is typed by its result ([`LatePosition::CallResult`]).
             if let ([a, b], true) = (pos_args, committed && kb.is_equality_connective_functor(functor)) {
                 for (lambda, other) in [(a, b), (b, a)] {
-                    let a_call = matches!(lambda.as_expr(), Some(Expr::Apply { functor, .. })
-                        if kb.op_record(*functor).is_some() && !kb.is_entity_constructor(*functor));
-                    if !a_call && holds_a_lambda(lambda) {
+                    if !is_operation_call(kb, lambda) && holds_a_lambda(lambda) {
                         st.late.push(LatePosition::LambdaValue {
                             lambda: Rc::clone(lambda),
                             other: Rc::clone(other),
@@ -933,6 +997,14 @@ pub(super) fn collect_occurrence_type_constraints(
                     if let (Some(var), true) = (other.var_key(kb), constructs_a_value(kb, construction)) {
                         st.late.push(LatePosition::ConstructedValue {
                             construction: Rc::clone(construction),
+                            var,
+                        });
+                    }
+                }
+                for (call, other) in [(a, b), (b, a)] {
+                    if let (Some(var), true) = (other.var_key(kb), is_operation_call(kb, call)) {
+                        st.late.push(LatePosition::CalledValue {
+                            call: Rc::clone(call),
                             var,
                         });
                     }
@@ -958,6 +1030,7 @@ pub(super) fn collect_occurrence_type_constraints(
                         position: position.clone(),
                         result,
                         at: occ.span,
+                        call: Rc::clone(occ),
                     });
                 }
             }
@@ -1088,6 +1161,12 @@ fn constructs_a_value(kb: &KnowledgeBase, value: &Rc<NodeOccurrence>) -> bool {
         Some(Expr::Ref(name)) => kb.entity_field_types(*name).is_some_and(|fields| fields.is_empty()),
         _ => false,
     }
+}
+
+/// Is `value` an operation's call (no constructor's)?
+fn is_operation_call(kb: &KnowledgeBase, value: &Rc<NodeOccurrence>) -> bool {
+    matches!(value.as_expr(), Some(Expr::Apply { functor, .. })
+        if kb.op_record(*functor).is_some() && !kb.is_entity_constructor(*functor))
 }
 
 /// Is there a lambda in `value`, outside any other lambda's body?
@@ -1847,8 +1926,24 @@ pub(super) fn settle_late_positions(
     // the field's type once the receiver's is known).
     let mut waiting: Vec<LatePosition> = Vec::new();
     let mut constructed: Vec<LatePosition> = Vec::new();
+    // The result of each call a `<=>` makes a variable of ([`LatePosition::CalledValue`]), all
+    // registered by the walk.
+    let called: Vec<Rc<NodeOccurrence>> = st
+        .late
+        .iter()
+        .filter_map(|late| match late {
+            LatePosition::CalledValue { call, .. } => Some(Rc::clone(call)),
+            _ => None,
+        })
+        .collect();
+    let mut call_results: Vec<(Rc<NodeOccurrence>, CallResult, crate::span::SourceSpan)> = Vec::new();
     while !st.late.is_empty() {
         for late in std::mem::take(&mut st.late) {
+            if let LatePosition::CallResult { result, at, call, .. } = &late {
+                if called.iter().any(|c| Rc::ptr_eq(c, call)) {
+                    call_results.push((Rc::clone(call), result.clone(), *at));
+                }
+            }
             if let LatePosition::RuleGoal { functor, goal } = &late {
                 let Some(columns) = rule_goal_columns_at(kb, own, *functor) else {
                     note_unread_goal(kb, st, goal);
@@ -1894,7 +1989,7 @@ pub(super) fn settle_late_positions(
                 | LatePosition::LambdaValue { .. }
                 | LatePosition::Element { .. } => true,
                 LatePosition::RuleGoal { .. } => false,
-                LatePosition::ConstructedValue { .. } => {
+                LatePosition::ConstructedValue { .. } | LatePosition::CalledValue { .. } => {
                     constructed.push(late);
                     continue;
                 }
@@ -1917,8 +2012,26 @@ pub(super) fn settle_late_positions(
         }
     }
     for late in constructed {
-        if let LatePosition::ConstructedValue { construction, var } = late {
-            narrow_to_construction(kb, st, &construction, var);
+        match late {
+            LatePosition::ConstructedValue { construction, var } => {
+                narrow_to_construction(kb, st, &construction, var)
+            }
+            LatePosition::CalledValue { call, var } => {
+                let Some(existing) = st.var_types.get(&var).cloned() else { continue };
+                let Some((_, result, at)) = call_results.iter().find(|(c, ..)| Rc::ptr_eq(c, &call))
+                else {
+                    continue;
+                };
+                let Some(ty) = computed_result_type(kb, rid, st, result, *at) else { continue };
+                let ty = walk_type_deep_value(kb, &st.subst, &ty);
+                let existing = walk_type_deep_value(kb, &st.subst, &existing);
+                if unify_types(kb, &mut st.subst.clone(), &existing, &ty) {
+                    if let Some(written) = with_written_bindings(kb, &existing, &ty) {
+                        st.var_types.insert(var, written);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     demands_on_some_type(kb, rid, st);
@@ -1999,6 +2112,7 @@ fn settle_typed_position(
             position,
             result,
             at,
+            ..
         } => {
             let Some(ty) = computed_result_type(kb, rid, st, result, *at) else {
                 return false;
@@ -2053,8 +2167,8 @@ fn settle_typed_position(
             (SlotOf::Arg(binder), ty, context, binder.span)
         }
         LatePosition::RuleGoal { .. } => unreachable!("a rule goal is read by its columns"),
-        LatePosition::ConstructedValue { .. } => {
-            unreachable!("a constructed value is read after every other position")
+        LatePosition::ConstructedValue { .. } | LatePosition::CalledValue { .. } => {
+            unreachable!("a variable's value is read after every other position")
         }
     };
     let mut trial = st.trial();
@@ -2471,6 +2585,12 @@ fn constrain_var_at(
         st.demand_only.remove(&d);
         if st.param_backed.remove(&d) {
             st.var_types.insert(d, ty.clone());
+        } else {
+            // A binding this position writes and the recorded type leaves unwritten.
+            let existing = walk_type_deep_value(kb, &st.subst, &existing);
+            if let Some(written) = with_written_bindings(kb, &existing, ty) {
+                st.var_types.insert(d, written);
+            }
         }
         return true;
     }
