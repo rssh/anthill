@@ -1189,12 +1189,19 @@ fn route_goal(
             let Some((spec, carrier, instance)) = guard_read_parts(kb, &read) else {
                 // A read the callee takes for a call is passed the requirement the caller's sort
                 // states at the call's receiver, which the caller reads for it
-                // (`install_sort_requirement_reads`); any other passes what it did.
+                // (`install_sort_requirement_reads`); a slot read, the slot's requirement at the
+                // goal's types where they make it concrete, or the caller's own guard where its
+                // carrier is a parameter of the caller ([`slot_read_at_goal`]); any other passes
+                // what it did.
                 let handed = writer.clause().and_then(|rid| {
                     let (spec, at_goal) = call_read_at_goal(kb, rid, &caller_sort_slots, site, crid, &read)?;
                     sort_requirement_read(kb, fd, rid, spec, &at_goal)
                 });
-                return handed.map_or(GuardRoute::NoGuard, GuardRoute::Declared);
+                if let Some(var) = handed {
+                    return GuardRoute::Declared(var);
+                }
+                return slot_read_at_goal(kb, fd, writer.clause(), site, crid, &read)
+                    .unwrap_or(GuardRoute::NoGuard);
             };
             let at = guard_carrier_at_goal(kb, site, crid, carrier);
             // Each other type parameter the guard names at an element, with the caller's
@@ -1684,23 +1691,140 @@ fn dictionary_at_goal(
             kb.local_name_of(callee),
         )));
     }
+    fetch_at_goal(kb, &ground, at).map_err(GoalDictMiss::Fetch)
+}
+
+/// The dictionary of the ground `spec` at its carrier's type `at`, built from the provisions as
+/// a read at those types fetches it; `Err` with what the fetch says where it fetches none — no
+/// provision there, or two that answer — said of the goal at load.
+fn fetch_at_goal(kb: &mut KnowledgeBase, spec: &Value, at: &Value) -> Result<Value, String> {
     let none = Substitution::new();
-    let fetched = fetch_dictionary_from_type(kb, &none, &ground, at, DefaultRung::Consult, None);
-    match fetched {
+    match fetch_dictionary_from_type(kb, &none, spec, at, DefaultRung::Consult, None) {
         FindDictFetch::Fetched(dict) => Ok(dict),
-        FindDictFetch::Guard(FindDictOutcome::DontFire) => Err(GoalDictMiss::Fetch(format!(
-            "nothing provides `{}` there",
-            type_display_name_value(kb, &ground)
-        ))),
+        FindDictFetch::Guard(FindDictOutcome::DontFire) => {
+            Err(format!("nothing provides `{}` there", type_display_name_value(kb, spec)))
+        }
         // The fetch's account, said of a read at run time; here it is the goal's, at load.
         FindDictFetch::Undecided { detail } | FindDictFetch::Defect { detail } => {
-            Err(GoalDictMiss::Fetch(detail.replace(" at run time:", ":")))
+            Err(detail.replace(" at run time:", ":"))
         }
-        FindDictFetch::Guard(_) => Err(GoalDictMiss::Fetch(format!(
-            "`{}` is not decided by the goal's types",
-            type_display_name_value(kb, &ground)
-        ))),
+        FindDictFetch::Guard(_) => {
+            Err(format!("`{}` is not decided by the goal's types", type_display_name_value(kb, spec)))
+        }
     }
+}
+
+/// A slot read `callee_clause` takes for a call it wove — `find_dictionary(Desc, pick, ?#0, slot:
+/// 0, out: ?#2)` for `pick(?b, ?r)` over `pick(x: Box) requires Desc[T = x.E]` — at goal `site`,
+/// written by clause `caller` where it is one: the slot's requirement at the types the goal gives
+/// the call's arguments. Where those types fix it, its dictionary built from the provisions as the
+/// call's own would be (`r(box(v: red()), ?r)` builds `Desc[T = Red]`), or what the fetch says
+/// where nothing provides it there; where its carrier, its only element, is a parameter of the
+/// caller, the caller's own guard of the spec there (`r(?b, ?r)` in `g[A](?b: Box[E = A], ?r) :-
+/// Desc[T = A], …`), as [`declared_route`] hands a guard read. `None` for any other read, a read
+/// under a form (which derives its own), an argument that is no head column of the callee or that
+/// the goal gives no type, and a requirement left open otherwise: the bridge derives that one when
+/// the call runs.
+fn slot_read_at_goal(
+    kb: &mut KnowledgeBase,
+    fd: Symbol,
+    caller: Option<RuleId>,
+    site: &Rc<NodeOccurrence>,
+    callee_clause: RuleId,
+    read: &Rc<NodeOccurrence>,
+) -> Option<GuardRoute> {
+    let Some(Expr::Apply {
+        pos_args, named_args, ..
+    }) = read.as_expr()
+    else {
+        return None;
+    };
+    if named_args.iter().any(|(k, _)| kb.local_name_of(*k) == REQUIREMENT_IN_FORM_LABEL) {
+        return None;
+    }
+    let slot = named_args
+        .iter()
+        .find(|(k, _)| kb.local_name_of(*k) == REQUIREMENT_SLOT_LABEL)
+        .and_then(|(_, v)| match v.as_expr() {
+            Some(Expr::Const(crate::kb::term::Literal::Int(n))) => usize::try_from(*n).ok(),
+            _ => None,
+        })?;
+    let Some(Expr::Ref(op)) = pos_args.get(1).and_then(|o| o.as_expr()) else {
+        return None;
+    };
+    let op = *op;
+    let entry = op_dict_entries(kb, op).entries().get(slot)?.clone();
+    let rec = crate::kb::op_info::lookup_operation_info(kb, op)?;
+    let args = pos_args.get(2..)?;
+    if args.len() != rec.params.len() {
+        return None;
+    }
+    let Some(Expr::Apply {
+        pos_args: goal_pos,
+        named_args: goal_named,
+        ..
+    }) = site.as_expr()
+    else {
+        return None;
+    };
+    // Each argument of the call, a head column of the callee, at the type the goal gives it.
+    let columns = rule_head_var_slots(kb, callee_clause);
+    let mut types: Vec<Value> = Vec::with_capacity(args.len());
+    for arg in args {
+        let Some(Expr::Var(Var::DeBruijn(d))) = arg.as_expr() else {
+            return None;
+        };
+        let column = columns.iter().find(|(_, _, v)| v == d).map(|(key, _, _)| *key)?;
+        let at = match column {
+            SlotKey::Pos(i) => goal_pos.get(i),
+            SlotKey::Named(k) => goal_named.iter().find(|(n, _)| same_label(kb, *n, k)).map(|(_, a)| a),
+        }
+        .cloned()?;
+        types.push(goal_arg_type(kb, &at)?);
+    }
+    let (subst, param_arg_types) = pin_params_from_args(kb, op, &rec.params, &[], Some(&types), true);
+    let spec = ground_entry_spec(kb, op, &entry, &param_arg_types, &subst).ok()?;
+    let carrier = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(entry.required_sort))?;
+    // The grounding answers the spec on the carrier its entry is written on (a sort view); the
+    // fetch reads the application, which the entry's goal spells.
+    let concrete = instance_is_concrete(kb, &spec);
+    let goal = goal_from_requires_entry(
+        kb,
+        &RequiresEntry {
+            spec,
+            ..entry.clone()
+        },
+    )?;
+    let at = goal.bindings.iter().find(|(k, _)| same_label(kb, *k, carrier)).map(|(_, v)| v.clone())?;
+    if !concrete {
+        // At a parameter of the caller, its only element: the caller's own guard of the spec there.
+        let caller = caller?;
+        if goal.bindings.len() != 1 {
+            return None;
+        }
+        let caller_carrier = caller_param_at(kb, caller, &at)?;
+        let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(caller).to_vec();
+        let held: Vec<Rc<NodeOccurrence>> = clause_requirement_reads(kb, fd, &body)
+            .into_iter()
+            .filter_map(|own| {
+                let (own_spec, own_carrier, _) = guard_read_parts(kb, &own)?;
+                (own_carrier == caller_carrier && same_sort_canonical(kb, own_spec, entry.required_sort))
+                    .then(|| requirement_read_out(kb, fd, &own).map(Rc::clone))
+                    .flatten()
+            })
+            .collect();
+        // Two of the caller's guards hold it: which is the goal's to say, and it says neither.
+        return match held.as_slice() {
+            [one] => Some(GuardRoute::Declared(Rc::clone(one))),
+            _ => None,
+        };
+    }
+    let base = kb.make_sort_ref(goal.spec_sort);
+    let spec = parameterized_value(kb, base, &goal.bindings, crate::kb::node_occurrence::empty_span(), None);
+    Some(match fetch_at_goal(kb, &spec, &at) {
+        Ok(dict) => GuardRoute::Concrete(dict),
+        Err(why) => GuardRoute::Unbuilt(entry.required_sort, why),
+    })
 }
 
 /// The type the type variable at frame slot `carrier` of `callee_clause` — its guard's carrier

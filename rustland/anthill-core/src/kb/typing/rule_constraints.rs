@@ -838,12 +838,14 @@ pub(super) fn with_written_bindings(
     existing: &Value,
     written: &Value,
 ) -> Option<Value> {
-    let TypeExtractor::Parameterized { base, bindings: has } = extract_type(kb, existing) else {
-        return None;
+    // A bare sort is its application with nothing written.
+    let application = |t: TypeExtractor| match t {
+        TypeExtractor::Parameterized { base, bindings } => Some((base, bindings)),
+        TypeExtractor::SortRef(base) => Some((base, Vec::new())),
+        _ => None,
     };
-    let TypeExtractor::Parameterized { base: other, bindings: adds } = extract_type(kb, written) else {
-        return None;
-    };
+    let (base, has) = application(extract_type(kb, existing))?;
+    let (other, adds) = application(extract_type(kb, written))?;
     if kb.canonical_sort_sym(base) != kb.canonical_sort_sym(other) {
         return None;
     }
@@ -2061,6 +2063,12 @@ fn narrow_to_construction(
     }
     let existing = walk_type_deep_value(kb, &st.subst, &existing);
     if unify_types(kb, &mut st.subst.clone(), &existing, &ty) {
+        // What the construction writes and the variable's other positions leave unwritten
+        // (`?b <=> box(v: red())` handed to a column `Box`) is the variable's, as for a call
+        // ([`with_written_bindings`]).
+        if let Some(written) = with_written_bindings(kb, &existing, &ty) {
+            st.var_types.insert(var, written);
+        }
         return;
     }
     let context = TypeErrorContext::Rule {

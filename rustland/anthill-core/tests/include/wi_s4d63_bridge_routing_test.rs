@@ -105,3 +105,67 @@ end
     assert_eq!(crate::common::one_definite_int(&mut kb, "s4d63.br.reify.split"), Some(3));
     assert_eq!(bridge_derivations_by_this_thread() - before, 0, "a dictionary derived from the values");
 }
+
+const PROJ: &str = r#"
+namespace s4d63.br.proj
+  import anthill.prelude.{Int64}
+  sort Desc
+    sort T = ?
+    operation tag() -> Int64
+  end
+  sort Red
+    entity red
+    provides Desc[T = Red]
+    operation tag() -> Int64 = 7
+  end
+  sort Blue
+    entity blue
+  end
+  sort Box
+    sort E = ?
+    entity box(v: E)
+  end
+  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()
+  rule r(?b, ?r) :- pick(?b, ?r)
+  rule rv(?b, ?r) :- ?r <=> pick(?b)
+"#;
+
+/// A citation fills the condition the weave made for a call of the cited clause, where its
+/// argument types make the slot's requirement concrete: `r(?b, ?r) :- pick(?b, ?r)` over
+/// `pick(x: Box) requires Desc[T = x.E]` leaves `x.E` to its clause, and `r(box(v: red()), ?r)`
+/// builds `Desc[T = Red]` at load, so `pick` answers `7` with nothing derived: in the goal
+/// spelling, in a value slot, through a variable a construction makes, and in a written query. A
+/// generic caller hands its own guard (`g[A](?b: Box[E = A], ?r) :- Desc[T = A], r(?b, ?r)`),
+/// cited at a `Red` box. FAILS, the counts, with a slot read left to the bridge
+/// (`slot_read_at_goal`): 1 derived for each; `q2`'s alone with a construction's written
+/// parameter not taken into its variable's type (`narrow_to_construction`).
+#[test]
+fn a_citation_fills_a_woven_slot_read() {
+    let mut kb = load_kb_with(&format!(
+        "{PROJ}  rule q(?r) :- r(box(v: red()), ?r)\n  rule qv(?r) :- rv(box(v: red()), ?r)\n  \
+         rule q2(?r) :- ?b <=> box(v: red()), r(?b, ?r)\n  \
+         rule g[A](?b: Box[E = A], ?r) :- Desc[T = A], r(?b, ?r)\n  rule q3(?r) :- g(box(v: red()), ?r)\nend\n"
+    ));
+    let goals = query_goals(&mut kb, &["s4d63.br.proj.r(s4d63.br.proj.Box.box(v: s4d63.br.proj.Red.red()), ?r)"]);
+    let before = bridge_derivations_by_this_thread();
+    let sols = kb.resolve(&goals, &ResolveConfig::default());
+    assert_eq!(sols.iter().filter(|s| s.is_definite()).count(), 1, "the query answers");
+    assert_eq!(bridge_derivations_by_this_thread() - before, 0, "the query: a dictionary derived from the values");
+    for rule in ["q", "qv", "q2", "q3"] {
+        let before = bridge_derivations_by_this_thread();
+        assert_eq!(crate::common::one_definite_int(&mut kb, &format!("s4d63.br.proj.{rule}")), Some(7), "{rule}");
+        assert_eq!(bridge_derivations_by_this_thread() - before, 0, "{rule}: a dictionary derived from the values");
+    }
+}
+
+/// … and at a type nothing provides the requirement at, the citation is refused where it is
+/// written, as `pick(box(v: blue()))` is in an operation body. Before, the clause loaded and
+/// the goal had no answer when it ran. FAILS with a slot read left to the bridge: it loads.
+#[test]
+fn a_citation_at_an_unprovided_instance_is_refused() {
+    let errors = load_errors_of(&format!("{PROJ}  rule qb(?r) :- r(box(v: blue()), ?r)\nend\n"));
+    assert!(
+        errors.iter().any(|e| e.contains("Desc[T = s4d63.br.proj.Blue]") || e.contains("Desc[T = Blue]")),
+        "refused at the citation, naming the requirement: {errors:#?}"
+    );
+}

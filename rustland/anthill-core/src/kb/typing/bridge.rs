@@ -797,7 +797,7 @@ fn derive_bridge_requirements(
 /// A parameter typed with the parent sort (`b: Box`) binds `Box`'s params from the
 /// arg's type-args (`Box[T = Tag]` ⇒ `Box.T := Tag`); a parameter typed with a
 /// sort-param directly (`x: T`) binds it from the arg's own type.
-fn pin_params_from_args(
+pub(super) fn pin_params_from_args(
     kb: &mut KnowledgeBase,
     op: Symbol,
     params: &[(Symbol, Value)],
@@ -843,7 +843,7 @@ fn pin_params_from_args(
 /// receiver) both arrive as "still a projection", and reporting them with one sentence
 /// tells the author the arguments are at fault when the requirement itself may be.
 /// `/code-review` drove it.
-fn ground_entry_spec(
+pub(super) fn ground_entry_spec(
     kb: &mut KnowledgeBase,
     op: Symbol,
     entry: &RequiresEntry,
