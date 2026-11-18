@@ -1054,6 +1054,30 @@ in the same order.
 **NOT CHANGED:** what a typed head means (060 §2's table), the guard in front of the body, the
 dictionary channel, and the answers of every mode — only how a bound value is checked.
 
+**DELIVERED 2026-11-18 (WI-20261115-YR3N7).** `fill_derive::emit_fill_clauses` emits a clause per
+constructor under the internal `<Sort>.__fill`, recorded as the `SortDomain` entry's `fill` with the
+sort's constructors (`ctors`) and how many clauses read the dictionary (`reads`). The to-verify items:
+- The COLUMN TYPE: the cases carry no bound; `<Sort>.domain` became a clause of its own,
+  `face(?x: Self) :- [read,] apply_domain(?self | Self, ?x)`, with the bound, recorded beside the fill
+  (`record_domain_value_face`) so the typed-head sweep leaves it alone. A relation citation builds its
+  query from its first clause's head and refuses a compound one, so the cases cannot be the face.
+- THE THREADING: (a) a clause reads the dictionary only where a field's evidence names it
+  (`Evidence::reads_self`); (b) `fill_goal` hands `reads` copies of the WHOLE dictionary, one per slot
+  of the relation's layout; (c) the read's witness is the head's constructor pattern. A read a marker
+  bound is dropped at clause open — trusted, so a no-op — and one reached with no marker runs.
+- REFINEMENT: `lower_apply_domain` applies it (`lower_refining_value`): each instance of the asked
+  sort the refining sort's `requires` give it is matched against the handed dictionary's slots
+  (`evidence_admits`), and the slot each of its parameters meets is that parameter's condition. The
+  `__refined_domain` builtin is gone, and so is the fill by name: a typed head's ground bound calls
+  `apply_domain(T, ?x)` too (`ground_fill_goals`).
+- ORDER: an unbound value is tried against the heads in clause order — the index's walk was in its
+  `HashMap`'s run-to-run order, and `query_view` now sorts by `RuleId`, a derived fill's candidates in
+  clause order alone (WI-20260911-SXZ3G, folded in).
+- COST: the dispatch is asked in the step that lowered it. MEASURED (the fewest `--max-steps` that
+  answer; first answer / exhausted): a typed `List[T = Product]` 8 + 10n / 11 + 14n, the clauses
+  written by hand 5 + 10n / 7 + 14n, the shape before 13 + 27n / 25 + 38n; YR3N7's state 73 / 105,
+  before 177 / 281.
+
 ### The next case — MiniSat over a collection BUILDER: the collection's domain creates it
 
 Beyond S3b, recorded because it is what the mechanism is for (user, 2026-09-25), and carried on as

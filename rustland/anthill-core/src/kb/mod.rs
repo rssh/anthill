@@ -1834,10 +1834,10 @@ pub struct KnowledgeBase {
     /// in its order — so a dictionary built by any of the three is read the same way.
     pub(crate) sort_domains: HashMap<Decl, fill_derive::SortDomainEntry>,
 
-    /// WI-20260925-SHED7 — each `fill` relation the table above names, mapped back to its
-    /// (canonical) sort. The typed-head sweep reads it to leave a sort's own `fill` clauses
-    /// alone: they ARE the generator, and a goal generated from their bound would run them
-    /// again (060-typedomains §0).
+    /// WI-20260925-SHED7 — each `fill` relation the table above names, and each derived value
+    /// face over one (WI-20261115-YR3N7), mapped back to its (canonical) sort. The typed-head
+    /// sweep reads it to leave a sort's own domain clauses alone: they ARE the generator, and
+    /// a goal generated from their bound would run it again (060-typedomains §0).
     pub(crate) fill_relations: HashMap<Symbol, Symbol>,
 
     /// WI-743 — the derivations collected during the item walk and drained ONCE by
@@ -4035,10 +4035,33 @@ impl KnowledgeBase {
         self.sort_domains.insert(Decl::of(canon), entry);
     }
 
-    /// WI-20260925-SHED7 — the sort whose `fill` relation `rel` is, or `None` for any other
-    /// relation.
+    /// WI-20261115-YR3N7 — `sort`'s `SortDomain` entry, to complete while its `fill` is
+    /// derived (`fill_derive::run` counts the clauses that read the dictionary as it emits
+    /// them).
+    pub(crate) fn sort_domain_mut(&mut self, sort: Symbol) -> Option<&mut fill_derive::SortDomainEntry> {
+        let canon = self.canonical_sort_sym(sort);
+        self.sort_domains.get_mut(&Decl::of(canon))
+    }
+
+    /// WI-20261115-YR3N7 — record `face`, the derived value face `<Sort>.domain` over `sort`'s
+    /// `fill`, as one of `sort`'s own domain relations ([`Self::fill_relation_sort`]).
+    pub(crate) fn record_domain_value_face(&mut self, face: Symbol, sort: Symbol) {
+        let canon = self.canonical_sort_sym(sort);
+        self.fill_relations.insert(face, canon);
+    }
+
+    /// WI-20260925-SHED7 — the sort whose `fill` relation — or derived value face, which
+    /// calls it (WI-20261115-YR3N7) — `rel` is, or `None` for any other relation.
     pub(crate) fn fill_relation_sort(&self, rel: Symbol) -> Option<Symbol> {
         self.fill_relations.get(&rel).copied()
+    }
+
+    /// WI-20261115-YR3N7 — is `rel` a sort's DERIVED `fill`, one clause per constructor
+    /// (`kb::fill_derive`)? Not its value face, nor a written or primitive domain's relation.
+    pub(crate) fn is_derived_fill_relation(&self, rel: Symbol) -> bool {
+        self.fill_relation_sort(rel)
+            .and_then(|s| self.sort_domain(s))
+            .is_some_and(|e| e.kind == fill_derive::SortDomainKind::Derived && e.fill == rel)
     }
 
     /// WI-743 — `sort`'s declared type parameters, recorded when its domain is derived
@@ -9420,17 +9443,30 @@ impl KnowledgeBase {
             }
             results.push((rid, tree_subst));
         }
-        // Stable-sort: facts (empty body) before rules (non-empty body).
-        // The discrimination tree uses HashMap internally, so candidate order
-        // is non-deterministic. DFS resolution depends on trying ground facts
-        // before recursive rules to find base-case solutions first.
-        results.sort_by_key(|(rid, _)| {
-            if rules[rid.index()].body_nodes.is_empty() {
-                0
-            } else {
-                1
-            }
-        });
+        // CLAUSE ORDER (WI-20260911-SXZ3G). The tree keeps a node's edges in a `HashMap`, so
+        // what it returns for a goal with a variable at an indexed position comes in an order
+        // that changes from run to run — three facts declared red, green, blue answered in
+        // four orders over six runs. Sorted here by `RuleId`, the order the clauses were
+        // asserted in, so a relation's answers are a function of the program. Facts (empty
+        // body) before rules, each group in clause order: DFS resolution depends on trying
+        // ground facts before recursive rules to find base-case solutions first.
+        //
+        // A DERIVED `fill`'s clauses keep CLAUSE ORDER ALONE (WI-20261115-YR3N7): the
+        // derivation writes them in the order generation must take — base constructors first,
+        // each group in declaration order (`kb::fill_derive`) — and a nullary constructor's
+        // clause is a fact, which the grouping would move ahead of a base constructor declared
+        // before it.
+        // One candidate has no order to keep, and is nearly every goal: no lookup, no sort.
+        if results.len() > 1 {
+            let clause_order_alone = pattern
+                .head(self)
+                .functor_sym()
+                .is_some_and(|f| self.is_derived_fill_relation(f));
+            results.sort_by_key(|(rid, _)| {
+                let rule = !clause_order_alone && !rules[rid.index()].body_nodes.is_empty();
+                (rule, rid.index())
+            });
+        }
         results
     }
 
@@ -9478,17 +9514,25 @@ impl KnowledgeBase {
     /// separately and O(1) via [`Self::has_bodied_rule`], BEFORE calling this).
     /// Retracted leaves are filtered, exactly as `query_view` guards (the discrim
     /// tree may still hold a retracted non-ground head).
+    ///
+    /// In CLAUSE ORDER, as [`Self::query_view`]'s candidates are (WI-20260911-SXZ3G): the
+    /// tree's walk is in its `HashMap`'s run-to-run order.
     pub(crate) fn query_fact_heads<V: term_view::TermView>(
         &self,
         pattern: &V,
     ) -> Vec<crate::eval::value::Value> {
-        self.discrim
+        let mut rows: Vec<RuleId> = self
+            .discrim
             .query_raw(self, pattern)
             .into_iter()
-            .filter(|(rid, _)| {
+            .map(|(rid, _)| rid)
+            .filter(|rid| {
                 !self.rules[rid.index()].retracted && self.rules[rid.index()].body_nodes.is_empty()
             })
-            .map(|(rid, _)| self.rules[rid.index()].head.clone())
+            .collect();
+        rows.sort_by_key(|rid| rid.index());
+        rows.into_iter()
+            .map(|rid| self.rules[rid.index()].head.clone())
             .collect()
     }
 
@@ -13871,9 +13915,6 @@ impl KnowledgeBase {
         // WI-20260925-SHED7 — the sub-dictionary selector a derived `fill` clause writes in
         // `apply_domain`'s operand. Never a goal; see [`BuiltinTag::DomainSub`].
         self.register_builtin_tag(crate::kb::fill_derive::DOMAIN_SUB, BuiltinTag::DomainSub);
-        // The last case of a derived `fill`: a value of a refining sort. See
-        // [`BuiltinTag::RefinedDomain`].
-        self.register_builtin_tag(crate::kb::fill_derive::REFINED_DOMAIN, BuiltinTag::RefinedDomain);
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // is the SEMANTIC `PartialEq` op, for a goal no member answers; `neq` is a
         // body in the spec and has no tag. `===` (struct_eq, WI-615) and its negation `!==`

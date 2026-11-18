@@ -1,14 +1,37 @@
 //! WI-20260925-SHED7 (proposal 060 §2.3, proposal 067) — derive every sort's `SortDomain`:
-//! the relation its `fill` runs, `<Sort>.domain`, PER ENTITY and PER FIELD.
+//! the relation its `fill` runs, `<Sort>.__fill`, PER ENTITY and PER FIELD.
 //!
 //! ```text
 //! List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]        -- the row
-//! List.domain(?x) :- find_dictionary(SortDomain, SortDomain, ?x, out: ?self),
-//!                    ( ?x <=> nil()
-//!                    | ?x <=> cons(head: ?h, tail: ?t),
-//!                      apply_domain(?self, ?t),                        -- the tail first
-//!                      apply_domain(__domain_sub(?self, 0), ?h) )     -- then the head
+//! List.__fill(nil)                                                      -- a case per constructor
+//! List.__fill(cons(head: ?h, tail: ?t)) :-
+//!     find_dictionary(SortDomain, SortDomain, cons(head: ?h, tail: ?t), out: ?self),
+//!     apply_domain(?self, ?t),                                          -- the tail first
+//!     apply_domain(__domain_sub(?self, 0), ?h)                         -- then the head
+//! List.domain(?x: List[T = ?T]) :-                                      -- the value face
+//!     find_dictionary(SortDomain, SortDomain, ?x, out: ?self), apply_domain(?self, ?x)
 //! ```
+//!
+//! **THE HEAD DECIDES THE MODE** (WI-20261115-YR3N7, 060 §2.3): ONE CLAUSE PER CONSTRUCTOR,
+//! the constructor in the head. A bound value selects the one clause its constructor heads —
+//! a CHECK: no case is proposed to it and refuted, and none is left to try. An unbound one
+//! matches every head, in clause order — GENERATION, in the order below. The shape first
+//! derived was one clause whose body was a choice over the constructors, which proposed each
+//! of them to a bound value too: 16 resolution steps per `Product` of a checked list where the
+//! same domain written a clause per constructor took 6 (YR3N7's measurements).
+//!
+//! **EVERY FIELD IS FILLED THROUGH `apply_domain`, NEVER A `fill` BY NAME**: the dictionary
+//! names whose `fill` runs, and a value of a sort that REFINES the asked one is the one case a
+//! derived domain adds — applied by the call, `KnowledgeBase::lower_apply_domain`, because no
+//! clause can hold it (an indexed head would list the refining sorts' values in generation, a
+//! variable head would be tried beside every value of the sort's own).
+//!
+//! **THE VALUE FACE `<Sort>.domain` IS A CLAUSE OF ITS OWN** over the fill, typed at the
+//! sort: a relation citation builds its query from its first clause's head and takes no
+//! constructor there, so the cases cannot be its clauses. It reads the dictionary a citation
+//! routes (or builds one from its value's type) and hands it to the fill, which is the face's
+//! answer; WT8WG retires it. A sort whose `.domain` names something else has no face, and
+//! keeps its fill.
 //!
 //! **EACH FIELD'S TYPE DECIDES HOW IT IS FILLED** (060 §2.3's table): the sort itself is the
 //! recursion, through the same dictionary; a type PARAMETER is filled through the
@@ -28,9 +51,12 @@
 //!
 //! **THE DICTIONARY IS HANDED IN, NEVER A HEAD ARGUMENT** (060 §5): `?self` is the clause's
 //! implicit parameter — a requirement READ, which `apply_domain` fills through the citation
-//! channel (`resolve::within_requirements_goal`) and a citation fills from its route. A read
-//! of `SortDomain` that arrives filled is TRUSTED, not checked: a domain involves no choice
-//! among providers, and `fill` itself refuses a value its dictionary does not describe.
+//! channel (`resolve::within_requirements_goal`), handing the WHOLE dictionary to each clause
+//! that reads it ([`SortDomainEntry::reads`]). Only a clause that reads a condition reads it
+//! (`fill(nil)` is a fact), and its witness is the head's constructor pattern, the value
+//! itself once the head has matched. A read of `SortDomain` that arrives filled is TRUSTED,
+//! not checked: a domain involves no choice among providers, and `fill` itself refuses a value
+//! its dictionary does not describe.
 //!
 //! **A DICTIONARY'S SUB MAY BE A TYPE.** The layout recorded here is what lets the resolver
 //! build a dictionary from a TYPE, one level at a time and only when `fill` reads it
@@ -51,14 +77,6 @@ use crate::kb::{ClauseKind, KnowledgeBase, SymbolKind};
 /// `__domain_sub(?self, k)` — evaluated by `apply_domain` when it reads its dictionary
 /// operand, never run as a goal (`resolve::BuiltinTag::DomainSub`).
 pub(crate) const DOMAIN_SUB: &str = "anthill.kernel.__domain_sub";
-
-/// The last case of a derived `fill` — `__refined_domain(?x, evidence)`, the evidence the
-/// sort's own dictionary or, for a sort with no conditions, its type: a value of a sort that
-/// refines this one is a value of it (kernel-language §8.2), and the cases before it are this
-/// sort's own constructors. Lowered in place to the `fill` at the value's own sort
-/// (`KnowledgeBase::lower_refined_domain`); an unbound `?x` is no case of it, so what a `fill`
-/// enumerates is its own constructors' values (`resolve::BuiltinTag::RefinedDomain`).
-pub(crate) const REFINED_DOMAIN: &str = "anthill.kernel.__refined_domain";
 
 /// Where a sort's `SortDomain` comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +125,15 @@ pub(crate) struct SortDomainEntry {
     /// (`typing::sort_domain_sub_offset`), which every `SortDomain` dictionary follows.
     pub(crate) sub_offset: usize,
     pub(crate) kind: SortDomainKind,
+    /// A DERIVED `fill`'s constructors, canonical: the values its clauses' heads select. A
+    /// bound value headed by any other constructor is the refinement case `apply_domain`
+    /// applies (`KnowledgeBase::lower_apply_domain`). Empty for any other kind.
+    pub(crate) ctors: Vec<Symbol>,
+    /// How many of a DERIVED `fill`'s clauses read the dictionary — one read each, so the
+    /// marker that hands the dictionary in carries this many copies of it, one per slot of
+    /// the relation's layout (`resolve::bind_citation_reads`). 0 for a primitive's; a written
+    /// domain's reads are scanned where it is called.
+    pub(crate) reads: usize,
 }
 
 /// A derivation candidate: a sort with constructors and no written domain.
@@ -143,6 +170,8 @@ pub(crate) fn run(
                     conditions: Vec::new(),
                     sub_offset: 0,
                     kind: SortDomainKind::Written,
+                    ctors: Vec::new(),
+                    reads: 0,
                 },
             );
             continue;
@@ -200,9 +229,8 @@ pub(crate) fn run(
     let conditions = condition_fixpoint(kb, &candidates);
     let Some(syms) = ClauseSyms::resolve(kb) else {
         errors.push(LoadError::Other {
-            message: "WI-20260925-SHED7: a resolver primitive the derived `fill` clauses are \
-                      built from (`unify` / `push_choice` / `push_and` / `apply_domain`) is \
-                      not registered"
+            message: "WI-20260925-SHED7: `apply_domain`, the resolver primitive the derived \
+                      `fill` clauses are built from, is not registered"
                 .to_string(),
         });
         return errors;
@@ -230,12 +258,16 @@ pub(crate) fn run(
     let alive = fillable_fixpoint(kb, &candidates, &conditions, &declined);
     // Record every surviving entry BEFORE emitting any clause: a field of a later sort in
     // this batch is filled through an earlier one's `fill`, and the other way round.
+    let mut faces: HashMap<Symbol, Symbol> = HashMap::new();
     for c in &candidates {
         let canon = kb.canonical_sort_sym(c.job.sort);
         if !alive.contains(&canon) {
             continue;
         }
-        let fill = fill_symbol(kb, c.job.sort);
+        let fill = internal_fill_symbol(kb, c.job.sort);
+        if let Some(face) = value_face_symbol(kb, c.job.sort) {
+            faces.insert(canon, face);
+        }
         let conds: Vec<usize> = conditions
             .get(&canon)
             .map(|s| s.iter().copied().collect())
@@ -245,6 +277,12 @@ pub(crate) fn run(
         } else {
             crate::kb::typing::sort_domain_sub_offset(kb, c.job.sort)
         };
+        let ctors: Vec<Symbol> = c
+            .job
+            .ctors
+            .iter()
+            .map(|d| kb.canonical_sort_sym(d.ctor))
+            .collect();
         kb.record_sort_domain(
             c.job.sort,
             SortDomainEntry {
@@ -253,14 +291,27 @@ pub(crate) fn run(
                 conditions: conds,
                 sub_offset,
                 kind: SortDomainKind::Derived,
+                ctors,
+                // Counted as the clauses are emitted, below.
+                reads: 0,
             },
         );
     }
     for c in &candidates {
-        if kb.sort_domain(c.job.sort).map(|e| e.kind) != Some(SortDomainKind::Derived) {
+        let Some(entry) = kb
+            .sort_domain(c.job.sort)
+            .filter(|e| e.kind == SortDomainKind::Derived)
+            .cloned()
+        else {
             continue;
+        };
+        let reads = emit_fill_clauses(kb, &syms, c, &entry);
+        kb.sort_domain_mut(c.job.sort)
+            .expect("the entry was recorded above")
+            .reads = reads;
+        if let Some(&face) = faces.get(&kb.canonical_sort_sym(c.job.sort)) {
+            emit_value_face(kb, &syms, c, &entry, face);
         }
-        emit_fill_clause(kb, &syms, c);
     }
     errors
 }
@@ -272,22 +323,20 @@ fn decline(kb: &mut KnowledgeBase, sort: Symbol, reason: String) {
     kb.record_sort_domain_declined(sort, reason);
 }
 
-/// The relation `sort`'s `fill` is derived under: `<sort>.domain`, minted in pass 1 — the
-/// VALUE FACE a citation reads (`Colour.domain.takeN(5)`) — when it is still a relation with
-/// no clauses.
+/// `sort`'s VALUE FACE, `<sort>.domain`, minted in pass 1 — what a citation reads
+/// (`Colour.domain.takeN(5)`) — when it is still a relation with no clauses.
 ///
 /// WHERE SOMETHING ELSE HOLDS THAT NAME — kernel-language §5.3's case: an operation, a
-/// const, the author's own relation at another arity — the sort KEEPS ITS DOMAIN under an
-/// internal `<sort>.__fill`, which only its `SortDomain` entry names, and has no `.domain`
-/// to cite it by; the reason is recorded, so a citation says why rather than answering
-/// through an unrelated relation (WT8WG's `/code-review` finding: a 3-ary `domain` once
-/// took the value face over in silence).
-fn fill_symbol(kb: &mut KnowledgeBase, sort: Symbol) -> Symbol {
+/// const, the author's own relation at another arity — the sort KEEPS ITS DOMAIN, and has no
+/// `.domain` to cite it by; the reason is recorded, so a citation says why rather than
+/// answering through an unrelated relation (WT8WG's `/code-review` finding: a 3-ary `domain`
+/// once took the value face over in silence).
+fn value_face_symbol(kb: &mut KnowledgeBase, sort: Symbol) -> Option<Symbol> {
     let qn = kb.qualified_name_of(sort).to_string();
     let name = format!("{qn}.domain");
     let reason = match kb.symbols.by_qualified_name.get(&name).copied() {
         Some(sym) if kb.has_kind(sym, SymbolKind::Goal) && !kb.has_clauses_under(sym) => {
-            return sym;
+            return Some(sym);
         }
         Some(sym) if kb.has_kind(sym, SymbolKind::Goal) => {
             let arity = kb.clause_ids_of(sym).first().and_then(|&rid| {
@@ -308,6 +357,14 @@ fn fill_symbol(kb: &mut KnowledgeBase, sort: Symbol) -> Symbol {
         None => format!("the name `{name}` is not available for the derived relation"),
     };
     kb.record_domain_value_face_declined(sort, reason);
+    None
+}
+
+/// The internal relation `<sort>.__fill`, which only `sort`'s `SortDomain` entry names: a
+/// DERIVED `fill`'s cases, one clause per constructor, and a primitive's waiting check where
+/// its `.domain` names something else ([`value_face_symbol`]).
+fn internal_fill_symbol(kb: &mut KnowledgeBase, sort: Symbol) -> Symbol {
+    let qn = kb.qualified_name_of(sort).to_string();
     let internal = format!("{qn}.__fill");
     if let Some(&sym) = kb.symbols.by_qualified_name.get(&internal) {
         return sym;
@@ -339,7 +396,8 @@ fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
             });
             return;
         };
-        let fill = fill_symbol(kb, sort);
+        // A primitive's one clause is its face too: it has a variable head.
+        let fill = value_face_symbol(kb, sort).unwrap_or_else(|| internal_fill_symbol(kb, sort));
         let self_type = kb.make_sort_ref(sort);
         let (x_var, x) = fresh_global_var(kb, "x");
         let head = pos_fn(kb, fill, &[x]);
@@ -361,6 +419,8 @@ fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
                 conditions: Vec::new(),
                 sub_offset: 0,
                 kind: SortDomainKind::Primitive,
+                ctors: Vec::new(),
+                reads: 0,
             },
         );
     }
@@ -526,13 +586,9 @@ fn field_fillable(
     })
 }
 
-/// The resolver primitives a derived clause is spelled with.
+/// The resolver primitive a derived clause is spelled with.
 struct ClauseSyms {
-    unify: Symbol,
-    choice: Symbol,
-    and: Symbol,
     apply: Symbol,
-    refined: Symbol,
     /// What a PARAMETRIC `fill` needs to read its dictionary — `None` in a KB that never
     /// loaded `anthill.reflect`, where no parametric sort has a domain.
     reads: Option<ReadSyms>,
@@ -561,11 +617,7 @@ impl ClauseSyms {
             })
         })();
         Some(Self {
-            unify: kb.try_resolve_symbol("anthill.kernel.unify")?,
-            choice: kb.try_resolve_symbol("anthill.kernel.push_choice")?,
-            and: kb.try_resolve_symbol("anthill.kernel.push_and")?,
             apply: kb.try_resolve_symbol(crate::kb::typing::APPLY_DOMAIN_GOAL)?,
-            refined: kb.try_resolve_symbol(REFINED_DOMAIN)?,
             reads,
         })
     }
@@ -585,27 +637,37 @@ enum Evidence {
     SelfDict,
     /// Sub-dictionary `k` of it: a parameter's condition.
     Sub(usize),
-    /// A ground type: its dictionary is built from the type when read.
+    /// A type: its dictionary is built from the type when read — a type with no parameter of
+    /// the sort's in it, or the sort's own type where the sort has no conditions. No caller
+    /// can hand a sub-domain for it, so this builds none below a handed one.
     Type(TermId),
     /// `Dictionary(subs…, impl: H)` for a type `H[args]` mentioning the sort's parameters.
     Dict(Symbol, Vec<Evidence>),
-    /// A sort whose `fill` needs no dictionary (no conditions): called by name.
-    Static { fill: Symbol, ty: TermId },
     /// A slot of the layout no `fill` reads — `SortDomain`'s own chain, a sort-level
     /// `requires` — in a dictionary built here.
     Placeholder,
 }
 
-/// Emit `c`'s `fill` clause.
-fn emit_fill_clause(kb: &mut KnowledgeBase, syms: &ClauseSyms, c: &Candidate) {
-    let entry = kb
-        .sort_domain(c.job.sort)
-        .cloned()
-        .expect("a candidate is emitted only once recorded");
-    let needs_self = !entry.conditions.is_empty();
-    let (x_var, x) = fresh_global_var(kb, "x");
-    let self_var = fresh_global(kb, "self");
-    // BASE CONSTRUCTORS FIRST, recursive ones after, each group in declaration order.
+impl Evidence {
+    /// Does filling through this read the clause's own dictionary?
+    fn reads_self(&self) -> bool {
+        match self {
+            Evidence::SelfDict | Evidence::Sub(_) => true,
+            Evidence::Dict(_, subs) => subs.iter().any(Evidence::reads_self),
+            Evidence::Type(_) | Evidence::Placeholder => false,
+        }
+    }
+}
+
+/// Emit `c`'s `fill`: ONE CLAUSE PER CONSTRUCTOR, the constructor over fresh fields in its
+/// head, base constructors first and each group in declaration order (the module doc's
+/// order rules). Returns how many of the clauses read the dictionary.
+fn emit_fill_clauses(
+    kb: &mut KnowledgeBase,
+    syms: &ClauseSyms,
+    c: &Candidate,
+    entry: &SortDomainEntry,
+) -> usize {
     let recursive: Vec<bool> = c
         .fields
         .iter()
@@ -613,71 +675,112 @@ fn emit_fill_clause(kb: &mut KnowledgeBase, syms: &ClauseSyms, c: &Candidate) {
         .collect();
     let mut order: Vec<usize> = (0..c.fields.len()).collect();
     order.sort_by_key(|&i| recursive[i]);
-    let mut branches: Vec<TermId> = Vec::with_capacity(order.len());
+    let mut reading = 0;
     for i in order {
         let ctor = c.job.ctors[i].ctor;
         let fs = &c.fields[i];
-        let vars: Vec<(Symbol, TermId)> = fs
+        let self_var = fresh_global(kb, "self");
+        let vars: Vec<TermId> = fs
             .iter()
             .map(|&(f, _)| {
                 let name = kb.symbols.local_name(f).to_owned();
-                (f, fresh_global(kb, &name))
+                fresh_global(kb, &name)
             })
             .collect();
         let ctor_term = if fs.is_empty() {
             kb.alloc(Term::Ref(ctor))
         } else {
-            let named: SmallVec<[(Symbol, TermId); 2]> = vars.iter().copied().collect();
+            let named: SmallVec<[(Symbol, TermId); 2]> =
+                fs.iter().map(|&(f, _)| f).zip(vars.iter().copied()).collect();
             kb.make_entity_term(ctor, SmallVec::new(), named)
         };
-        let mut goals: Vec<TermId> = vec![pos_fn(kb, syms.unify, &[x, ctor_term])];
+        let mut fills: Vec<TermId> = Vec::with_capacity(fs.len());
+        let mut reads_self = false;
         // RECURSIVE FIELDS FIRST inside the case — the other half of fairness.
         for want_rec in [true, false] {
             for (k, &(_, t)) in fs.iter().enumerate() {
                 if mentions_sort(kb, t, c.job.sort) != want_rec {
                     continue;
                 }
-                let ev = evidence(kb, t, c, &entry);
-                goals.push(fill_goal(kb, syms, ev, vars[k].1, self_var));
+                let ev = evidence(kb, t, c, entry);
+                reads_self |= ev.reads_self();
+                fills.push(fill_goal(kb, syms, ev, vars[k], self_var));
             }
         }
-        branches.push(right_fold(kb, syms.and, &goals));
+        let mut body: Vec<TermId> = Vec::with_capacity(fills.len() + 1);
+        if reads_self {
+            // The clause's IMPLICIT PARAMETER: its own dictionary, a requirement read the
+            // citation channel fills — only where the clause reads a condition, so `fill(nil)`
+            // is a fact. Witnessed by the head's constructor pattern, the value itself once
+            // the head has matched: an unfilled read derives the dictionary from its type.
+            body.push(dictionary_read(kb, syms, ctor_term, self_var));
+            reading += 1;
+        }
+        body.extend(fills);
+        let head = pos_fn(kb, entry.fill, &[ctor_term]);
+        let body_nodes = kb.term_body_to_nodes(&body);
+        let rid = kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            ClauseKind::Rule,
+            c.job.domain,
+            None,
+        );
+        kb.set_rule_head_span(rid, c.job.span);
     }
-    // A value of a sort that refines this one, LAST: filled at its own sort.
-    let evidence = if needs_self { self_var } else { c.self_type };
-    branches.push(pos_fn(kb, syms.refined, &[x, evidence]));
-    let head = pos_fn(kb, entry.fill, &[x]);
+    reading
+}
+
+/// Emit `c`'s VALUE FACE, `face(?x: Self) :- apply_domain(evidence, ?x)` — the sort's
+/// dictionary read (and handed to the fill) where it has conditions, its type otherwise. The
+/// bound is the column type a citation reads; the typed-head sweep adds nothing to it
+/// (`typing::install_typed_head_domain_goals`: a sort's own domain relation), the fill being
+/// its body already.
+fn emit_value_face(
+    kb: &mut KnowledgeBase,
+    syms: &ClauseSyms,
+    c: &Candidate,
+    entry: &SortDomainEntry,
+    face: Symbol,
+) {
+    let (x_var, x) = fresh_global_var(kb, "x");
     let mut body: Vec<TermId> = Vec::with_capacity(2);
-    if needs_self {
-        // The clause's IMPLICIT PARAMETER: its own dictionary, a requirement read the
-        // citation channel fills. Witnessed by `?x`, so a citation routes it from the
-        // column's type and an unfilled read derives it from `?x`'s carried type.
-        let reads = syms.reads();
-        let spec_ref = kb.alloc(Term::Ref(reads.spec));
-        let read = kb.alloc(Term::Fn {
-            functor: reads.find_dictionary,
-            pos_args: SmallVec::from_slice(&[spec_ref, spec_ref, x]),
-            named_args: SmallVec::from_slice(&[(reads.out_label, self_var)]),
-        });
-        body.push(read);
-    }
-    body.push(right_fold(kb, syms.choice, &branches));
+    let evidence = if entry.conditions.is_empty() {
+        c.self_type
+    } else {
+        // Witnessed by `?x`, so a citation routes it from the column's type and an unfilled
+        // read derives it from `?x`'s carried type.
+        let self_var = fresh_global(kb, "self");
+        body.push(dictionary_read(kb, syms, x, self_var));
+        self_var
+    };
+    body.push(pos_fn(kb, syms.apply, &[evidence, x]));
+    let head = pos_fn(kb, face, &[x]);
     let body_nodes = kb.term_body_to_nodes(&body);
     let rid =
         kb.assert_rule_debruijn_with_nodes(head, body_nodes, ClauseKind::Rule, c.job.domain, None);
-    // The column type a citation of `<Sort>.domain` reads, and where the clause reports.
     kb.install_rule_type_bounds(rid, &[(x_var, crate::eval::value::Value::term(c.self_type))]);
     kb.set_rule_head_span(rid, c.job.span);
+    kb.record_domain_value_face(face, c.job.sort);
+}
+
+/// `find_dictionary(SortDomain, SortDomain, witness, out: out)` — a `fill`'s read of its own
+/// `SortDomain` dictionary.
+fn dictionary_read(kb: &mut KnowledgeBase, syms: &ClauseSyms, witness: TermId, out: TermId) -> TermId {
+    let reads = syms.reads();
+    let spec_ref = kb.alloc(Term::Ref(reads.spec));
+    kb.alloc(Term::Fn {
+        functor: reads.find_dictionary,
+        pos_args: SmallVec::from_slice(&[spec_ref, spec_ref, witness]),
+        named_args: SmallVec::from_slice(&[(reads.out_label, out)]),
+    })
 }
 
 /// How a field of type `t` of candidate `c` is filled.
 fn evidence(kb: &mut KnowledgeBase, t: TermId, c: &Candidate, entry: &SortDomainEntry) -> Evidence {
     if t == c.self_type {
         return if entry.conditions.is_empty() {
-            Evidence::Static {
-                fill: entry.fill,
-                ty: t,
-            }
+            Evidence::Type(t)
         } else {
             Evidence::SelfDict
         };
@@ -695,14 +798,9 @@ fn evidence(kb: &mut KnowledgeBase, t: TermId, c: &Candidate, entry: &SortDomain
         .sort_domain(head)
         .cloned()
         .expect("a fillable field type's sort has a SortDomain");
-    // A sort whose `fill` reads no dictionary is called by name, whatever its arguments.
-    if target.conditions.is_empty() {
-        return Evidence::Static {
-            fill: target.fill,
-            ty: t,
-        };
-    }
-    if !term_mentions_params(kb, t, &c.job.params) {
+    // A sort whose `fill` reads no dictionary is filled through its type, whatever its
+    // arguments; so is a type that names none of the sort's parameters.
+    if target.conditions.is_empty() || !term_mentions_params(kb, t, &c.job.params) {
         return Evidence::Type(t);
     }
     // THE TYPER'S LAYOUT: the prefix `sub_offset` slots are never read by a `fill`, and a
@@ -718,15 +816,11 @@ fn evidence(kb: &mut KnowledgeBase, t: TermId, c: &Candidate, entry: &SortDomain
     Evidence::Dict(head, subs)
 }
 
-/// The goal that fills `v` through `ev`.
+/// The goal that fills `v` through `ev`: `apply_domain`, the one dispatch — the evidence names
+/// whose `fill` runs, never a relation named here.
 fn fill_goal(kb: &mut KnowledgeBase, syms: &ClauseSyms, ev: Evidence, v: TermId, self_var: TermId) -> TermId {
-    match ev {
-        Evidence::Static { fill, .. } => pos_fn(kb, fill, &[v]),
-        other => {
-            let e = evidence_term(kb, syms, other, self_var);
-            pos_fn(kb, syms.apply, &[e, v])
-        }
-    }
+    let e = evidence_term(kb, syms, ev, self_var);
+    pos_fn(kb, syms.apply, &[e, v])
 }
 
 /// The TERM `apply_domain` reads its dictionary from.
@@ -737,7 +831,7 @@ fn evidence_term(kb: &mut KnowledgeBase, syms: &ClauseSyms, ev: Evidence, self_v
             let idx = kb.alloc(Term::Const(Literal::Int(k as i64)));
             pos_fn(kb, syms.reads().sub, &[self_var, idx])
         }
-        Evidence::Type(t) | Evidence::Static { ty: t, .. } => t,
+        Evidence::Type(t) => t,
         Evidence::Placeholder => kb.alloc(Term::Bottom),
         Evidence::Dict(head, subs) => {
             let subs: SmallVec<[TermId; 4]> = subs
@@ -844,16 +938,4 @@ fn pos_fn(kb: &mut KnowledgeBase, f: Symbol, args: &[TermId]) -> TermId {
         pos_args: SmallVec::from_slice(args),
         named_args: SmallVec::new(),
     })
-}
-
-/// `a & b & c` / `a | b | c` as a right-nested chain under `connective`.
-fn right_fold(kb: &mut KnowledgeBase, connective: Symbol, goals: &[TermId]) -> TermId {
-    match goals {
-        [] => kb.alloc(Term::Bottom),
-        [only] => *only,
-        [first, rest @ ..] => {
-            let tail = right_fold(kb, connective, rest);
-            pos_fn(kb, connective, &[*first, tail])
-        }
-    }
 }
