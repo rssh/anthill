@@ -199,7 +199,7 @@ pub enum EvalError {
     /// through, projected into, or enumerated. The slot carries an empty bundle over
     /// the `NoProvider` marker because its goal did not resolve when the dictionary
     /// was built, because the strictness rule declined to search it, or because it is
-    /// a host-entry stand-in that supplied no dictionary at all.
+    /// a sub-slot of a frame's own-sort stand-in, which carries none.
     ///
     /// The THIRD member of the family above, and a variant for the same reason: this
     /// is a PROGRAM (or host-entry) error, not an evaluator-invariant one, so the

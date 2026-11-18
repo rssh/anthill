@@ -224,7 +224,7 @@ namespace anthill.todo.store
     -- impls, and WI-402's `-> C ensures Spec[C, …]` does not fit a spec whose
     -- carrier is its dictionary and whose value is its `State` — §8.2.2 carries
     -- the measurement. Selection is already done, by `sort Main`'s
-    -- `requires WorkItemStore[State]` and the host's requirement dictionary.
+    -- `requires WorkItemStore[State]` and the type the host hands the cell at.
     operation open(backend: NonMonotonicStore) -> WIS =
       wis(backend)
 

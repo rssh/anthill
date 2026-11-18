@@ -88,8 +88,9 @@ impl Dictionary {
     /// WI-867 — `pub(crate)`, NOT `pub`: it knows a provider and no spec, so it cannot
     /// tell a dictionary that carries evidence from one that is short of it, and while
     /// it was reachable from outside it was a third host path past the layout with no
-    /// name saying so. A host builds through [`crate::eval::Interpreter::alloc_dictionary`],
-    /// which takes the pair, or names the blindness with
+    /// name saying so. A host builds none: its call is typed and the typer builds the
+    /// call's dictionaries ([`crate::eval::Interpreter::call`]). A caller that builds the
+    /// value alone names the blindness with
     /// [`crate::eval::Interpreter::alloc_dictionary_unchecked`].
     pub(crate) fn build(
         kb: &KnowledgeBase,

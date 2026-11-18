@@ -16,10 +16,12 @@
 //! is, so a circular binding runs to the step budget as a circular member does; it was refused
 //! at the bridge's re-entry cap while the builtin reached it.
 //!
-//! BACK-OUTS, MEASURED: with the gate on `eq_dispatch_is_partial` removed from both halves, the
-//! five rows that name the binding or an open operand fail; the member's two rows and the
-//! controls pass either way by design (the dictionary spelling passes too: it already entered
-//! the binding). With eval's refusal of an open operand removed, its row alone fails.
+//! BACK-OUTS, MEASURED at TSYS6: with the gate on `eq_dispatch_is_partial` removed from both
+//! halves, the five rows that named the binding or an open operand failed; the member's two
+//! rows and the controls passed either way by design (the dictionary spelling passed too: it
+//! already entered the binding). With eval's refusal of an open operand removed, its row alone
+//! failed. The open operand's row is the typed call's alone since WI-20261113-S4D63, and says
+//! why.
 //!
 //! NOT COVERED, and a gap of its own: an operand of such a type BURIED in one with no `eq` of
 //! its own (`some(lp(v: 1))` against itself) is answered by reflexivity at the top, as a buried
@@ -113,12 +115,18 @@ fn a_binding_decides_identical_operands_through_every_spelling() {
     }
 }
 
-/// A NON-GROUND operand of such a type is undecided, and refused: its `eq` cannot be asked of a
-/// value with a variable in it (`=` never binds), and reflexivity is not its answer. It answered
-/// `true` by reflexivity; with reflexivity gone and nothing else said, eval's last step would
-/// have answered `false` (found by /code-review).
+/// A NON-GROUND operand of such a type goes to the binding, as a ground one does: the host call
+/// `PartialEq.eq(a, b)` at `Loop` is pinned to `neverEq` at load, which answers without reading
+/// its operands. It answered `true` by reflexivity. Passes with the gate on
+/// `eq_dispatch_is_partial` removed: the pin decides before the builtin is asked.
+///
+/// Eval's refusal of an open operand in the builtin (undecided, not `false`: its `eq` cannot be
+/// asked of a value with a variable in it, and reflexivity is not its answer; found by
+/// /code-review) was driven here through the host's untyped entry, which reached the builtin
+/// with no pin. That entry is gone (WI-20261113-S4D63), and no row drives the refusal outside
+/// the resolver's bridge, where it is a delay.
 #[test]
-fn a_non_ground_operand_is_undecided() {
+fn a_non_ground_operand_goes_to_the_binding() {
     use anthill_core::eval::Value;
     use anthill_core::kb::term::{Term, Var};
     use smallvec::SmallVec;
@@ -141,17 +149,9 @@ fn a_non_ground_operand_is_undecided() {
     // The typed host call is the body's call `PartialEq.eq(a, b)` at `Loop`, pinned to the
     // binding at load: `neverEq` answers without reading its operands (WI-20261113-S4D63).
     let typed = interp
-        .call("anthill.prelude.PartialEq.eq", &anthill_core::eval::HostValue::all(&[open.clone(), open.clone()]))
+        .call("anthill.prelude.PartialEq.eq", &anthill_core::eval::HostValue::all(&[open.clone(), open]))
         .map(|h| h.value);
     assert!(matches!(typed, Ok(Value::Bool(false))), "the binding answers: {typed:?}");
-    // The untyped entry reaches eval's equality, which asks the operands.
-    let answer = interp.call_with_requirements("anthill.prelude.PartialEq.eq", &[open.clone(), open], Default::default());
-    assert!(
-        answer
-            .as_ref()
-            .is_err_and(|e| format!("{e:?}").contains("could not be decided")),
-        "undecided, not an answer: {answer:?}"
-    );
 }
 
 /// A CIRCULAR MEMBER runs: the call is pinned to it at load, and it stops at a step budget where

@@ -1,4 +1,4 @@
-//! WI-20261015-ZPETZ — a host call (`Interpreter::call`, `call_with_requirements`, and the
+//! WI-20261015-ZPETZ — a host call (`Interpreter::call`, and the
 //! resolver's bridge, which a rule body's call reaches the evaluator through) is dispatched
 //! by the dispatch an operation body's call takes, so the two cannot answer differently.
 //!
@@ -35,8 +35,8 @@
 //!
 //! Measured 2026-11-12, (1) on the tree before and (2) by a temporary switch.
 //!
-//! Both `Desc` rows ask `Interpreter::call` and `call_with_requirements` (with the empty chain
-//! `Desc` has): each seeds the stand-in (2) reads.
+//! Both `Desc` rows asked `Interpreter::call` and `call_with_requirements` (with the empty chain
+//! `Desc` has), each seeding the stand-in (2) reads; the second is gone (WI-20261113-S4D63).
 //!
 //! The `Error.reify` route a rule body's call reaches through the bridge is
 //! `wi_9wvt7_reify_rule_body_test`'s, now through the dispatch's own boundary step.
@@ -81,10 +81,8 @@ fn a_host_call_of_a_body_less_spec_operation_reaches_a_conditional_member() {
     for (mk, body, want) in [("mk", "viaBody", 12), ("mk2", "viaBody2", 122)] {
         let w = interp.call(&format!("{ns}.{mk}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the value is made");
         let host = interp.call(&format!("{ns}.Desc.describe"), &anthill_core::eval::HostValue::all(&[w.clone()])).map(|h| h.value);
-        let passed = interp.call_with_requirements(&format!("{ns}.Desc.describe"), &[w.clone()], Default::default());
         let in_body = interp.call(&format!("{ns}.{body}"), &anthill_core::eval::HostValue::all(&[w])).map(|h| h.value);
         assert!(matches!(host, Ok(Value::Int(n)) if n == want), "host call at `{mk}`: {host:?}");
-        assert!(matches!(passed, Ok(Value::Int(n)) if n == want), "`call_with_requirements` at `{mk}`: {passed:?}");
         assert!(matches!(in_body, Ok(Value::Int(n)) if n == want), "body at `{mk}`: {in_body:?}");
     }
     // The member called straight from the host: the host has no spelling for the element's
@@ -138,10 +136,8 @@ end
     for (mk, body, want) in [("mkLeaf", "leafBody", 1), ("mkWrap", "wrapBody", 12)] {
         let v = interp.call(&format!("zpetz.body.{mk}"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value).expect("the value is made");
         let host = interp.call("zpetz.body.Desc.describe", &anthill_core::eval::HostValue::all(&[v.clone()])).map(|h| h.value);
-        let passed = interp.call_with_requirements("zpetz.body.Desc.describe", &[v.clone()], Default::default());
         let in_body = interp.call(&format!("zpetz.body.{body}"), &anthill_core::eval::HostValue::all(&[v])).map(|h| h.value);
         assert!(matches!(host, Ok(Value::Int(n)) if n == want), "host call at `{mk}`: {host:?}");
-        assert!(matches!(passed, Ok(Value::Int(n)) if n == want), "`call_with_requirements` at `{mk}`: {passed:?}");
         assert!(matches!(in_body, Ok(Value::Int(n)) if n == want), "body at `{mk}`: {in_body:?}");
     }
 }

@@ -25,8 +25,8 @@
 //! * `boundary_admits` answering `false`: every row of those files in which a boundary
 //!   catches, and both rows of `a_boundary_reads_the_type_the_raise_carries`.
 //! * The install-time check that the dictionary is a `TypePattern` instance
-//!   (`Interpreter::enter_reify_boundary`): `a_dictionary_that_is_no_pattern_is_refused_before_the_thunk_runs`,
-//!   whose host rows then run the thunk.
+//!   (`Interpreter::enter_reify_boundary`): no row since the host's untyped entry went
+//!   (WI-20261113-S4D63); `a_host_call_of_a_catcher_builds_the_pattern` keeps its measurements.
 //! * The frames of a raise discarded before a boundary is asked
 //!   (`ActivationStack::discard_above_boundary`): `a_raise_at_the_depth_caps_last_frame_is_caught`.
 //! * The type asked about built from the raised value's head alone, as this stage built it,
@@ -294,32 +294,28 @@ end
     );
 }
 
-/// A DICTIONARY THAT IS NO `TypePattern` INSTANCE IS REFUSED WHERE THE BOUNDARY WOULD BE
-/// INSTALLED, BEFORE THE THUNK RUNS. The untyped host entry into an operation of a sort that
-/// declares `requires TypePattern[T = P]` (`call_with_requirements`) is handed a stand-in over
-/// that sort for its chain, and the sort provides no `TypePattern`. The thunk ticks a host
-/// counter, so "before it runs" is observed, not inferred from the error. (The host's typed
-/// call builds the evidence at `Boom` from the thunk's arrow, as `viaOp`'s body does, and
-/// catches: asserted beside it. That half FAILS, measured, with the thunk typed against no
-/// expected arrow: `mayFail`'s bare reference reads as its call, and the host call is
-/// refused.)
+/// A HOST CALL OF A CATCHER BUILDS THE `TypePattern` EVIDENCE AT `Boom` FROM THE THUNK'S ARROW,
+/// as `viaOp`'s body does, and catches: `catchIt(c, mayFail)` from the host answers the `err`
+/// arm, the thunk run once, through `Catcher` and through `OwnCatcher`, whose own `admits`
+/// answers yes. FAILS, measured, with the thunk typed against no expected arrow: `mayFail`'s
+/// bare reference reads as its call, and the host call is refused.
 ///
-/// MEASURED without the check: through `Catcher`, the thunk ran and the raise died
-/// `OperationBodyMissing: anthill.reflect.TypePattern.admits`; through `OwnCatcher`, whose own
-/// `admits` answers yes, the dispatch landed on it and the boundary caught every payload
-/// (found by /code-review). A third stand-in, `RowCatcher`, wrote `provides
-/// TypeValuePattern[T = P]` and its own `admits`, providing `TypePattern` through it, and a check
-/// that the `impl` provides `TypePattern` passed it (found by the second /code-review); the
-/// check is that the `impl` is the one row's provider, `TypeValuePattern`. That stand-in cannot
-/// be written since WI-20261105-CBRD2: its `admits` overrides the row's, a static operation with
-/// a body, which no provider overrides
-/// ([`a_forged_admits_beside_the_one_row_is_refused_at_load`]).
+/// THE CONTROL, `viaOp`, is the same call from an operation body: `22`, the `err` arm, the
+/// counter ticked.
 ///
-/// THE CONTROL, `viaOp`, is the same call from an operation body, whose caller builds the
-/// evidence at `Boom`: `22`, the `err` arm, the counter ticked. FAILS with the install-time
-/// check backed out (the three host rows); the control passes either way.
+/// The row drove the install-time check too — a dictionary that is no `TypePattern` instance
+/// refused where the boundary would be installed, before the thunk runs — through the host's
+/// untyped entry, handed a stand-in over the catcher sort for its chain. MEASURED without the
+/// check: through `Catcher` the raise died `OperationBodyMissing:
+/// anthill.reflect.TypePattern.admits`; through `OwnCatcher` the boundary caught every payload.
+/// A third stand-in, `RowCatcher` (`provides TypeValuePattern[T = P]` with its own `admits`),
+/// passed a check that the `impl` provides `TypePattern`, so the check is that the `impl` is
+/// the one row's provider; it cannot be written since WI-20261105-CBRD2
+/// ([`a_forged_admits_beside_the_one_row_is_refused_at_load`]). The untyped entry is gone
+/// (WI-20261113-S4D63): a host's dictionaries are built by the typer, and no row drives the
+/// check.
 #[test]
-fn a_dictionary_that_is_no_pattern_is_refused_before_the_thunk_runs() {
+fn a_host_call_of_a_catcher_builds_the_pattern() {
     use std::sync::atomic::Ordering;
     let kb = crate::common::try_load_kb_prepared(STAND_IN_PROGRAM, |kb| {
         kb.register_host_fn("ym8hd_tick", 0, |_, _| {
@@ -362,29 +358,6 @@ fn a_dictionary_that_is_no_pattern_is_refused_before_the_thunk_runs() {
         let payload = crate::common::result_err_payload(interp.kb(), &caught);
         assert_eq!(crate::common::constructor_qn(interp.kb(), &payload), "test.ym8hd.standin.Boom.boom");
         assert_eq!(TICKS.load(Ordering::SeqCst), 1, "{catcher}: the typed call's thunk runs once");
-        // The untyped entry, handed a stand-in over the sort itself for its chain.
-        let sort = interp
-            .kb()
-            .try_resolve_symbol(&format!("test.ym8hd.standin.{catcher}"))
-            .expect("the catcher sort");
-        // Bundling one for the sort's own chain, as the provider's layout asks.
-        let inner = interp.alloc_dictionary_unchecked(sort, []).expect("a stand-in over the sort");
-        let stand_in = interp.alloc_dictionary_unchecked(sort, [inner]).expect("a stand-in over the sort");
-        TICKS.store(0, Ordering::SeqCst);
-        match interp.call_with_requirements(&catch_it, &[c.value, thunk.clone()], [stand_in].into_iter().collect()) {
-            Err(e @ anthill_core::eval::EvalError::ReifyPayloadUnread { .. }) => {
-                let text = e.to_string();
-                for want in [
-                    format!("`test.ym8hd.standin.{catcher}`'s dictionary"),
-                    "is no instance of `TypePattern`".to_owned(),
-                ] {
-                    assert!(text.contains(&want), "{catcher}: expected {want:?}; got {text}");
-                }
-            }
-            other => panic!("{catcher}: the stand-in is refused before the thunk runs, got {other:?}"),
-        }
-        assert_eq!(TICKS.load(Ordering::SeqCst), 0, "{catcher}: the thunk did not run");
-        assert_eq!(interp.activation_depth(), 0, "{catcher}: the refused entry leaves no frame");
     }
 }
 

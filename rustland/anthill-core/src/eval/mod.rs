@@ -333,7 +333,7 @@ impl FieldSymbols {
             predicate: kb.intern("predicate"),
             no_provider: crate::kb::typing::absence_marker_sym(
                 kb,
-                crate::kb::typing::AbsenceRecord::HostEntry,
+                crate::kb::typing::AbsenceRecord::StandIn,
             ),
             req_self: kb.intern("__req_self"),
             instance: kb.try_resolve_symbol("anthill.realization.runtime.Instance"),
@@ -901,8 +901,7 @@ impl Interpreter {
     /// A host-implemented operation with no declared signature has nothing to type, and reads
     /// no requirement: it is called with the values.
     ///
-    /// The parent sort's `requires` chain the typer cannot build at the arguments' types is
-    /// the host's to pass: [`Self::call_with_requirements`]
+    /// It is the host's only entry: a host hands an operation no dictionary by hand
     /// (`docs/design/operation-call-model.md` §"Host-to-entry-op boundary").
     pub fn call(&mut self, qualified_name: &str, args: &[HostValue]) -> Result<HostValue, EvalError> {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
@@ -1188,8 +1187,8 @@ impl Interpreter {
     ///
     /// The requirement dictionaries are RESOLVED at the concrete argument types
     /// ([`crate::kb::typing::resolve_bridge_requirements`], WI-300 Tier B / gap 3),
-    /// NOT seeded with [`Self::seed_entry_requirements`]'s self-referential
-    /// placeholders — a placeholder can misdispatch a `requires` op to a
+    /// NOT seeded with self-referential placeholders, as the untyped host entry's frame
+    /// was — a placeholder can misdispatch a `requires` op to a
     /// wrong-but-non-erroring impl and return a plausibly-WRONG value, which the
     /// resolver would import as a definite `eq`/`cmp` answer (an unsoundness the
     /// pre-bridge delay never had). Instead:
@@ -1494,7 +1493,6 @@ impl Interpreter {
     /// payload: slot 0 = the Self placeholder over the op's own parent sort, then
     /// one real provider handle per `requires` slot, keyed by the
     /// `synth_req_names` name each tree came back under. The same layout
-    /// `call_with_requirements` assembles for a host caller and
     /// `expand_dispatching_dict` assembles from a dispatching dict.
     ///
     /// `Err` names WHICH of the two things went wrong, because they want different
@@ -1786,135 +1784,6 @@ impl Interpreter {
         self.config.bridge_mode
     }
 
-    /// Variant of [`Self::call`] that lets the host supply real
-    /// impl-rooted dictionaries for the entry op's `requires` chain,
-    /// instead of [`Self::seed_entry_requirements`]'s self-referential
-    /// placeholders.
-    ///
-    /// `chain_dicts` is one handle per entry in the parent sort's
-    /// flattened `requires` chain (in declaration order). The frame's
-    /// Self slot (slot 0) is auto-allocated by this method as a
-    /// self-referential placeholder for the parent sort — host callers
-    /// don't see it. The supplied handles populate slots 1..=N.
-    ///
-    /// Required when the parent sort declares `requires X[…]` for a
-    /// different sort X (e.g. `sort Main { requires
-    /// WorkItemStore[State] }`): plain [`Self::call`] would seed slot 1
-    /// with `Requirement{ functor: Main, … }`, and body-side
-    /// `WorkItemStore.lookup(…)` would dispatch through the placeholder
-    /// — wrong impl, runtime mis-dispatch.
-    ///
-    /// Use [`Self::alloc_dictionary`] to build each handle — WI-867: it takes the
-    /// slot's SPEC beside the provider and refuses a dictionary of the wrong shape
-    /// where it is built, rather than letting it reach the per-slot check below. The
-    /// chain to walk for those specs is [`crate::kb::typing::provider_dict_entries`]
-    /// of the entry op's parent sort, which is the list this method counts against.
-    /// See `docs/design/operation-call-model.md` §"Host-to-entry-op boundary".
-    ///
-    /// WI-822 LEG 1: the count is the PARENT SORT's chain, not the entry op's composed
-    /// one — an op-scoped `requires` has no host-boundary spelling HERE, for the reason
-    /// [`Self::seed_entry_requirements`] records, and widening this would ask every
-    /// host for handles it has no way to build. Its slots stay unfilled here — unlike
-    /// [`Self::call`], which resolves them from the arguments — and the body's own read
-    /// is what says so, as `not bound`, naming the frame rather than the slot.
-    ///
-    /// WI-20260922-ATFGH — the one op-half kind a host CAN fill is EE0EP's synthesized
-    /// slot, whose witness lives in a parameter's type: [`Self::call`] reads it off the type
-    /// the argument is passed at.
-    pub fn call_with_requirements(
-        &mut self,
-        qualified_name: &str,
-        args: &[Value],
-        chain_dicts: smallvec::SmallVec<[value::Dictionary; 2]>,
-    ) -> Result<Value, EvalError> {
-        let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
-            EvalError::UnknownOperation {
-                name: qualified_name.to_string(),
-            }
-        })?;
-        if let Some(builtin) = self.builtins.get(&sym).cloned() {
-            // A host's call has no typed caller: the operation's own `requires` are read at
-            // the arguments' types here, as a body's are below (proposal 073 §6.1) — the
-            // `TypeValue` of what it raises among them.
-            let mut requirements = smallvec::SmallVec::new();
-            self.seed_entry_op_requirements(sym, args, &mut requirements)?;
-            // Proposal 073 §2 — handed back to the host as the carrier's value.
-            return self
-                .call_host(sym, &builtin, args, requirements)
-                .map(|v| self.carried_for_host(sym, v));
-        }
-        // Names model: `__req_self` → a self-referential placeholder for
-        // the parent sort; `__req_<spec>` → each host-supplied chain
-        // dict, zipped against `synth_req_names`. The arity check uses
-        // the same name list as the bind step so the two can't diverge
-        // (a prior version used the flat requires chain here, which could
-        // see different cache state than `synth_req_names`'s
-        // substitution-composed walk). See operation-call-model.md
-        // §"Host-to-entry-op boundary".
-        let parent_sym = crate::kb::typing::impl_parent_of_op(&self.kb, sym);
-        // Proposal 066 §7: the operation's OWN frame — its sort's chain under the
-        // provision it is a member of.
-        let names = parent_sym.map(|_| {
-            crate::kb::typing::op_owner_dict_entries(&mut self.kb, sym).names(&mut self.kb)
-        });
-        let expected = names.as_ref().map_or(0, |n| n.len());
-        if chain_dicts.len() != expected {
-            return Err(EvalError::Internal(format!(
-                "call_with_requirements({qualified_name}): expected {expected} \
-                 requirement slot(s) (the parent sort's requires chain), got {got}",
-                got = chain_dicts.len(),
-            )));
-        }
-        // WI-857: each supplied dictionary must also be layout-VALID for its slot's
-        // spec, not merely present. The count check above is the pre-existing guard and
-        // does not look inside. Checked HERE because this is the host boundary: a
-        // hand-built dict that claims a provider and bundles nothing is the shape that
-        // dies later at a frame push, attributed to the callee rather than to the
-        // caller that built it. Today's in-tree host is layout-valid only because the
-        // chains involved are empty — the same chain-free accident this ticket is about
-        // — so the check is what keeps it valid when 058 phase 7 gives those specs
-        // chains.
-        if parent_sym.is_some() {
-            // WI-869: the DICTIONARY chain, matching the `synth_req_names` count check
-            // above — the divergence this file's own comment warns about three lines up
-            // is precisely what a declared-chain read reintroduces here, silently
-            // validating fewer dicts than were supplied.
-            let chain = crate::kb::typing::op_owner_dict_entries(&mut self.kb, sym);
-            for (entry, dict) in chain.iter().zip(chain_dicts.iter()) {
-                // WI-867: through `refuse_arity`, the same owner
-                // [`Self::alloc_dictionary`] asks at construction — so a host that
-                // used the constructor cannot be refused here for a reason the
-                // constructor phrased differently, and a value that came from
-                // somewhere else is still judged by the one rule.
-                // A slot's dictionary is a dispatch dictionary, not a parent bundle:
-                // no operation's frame to lay a self case out for.
-                let want = crate::kb::typing::dict_layout(
-                    &mut self.kb,
-                    entry.required_sort,
-                    dict.impl_sort(),
-                    None,
-                );
-                if let Some(why) = want.refuse_arity(&self.kb, dict.arity()) {
-                    return Err(EvalError::Internal(format!(
-                        "call_with_requirements({qualified_name}): {why}"
-                    )));
-                }
-            }
-        }
-        let mut requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> =
-            smallvec::SmallVec::new();
-        if let (Some(p), Some(names)) = (parent_sym, names) {
-            // WI-857: layout-valid — see `stand_in_requirement`.
-            let self_provision = crate::kb::typing::op_owner_provision(&self.kb, sym);
-            let placeholder = self.stand_in_requirement(p, p, self_provision)?;
-            requirements.push((self.fields.req_self, placeholder));
-            for (name, dict) in names.iter().zip(chain_dicts) {
-                requirements.push((*name, dict));
-            }
-        }
-        self.invoke_op_with_requirements(sym, args, requirements)
-    }
-
     /// WI-818 (review): the ONE classifier for "this call target cannot run", the
     /// fall-through of the dispatch (`dispatch_resolved_operation`) a body's call and a
     /// host call ([`Self::invoke_op_with_requirements`]) both take:
@@ -2006,7 +1875,7 @@ impl Interpreter {
 
 
     /// WI-1091 — the entry op's OWN op-scoped slots, resolved at the concrete argument
-    /// types, appended after [`Self::seed_entry_requirements`]' sort half.
+    /// types, appended after the sort half's stand-ins.
     ///
     /// A host `interp.call` is one of the four routes WI-822 measured as unable to fill
     /// an op slot: there is no call site to build one, and a STAND-IN cannot serve it
@@ -2143,10 +2012,9 @@ impl Interpreter {
     ///
     /// Producers of a dictionary must produce a layout-valid one — that is the
     /// invariant the arity cross-check enforces, and this is what lets a stand-in
-    /// satisfy it without pretending to carry evidence. The stand-ins are the host
-    /// entry points' self-referential slots ([`Self::seed_entry_requirements`],
-    /// [`Self::call_with_requirements`]'s `__req_self`): adequate for same-sort
-    /// recursion, and for a cross-sort `requires` they dispatch onto the spec's own
+    /// satisfy it without pretending to carry evidence. The stand-ins are a frame's
+    /// self-referential `__req_self` slots (a bridged call's, a woven call's): adequate for
+    /// same-sort recursion, and for a cross-sort `requires` they dispatch onto the spec's own
     /// op, whose value-directed resolution reads the real carrier (WI-350/WI-822).
     /// Before this they were `functor` with NO sub-slots, which the layout reads as
     /// a dictionary claiming `functor`'s whole `requires` chain and bundling none.
@@ -2160,8 +2028,8 @@ impl Interpreter {
     ///    [`crate::kb::typing::BridgeSlot::Absent`] — emitted as an empty bundle over an
     ///    `anthill.reflect.NoProvider` marker, which `resolve_op_target_checked` REFUSES
     ///    to dispatch through;
-    ///  * this STAND-IN — marker sub-slots, but its own functor is a real sort, which
-    ///    `call_with_requirements`' own doc calls a claim that can mis-dispatch.
+    ///  * this STAND-IN — marker sub-slots, but its own functor is a real sort, which is a
+    ///    claim that can mis-dispatch.
     ///
     /// The ticket's hypothesis: they cannot be merged only because the refusal sits
     /// BEFORE the WI-350/WI-822 value-directed rescue, and moving it after the rescue
@@ -2303,55 +2171,16 @@ impl Interpreter {
         self.cells.live()
     }
 
-    /// WI-867 — build the dictionary for spec `spec` supplied by `provider`, REFUSING
-    /// one that is not layout-valid. **The host-facing constructor**: what
-    /// [`Self::call_with_requirements`] points at, and what a host that hand-builds a
-    /// requirement channel should use.
-    ///
-    /// WHY A SPEC ARGUMENT AT ALL, when a dictionary's own functor is its provider: the
-    /// layout is a property of the PAIR (WI-857 — spec half then provider half), so
-    /// `(provider, subs)` alone cannot say whether `subs` is the right number. That is
-    /// the whole of the gap this closes. A dictionary that claims a provider and
-    /// bundles nothing is well-formed as a VALUE and wrong as EVIDENCE, and it used to
-    /// travel until a frame push read a slot that was not there — reported against the
-    /// callee, which is not who built it.
-    ///
-    /// MEASURED as latent, not hypothetical: the one in-tree host
-    /// (`anthill-todo/src/main.rs`) built an arity-0 dictionary for spec
-    /// `WorkItemStore` supplied by `FileBasedWorkitemStore`, and was layout-valid ONLY
-    /// because both chains are empty — the same chain-free-provider accident WI-857
-    /// records as the reason the split went unnoticed. WI-858 (058 phase 7) gives such
-    /// specs real chains, at which point the host learns at CONSTRUCTION instead.
-    ///
-    /// For the VALUE carrier alone — a test of projection or reflection, where the
-    /// pair means nothing — see [`Self::alloc_dictionary_unchecked`].
-    pub fn alloc_dictionary(
-        &mut self,
-        spec: Symbol,
-        provider: Symbol,
-        subs: impl IntoIterator<Item = value::Dictionary>,
-    ) -> Result<value::Dictionary, EvalError> {
-        let subs: smallvec::SmallVec<[value::Dictionary; 2]> = subs.into_iter().collect();
-        // A host-built dictionary is a dispatch dictionary for `spec` at `provider`; a
-        // host has no operation frame to lay a self case out for.
-        let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider, None);
-        if let Some(why) = layout.refuse_arity(&self.kb, subs.len()) {
-            return Err(EvalError::Internal(format!("alloc_dictionary: {why}")));
-        }
-        self.build_dictionary(provider, subs)
-    }
-
     /// Build `Dictionary(subs…, impl: functor)` with NO layout check — the value
     /// carrier alone. `None` in a KB with no
     /// `anthill.realization.runtime.Dictionary` to name.
     ///
-    /// WI-867 — NOT the host constructor; [`Self::alloc_dictionary`] is, and this
-    /// carries `_unchecked` so that reaching for it is a decision. What is unchecked
-    /// is that `subs` is the number the (spec, provider) layout wants, which is what
-    /// makes a dictionary usable as EVIDENCE. Its remaining callers all build a
-    /// dictionary to exercise the value machinery — `Dictionary.impl` reading a
-    /// symbol back, a projection reading slot `k` — where the pair is not a claim
-    /// about any spec and a layout would be a fiction to satisfy.
+    /// Not a host's way to hand an operation its requirements: a host call is typed as the
+    /// same call in an operation body, and the typer builds its dictionaries ([`Self::call`]).
+    /// What is unchecked is that `subs` is the number the (spec, provider) layout wants,
+    /// which is what makes a dictionary usable as EVIDENCE. Its callers build a dictionary
+    /// to exercise the value machinery — `Dictionary.impl` reading a symbol back, a
+    /// projection reading slot `k` — where the pair is not a claim about any spec.
     pub fn alloc_dictionary_unchecked(
         &self,
         functor: Symbol,

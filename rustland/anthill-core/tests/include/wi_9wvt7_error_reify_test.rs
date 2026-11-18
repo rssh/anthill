@@ -899,15 +899,20 @@ fn a_clock_handler_s_throw_is_refused_where_now_declares_no_error() {
 /// narrow": a boundary that catches every payload takes a label the thunk's row leaves to
 /// the caller. MEASURED with the wide catch: `tupOp(7)` over a thunk raising
 /// `{Error[(a: Int64, b: String)], Error[Other]}` answered `err(other(n: 7))`, an `Other`
-/// delivered as the tuple's `err`. The route here is a host entry that hands no evidence
-/// (`call_with_requirements` fills only the parent sort's chain).
+/// delivered as the tuple's `err`.
+///
+/// `returned`'s row raises nothing, so `Error.reify(returned)` leaves `T1`, the payload sort
+/// whose `TypePattern` the boundary owes, to nothing: the host call is refused where it is
+/// typed, naming `T1`, as the same call in an operation body is, before a boundary is
+/// installed. The host's
+/// untyped entry handed no evidence and was refused by the boundary itself
+/// (`ReifyPayloadUnread`, "with no `TypePattern` evidence"); that entry is gone
+/// (WI-20261113-S4D63).
 ///
 /// A WRITTEN ROW WAS THE OTHER ROUTE while the boundary required `ErrorTag`, which took one:
 /// a `provides ErrorTag[…]` carried no `TypeValue`, and the boundary refused to run on it.
 /// `TypePattern` takes none, and `ErrorTag` is gone (WI-20261016-YM8HD,
 /// `wi_ym8hd_reify_type_pattern_test`).
-///
-/// BACK-OUT: the boundary installed with no pattern and catching wide, and the row answers.
 #[test]
 fn evidence_that_names_no_payload_sort_is_refused() {
     let mut interp = interp();
@@ -922,13 +927,13 @@ fn evidence_that_names_no_payload_sort_is_refused() {
         spread_labels: None,
         op_reqs: None,
     };
-    match interp.call_with_requirements("anthill.prelude.Error.reify", &[thunk], Default::default()) {
-        Err(e @ EvalError::ReifyPayloadUnread { .. }) => {
-            assert!(e.to_string().contains("with no `TypePattern` evidence"), "{e}")
+    match interp.call("anthill.prelude.Error.reify", &anthill_core::eval::HostValue::all(&[thunk])) {
+        Err(EvalError::HostCallRefused { detail, .. }) => {
+            assert!(detail.contains("expected a type for 'T1', got unconstrained"), "{detail}")
         }
-        other => panic!("a host entry with no evidence is refused, got {other:?}"),
+        other => panic!("a boundary over a row that names no payload is refused, got {other:?}"),
     }
-    assert_eq!(interp.activation_depth(), 0, "the refused entry leaves no frame");
+    assert_eq!(interp.activation_depth(), 0, "the refused call leaves no frame");
 }
 
 /// A WIDER BOUNDARY ADMITS A NARROWER RAISE, because the ROW already does.

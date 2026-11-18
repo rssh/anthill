@@ -432,8 +432,8 @@ mod wi230_requires_tree_test;
 #[path = "include/wi231_req_insertion_pass_test.rs"]
 mod wi231_req_insertion_pass_test;
 
-#[path = "include/wi236_call_with_requirements_test.rs"]
-mod wi236_call_with_requirements_test;
+#[path = "include/wi236_polymorphic_entry_test.rs"]
+mod wi236_polymorphic_entry_test;
 
 #[path = "include/wi237_diag_test.rs"]
 mod wi237_diag_test;
@@ -1642,8 +1642,6 @@ mod wi1122_embedder_host_fn_test;
 #[path = "include/wi866_dictionary_layout_source_test.rs"]
 mod wi866_dictionary_layout_source_test;
 
-#[path = "include/wi867_host_dictionary_constructor_test.rs"]
-mod wi867_host_dictionary_constructor_test;
 
 #[path = "include/wi868_absence_representation_test.rs"]
 mod wi868_absence_representation_test;

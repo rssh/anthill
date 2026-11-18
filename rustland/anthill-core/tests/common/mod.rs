@@ -1304,6 +1304,17 @@ pub fn list_type(kb: &mut KnowledgeBase, elem: &str) -> eval::Value {
     eval::Value::term(kb.make_parameterized_type(base, &[(t, elem)]))
 }
 
+/// The type `Cell[V = <elem>]`, `elem` a sort's qualified name — what a host hands a cell over
+/// at, the cell's value carrying no type of its own.
+#[allow(dead_code)]
+pub fn cell_type(kb: &mut KnowledgeBase, elem: &str) -> eval::Value {
+    let cell = kb.try_resolve_symbol("anthill.prelude.Cell").expect("`Cell`");
+    let v = kb.try_resolve_symbol("anthill.prelude.Cell.V").expect("`Cell.V`");
+    let elem = kb.try_resolve_symbol(elem).unwrap_or_else(|| panic!("the sort `{elem}`"));
+    let (base, elem) = (kb.make_sort_ref(cell), kb.make_sort_ref(elem));
+    eval::Value::term(kb.make_parameterized_type(base, &[(v, elem)]))
+}
+
 /// The type the sort `qn` names.
 #[allow(dead_code)]
 pub fn sort_type(kb: &mut KnowledgeBase, qn: &str) -> eval::Value {
@@ -3139,8 +3150,8 @@ pub fn one_goal_carrier_fixture(
 /// WI-867: the UNCHECKED constructor on purpose — these fixtures drive the value
 /// carrier (a projection reading slot `k`, `Dictionary.impl` reading a symbol back),
 /// where the (spec, provider) pair is not a claim about any spec and a layout would be
-/// a fiction invented to satisfy. A host building EVIDENCE uses
-/// `Interpreter::alloc_dictionary`, which refuses a wrong-shaped one at construction.
+/// a fiction invented to satisfy. A host builds no evidence: its call is typed, and the
+/// typer builds the call's dictionaries (`Interpreter::call`).
 ///
 /// It goes through the interpreter rather than assembling a
 /// `Value::Entity` by hand ON PURPOSE: a test that spelled the functor and the

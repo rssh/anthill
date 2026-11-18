@@ -296,9 +296,10 @@ fn a_failure_below_on_the_same_spec_names_the_goal_that_failed() {
 
 /// A marker is still reachable in a frame slot at RUN time — eval's host-entry stand-in
 /// (`Interpreter::stand_in_requirement`), whose sub-slots carry no evidence because the
-/// host supplied no dictionary at all. Nothing is wrong with the PROGRAM there, and the
-/// remedy is `call_with_requirements`; the old sentence offered that beside "declare a
-/// provider" and let the reader pick.
+/// host supplied no dictionary at all. Nothing was wrong with the PROGRAM there, and the
+/// remedy was the host's untyped entry (`call_with_requirements`, removed by
+/// WI-20261113-S4D63); the old sentence offered that beside "declare a provider" and let the
+/// reader pick.
 ///
 /// Driven by entering `Holder.via` DIRECTLY from the host — the same body, the same
 /// slot 0 projection, a different producer of what sits in it. Note the fixture here

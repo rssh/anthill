@@ -1537,14 +1537,14 @@ pub enum AbsenceRecord {
     /// is recorded at its own slot (WI-20260925-4ZZKZ), so there is no deeper level to
     /// point at and the bit went with the resolver's producer.
     Slot { spec: Symbol, why: UnavailableWhy },
-    /// The sub-slots of eval's host-entry STAND-IN (`Interpreter::
-    /// stand_in_requirement`). Nothing resolved and nothing failed: the frame was
-    /// entered from the host with no dictionary at all, so the remedy is
-    /// `call_with_requirements` and not anything in the program. It names no spec —
+    /// The sub-slots of eval's STAND-IN for a frame's own sort (`Interpreter::
+    /// stand_in_requirement`, a bridged or woven call's `__req_self`). Nothing resolved
+    /// and nothing failed: the call that entered the frame supplied no dictionary for its
+    /// own sort, and nothing in the program is at fault. It names no spec —
     /// one stand-in marker is SHARED across every sub-slot of the chain (they are
     /// empty and interchangeable, and a dictionary's children are `Rc`-backed), so
     /// there is no one slot for it to name.
-    HostEntry,
+    StandIn,
 }
 
 /// WI-857/WI-865 — the functor a dictionary slot carries when it holds no dictionary
@@ -1585,7 +1585,7 @@ pub(crate) fn absence_marker_sym(kb: &mut KnowledgeBase, rec: AbsenceRecord) -> 
     }
     let name = match &rec {
         // The bare prefix, so eval's stand-in keeps the exact symbol WI-857 minted.
-        AbsenceRecord::HostEntry => NO_PROVIDER_NAME.to_string(),
+        AbsenceRecord::StandIn => NO_PROVIDER_NAME.to_string(),
         AbsenceRecord::Slot { spec, why } => {
             let spec_qn = kb.qualified_name_of(*spec).to_string();
             let detail = match why {

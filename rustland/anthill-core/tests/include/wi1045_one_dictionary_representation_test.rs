@@ -23,9 +23,9 @@
 //!    the query `probe(leaf())` passes in its citation marker, built where the query is read
 //!    (proposal 073 §6.2), and bound to the read's `out` when the clause opens
 //!    ([`sigma_dictionary`]);
-//!  * **eval** — an operation frame's `requirements` channel, entered through
-//!    `Interpreter::call_with_requirements` and read by the body's
-//!    `var_ref(__req_*)`.
+//!  * **eval** — an operation frame's `requirements` channel, entered from a clause's call,
+//!    which hands the frame the dictionary its guard was bound (the resolver's bridge), and
+//!    read by the body's `var_ref(__req_*)`.
 //!
 //! ## The refcount tests are DELETED, not ported
 //!
@@ -50,7 +50,7 @@
 //!
 //! | test | backed out ⇒ |
 //! |---|---|
-//! | `a_sigma_dictionary_dispatches_an_operation_frame` | does not COMPILE (the frame took a `RequirementHandle`), and semantically: the σ value had to be converted, so the answer came from whatever the conversion produced |
+//! | `a_sigma_dictionary_dispatches_an_operation_frame` | does not COMPILE (the frame took a `RequirementHandle`), and semantically: the σ value had to be converted, so the answer came from whatever the conversion produced. Driven through a clause's call since WI-20261113-S4D63, and held to a derivation count of 0: a dictionary the bridge derived from the value instead of the guard's would count (not backed out for this program) |
 //! | `the_value_the_resolver_bound_is_the_value_the_frame_reads` | FAILS — the frame delivered `Value::Requirement(handle)`, a different carrier that compared equal only THROUGH the view, never as the same value |
 //! | `a_conditional_provisions_sub_dictionary_projects_by_index_on_both_sides` | the σ half passes either way (WI-1040 shipped it); the EVAL half is what moved |
 //! | `the_marker_is_refused_at_every_dispatch_read` | passes either way BY DESIGN — WI-857's refusal is what must SURVIVE the carrier change, so it is a regression guard, not a new claim |
@@ -120,6 +120,9 @@ namespace test.wi1045
   end
 
   rule probe[A](?x: A) :- Desc[T = A]
+  rule runs[A](?x: A, ?r) :- Desc[T = A], ?r <=> Driver.run(?x)
+  rule leafRun(?r) :- runs(Leaf.leaf(), ?r)
+  rule otherRun(?r) :- runs(Other.other(), ?r)
 end
 "#;
 
@@ -155,14 +158,6 @@ fn sigma_dictionary(carrier: &str) -> (Interpreter, Value) {
     (interp, value)
 }
 
-/// A carrier value, built by RUNNING its constructor op rather than assembled by
-/// hand — so the value that reaches `Driver.run` is the one the language makes.
-fn carrier(interp: &mut Interpreter, sort: &str) -> Value {
-    interp
-        .call(&format!("test.wi1045.{sort}.mk"), &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
-        .unwrap_or_else(|e| panic!("{sort}.mk() must run, got {e:?}"))
-}
-
 /// The dictionary a `Value` IS — the ONE boundary check in the crate. Before
 /// WI-1045 this crossing did not exist as a check: it was a CONVERSION
 /// (`eval_requirement_chain_node`) that minted an arena handle with a fresh
@@ -175,45 +170,34 @@ fn as_dictionary(interp: &Interpreter, v: &Value) -> Dictionary {
 // ── (a) + (b): σ builds it, an operation frame reads it ─────────────────────
 
 /// ACCEPTANCE (a) + (b) — a dictionary the SLD fetch built is installed into an
-/// operation call's frame with NO conversion step, and the body's dispatch reads
-/// it: `Driver.run` answers the CARRIER's `7`, not the spec default's `1`.
+/// operation call's frame with NO conversion step, and the body's dispatch reads it:
+/// `runs[A](?x: A, ?r) :- Desc[T = A], ?r <=> Driver.run(?x)` hands `Driver.run` the
+/// dictionary its guard was bound, at `Leaf` (`7`, `Leaf`'s own `describe`; `1` would be the
+/// spec default, no dictionary read) and at `Other` (`9`), with no dictionary derived from the
+/// value.
 ///
-/// The `Other` arm is what makes that non-vacuous: the SAME op with the SAME
-/// argument answers `9` when the dictionary names the other carrier, so the answer
-/// is decided by the dictionary and by nothing else. (`run`'s argument is a `Leaf`
-/// in both arms deliberately — if dispatch were reading the VALUE rather than the
-/// frame slot, both arms would answer `7`.)
+/// It handed a `Leaf` to `run` under `Other`'s dictionary too, through the host's untyped
+/// entry, and got `9`: the dictionary decided, not the value. That entry is gone
+/// (WI-20261113-S4D63) and no call can be written that pairs a value with another carrier's
+/// dictionary — a frame's dictionary is the one its call's types give — so the derivation
+/// count is what says the frame read the guard's dictionary and not one made from the value.
 #[test]
 fn a_sigma_dictionary_dispatches_an_operation_frame() {
-    let run = |provider: &str| -> i64 {
-        let (mut interp, v) = sigma_dictionary(provider);
-        let dict = as_dictionary(&interp, &v);
-        let leaf = carrier(&mut interp, "Leaf");
-        let got = interp.call_with_requirements(
-            "test.wi1045.Driver.run",
-            &[leaf],
-            smallvec::smallvec![dict],
+    use anthill_core::kb::resolve::bridge_derivations_by_this_thread;
+    let mut kb = crate::common::load_kb_with(SRC);
+    for (rule, want) in [("leafRun", 7), ("otherRun", 9)] {
+        let before = bridge_derivations_by_this_thread();
+        assert_eq!(
+            crate::common::one_definite_int(&mut kb, &format!("test.wi1045.{rule}")),
+            Some(want),
+            "`Driver.run` dispatches through the dictionary `runs`'s guard was bound ({rule})",
         );
-        match got {
-            Ok(Value::Int(n)) => n,
-            other => {
-                panic!("Driver.run under the {provider} dictionary must answer an Int, got {other:?}")
-            }
-        }
-    };
-
-    assert_eq!(
-        run("Leaf"),
-        7,
-        "the frame must dispatch through the dictionary σ bound — `7` is `Leaf`'s \
-         own `describe`, and `1` would be the spec default (no dictionary read)",
-    );
-    assert_eq!(
-        run("Other"),
-        9,
-        "and the dictionary DECIDES: the same op on the same argument answers \
-         `Other`'s `9` when the frame carries `Other`'s dictionary",
-    );
+        assert_eq!(
+            bridge_derivations_by_this_thread() - before,
+            0,
+            "{rule}: the frame's dictionary is the guard's, none derived from the value",
+        );
+    }
 }
 
 /// ACCEPTANCE (a) — the crossing converts NOTHING: the value an operation body

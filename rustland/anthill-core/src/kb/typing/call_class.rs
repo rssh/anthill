@@ -1014,13 +1014,13 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
     let Some(rec) = kb.absence_record(functor) else {
         return Err(format!(
             "{head}, and no reason was recorded for the marker. Declare a provider, \
-             select one at the call site, or enter through `call_with_requirements`."
+             or select one at the call site."
         ));
     };
     let detail = match rec {
-        AbsenceRecord::HostEntry => {
-            "this frame was entered from a host entry point that supplied no \
-             dictionary. Enter through `call_with_requirements` to supply one."
+        AbsenceRecord::StandIn => {
+            "this frame's own sort's dictionary is a stand-in: the call that entered \
+             it supplied no dictionary for it."
                 .to_string()
         }
         AbsenceRecord::Slot { spec, why } => {

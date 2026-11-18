@@ -132,9 +132,8 @@ impl Interpreter {
         result
     }
 
-    /// The host entry, shared by [`Self::call`], [`Self::call_with_requirements`] and the
-    /// resolver's bridge ([`Self::call_op_bridged`]): the call is handed to the dispatch an
-    /// operation body's call takes (`dispatch_resolved_operation`), so every route of that
+    /// The host entry, shared by [`Self::call`] and the resolver's bridge
+    /// ([`Self::call_op_bridged`]): the call is handed to the dispatch an operation body's call takes (`dispatch_resolved_operation`), so every route of that
     /// dispatch — a body, a builtin, a supplier found from the value, the `eq` bridge, the
     /// `Error.reify` boundary, the unrunnable classifier — is a route of this entry too,
     /// and `requirements` is the call's channel there as a caller's is in a body.
@@ -195,9 +194,9 @@ impl Interpreter {
 
 
     /// Proposal 073 §6.1, §6.2, STAGE 4'S — is the call being dispatched one with no typed
-    /// caller: the untyped host entry's own call (`call_with_requirements`, the resolver's
-    /// bridge; `Interpreter::call` is typed), or a call in text no typer saw (a query's compound
-    /// expression, a rule's lambda: [`super::frame::Frame::untyped`])? The only calls whose
+    /// caller: the resolver's bridge's own call (`Interpreter::call` is typed), or a call in
+    /// text no typer saw (a query's compound expression, a rule's lambda:
+    /// [`super::frame::Frame::untyped`])? The only calls whose
     /// implementation is still found from the argument values, until CBRD2.
     fn untyped_caller(&self) -> bool {
         self.host_entry_dispatch || self.stack.top().is_some_and(|f| f.untyped)

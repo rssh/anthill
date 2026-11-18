@@ -169,25 +169,20 @@ end
     let handle = interp.alloc_cell(wis_value);
     let cell_value = Value::Cell(handle);
 
-    // WI-818: supply a REAL impl-rooted dictionary for ConcreteCaller's
-    // `requires WorkItemStore[WIS]` chain. Plain `interp.call` seeds a
-    // self-referential placeholder, which `call`'s own doc says cannot reach a
-    // cross-sort impl — the dispatch fell through and errored. The old assert
-    // never saw that: it compared the DEBUG rendering against DISPLAY strings
-    // (`UnknownOperation { name: "lookup" }` does not contain
-    // "unknown operation: lookup"), so the test passed vacuously until the
-    // fall-through's variant changed to `OperationBodyMissing` (whose name the
-    // assert did catch).
-    let fbws = interp
-        .kb_mut()
-        .try_resolve_symbol("anthill.todo.store.FileBasedWorkitemStore")
-        .expect("FileBasedWorkitemStore is loaded");
-    let dict = crate::common::dict(&interp, fbws, []);
-    let result = interp.call_with_requirements(
-        "test.wi204_form_c_runtime.ConcreteCaller.call_drive",
-        &[cell_value, Value::Str("WI-001".to_string())],
-        smallvec::smallvec![dict],
-    );
+    // The cell at `Cell[V = WIS]`; `ConcreteCaller`'s `requires WorkItemStore[WIS]` is built
+    // from `FileBasedWorkitemStore`'s provision, as for the same call in an operation body
+    // (proposal 074 §1.4). WI-818: the host handed that dictionary over by hand, and plain
+    // `interp.call` seeded a placeholder that could not reach a cross-sort impl.
+    let at = crate::common::cell_type(interp.kb_mut(), "anthill.todo.store.FileBasedWorkitemStore.WIS");
+    let result = interp
+        .call(
+            "test.wi204_form_c_runtime.ConcreteCaller.call_drive",
+            &[
+                anthill_core::eval::HostValue::typed(cell_value, at),
+                Value::Str("WI-001".to_string()).into(),
+            ],
+        )
+        .map(|h| h.value);
     println!("[form_c_runtime] result: {result:?}");
     // MEASURED with the real dictionary: dispatch reaches
     // FileBasedWorkitemStore.lookup, retrieve no-ops on the empty store, and

@@ -108,8 +108,8 @@ left is at a route with no typed caller.
 
 Since 074 stage 10 (WI-20261113-S4D63) a host call (`Interpreter::call`) is typed as the
 same call in an operation body and reads no value: the host-entry row is the resolver's bridge
-and `call_with_requirements` (`invoke_op_with_requirements`), and a host call is no untyped
-frame.
+(`invoke_op_with_requirements`), and a host call is no untyped frame. The untyped host entry,
+`call_with_requirements`, is gone.
 
 The receiver-less sibling of a default body (step 3c) reads the dictionary the frame was
 entered with, not a value, and built no frame from values in the census. A frame is

@@ -392,8 +392,8 @@ fn a_generic_consumer_over_a_list_keeps_each_elements_ordering() {
 //     `Interpreter::call_typed` reads its witness off the argument's type
 //     (`wi_ee0ep_param_dictionary_test::the_host_entry_reads_the_witness_off_the_type`).
 //     This row's slot is the SORT's own `O`, one of the dictionaries
-//     `call_with_requirements` takes from a host, and WI-868's stand-in decision is what
-//     keeps plain `interp.call` as it is.
+//     `call_with_requirements` took from a host (removed by WI-20261113-S4D63), and WI-868's
+//     stand-in decision is what kept plain `interp.call` as it was.
 //
 //  2. THE SLD BRIDGE from a rule body (`call_op_bridged`) — SUSPENDS. It resolves the
 //     callee's chain from the ARGUMENT TYPES and passes `NamedSlotTies::Raise`, so a

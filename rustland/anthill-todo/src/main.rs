@@ -5346,79 +5346,37 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         // `backend` is the same store value the mirror registry is keyed on, so
         // anthill-side `persist` / `flush` through the cell route to the instance built
         // above.
-        let wis_value = match interp.call(
+        // The state at the type `open` answers, `WIS`: the cell is a `Cell[V = WIS]`, which
+        // fixes `Main`'s `State`, and the typed call of `main` builds `WorkItemStore[State =
+        // WIS]` from `FileBasedWorkitemStore`'s provision (proposal 074 §1.4).
+        let wis = match interp.call(
             "anthill.todo.store.FileBasedWorkitemStore.open",
             &anthill_core::eval::HostValue::all(&[store_value.clone()]),
-        ).map(|h| h.value) {
-            Ok(v) => v,
+        ) {
+            Ok(h) => h,
             Err(e) => {
                 eprintln!("error: building the store's initial state: {e}");
                 return runner::EXIT_RUNTIME;
             }
         };
-        let handle = interp.alloc_cell(wis_value);
-        Value::Cell(handle)
-    };
-
-    // Build the chain_dicts for Main's DIRECT requires chain. Walk the
-    // chain via the public direct_requires_chain API and allocate a
-    // dictionary handle per entry — FileBasedWorkitemStore for the
-    // WorkItemStore slot (so cmd_X dispatch lands on the impl), and
-    // self-referential placeholders for every other slot. Walking
-    // dynamically avoids hard-coding the chain length, which can grow
-    // when Main gains more requires.
-    //
-    // WI-239: NOT flat-transitive — a transitive require is bundled inside its direct
-    // parent's dict, not given a top-level slot, so the count and order line up with
-    // the frame's `__req_*` names rather than with a flattened walk.
-    //
-    // WI-867: and the list is `provider_dict_entries`, which is the one
-    // `call_with_requirements` counts against — WI-869 widened THAT to a sort's direct
-    // `requires` FOLLOWED BY its conditional provisions' `:- goals`, and this host was
-    // still reading `direct_requires_chain`. The two agree only while `Main` declares
-    // no conditional provision; the day it does, the old read hands over fewer
-    // dictionaries than there are slots, and the host learns it as a count mismatch at
-    // the entry rather than as a slot it forgot to fill.
-    let chain_dicts: smallvec::SmallVec<[_; 2]> = {
-        let main_sym = interp
-            .kb()
-            .try_resolve_symbol("anthill.todo.Main")
-            .expect("anthill.todo.Main must be loaded");
-        let workitemstore_sym = interp
-            .kb()
-            .try_resolve_symbol("anthill.todo.store.WorkItemStore");
-        let filebased_sym = interp
-            .kb_mut()
-            .intern("anthill.todo.store.FileBasedWorkitemStore");
-        let entries: Vec<_> =
-            anthill_core::kb::typing::provider_dict_entries(interp.kb_mut(), main_sym, None)
-                .entries()
-                .to_vec();
-        let mut out: smallvec::SmallVec<[_; 2]> = smallvec::SmallVec::new();
-        for entry in &entries {
-            let impl_sym = if Some(entry.required_sort) == workitemstore_sym {
-                filebased_sym
-            } else {
-                entry.required_sort
+        let Some(Value::Term { id: wis_ty, .. }) = wis.ty().cloned() else {
+            eprintln!("error: `open` answered no type for the store's state: {:?}", wis.ty());
+            return runner::EXIT_RUNTIME;
+        };
+        let cell_ty = {
+            let kb = interp.kb_mut();
+            let (Some(cell), Some(v)) = (
+                kb.try_resolve_symbol("anthill.prelude.Cell"),
+                kb.try_resolve_symbol("anthill.prelude.Cell.V"),
+            ) else {
+                eprintln!("error: anthill.prelude.Cell is not loaded");
+                return runner::EXIT_RUNTIME;
             };
-            // WI-867: the SPEC beside the provider, and empty subs only because the
-            // layout says so. Today both chains are empty, which is the accident that
-            // made the pre-WI-867 blind call valid; when 058 phase 7 gives these specs
-            // chains this refuses HERE, naming the spec, the provider and both halves,
-            // instead of dying at a frame push inside `Main.main`.
-            match interp.alloc_dictionary(entry.required_sort, impl_sym, []) {
-                Ok(d) => out.push(d),
-                // Reported, not panicked: this is a HOST bug — the dictionary this
-                // binary hands `Main` is the wrong shape — and the refusal already
-                // names the spec, the provider and both halves. A panic would bury
-                // that under a backtrace in the one place it is addressed to.
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return runner::EXIT_RUNTIME;
-                }
-            }
-        }
-        out
+            let base = kb.make_sort_ref(cell);
+            Value::term(kb.make_parameterized_type(base, &[(v, wis_ty)]))
+        };
+        let handle = interp.alloc_cell(wis.value);
+        anthill_core::eval::HostValue::typed(Value::Cell(handle), cell_ty)
     };
 
     // The main-result → exit-code mapping (Int clamp, non-Int, top-level
@@ -5431,11 +5389,14 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // `WorkItemStore` spec ops, which is what lets a second backend be substituted at
     // all. `store_value` is still built above, because the cell's `wis(backend:, …)`
     // carries it and the mirror registry is keyed on it.
-    let result = interp.call_with_requirements(
-        "anthill.todo.Main.main",
-        &[args_value, wis_cell_value, agent_value],
-        chain_dicts,
-    );
+    // Typed as the same call in a body: `Main`'s `requires` — `anthill.cli.Main`, and
+    // `WorkItemStore[State]` at the cell's `WIS` — are built from the provisions.
+    let result = interp
+        .call(
+            "anthill.todo.Main.main",
+            &[args_value.into(), wis_cell_value, agent_value.into()],
+        )
+        .map(|h| h.value);
     let code = runner::exit_code_from_main(interp.kb(), result);
 
     // The bundle has just printed the spec-driven command list; surface the

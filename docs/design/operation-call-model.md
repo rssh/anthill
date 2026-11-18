@@ -929,11 +929,9 @@ Why it is being replaced: a positional slot index is relative to the *current ac
 
 ## Host-to-entry-op boundary
 
-> **Describes the current (legacy positional) implementation.** This section uses `requirement_at_current(slot)` and positional `frame.requirements`. Under the names-model migration the *concepts* are unchanged — the host still seeds the entry frame's requirements — but the access form moves from positional slots to named bindings. See §"Implementation roadmap".
+The operation-call model assumes every body runs inside an activation frame whose `requirements` channel is populated by some caller's `apply_within` reduction. That covers all *in-program* calls — but the **outermost** call comes from the host (Rust, in the current realization), and the typed host call stands in for the anthill-side caller.
 
-The operation-call model assumes every body runs inside an activation frame whose `requirements` channel is populated by some caller's `apply_within` reduction. That covers all *in-program* calls — but the **outermost** call comes from the host (Rust, in the current realization) and there is no anthill-side caller to populate the frame.
-
-The runtime exposes two host APIs for the boundary: the typed call, and an untyped entry for a cross-sort chain the host supplies.
+The runtime exposes one host API for the boundary: the typed call.
 
 ### A host call is typed → `Interpreter::call(qname, &[HostValue])`
 
@@ -951,47 +949,18 @@ Handed over bare, the set is at `MySet[T = String]`, `O` open, and `has` is refu
 
 What the typer refuses about the call, and a requirement it parks for the report after every body is typed, is refused before anything runs (`EvalError::HostCallRefused`), in the sentence the same call's load error has in a body: `zeroOf()` over `zeroOf[X]() -> X requires Additive[T = X]` names `X`, `add2(7, 2, 3)` over `add2(x: Additive, …)` names `add2.x`. An operation with no declared signature (a host function registered by key) has nothing to type and is called with the values.
 
-### Cross-sort requires → `Interpreter::call_with_requirements(qname, args, chain_dicts)`
+### A parent sort's requirement at its own parameter
 
-When the parent sort declares `requires X[…]` for a different sort `X` at a type the arguments' types do not fix (e.g. `sort Main { sort State = ?; requires WorkItemStore[State]; … }`), there is no dictionary for the typed call to build: the body's `WorkItemStore.lookup(s, id)` call dispatches through slot 1, which must hold `FileBasedWorkitemStore`'s dictionary, and only the host knows that it does.
-
-The fix is for the host to supply **real impl-rooted dictionaries** for the chain entries:
+When the parent sort declares `requires X[…]` at a type parameter of its own (`sort Main { sort State = ?; requires WorkItemStore[State]; … }`), the arguments' types fix it, as for the same call in a body. The host hands the store's cell at `Cell[V = WIS]`, the type `FileBasedWorkitemStore.open` answers the state at, which fixes `State = WIS`, and `WorkItemStore[State = WIS]` is built from `FileBasedWorkitemStore`'s provision:
 
 ```rust
-// Build a dictionary for `WorkItemStore[State = WIS]` rooted at FileBasedWorkitemStore.
-// WI-867: the constructor takes the SLOT'S SPEC beside the provider, because the
-// number of sub-dictionaries a dictionary must bundle is a property of the PAIR
-// (WI-857 — the spec's own `requires` chain, then the provider's).
-let workitemstore = interp.kb_mut().intern("anthill.todo.store.WorkItemStore");
-let filebased = interp.kb_mut().intern("anthill.todo.store.FileBasedWorkitemStore");
-let dict = interp.alloc_dictionary(workitemstore, filebased, [])?;
-
-// Invoke Main.main with the dictionary in slot 1.
-// Slot 0 (Self) is auto-allocated by the runtime as a self-referential placeholder.
-let mut chain_dicts: SmallVec<[_; 2]> = SmallVec::new();
-chain_dicts.push(dict);
-interp.call_with_requirements("anthill.todo.Main.main",
-                              &[args_val, wis_cell_val, agent_val],
-                              chain_dicts)?;
+let wis = interp.call("anthill.todo.store.FileBasedWorkitemStore.open", &[store.into()])?; // at WIS
+let cell_ty = /* Cell[V = <wis.ty()>] */;
+let cell = HostValue::typed(Value::Cell(interp.alloc_cell(wis.value)), cell_ty);
+interp.call("anthill.todo.Main.main", &[args.into(), cell, agent.into()])?;
 ```
 
-The caller supplies one handle per entry in the parent sort's dictionary chain, in declaration order; the runtime prepends the Self slot automatically. **The chain to walk is `typing::provider_dict_entries(parent)`** — WI-869: a sort's direct `requires` FOLLOWED BY the `:- goals` of every conditional provision it declares. Not `direct_requires_chain`, which is that list without the conditions, and not a flattened transitive walk: a transitive requirement is bundled INSIDE its direct parent's dictionary rather than given a top-level slot. Each handle's own structure follows the same rule recursively — an impl whose chain is non-empty is built with one sub-dictionary per entry.
-
-The host API is value-level only; the **typer** doesn't see the caller's intent. Two guards ask the same question, one owner apart (`DictLayout::refuse_arity`):
-
-- **At construction.** `alloc_dictionary(spec, provider, subs)` refuses a handle whose `subs` is not `dict_layout(spec, provider).arity()`, naming the spec, the provider and both halves. This is where a host wants to hear it — a dictionary that claims a provider and bundles nothing is well-formed as a VALUE and wrong as EVIDENCE, and before WI-867 it travelled until a frame push read a slot that was not there, reported against the callee rather than the caller that built it.
-- **At the entry.** `call_with_requirements` checks the count against `provider_dict_entries(parent).names(..)` and then re-asks the layout question per slot, for a handle that did not come from the constructor.
-
-`Interpreter::alloc_dictionary_unchecked` builds a dictionary of any shape and is NOT the host constructor: it exists for fixtures that drive the value carrier (a projection reading slot `k`, `Dictionary.impl` reading a symbol back), where the pair is not a claim about any spec.
-
-### When to pick which
-
-- `interp.call` is the default: the call is typed, and every dictionary the typer can build at its arguments' types is built.
-- `interp.call_with_requirements` is the untyped entry for a parent sort whose cross-sort `requires` chain the arguments' types do not fix (`requires WorkItemStore[State]` with `State` open): the host supplies the chain's dictionaries.
-
-Inference of the right dictionary from the value-level args (e.g. peek at the `wis(...)` functor inside a `Cell[?S]` argument to deduce `State = WIS` and select FileBasedWorkitemStore) is a future direction — `call_with_requirements` is the explicit-impl baseline that ships first.
-
-(WI-236 — landed alongside this section.)
+A cell handed bare leaves `State` open, and the call is refused naming the `WorkItemStore` it owes. A host hands an operation no dictionary by hand. `Interpreter::alloc_dictionary_unchecked` builds a dictionary value for fixtures that drive the value carrier (a projection reading slot `k`, `Dictionary.impl` reading a symbol back); it is no way to pass one.
 
 ## Codegen
 

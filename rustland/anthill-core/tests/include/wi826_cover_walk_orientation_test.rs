@@ -263,8 +263,13 @@ const MID: &str = r#"  sort Mid
 /// an accident of the empty map: a bare `requires Mid` leaves `Mid`'s parameter
 /// unnamed in `Outer`, so nothing written in `Outer` can denote which
 /// instantiation the slot's bundled dictionary is for — the same reason the bare
-/// scope entry above covers nothing. The dep is served by CONSTRUCTION instead,
-/// and the answer is right: `describe(gem) = 5`.
+/// scope entry above covers nothing. The dep is served by CONSTRUCTION instead, and
+/// the program loads.
+///
+/// The construction is not RUN here: no call reaches `drive`. The host's untyped entry
+/// handed `Outer` `Gem`'s `Mid` by hand and got `describe(gem) = 5`; it is gone
+/// (WI-20261113-S4D63), and a call that reaches `Outer` owes the `Mid` nothing denotes.
+/// The bound twin below runs (`bound_slot_nested_forward_runs`).
 #[test]
 fn bindingless_slot_nested_forward_is_refused_and_constructed() {
     let src = with_desc(
@@ -288,44 +293,19 @@ fn bindingless_slot_nested_forward_is_refused_and_constructed() {
             if detail.contains("wi826.slot.Mid")),
         "a host call into `Outer` owes the `Mid` nothing denotes: {typed:?}"
     );
-    // The host that passes `Outer`'s chain enters `drive` with `Gem`'s `Mid`, which is what
-    // the subject needs: the nested forward under that bare slot refused, `Desc[T = Gem]`
-    // constructed inside.
-    let mid = interp.kb().try_resolve_symbol("wi826.slot.Mid").expect("`Mid`");
-    let gem = interp.kb().try_resolve_symbol("wi826.slot.Gem").expect("`Gem`");
-    let desc = interp.kb().try_resolve_symbol("wi826.slot.Desc").expect("`Desc`");
-    let gem_desc = interp.alloc_dictionary(desc, gem, []).expect("`Gem`'s `Desc`");
-    let dict = interp.alloc_dictionary(mid, gem, [gem_desc]).expect("`Gem`'s `Mid`");
-    let got = interp.call_with_requirements(
-        "wi826.slot.Outer.drive",
-        &[Value::Int(0)],
-        smallvec::smallvec![dict],
-    );
-    assert!(
-        matches!(got, Ok(Value::Int(5))),
-        "expected Ok(Int(5)) = `Desc[T = Gem]` CONSTRUCTED, the nested forward \
-         under the bare `requires Mid` slot refused (its composition map is empty, \
-         so the sub-entry never reaches caller scope); got {got:?}"
-    );
 }
 
 /// The BOUND-slot twin of the fixture above, and a NO-OVER-REFUSAL control:
-/// naming the slot's parameter (`requires Mid[MT2 = Gem]`) must keep the program
-/// loadable. That single bit is all this asserts — a clean load cannot tell a
-/// Strategy-2 nested forward from a Strategy-3 construction (the bare-slot twin
-/// above constructs and also loads clean), so read it as "the stricter cover does
-/// not refuse the bound spelling", not as a pin on which route supplies the dep.
+/// naming the slot's parameter (`requires Mid[MT2 = Gem]`) keeps the program
+/// loadable, and `Driver.drive` runs: `describe(gem) = 5`. Neither the load nor the answer
+/// tells a Strategy-2 nested forward from a Strategy-3 construction (any `Desc[T = Gem]`
+/// answers 5), so read it as "the stricter cover does not refuse the bound spelling".
 ///
-/// Deliberately NOT evaluated: `Gem` provides `Mid` UNCONDITIONALLY, so the
-/// resolution is a `Leaf` whose emitted `Dictionary` node bundles an EMPTY
-/// sub-requirement list, while Strategy 2 indexes the forward by the SPEC's
-/// static `direct_requires_chain(Mid)` — running it panics
-/// `requirement_at_sort: index 0 out of range`. That mismatch (a `Leaf`'s bundle
-/// is built from the CARRIER's `requires`, never from the SPEC's) is a
-/// pre-existing gap on HEAD, adjacent to this ticket but not part of it; it is
-/// recorded as WI-826 feedback rather than pinned here.
+/// It was not evaluated while running it panicked `requirement_at_sort: index 0 out of
+/// range` (`Gem`'s unconditional `Mid` built as a `Leaf` with an empty bundle, indexed by
+/// the spec's own chain); it runs on the tree of WI-20261113-S4D63.
 #[test]
-fn bound_slot_nested_forward_is_found_at_load() {
+fn bound_slot_nested_forward_runs() {
     let src = with_desc(
         "wi826.slotbound",
         &format!(
@@ -340,9 +320,9 @@ fn bound_slot_nested_forward_is_found_at_load() {
   end"#
         ),
     );
-    assert!(
-        crate::common::try_load_kb_with(&src).is_ok(),
-        "expected a clean load: the bound slot's composed sub-entry `Desc[T = Gem]` \
-         σ-agrees with the dep, so Strategy 2 supplies it by nested forward"
-    );
+    let mut interp = crate::common::interp_for(&src);
+    let got = interp
+        .call("wi826.slotbound.Driver.drive", &anthill_core::eval::HostValue::all(&[Value::Int(0)]))
+        .map(|h| h.value);
+    assert!(matches!(got, Ok(Value::Int(5))), "`describe(gem)` = 5: {got:?}");
 }
