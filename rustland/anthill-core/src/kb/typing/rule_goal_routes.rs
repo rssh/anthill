@@ -191,6 +191,18 @@ pub(crate) fn route_query_goals(
     let mut refused = Vec::new();
     refuse_unread_brackets(kb, query, &sites, &mut refused);
     refuse_misfitting_typed_variables(kb, query, &sites, &mut refused);
+    // A goal riding in its citation marker was routed where its citation was typed — a
+    // relation's query a typed body returned, drained later with the conditions run-time code
+    // added to it: the marker is its routing, and routing it again would wrap the marker in
+    // another. Its variables are still typed by it, above.
+    let marked: Vec<Rc<NodeOccurrence>> = sites
+        .iter()
+        .filter_map(|s| goal_marker(kb, s).map(|m| Rc::clone(m.goal)))
+        .collect();
+    let sites: Vec<Rc<NodeOccurrence>> = sites
+        .into_iter()
+        .filter(|s| !marked.iter().any(|g| Rc::ptr_eq(g, s)))
+        .collect();
     let mut wraps: Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> = typed_spec_op_calls(kb, &sites, &mut refused);
     for site in sites {
         let Some(callee) = relation_goal_callee(kb, &site) else {

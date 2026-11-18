@@ -296,7 +296,7 @@ pub enum Value {
     /// - `query` — a reflect `LogicalQuery` value (`pattern_query(head_atom)` for
     ///   a bare rule reference; the algebra increments wrap it in
     ///   `conjunction`/`guarded`/`disjunction`/… — the constructors of the same
-    ///   ADT). Reaches [`crate::kb::KnowledgeBase::execute_logical_query`] verbatim.
+    ///   ADT). Reaches [`crate::kb::KnowledgeBase::execute_typed_logical_query`] verbatim.
     /// - `columns` — the relation's free variables `(column name, VarId)` in head
     ///   declaration order: the schema `T`'s projection targets. The `VarId`s are
     ///   the fresh globals embedded in `query`'s goal atom, so an answer

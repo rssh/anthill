@@ -900,12 +900,19 @@ pub(crate) fn goal_marker<'a>(kb: &KnowledgeBase, node: &'a NodeOccurrence) -> O
     {
         return None;
     }
-    let Some(Expr::Ref(relation)) = pos_args[1].as_expr() else {
-        unreachable!("a goal's citation marker names its relation by a symbol");
+    // The relation's bare name, read through the view as the resolver's reader of the marker
+    // reads it (`within_requirements_args`): `Ref(r)` and the nullary application `r()` are one
+    // term, and a goal materialized from another carrier comes as the second.
+    let relation = match crate::kb::term_view::TermView::head(&pos_args[1], kb) {
+        ViewHead::Ident(functor) | ViewHead::Functor { functor, pos_arity: 0, .. } => functor,
+        _ => unreachable!(
+            "a goal's citation marker names its relation by a symbol: {:?}",
+            pos_args[1].as_expr()
+        ),
     };
     Some(GoalMarker {
         goal: &pos_args[0],
-        relation: *relation,
+        relation,
         slots: &pos_args[2..],
     })
 }

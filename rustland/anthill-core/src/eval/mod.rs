@@ -1575,6 +1575,7 @@ impl Interpreter {
         if args.iter().any(|a| self.mentions_unknown(a)) {
             return Err(self.reads_unknown("`anthill.prelude.PartialEq.eq`"));
         }
+        crate::kb::resolve::note_untyped_equality();
         builtins::builtin_eq(self, args)
     }
 

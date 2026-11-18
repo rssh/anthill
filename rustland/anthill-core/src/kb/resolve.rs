@@ -116,6 +116,22 @@ thread_local! {
     static BRIDGE_REENTRY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// [`eq_index_reads_by_this_thread`].
     static EQ_INDEX_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// [`untyped_equalities_by_this_thread`].
+    static UNTYPED_EQUALITIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many equalities have been compared ON THIS THREAD, ever, with no member the typer chose:
+/// a resolver's `eq` goal whose call class names none, and the interpreter's `PartialEq.eq`
+/// reached with none. Such an equality is answered by its operands' values. An instrument
+/// for tests, as [`eq_index_reads_by_this_thread`] is: that a goal the resolver or a library
+/// operation builds carries its member.
+pub fn untyped_equalities_by_this_thread() -> usize {
+    UNTYPED_EQUALITIES.with(|c| c.get())
+}
+
+/// Count one equality compared with no member ([`untyped_equalities_by_this_thread`]).
+pub(crate) fn note_untyped_equality() {
+    UNTYPED_EQUALITIES.with(|c| c.set(c.get() + 1));
 }
 
 /// How many times the equality index has answered a question about a value's constructor ON
@@ -1173,7 +1189,7 @@ pub struct ResolveConfig {
     /// proofs`, and §"provides LogicalStream" calls a relation an unordered BAG.
     /// `union(r, r)` yields its row TWICE by design, and `Relation.set` is the
     /// explicit operator that collapses it. Set from the ONE seam those consumers
-    /// share — [`KnowledgeBase::execute_logical_query`], 026.1's sole entry for
+    /// share — [`KnowledgeBase::execute_typed_logical_query`], 026.1's sole entry for
     /// value-driven KB queries, feeding `Relation.splitFirst` and `KB.execute`.
     ///
     /// A test that counts PROOFS of a goal with no free query variables (a ground
@@ -3065,8 +3081,13 @@ impl SearchStream {
             if tag == BuiltinTag::FieldAccess
                 && matches!(goal_val.head(kb), ViewHead::Functor { pos_arity: 2, .. })
             {
-                let eq_sym = kb.eq_functor();
-                let eq_goal = kb.make_goal_value(eq_sym, vec![goal_val.clone(), Value::Bool(true)]);
+                let eq_goal = match kb.holds_goal(goal_val.clone()) {
+                    Ok(goal) => goal,
+                    Err(message) => {
+                        self.record_error(ResolveError::new(message).located_at(&goal_val));
+                        return self.schedule_unanswerable_goal(kb, &goal_val, depth, delay_mode, None);
+                    }
+                };
                 let fr = self.stack.last_mut().unwrap();
                 // Same discipline as the WI-580 hook above: goal[0] in place, same goal
                 // count, `delay_mode` threaded through unchanged rather than reset.
@@ -3575,7 +3596,6 @@ impl SearchStream {
                 if let Some(step) = self.answer_from_hypotheses_as_written(kb, &goal_val, &delay_mode) {
                     return Some(step);
                 }
-                let eq_sym = kb.eq_functor();
                 // WI-20260830-DQD5W — THE OPERAND GOES IN ON THE OCCURRENCE CARRIER, and
                 // that is not tidiness: `reduce_op_value` opens with `Value::Node(o) =>
                 // …, _ => return v`, so a `Value::Term` call is handed straight back
@@ -3722,7 +3742,13 @@ impl SearchStream {
                         operand.rebuilt_expr(apply_f())
                     },
                 );
-                let eq_goal = kb.make_goal_value(eq_sym, vec![operand, Value::Bool(true)]);
+                let eq_goal = match kb.holds_goal(operand) {
+                    Ok(goal) => goal,
+                    Err(message) => {
+                        self.record_error(ResolveError::new(message).located_at(&goal_val));
+                        return self.schedule_unanswerable_goal(kb, &goal_val, depth, delay_mode, None);
+                    }
+                };
                 let fr = self.stack.last_mut().unwrap();
                 // Rewrite goal[0] in place, same goal count — `delay_mode` is
                 // threaded through unchanged (like the `push_choice` / Γ / HoApply
@@ -6206,7 +6232,7 @@ impl SearchStream {
     /// IT IS NOT ASKED OF EVERY RESOLUTION. `ResolveConfig::dedup_answers` says
     /// whether this stream is enumerating ANSWERS or PROOFS; a relation is a BAG
     /// (proposal 052) and turns this off wholesale at
-    /// [`KnowledgeBase::execute_logical_query`]. Read that field's doc before
+    /// [`KnowledgeBase::execute_typed_logical_query`]. Read that field's doc before
     /// changing anything here — the two consumers disagree on purpose.
     ///
     /// WHAT IT STILL CANNOT SEE, stated rather than left to be rediscovered: the
@@ -9732,30 +9758,37 @@ impl KnowledgeBase {
         };
         // The member the typer decided the call at, a plain pin or one entered through a
         // dictionary (`NeedsDict`: `=` at `Option[T = Pt]` is `Option.eq`, whose sort reads
-        // `PartialEq[T]`), with the dictionary it built where it built one.
-        let pinned: Option<PinnedEq> = match goal {
+        // `PartialEq[T]`), with the dictionary it built where it built one. A member the host
+        // implements (`Int64.eq`, `Bool.eq`) is no member to dispatch to: its operands are
+        // compared below as their carrier's are, typed all the same.
+        let (pinned, typed): (Option<PinnedEq>, bool) = match goal {
             Value::Node(o) => {
                 let (target, through) = match o.apply_dispatch() {
                     node_occurrence::ApplyDispatch::Pin(t) => (Some(t), false),
                     node_occurrence::ApplyDispatch::NeedsDict(t) => (Some(t), true),
                     node_occurrence::ApplyDispatch::Unclassified => (None, false),
                 };
-                target
-                    .filter(|t| *t != functor && self.builtin_of(*t).is_none())
+                let target = target.filter(|t| *t != functor);
+                let pinned = target
+                    .filter(|t| self.builtin_of(*t).is_none())
                     .map(|member| PinnedEq {
                         member,
                         // Only a member entered through a dictionary has one to enter it by.
                         entry: if through { self.classified_entry(o, member) } else { None },
                         lawful: false,
-                    })
+                    });
+                (pinned, target.is_some())
             }
-            _ => None,
+            _ => (None, false),
         };
         let verdict = match self.eq_operands(goal, subst, faults) {
             EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Stuck(state) => state.verdict(),
             EqOperands::Absent => BuiltinResult::Failure,
             EqOperands::Ready(a, b) => {
+                if !typed {
+                    note_untyped_equality();
+                }
                 // The law is asked of identical operands alone.
                 let pinned = pinned.map(|p| PinnedEq {
                     lawful: matches!(goal, Value::Node(o) if self.values_equal(&a, &b)
@@ -9956,6 +9989,44 @@ impl KnowledgeBase {
             });
         }
         (labels.len() == pins.len()).then_some((pins, labels))
+    }
+
+    /// The goal that `operand` holds, `eq(operand, true)`, pinned to `Bool`'s own `eq`: a call
+    /// of a `Bool` operation, or a projection, read as a condition. The comparison is at `Bool`
+    /// by construction, so it carries its member as a typed `=` does. `operand` rides as it is
+    /// (a value that is no occurrence as a spliced child, which a read of the goal's argument
+    /// gives back). An error where `Bool` provides no `PartialEq` member: a KB with no prelude.
+    fn holds_goal(&mut self, operand: Value) -> Result<Value, String> {
+        let span = match &operand {
+            Value::Node(o) => o.span,
+            _ => crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0),
+        };
+        let eq = self.eq_functor();
+        let member = self
+            .try_resolve_symbol("anthill.prelude.Bool")
+            .and_then(|bool_sort| super::typing::resolve_op_target_checked(self, bool_sort, eq).ok())
+            .filter(|member| *member != eq)
+            .ok_or_else(|| "a condition is read at `Bool`'s `eq`, and `Bool` provides none".to_string())?;
+        let child = |v: Value| match v {
+            Value::Node(o) => o,
+            other => NodeOccurrence::new_expr(Expr::Spliced(other), span, None),
+        };
+        let call = NodeOccurrence::new_expr(
+            Expr::Apply {
+                recv_type: None,
+                functor: eq,
+                pos_args: vec![child(operand), child(Value::Bool(true))],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        );
+        call.set_classification(super::typing::CallClass::PinNow {
+            spec_op_sym: eq,
+            impl_op_sym: member,
+        });
+        Ok(Value::Node(call))
     }
 
     /// `goal` as an equality the weave gave its clause's dictionary — an `ApplyWithin` of

@@ -1244,6 +1244,26 @@ pub enum LoadError {
     IncompatibleEqNonEq {
         carrier: String,
     },
+    /// A composite writes `provides PartialEq` (or `Eq`) and no `eq`, and no `eq` can be derived
+    /// for it: a field's type has no equality (kernel-language §8.3: a provision written with no
+    /// `eq` is given the derived member). Its author writes the `eq`.
+    EqNotDerivable {
+        /// The carrier, qualified.
+        carrier: String,
+        /// The first field whose equality nothing decides, by its name.
+        field: String,
+        /// That field's type, as written.
+        field_type: String,
+    },
+    /// A parametric composite writes `provides PartialEq` (or `Eq`) with no condition and no
+    /// `eq`, and the derived member compares a field typed by a parameter through `PartialEq` at
+    /// it, which the provision does not require.
+    EqNeedsCondition {
+        /// The carrier, qualified.
+        carrier: String,
+        /// The parameters the member compares at, by their names.
+        params: Vec<String>,
+    },
     /// WI-20260919-HXGXF (proposal 065 §2) — a HAND-WRITTEN `provides
     /// anthill.reflect.TypeValue[…]`. Every instance is derived
     /// (`type_value_derive`); writing one is a load error wherever it is written — the
@@ -4049,6 +4069,10 @@ impl LoadError {
                 format!("'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive: a carrier's `eq` cannot be both lawful (reflexive) and non-reflexive. A partial carrier (e.g. IEEE Float) provides PartialEq + NonEq; a lawful carrier provides PartialEq + Eq — drop whichever is wrong.",
                     carrier)
             }
+            LoadError::EqNotDerivable { carrier, field, field_type } => {
+                eq_not_derivable_detail(carrier, field, field_type)
+            }
+            LoadError::EqNeedsCondition { carrier, params } => eq_needs_condition_detail(carrier, params),
             LoadError::HandWrittenTypeValue { carrier } => {
                 format!("'{}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: '{}' already has its derived instance.",
                     carrier, carrier)
@@ -5925,6 +5949,12 @@ impl std::fmt::Display for LoadError {
             LoadError::IncompatibleEqNonEq { carrier } => {
                 write!(f, "'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive (a partial carrier provides PartialEq + NonEq; a lawful one PartialEq + Eq)",
                     carrier)
+            }
+            LoadError::EqNotDerivable { carrier, field, field_type } => {
+                write!(f, "{}", eq_not_derivable_detail(carrier, field, field_type))
+            }
+            LoadError::EqNeedsCondition { carrier, params } => {
+                write!(f, "{}", eq_needs_condition_detail(carrier, params))
             }
             LoadError::KeyWithoutEq {
                 container,
@@ -18551,6 +18581,28 @@ fn refused_constraint_guards(kb: &KnowledgeBase, errors: &[LoadError]) -> Vec<su
         .collect()
 }
 
+/// [`LoadError::EqNeedsCondition`]'s text, one for both renders.
+fn eq_needs_condition_detail(carrier: &str, params: &[String]) -> String {
+    let conditions: Vec<String> = params.iter().map(|p| format!("PartialEq[{p}]")).collect();
+    format!(
+        "`{carrier}` provides `PartialEq` with no condition and writes no `eq`, and the derived \
+         one compares a field typed by {} through `{}`, which the provision does not require. \
+         Write the provision with `:- {}`, or `{carrier}`'s `eq`",
+        params.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", "),
+        conditions.join("`, `"),
+        conditions.join(", "),
+    )
+}
+
+/// [`LoadError::EqNotDerivable`]'s text, one for both renders.
+fn eq_not_derivable_detail(carrier: &str, field: &str, field_type: &str) -> String {
+    format!(
+        "`{carrier}` provides `PartialEq` and writes no `eq`, and none can be derived: its field \
+         `{field}` has the type `{field_type}`, whose equality nothing decides. Write \
+         `{carrier}`'s `eq`"
+    )
+}
+
 #[allow(unused_assignments)]
 /// The `eq` members of the composites whose `PartialEq` this load derived
 /// (`eq_derive::derived_eq_member_source`), loaded in this load: the derivation writes
@@ -19038,9 +19090,15 @@ fn load_phase_inner(
         // one — only where its `hash` members are written beside the `eq` ones: a row with
         // no member is one no call can run.
         let given_hash = super::eq_derive::derive_hash(kb, &eq_classification, &given_partial_eq);
+        // And each composite whose `PartialEq` the program wrote with no `eq`.
+        let (written, refused) =
+            super::eq_derive::written_without_member(kb, &eq_classification, &given_partial_eq);
+        all_errors.extend(refused);
+        let mut given_eq_member = given_partial_eq.clone();
+        given_eq_member.extend(written);
         all_errors.extend(load_derived_eq_members(
             kb,
-            &given_partial_eq,
+            &given_eq_member,
             &given_hash,
             resolver,
             &mut loaded_paths,

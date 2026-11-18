@@ -443,6 +443,109 @@ pub(crate) fn derive_hash(kb: &mut KnowledgeBase, c: &EqClassification, given: &
     out
 }
 
+/// The composites whose `PartialEq` a program wrote and gave no `eq`: a provision binding no
+/// member, of a sort that writes no `eq` and is no boundary. Each is given the member
+/// [`derived_eq_member_source`] gives a composite whose `PartialEq` this load derived, so every
+/// provision of `PartialEq` has a member and a typed `=` at the carrier calls it. `given` is
+/// the composites the derivation gave `PartialEq`, which have theirs. Refused, each naming its
+/// repair: one with a field whose equality nothing decides (a function, a sort whose `eq` is
+/// declared and not implemented), whose author writes the `eq`; and one with a field typed by a
+/// parameter whose provision states no condition, which the member's comparison at the
+/// parameter needs (`:- PartialEq[T]`).
+pub(crate) fn written_without_member(
+    kb: &mut KnowledgeBase,
+    c: &EqClassification,
+    given: &[Symbol],
+) -> (Vec<Symbol>, Vec<super::load::LoadError>) {
+    let Some(partial_eq) = kb.try_resolve_symbol("anthill.prelude.PartialEq") else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut seen: HashSet<Symbol> = given.iter().map(|&s| kb.canonical_sort_sym(s)).collect();
+    let written: Vec<Symbol> = c
+        .sorts
+        .iter()
+        .copied()
+        .filter(|&s| {
+            let cs = kb.canonical_sort_sym(s);
+            !c.boundary.contains(&cs)
+                // A sort whose scope declares `eq` has one: the member an earlier load
+                // derived, or a predicate its rules define (`derived_eq_member_source`).
+                && kb.try_resolve_symbol(&format!("{}.eq", kb.qualified_name_of(s))).is_none()
+                && super::typing::sort_provides(kb, s, partial_eq)
+                && seen.insert(cs)
+        })
+        .collect();
+    // Given's members count as decided: a field of a composite the derivation gave
+    // `PartialEq` compares through its member.
+    let mut candidates = written.clone();
+    candidates.extend(given.iter().copied());
+    let derived = conditional_rows(kb, &candidates, partial_eq, &c.unbacked_eq);
+    let mut refusals = Vec::new();
+    let mut members = Vec::new();
+    for s in written {
+        let params: Vec<Symbol> = kb.type_param_syms_of(s).to_vec();
+        if let Some(needed) = derived.get(&kb.canonical_sort_sym(s)) {
+            // The member compares a field typed by a parameter through `PartialEq` at it,
+            // read from the slot the provision's condition gives its frame.
+            let frame = super::typing::provider_dict_entries(kb, s, Some(partial_eq));
+            let held = |p: Symbol| {
+                frame.entries().iter().any(|e| {
+                    kb.canonical_sort_sym(e.required_sort) == kb.canonical_sort_sym(partial_eq)
+                        && spec_arguments(kb, &e.spec)
+                            .iter()
+                            .any(|a| own_param_of(kb, a, &params) == Some(p))
+                })
+            };
+            let missing: Vec<Symbol> = needed.iter().map(|&(_, p)| p).filter(|&p| !held(p)).collect();
+            if missing.is_empty() {
+                members.push(s);
+            } else if !super::typing::provision_is_conditional(kb, s, partial_eq) {
+                refusals.push(super::load::LoadError::EqNeedsCondition {
+                    carrier: kb.qualified_name_of(s).to_string(),
+                    params: missing.iter().map(|&p| kb.local_name_of(p).to_string()).collect(),
+                });
+            }
+            // A condition that reaches `PartialEq` at the parameter through another spec
+            // (`:- Eq[T]`) gives the frame that spec's slot, and a member's call at the
+            // parameter is not read through it, written or derived alike. Such a provision is
+            // left with no member, as before the derivation covered written provisions.
+            continue;
+        }
+        // A field of a boundary — a carrier whose `eq` its author wrote, a witness's among them
+        // (`EqList` giving `List` its equality) — is decided by that `eq`, which the rows do not
+        // read: the member is given, and typed with the rest.
+        let undecided = kb.field_constructors_of_sort(s).into_iter().find_map(|ctor| {
+            kb.entity_field_types(ctor)?.iter().find_map(|(name, ty)| {
+                let at_a_boundary = super::typing::sort_functor_of_view(kb, ty)
+                    .is_some_and(|h| c.boundary.contains(&kb.canonical_sort_sym(h)));
+                (!at_a_boundary
+                    && field_conditions(kb, ty, partial_eq, &params, &derived, &c.unbacked_eq).is_none())
+                .then(|| (*name, ty.clone()))
+            })
+        });
+        let Some((field, ty)) = undecided else {
+            members.push(s);
+            continue;
+        };
+        refusals.push(super::load::LoadError::EqNotDerivable {
+            carrier: kb.qualified_name_of(s).to_string(),
+            field: kb.local_name_of(field).to_string(),
+            field_type: super::typing::type_display_name_value(kb, &ty),
+        });
+    }
+    (members, refusals)
+}
+
+/// The arguments of a spec application `v` (`PartialEq[T = A]`, `PartialEq[A]`), by position
+/// and by name.
+fn spec_arguments(kb: &KnowledgeBase, v: &Value) -> Vec<Value> {
+    let mut out: Vec<Value> = (0..)
+        .map_while(|i| v.pos_arg(kb, i).map(|a| a.to_value()))
+        .collect();
+    out.extend(v.named_keys(kb).into_iter().filter_map(|k| v.named_arg(kb, k).map(|a| a.to_value())));
+    out
+}
+
 /// The `hash` a composite this load gave `Hash` is given ([`derive_hash`]), as
 /// [`derived_eq_member_source`] gives its `eq`: the member a program would write, mixing a
 /// constructor's position with each field's `hash` through the field type's instance —
@@ -762,6 +865,24 @@ fn write_member(
     Ok(())
 }
 
+/// The carrier's own parameter among `params` that the type `ty` is: the parameter's canonical
+/// variable (`KnowledgeBase::canonical_type_param_var`), in a type the extractor produced a
+/// `TypeVar` naming it, and in a written condition (`:- PartialEq[T]`) the parameter by its name.
+fn own_param_of(kb: &KnowledgeBase, ty: &Value, params: &[Symbol]) -> Option<Symbol> {
+    if let ViewHead::Var(v) = ty.head(kb) {
+        return params.iter().copied().find(|&p| {
+            kb.canonical_type_param_var(p)
+                .is_some_and(|t| matches!(kb.get_term(t), Term::Var(w) if *w == v))
+        });
+    }
+    if let Some(name) = super::typing::type_var_name_of_view(kb, ty) {
+        let name = kb.local_name_of(name).to_string();
+        return params.iter().copied().find(|&p| kb.local_name_of(p) == name);
+    }
+    let head = super::typing::sort_functor_of_view(kb, ty)?;
+    (params.contains(&head) && ty.named_keys(kb).is_empty()).then_some(head)
+}
+
 /// WI-20260918-CKD4J — what a field of type `ty` needs for its `spec` equality, as
 /// conditions over the carrier's own `params`: `Some(vec![])` for a field whose equality
 /// holds outright, `None` for one nothing decides. `derived` is the fixpoint's current
@@ -787,24 +908,9 @@ fn field_conditions(
         }
         return Some(out);
     }
-    // A field typed by one of the carrier's own parameters (`value: T`) is that
-    // parameter's CANONICAL variable (`KnowledgeBase::canonical_type_param_var`) — or,
-    // in a type the extractor produced, a `TypeVar` naming it.
-    if let ViewHead::Var(v) = ty.head(kb) {
-        return params
-            .iter()
-            .find(|&&p| {
-                kb.canonical_type_param_var(p)
-                    .is_some_and(|t| matches!(kb.get_term(t), Term::Var(w) if *w == v))
-            })
-            .map(|&p| vec![(spec, p)]);
-    }
-    if let Some(name) = super::typing::type_var_name_of_view(kb, ty) {
-        let name = kb.local_name_of(name).to_string();
-        return params
-            .iter()
-            .find(|p| kb.local_name_of(**p) == name)
-            .map(|&p| vec![(spec, p)]);
+    // A field typed by one of the carrier's own parameters (`value: T`).
+    if matches!(ty.head(kb), ViewHead::Var(_)) || super::typing::type_var_name_of_view(kb, ty).is_some() {
+        return own_param_of(kb, ty, params).map(|p| vec![(spec, p)]);
     }
     let head = super::typing::sort_functor_of_view(kb, ty)?;
     if params.contains(&head) {

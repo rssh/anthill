@@ -2805,7 +2805,7 @@ fn split_first_result(
 /// `Relation.splitFirst(r: Relation) -> Option[Pair[A = r.T, B = LogicalStream[T
 /// = r.T, E = r.E]]]` — WI-714 (proposal 052). The runtime primitive that makes a
 /// `Relation` consumable through `provides LogicalStream`: RUN the relation's
-/// query (026.1 `execute_logical_query`), wrap the resolver search in a
+/// query (`execute_typed_logical_query`), wrap the resolver search in a
 /// `MaterializedResolver` over the relation's schema `columns`, and pump ONE
 /// solution — materialized onto the free vars as a `T` row (C1
 /// `materialize_solution`). The continuation `rest` is a `Value::Stream`, so after
@@ -2823,7 +2823,7 @@ fn relation_split_first(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     };
     // WI-20260911-8Y5BE — the same declared raise `KB.execute` makes for a query that
     // does not lower, so the two faces of one query cannot disagree about it.
-    let search = match interp.kb.execute_logical_query(&query) {
+    let search = match interp.kb.execute_typed_logical_query(&query) {
         Ok(search) => search,
         Err(e) => return Err(interp.raise_query_lowering(
             e,
@@ -4549,7 +4549,7 @@ fn named_child(interp: &Interpreter, v: &Value, name: &str) -> Option<Value> {
 /// lazily by `Interpreter::stream_split_first`). The KB argument is a
 /// sentinel — `Value::Unit` or any placeholder — because the evaluator has no
 /// first-class KB values and always uses the interpreter's own KB. The query
-/// value is lowered via `KnowledgeBase::execute_logical_query` (proposal
+/// value is lowered and typed via `KnowledgeBase::execute_typed_logical_query` (proposal
 /// 026.1 Q3) and wrapped in `StreamSource::Resolver`. A query that does not lower
 /// RAISES the declared `Error[ResolveStreamFailure]` (WI-20260911-8Y5BE), and so does a
 /// pull whose search faulted (`Interpreter::stream_split_first`).

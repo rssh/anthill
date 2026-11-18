@@ -49,7 +49,10 @@ namespace test.an6cq.over
   import anthill.prelude.{Eq, PartialEq, List, Bool}
   sort EqList
     sort A = ?
-    requires Eq[T = A]
+    -- `PartialEq[T = A]`, not `Eq`: loaded with the library, this is `List`'s equality there,
+    -- and the library's `EffectExpression` compares a `List[T = Term]` through it (its
+    -- derived `eq`) at a `Term`, which provides `PartialEq` and no `Eq`.
+    requires PartialEq[T = A]
     provides PartialEq[T = List[T = A]]
     provides Eq[T = List[T = A]]
     operation eq(x: List[T = A], y: List[T = A]) -> Bool = true

@@ -415,7 +415,7 @@ impl KnowledgeBase {
             Value::FactRef(_) => Err(LowerError::UnsupportedVariant("FactRef")),
             Value::Node(_) => Err(LowerError::UnsupportedVariant("Node")),
             // WI-714: a `Relation` is an intensional query value — it is RUN
-            // (`Relation.splitFirst` → `execute_logical_query`), never lowered to a
+            // (`Relation.splitFirst` → `execute_typed_logical_query`), never lowered to a
             // data term. Its `query` payload IS a lowerable `LogicalQuery`, but the
             // relation wrapper itself has no term equivalent.
             Value::Relation { .. } => Err(LowerError::UnsupportedVariant("Relation")),
@@ -476,7 +476,7 @@ impl KnowledgeBase {
     /// (`pattern_query` term / `guarded` condition) passes through
     /// [`Self::lower_leaf`], which keeps it on the carrier it came on (an occurrence
     /// resolves via `query_view`, preserving WI-518). This is the SINGLE lowerer shared
-    /// by the eval-side [`Self::execute_logical_query`] and the guard engine
+    /// by the eval-side [`Self::execute_typed_logical_query`] and the guard engine
     /// (`evaluate_guard` and the quantifier evaluators in `kb/mod.rs`), replacing
     /// the guard engine's old partial `lower_logical_query` re-implementation.
     ///
@@ -873,8 +873,10 @@ impl KnowledgeBase {
     /// call of a spec's member, `=` among them, is decided at the types the query fixes, and a
     /// requirement it leaves open is refused before the search starts
     /// ([`LowerError::QueryRefused`]). The reading is a load of the query, so nothing during the
-    /// search chooses a member. `Relation.splitFirst` runs a query its citation's load typed, and
-    /// goes through [`Self::execute_logical_query`].
+    /// search chooses a member. `Relation.splitFirst` runs a relation's query so too: the
+    /// conditions `where`, `join` and `fix` add to it are typed at the columns its goals give their
+    /// variables, and a goal in its citation marker, typed by its citation's load, is kept as it
+    /// was routed.
     pub fn execute_typed_logical_query(&mut self, q: &Value) -> Result<SearchStream, LowerError> {
         let goals = self.lower_query(q)?;
         let goals = self.type_query_goals(&goals)?;
