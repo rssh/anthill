@@ -3233,9 +3233,15 @@ requirements — before it types the operation bodies whose guards and precondit
 proved with them (WI-20261117-22S8N). With `rule mul_div: div[A](mul(?a, ?b: A), ?b) = ?a :-
 EuclideanDomain[T = A], Additive[T = A], neq(?b, zero)` beside `operation risky(a: Int64, b:
 Int64) -> Int64 requires eq((a * b) / b, a)`, `risky(x, 2)` in the same file is proved and
-`risky(x, 0)` is refused. What a law's guard CALLS is elaborated with the load's other rules,
-after the bodies: a relation of the same load that needs a dictionary leaves the proof
-undecided there, as a proof derives none from the values.
+`risky(x, 0)` is refused. So are the relations a law's guard calls, with the load's other
+rules (WI-20261117-8J8NG), and a law's goal is passed the instances the law holds, as a
+clause's goal is passed the clause's: with `rule nz[A](?b: A) :- PartialEq[T = A], Additive[T
+= A], neq(?b, zero)` and the law's guard written `PartialEq[T = A], nz(?b)` beside its other
+two, `risky(x, 2)` is proved in one load as in two, and `risky(x, 0)` in neither. Before, such
+a goal was passed nothing, and the proof was undecided in every load. A callee whose call
+needs a requirement it does not declare — `nz` without its `PartialEq` — reads that
+dictionary from the value when it runs, which a proof does not, and stays undecided in every
+load.
 
 **Every firing site answers alike** — the resolver's rewriter, the typer's operation-body pass and the typer's dot-rule pass all share one guard evaluator — so a tagged rule means the same thing at a resolution goal, in the operation body that spells the same call, and at a method call. At the typer the redex is compile-time syntax, so most guards are simply under-determined and decline; the ones that fire are the ones already decidable from the program text (`nth(xs, -1)` under `nth(?_, ?i) = none :- lt(?i, 0)`), which is constant folding.
 
@@ -3570,6 +3576,23 @@ checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
   calling a function parameter (`Boom :- g(b)`) keeps its effect; a precondition's or a
   contract's predicate is proved by a clause that writes its arguments the same way
   (`holds(Box[V = Untrusted])` by that fact) (WI-20261109-5VM2G).
+
+  **A load's proofs are made over its whole program, as a later load's are over an earlier
+  one** (WI-20261117-8J8NG). A load types and elaborates its rules — their requirement reads,
+  their goals routed — before it types the operation bodies whose guards, preconditions and
+  contracts are proved with them, and a citation in a body is routed where it is typed. So
+  `effects { Boom :- firstIs(r, -1) }` at `g(made[A = Int64, WeakOrd = Descending](1, 5))`,
+  where `made` returns the relation of `rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A],
+  WeakOrd.compare(?a, ?b, ?c)`, is refuted with the rule in the program's file, its first row
+  `c = 4`, as it was with the rule in an earlier load. And an operation or a constant a proof
+  runs before the typer has reached it is typed there first: where a body is written changes no
+  verdict, and `big(n) = n.gt(3)` written after a caller whose guard calls it is run typed. A
+  proof that reaches a body the load has not typed — the one being typed (its own recursion
+  under a guard, or a body that calls it back), or one whose typing failed — is undecided there.
+  One limit remains: a body reached from a rule's own typing — the refutation of a precondition
+  at a rule-body call — is typed before the load's rules are elaborated, so a proof of its own
+  that runs a rule of the same load may be undecided there, as every body's was before the
+  rules came first.
 
   **An unsatisfied precondition does not suppress the same call's other verdicts**
   (WI-20260830-JM7A8). A precondition is proved from the KB; the call's effects are read

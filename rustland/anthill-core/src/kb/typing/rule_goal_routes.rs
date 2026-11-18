@@ -68,14 +68,23 @@ pub(super) fn route_rule_goal_requirements(
             continue;
         }
         // An equation's guard is run by the rewriter, which passes nothing: a bracket there,
-        // or in its right-hand side, is read by no one.
+        // or in its right-hand side, is read by no one. Not a LAW's guard (WI-20261117-8J8NG):
+        // an untagged guarded `=` law is run by a proof from Γ, which passes it the instances
+        // it holds (`law_type_instantiation`), and its goals are routed them as a clause's are
+        // — so `nz(?b)` in `div[A](mul(?a, ?b: A), ?b) = ?a :- EuclideanDomain[T = A], …,
+        // nz(?b)` is passed the law's `EuclideanDomain`, where it was passed nothing in any
+        // load and the proof was undecided. Its right-hand side is still read by no one.
         if kb.has_equational_head(rid) {
+            let law = kb.is_guarded_eq_law(rid) && !kb.is_directional_equation(rid);
             if !kb.is_clause_of_a_refused_load(rid) {
-                let mut written: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+                let mut written: Vec<Rc<NodeOccurrence>> =
+                    if law { Vec::new() } else { kb.rule_body_nodes(rid).to_vec() };
                 written.extend(kb.rule_equation_rhs_node(rid));
                 refuse_unread_brackets(kb, &written, &[], &mut refused);
             }
-            continue;
+            if !law {
+                continue;
+            }
         }
         let Value::Term { id: head, .. } = kb.rule_head_value(rid).clone() else {
             continue;

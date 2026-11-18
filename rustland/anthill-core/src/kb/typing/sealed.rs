@@ -331,9 +331,10 @@ pub(super) fn oracle_type_sealed_constants(kb: &mut KnowledgeBase, sealed: &[Con
 /// Type `ops`' bodies OUTSIDE the run's own sweep: what the pass reports comes back
 /// instead of joining the run's errors, and what it parks for the end-of-typing report
 /// (`dict::report_unsuppliable_requirements`) is taken off that queue and counted. The
-/// other queue typing a body fills, the citation routes, is left to the run it is
-/// called in, which settles it after the sweeps — so this is called from INSIDE a
-/// typer run, above that point, and nowhere else.
+/// citations a body writes are routed where it is typed, and what their routes refuse is
+/// kept for the run it is called in, which reports it after the sweeps
+/// (`take_citation_refusals`) — so this is called from INSIDE a typer run, above that point,
+/// and nowhere else: a refusal kept after it would be reported by the next run.
 fn type_operation_bodies_aside(
     kb: &mut KnowledgeBase,
     ops: &[Symbol],
@@ -341,7 +342,7 @@ fn type_operation_bodies_aside(
 ) -> (Vec<TypeError>, usize) {
     let parked_before = kb.unsuppliable_requirements.len();
     let (mut errors, mut sources) = (Vec::new(), Vec::new());
-    check_operation_bodies(kb, ops, &mut errors, &mut sources, region_sorts);
+    check_operation_bodies(kb, OpBodyPass::Full, ops, &mut errors, &mut sources, region_sorts);
     let parked = kb.unsuppliable_requirements.len() - parked_before;
     kb.unsuppliable_requirements.truncate(parked_before);
     (errors, parked)
@@ -394,48 +395,22 @@ pub(super) fn oracle_type_sealed_rules(kb: &mut KnowledgeBase) {
 
 /// Which rule bodies one call of [`type_rule_bodies`] types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RuleBodies<'a> {
-    /// Every rule a seal does not hold, but `ahead` — the sweep.
-    NotSealed { ahead: &'a [RuleId] },
-    /// The laws a run elaborates AHEAD of the operation bodies ([`laws_elaborated_ahead`],
-    /// WI-20261117-22S8N): a proof of a guard takes one as a premise.
-    Ahead(&'a [RuleId]),
+pub(super) enum RuleBodies {
+    /// Every rule a seal does not hold — the sweep, ahead of the operation bodies
+    /// (WI-20261117-8J8NG).
+    NotSealed,
     /// The sealed ones only — the oracle's half.
     SealedOnly,
 }
 
-impl RuleBodies<'_> {
+impl RuleBodies {
     /// The rules this call types, in the order of their ids.
     pub(super) fn rules(self, kb: &KnowledgeBase) -> Vec<RuleId> {
-        match self {
-            RuleBodies::Ahead(laws) => laws.to_vec(),
-            RuleBodies::SealedOnly => kb
-                .live_rule_ids_iter()
-                .filter(|&rid| rule_body_is_typed_once(kb, rid))
-                .collect(),
-            RuleBodies::NotSealed { ahead } => kb
-                .live_rule_ids_iter()
-                .filter(|&rid| !ahead.contains(&rid) && !rule_body_is_typed_once(kb, rid))
-                .collect(),
-        }
+        let sealed = self == RuleBodies::SealedOnly;
+        kb.live_rule_ids_iter()
+            .filter(|&rid| rule_body_is_typed_once(kb, rid) == sealed)
+            .collect()
     }
-}
-
-/// THE LAWS A TYPER RUN ELABORATES AHEAD OF THE OPERATION BODIES (WI-20261117-22S8N), in the
-/// order of their ids: each untagged guarded `=` law a seal does not hold. A proof of a guard
-/// or a precondition takes such a law as a premise (§5.3) and runs its body, so the law is
-/// typed and woven before the bodies whose proofs use it ([`type_rule_bodies`],
-/// `install_typed_head_domain_goals`, `install_rule_provider_dictionaries`, each handed this
-/// list). A `@[simp]` guarded equation is not one: it is a rewrite the bodies FIRE, whose
-/// right-hand side the requirement weave rewrites, and it keeps its place after them.
-pub(super) fn laws_elaborated_ahead(kb: &KnowledgeBase) -> Vec<RuleId> {
-    kb.live_rule_ids_iter()
-        .filter(|&rid| {
-            kb.is_guarded_eq_law(rid)
-                && !kb.is_directional_equation(rid)
-                && !rule_body_is_typed_once(kb, rid)
-        })
-        .collect()
 }
 
 /// The rule's body was typed by the sealed load that wrote it: its head is in a sealed

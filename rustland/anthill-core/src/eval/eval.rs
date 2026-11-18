@@ -1499,6 +1499,16 @@ impl Interpreter {
         // Anthill-bodied: fold the stored body lazily, under the shared step_cap.
         // Bodyless with no registered builtin → the value is unavailable in this
         // build (it still type-checked: the declared type is known).
+        //
+        // WI-20261117-8J8NG: a value a typer run has not typed is typed first, as a body is
+        // ([`Self::runnable_operation_body`]), or not read.
+        if crate::kb::typing::body_readiness(&mut self.kb, sym)
+            == crate::kb::typing::BodyReadiness::NotTyped
+        {
+            return Err(EvalError::BodyNotTyped {
+                name: self.kb.qualified_name_of(sym).to_string(),
+            });
+        }
         let body = match self.kb.const_body_node(sym) {
             Some(node) => Rc::clone(node),
             None => {
@@ -3802,7 +3812,7 @@ impl Interpreter {
                         return Ok(StepOutcome::Deliver(result));
                     }
                     if let Some((impl_body, impl_params, impl_slots)) =
-                        self.cached_operation_body(impl_target)
+                        self.runnable_operation_body(impl_target)?
                     {
                         self.note_dispatch(impl_target);
                         let requirements = self.requirements_for_value_directed_impl(
@@ -3825,6 +3835,11 @@ impl Interpreter {
             // Proposal 073 §6.1, STAGE 4'S — a host call of a spec's own body, which the host
             // hands no dictionary: the body runs at the instance the arguments' sorts give,
             // where the channel holds only the spec's stand-in (`Coll.viaHelper(l(3))`).
+            //
+            // WI-20261117-8J8NG: the body that runs is asked for here, past the override that
+            // would run instead — typed first where a typer run has not reached it.
+            let (body_node, params, slots) =
+                self.runnable_operation_body(target)?.unwrap_or((body_node, params, slots));
             return self.enter_operation(target, body_node, &params, &slots, arg_values, requirements);
         }
 
@@ -3871,7 +3886,7 @@ impl Interpreter {
                         self.call_host(impl_target, &builtin, &arg_values, requirements)?;
                     return Ok(StepOutcome::Deliver(result));
                 }
-                if let Some((body_node, params, slots)) = self.cached_operation_body(impl_target) {
+                if let Some((body_node, params, slots)) = self.runnable_operation_body(impl_target)? {
                     self.note_dispatch(impl_target);
                     let requirements = self.requirements_for_value_directed_impl(
                         impl_target,
@@ -4197,7 +4212,7 @@ impl Interpreter {
             self.builtin_dispatch_dict = saved_dict;
             return Ok(Some(StepOutcome::Deliver(result?)));
         }
-        if let Some((body_node, params, slots)) = self.cached_operation_body(impl_target) {
+        if let Some((body_node, params, slots)) = self.runnable_operation_body(impl_target)? {
             self.note_dispatch(impl_target);
             let requirements = self.requirements_for_value_directed_impl(
                 impl_target,
@@ -4736,6 +4751,10 @@ impl Interpreter {
     /// programs that make many calls. `OperationInfo` facts are static across
     /// a run (only data facts get persisted/retracted), so caching by op
     /// `Symbol` is sound. See `Interpreter::op_body_cache`.
+    ///
+    /// WI-20261117-8J8NG: inside a typer run, a body the run has not typed is read as stored and
+    /// not kept, and nothing is typed here; a caller that RUNS the body asks
+    /// [`Self::runnable_operation_body`].
     pub(crate) fn cached_operation_body(&mut self, target: Symbol) -> Option<OpBody> {
         if let Some(cached) = self.op_body_cache.get(&target) {
             return Some(cached.clone());
@@ -4743,8 +4762,24 @@ impl Interpreter {
         let (node, params) = lookup_operation_body(&self.kb, target)?;
         let slots = instance_param_slots(&mut self.kb, target);
         let entry: OpBody = (node, params.into(), slots);
-        self.op_body_cache.insert(target, entry.clone());
+        if crate::kb::typing::body_is_typed(&self.kb, target) {
+            self.op_body_cache.insert(target, entry.clone());
+        }
         Some(entry)
+    }
+
+    /// WI-20261117-8J8NG — the body of `target` to RUN ([`Self::cached_operation_body`]), typed
+    /// first where the typer run in progress has not begun it, or [`EvalError::BodyNotTyped`]
+    /// where it has and the body did not come out typed ([`crate::kb::typing::body_readiness`]).
+    pub(crate) fn runnable_operation_body(&mut self, target: Symbol) -> Result<Option<OpBody>, EvalError> {
+        if crate::kb::typing::body_readiness(&mut self.kb, target)
+            == crate::kb::typing::BodyReadiness::NotTyped
+        {
+            return Err(EvalError::BodyNotTyped {
+                name: self.kb.qualified_name_of(target).to_string(),
+            });
+        }
+        Ok(self.cached_operation_body(target))
     }
 
     /// WI-625 — the eval→SLD bridge's Site-B gate: if `target` is a body-less

@@ -256,9 +256,11 @@ kb_scoped_fields!(
     head_name_sites,
     refused_replacements,
     effect_guard_sites,
+    refused_bracket_sites,
     sort_goal_declarations,
     rigid_projection_formations,
     unsuppliable_requirements,
+    citation_refusals,
     pending_citation_routes,
     dispatch_rewrites,
     // ── memo caches ────────────────────────────────────────────
@@ -549,9 +551,11 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         head_name_sites: _,
         refused_replacements: _,
         effect_guard_sites: _,
+        refused_bracket_sites: _,
         sort_goal_declarations: _,
         rigid_projection_formations: _,
         unsuppliable_requirements: _,
+        citation_refusals: _,
         pending_citation_routes: _,
         dispatch_rewrites: _,
         requires_chain_cache: _,
@@ -607,6 +611,10 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         spec_as_providers_depth: _,
         // The same class: the proofs from Γ currently on the stack, 0 outside one.
         gamma_proof_depth: _,
+        // WI-20261117-8J8NG — the same class: the typer run in progress, `None` and `true`
+        // outside one (`typing::body_readiness`, `typing::route_citation`).
+        bodies_in_run: _,
+        rules_elaborated: _,
     } = kb;
 }
 

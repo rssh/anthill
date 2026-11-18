@@ -5,7 +5,10 @@
 //! so a law of the same load had no reads yet and the lemma went unused where the same law of
 //! an earlier load was used — MEASURED, with the law below in its own file loaded first,
 //! `risky(x, 2)` loaded clean, and in the program's file it owed `Boom`. A load now elaborates
-//! its laws (`typing::RuleBodies::GuardedLaws`, `Clauses::GuardedLaws`) before its bodies.
+//! its laws before its bodies — since WI-20261117-8J8NG with every other rule, in one sweep
+//! ahead of the bodies (`typing::elaborate_rules`), where this ticket had listed the untagged
+//! guarded laws alone (`laws_elaborated_ahead`, gone). The back-outs below were measured against
+//! that list; `wi_8j8ng_rules_before_bodies_test`'s header has the sweep's.
 //!
 //! The rows here are a program's OWN law, which is in the program's load in every recipe; the
 //! library's laws used in the library's own load are `wi_v0rpw`'s rows under

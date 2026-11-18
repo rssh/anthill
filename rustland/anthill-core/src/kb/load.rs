@@ -33362,6 +33362,8 @@ impl<'a> Loader<'a> {
             return false;
         }
         self.consumed_recv_types.insert(parse_id);
+        let site = self.source_span_of(parse_id);
+        self.kb.refused_bracket_sites.insert(site);
         self.errors.push(LoadError::BracketOnCallable {
             name: self.kb.local_name_of(head).to_string(),
             on: BracketedName::Callable,
@@ -33395,6 +33397,10 @@ impl<'a> Loader<'a> {
         let Some(on) = bracketed_name(self.kb, functor, at_head) else {
             return false;
         };
+        if on == BracketedName::Callable {
+            let site = self.source_span_of(parse_id);
+            self.kb.refused_bracket_sites.insert(site);
+        }
         self.errors.push(LoadError::BracketOnCallable {
             name: self.kb.local_name_of(functor).to_string(),
             on,

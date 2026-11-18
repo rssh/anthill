@@ -347,6 +347,12 @@ impl TermStore {
         self.pinned += 1;
     }
 
+    /// Does a scoped-KB layer hold the store pinned ([`Self::pin`])? While one does, what is
+    /// written to the KB is the layer's, and its discard takes it back.
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.pinned > 0
+    }
+
     /// WI-20261009-D0SD4 — an independent copy, for
     /// [`crate::kb::KnowledgeBase::deep_clone`]. NOT `Clone`, because one state must
     /// not be copied: `None` while a scoped-KB layer holds the store pinned. The

@@ -344,9 +344,9 @@ pub(super) fn for_each_var_leaf(
 ///
 /// Runs over ALL live non-fact rules — sort-scoped AND free namespace-level (a
 /// free rule's domain is its namespace, which has no `SortInfo`, so the driver's
-/// sort loop misses it). The sweep is two calls ([`RuleBodies`]): the laws whose
-/// proofs the operation bodies use, ahead of the bodies (WI-20261117-22S8N), and every
-/// other rule a seal does not hold after them; the oracle makes a third, over the sealed. This subsumes the second `collect_rule_var_types`
+/// sort loop misses it). The sweep ([`RuleBodies::NotSealed`]) types every rule a seal does
+/// not hold, ahead of the operation bodies whose proofs run them (WI-20261117-8J8NG); the
+/// oracle makes a second call, over the sealed. This subsumes the second `collect_rule_var_types`
 /// recompute: `check_rule_typing` no longer collects (it contributed only the
 /// contradiction, now emitted here) and the dot pass no longer collects separately.
 pub(super) fn type_rule_bodies(
@@ -967,7 +967,7 @@ pub fn is_typed_head_domain_goal(kb: &KnowledgeBase, goal: &NodeOccurrence) -> b
 /// a bound is a RELATIONAL head, including a body-less one — `rule p(?x: T) :- true` folds to
 /// an empty body (§6.1) and is still a clause that answers — or a GUARDED `=` LAW, whose body
 /// a proof from Γ runs when it takes the law as a premise (WI-20261117-V0RPW).
-pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase, clauses: Clauses) {
+pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
     let (Some(dom_sym), Some(guard_sym)) = (
         kb.try_resolve_symbol(TYPE_DOMAIN_GOAL),
         kb.try_resolve_symbol(TYPE_DOMAIN_GUARD),
@@ -975,7 +975,7 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase, clauses: C
         return; // builtins not registered — nothing to generate against
     };
     let pass = typed_head_domain_pass(kb);
-    for rid in clauses.rules(kb) {
+    for rid in kb.live_rule_ids() {
         if kb.rule_type_bounds(rid).is_empty() {
             continue;
         }
@@ -1406,25 +1406,3 @@ pub(crate) fn occ_holds_woven_call(occ: &Rc<NodeOccurrence>) -> bool {
     false
 }
 
-/// Which clauses one run of a pass that elaborates rule bodies covers — the domain goals a
-/// head's bound adds ([`install_typed_head_domain_goals`]) and the reads of a clause's declared
-/// requirements (`install_rule_provider_dictionaries`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Clauses<'a> {
-    /// Every live clause. Each pass stamps what it installs and passes over a clause it finds
-    /// its stamp in, so this run leaves alone what a run over [`Clauses::Ahead`] installed.
-    All,
-    /// The laws a typer run elaborates ahead of the operation bodies
-    /// ([`laws_elaborated_ahead`], WI-20261117-22S8N).
-    Ahead(&'a [RuleId]),
-}
-
-impl Clauses<'_> {
-    /// The clauses this run covers, in the order of their ids.
-    pub(super) fn rules(self, kb: &KnowledgeBase) -> Vec<RuleId> {
-        match self {
-            Clauses::All => kb.live_rule_ids(),
-            Clauses::Ahead(laws) => laws.to_vec(),
-        }
-    }
-}

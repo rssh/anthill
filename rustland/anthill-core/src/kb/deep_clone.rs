@@ -1134,6 +1134,7 @@ impl KnowledgeBase {
             head_name_sites: plain(&self.head_name_sites),
             refused_replacements: plain(&self.refused_replacements),
             effect_guard_sites: plain(&self.effect_guard_sites),
+            refused_bracket_sites: plain(&self.refused_bracket_sites),
             sort_goal_declarations: plain(&self.sort_goal_declarations),
             absence_records: plain(&self.absence_records),
             absence_marker_syms: plain(&self.absence_marker_syms),
@@ -1240,7 +1241,10 @@ impl KnowledgeBase {
             host_fns: self.host_fns.deep_clone_with(&mut c),
             dispatch_rewrites: plain(&self.dispatch_rewrites),
             unsuppliable_requirements: plain(&self.unsuppliable_requirements),
+            citation_refusals: Vec::new(),
             pending_citation_routes: Vec::new(),
+            rules_elaborated: self.rules_elaborated,
+            bodies_in_run: None,
             // ── memo caches whose rows hold an `Rc` START EMPTY — see the module docs.
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
@@ -1312,8 +1316,10 @@ impl KnowledgeBase {
                 "rule_goal_columns_in_flight",
                 !self.rule_goal_columns_in_flight.borrow().is_empty(),
             ),
-            // Queued by one typer pass and drained by the same pass (`typing/relation.rs`).
+            // Kept by one typer run and reported by the same run (`typing/relation.rs`).
+            ("citation_refusals", !self.citation_refusals.is_empty()),
             ("pending_citation_routes", !self.pending_citation_routes.is_empty()),
+            ("bodies_in_run", self.bodies_in_run.is_some()),
         ];
         let in_flight = in_flight
             .into_iter()
@@ -1564,8 +1570,8 @@ mod tests {
     /// (measured for the pinned store). `LiveBackend` needs a host backend to build
     /// and is driven from `wi_d0sd4_deep_clone_test` — a mounted SOURCE; a mirror
     /// store, and a record left behind by a lent-out one, are not driven anywhere.
-    /// Nor are `LoadInFlight`'s `pending_citation_routes` (its record is private to
-    /// `typing/relation.rs`) and asking file, nor `ReceiverTwinNotOwned`.
+    /// Nor are `LoadInFlight`'s `citation_refusals` (kept and reported inside one typer
+    /// run, `typing/relation.rs`) and asking file, nor `ReceiverTwinNotOwned`.
     #[test]
     fn what_cannot_be_copied_is_refused() {
         assert!(KnowledgeBase::new().deep_clone().is_ok(), "the control: an empty KB copies");

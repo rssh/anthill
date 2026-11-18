@@ -47,10 +47,14 @@ pub(super) fn relation_reference_type(
     )?;
     let ty = close_unfixed_clause_vars(kb, &column_types, &[], &subst, ty);
     // S2 — the bare citation's implicit arguments: no column is bound, so each read is
-    // routed over the columns' own types at this citation. QUEUED, not computed — see
-    // [`PendingCitationRoutes`].
-    // A bare reference takes no bracket: the loader refuses one on a relation's name.
-    queue_citation_routes(
+    // routed over the columns' own types at this citation — see [`PendingCitationRoutes`].
+    // A bare reference takes no bracket: the loader refuses one on a relation's name, and
+    // leaves the name — a citation whose type the refused bracket would have fixed, and whose
+    // routes would be refused for being open, the same refusal said again. Not routed.
+    if kb.refused_bracket_sites.contains(&occ.span) {
+        return Ok(ty);
+    }
+    citation_routes(
         kb,
         site.env,
         occ,
@@ -1101,7 +1105,7 @@ pub(super) fn relation_reference_type_applied(
         ty,
     )?;
     let ty = close_unfixed_clause_vars(kb, &column_types, &bound, &subst, ty);
-    queue_citation_routes(
+    citation_routes(
         kb,
         site.env,
         occ,
@@ -1219,18 +1223,25 @@ fn some_type_columns_at_citation(kb: &mut KnowledgeBase, columns: &mut [ClauseCo
     }
 }
 
-/// WI-20260911-5G28A S2 — a citation's EDGE CHECK, captured at the citation and run later.
-///
-/// LATER BECAUSE THE READS DO NOT EXIST YET. An operation body is typed before any rule
-/// body (`type_check_sorts`: the sort loop and the free operations, then
-/// `type_rule_bodies`), and a rule's declared requirement becomes a routable read —
-/// `find_dictionary(spec, op, carrier, out: ?d)` — only when
-/// [`install_rule_provider_dictionaries`] compiles its guard, after the rule bodies are
-/// typed. So everything the check reads AT the citation is captured here — the column
+/// WI-20260911-5G28A S2 — a citation's EDGE CHECK: what it reads at the citation — the column
 /// types, each bound column's argument type, the citation's σ, and the caller's frame chain
-/// and rigids — and [`settle_citation_routes`] runs it once the sweep has rewritten every
-/// read, stamping the result on the very occurrence captured here (a citation's node is
-/// handed back unchanged by its typer arm, so the stored body holds it).
+/// and rigids — and the result stamped on the very occurrence captured here (a citation's
+/// node is handed back unchanged by its typer arm, so the stored body holds it).
+///
+/// RUN WHERE THE CITATION'S BODY IS TYPED (WI-20261117-8J8NG), not at the citation: the column
+/// types captured there hold variables the rest of the body fixes (MEASURED, routed at the
+/// citation `cmpS[A = Int64, WeakOrd = Descending].head.c` was refused a second time, "the
+/// citation leaves the type it is at open"). It reads the cited clauses' requirement reads —
+/// `find_dictionary(spec, op, carrier, out: ?d)`, which [`install_rule_provider_dictionaries`]
+/// compiles from a rule's declared requirement — and a typer run elaborates every rule before
+/// it types an operation body (`type_check_sorts`). It was queued until the end of the run
+/// while the rules were typed after the bodies, and so a guard's proof, run while a LATER body
+/// was typed, evaluated an earlier body's citation with no route: MEASURED, `effects { Boom :-
+/// firstIs(r, -1) }` at `g(made[A = Int64, WeakOrd = Descending](1, 5))` owed `Boom` with `made`
+/// in the program's load, and was refuted with `made` in an earlier one. A citation typed
+/// before the run's rule sweep is done — in a body a proof of the sweep had typed on demand
+/// ([`super::body_readiness`]) — waits for it, and is routed where it ends
+/// ([`settle_pending_citation_routes`]); so does one a `const` value writes.
 #[derive(Clone)]
 pub(crate) struct PendingCitationRoutes {
     occ: Rc<NodeOccurrence>,
@@ -1256,8 +1267,9 @@ pub(crate) struct PendingCitationRoutes {
     from_operation_body: bool,
 }
 
+/// Route a citation an operation or `const` body writes ([`route_citation`]).
 #[allow(clippy::too_many_arguments)]
-fn queue_citation_routes(
+fn citation_routes(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
@@ -1269,7 +1281,7 @@ fn queue_citation_routes(
     unopened: Vec<CitedParam>,
     selections: Vec<InstanceSelection>,
 ) {
-    kb.pending_citation_routes.push(PendingCitationRoutes {
+    let pending = PendingCitationRoutes {
         occ: Rc::clone(occ),
         relation,
         column_types,
@@ -1281,32 +1293,56 @@ fn queue_citation_routes(
         unopened,
         selections,
         from_operation_body: true,
-    });
+    };
+    kb.pending_citation_routes.push(pending);
 }
 
-/// WI-20260911-5G28A S2 — run every queued citation edge check ([`PendingCitationRoutes`])
-/// and stamp the routes it finds. AFTER [`install_rule_provider_dictionaries`], which is
-/// what makes the reads routable; drains the queue, so a later pass cannot see a stale entry.
-///
-/// Answers the citations refused, each at the citation with the file it is written in: a
-/// named slot of a clause variable's type fixed to a witness that does not answer the read
-/// the slot states, a goal of the cited clause left free ([`CarriedMisfit`]).
-pub(super) fn settle_citation_routes(
-    kb: &mut KnowledgeBase,
-) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
-    let mut refused = Vec::new();
-    for pending in std::mem::take(&mut kb.pending_citation_routes) {
-        let mut misfits = Vec::new();
-        let routes = citation_requirement_routes(kb, &pending, &mut misfits);
-        if !routes.is_empty() {
-            pending.occ.set_op_dicts(routes);
-        }
-        refuse_goals_left_free(kb, &pending, &mut Vec::new(), &mut misfits);
-        for misfit in misfits {
-            refused.push(citation_misfit_error(kb, pending.relation, pending.occ.span, misfit));
-        }
+/// WI-20260911-5G28A S2 — run one citation's edge check ([`PendingCitationRoutes`]) and stamp
+/// the routes it finds. What it refuses — a named slot of a clause variable's type fixed to a
+/// witness that does not answer the read the slot states, a goal of the cited clause left
+/// free ([`CarriedMisfit`]) — is kept, at the citation with the file it is written in, for
+/// the run's report ([`take_citation_refusals`]).
+fn route_citation(kb: &mut KnowledgeBase, pending: PendingCitationRoutes) {
+    let mut misfits = Vec::new();
+    let routes = citation_requirement_routes(kb, &pending, &mut misfits);
+    if !routes.is_empty() {
+        pending.occ.set_op_dicts(routes);
     }
-    refused
+    refuse_goals_left_free(kb, &pending, &mut Vec::new(), &mut misfits);
+    for misfit in misfits {
+        let refusal = citation_misfit_error(kb, pending.relation, pending.occ.span, misfit);
+        kb.citation_refusals.push(refusal);
+    }
+}
+
+/// Route the citations queued from `mark` on — those a body wrote, once it is typed
+/// ([`check_operation_bodies`] marks where each body's begin) — where the run's rules are
+/// elaborated; before, they wait for [`settle_pending_citation_routes`].
+pub(super) fn route_citations_from(kb: &mut KnowledgeBase, mark: usize) {
+    if !kb.rules_elaborated || mark >= kb.pending_citation_routes.len() {
+        return;
+    }
+    for pending in kb.pending_citation_routes.split_off(mark) {
+        route_citation(kb, pending);
+    }
+}
+
+/// The run's queued citations, from `mark` on, routed — those of the bodies a proof of the rule
+/// sweep typed on demand ([`super::body_readiness`]), once the sweep has elaborated the reads
+/// they are routed to — and the run's rules marked elaborated.
+pub(super) fn settle_pending_citation_routes(kb: &mut KnowledgeBase, mark: usize) {
+    kb.rules_elaborated = true;
+    route_citations_from(kb, mark);
+}
+
+/// What the routes of the citations a typer run typed refused ([`route_citation`]), from the
+/// run's `mark` on, taken: the run reports them after its bodies, so a later pass cannot see a
+/// stale one.
+pub(super) fn take_citation_refusals(
+    kb: &mut KnowledgeBase,
+    mark: usize,
+) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
+    kb.citation_refusals.split_off(mark.min(kb.citation_refusals.len()))
 }
 
 /// The wording of [`CarriedMisfit::UnfixedAtGoal`] at a citation of `cited`.
