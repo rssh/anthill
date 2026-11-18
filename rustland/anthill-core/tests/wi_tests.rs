@@ -29,6 +29,9 @@ mod wi_s4d63_host_boundary_test;
 #[path = "include/wi_s4d63_rule_variable_type_test.rs"]
 mod wi_s4d63_rule_variable_type_test;
 
+#[path = "include/wi_s4d63_bridge_routing_test.rs"]
+mod wi_s4d63_bridge_routing_test;
+
 #[path = "include/wi_papx0_dot_receiver_split_test.rs"]
 mod wi_papx0_dot_receiver_split_test;
 #[path = "include/wi_papx0_written_type_member_test.rs"]

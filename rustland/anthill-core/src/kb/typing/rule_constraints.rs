@@ -1980,6 +1980,10 @@ pub(super) fn settle_late_positions(
                 continue;
             }
             let computed = match &late {
+                // A call holding a lambda is typed whole once the clause types what the
+                // lambda's body reads (`Error.reify(lambda () -> loadBad())`'s error type is the
+                // lambda's row), as an operation body's call is.
+                LatePosition::CallResult { call, .. } if holds_a_lambda(call) => true,
                 LatePosition::CallResult { result, .. }
                 | LatePosition::ResultColumn { result, .. } => {
                     value_contains_projection(kb, &result.ty)
@@ -2112,9 +2116,14 @@ fn settle_typed_position(
             position,
             result,
             at,
-            ..
+            call,
         } => {
-            let Some(ty) = computed_result_type(kb, rid, st, result, *at) else {
+            let ty = if holds_a_lambda(call) {
+                dot_value_type(kb, rid, st, call)
+            } else {
+                computed_result_type(kb, rid, st, result, *at)
+            };
+            let Some(ty) = ty else {
                 return false;
             };
             let context = TypeErrorContext::OperationReturn {

@@ -568,12 +568,19 @@ end
 /// picking. What changes is only that the `None` is now reported where the call is
 /// written instead of becoming a query that comes back empty.
 ///
-/// THE FIRST ARM IS WHAT KEEPS THIS HONEST, and it is why both live in one fixture: with
-/// ONE provider the completion is exact and the call answers `1`. If the refusal below
-/// were about the SHAPE rather than about the tie, that arm would be refused too.
+/// WI-20261113-S4D63 — **THE FIRST ARM IS INVERTED TOO** (decided with the user 2026-11-18):
+/// with ONE provider the clause is refused, as `Ghost.probe(5)` is in an operation body. The
+/// requirement is written at `Ghost`'s `U`, which nothing in the clause fixes, so the call has
+/// no single answer (`probe` answers 1 at a `Leaf` and 5 at a `Pebble`); one loaded provider
+/// does not say the clause means it, and loading a second turned the same clause into a load
+/// error. What keeps the refusal about `U` and not about `Ghost`'s requirement is the control:
+/// the same requirement reached with an input typed by `U` (`probeAt(x: U)` over `?v <=>
+/// leaf()`) answers 1. FAILS, the first arm, with an element written at a parameter nothing
+/// fixes asked of the provider facts again (`unconstrained_elements` in
+/// `build_dispatching_dict_from_chain`'s rule-body gate): the clause loads and answers 1.
 #[test]
 fn rival_completions_are_refused_rather_than_guessed() {
-    let base = |extra: &str| {
+    let base_with = |extra: &str, rules: &str| {
         format!(
             r#"
 namespace nx4fd_hz
@@ -595,21 +602,29 @@ namespace nx4fd_hz
     sort U = ?
     requires Zeroable[T = U]
     operation probe(n: Int64) -> Int64 = Zeroable.describe(Zeroable.zero())
+    operation probeAt(x: U) -> Int64 = Zeroable.describe(x)
   end
 
   fact mark(1)
-  rule r(?x) :- mark(?m), Ghost.probe(5, ?x)
-end
+{rules}end
 "#
         )
     };
-    let mut sole = load_kb_with(&base(""));
-    let got = definite_unary(&mut sole, "nx4fd_hz.r");
+    let base = |extra: &str| base_with(extra, "  rule r(?x) :- mark(?m), Ghost.probe(5, ?x)\n");
+    let sole = load_errors(&base(""));
+    assert!(
+        sole.iter().any(|e| e.contains("`T = nx4fd_hz.Ghost.U` is unconstrained")),
+        "with ONE `Zeroable` provider the clause is refused, naming `U`, as its operation-body \
+         twin is. Got {sole:#?}"
+    );
+    let mut typed = load_kb_with(&base_with(
+        "",
+        "  rule rv(?x) :- ?v <=> Leaf.leaf(), Ghost.probeAt(?v, ?x)\n",
+    ));
+    let got = definite_unary(&mut typed, "nx4fd_hz.rv");
     assert!(
         matches!(got.as_slice(), [Value::Int(1)]),
-        "with ONE `Zeroable` provider the completion is the only dictionary the goal \
-         could name, so the call must answer 1 — `[]` here would make the arm below \
-         measure an un-drivable fixture. Got {got:?}"
+        "THE CONTROL: an input typed by `U` fixes it, and the call answers 1. Got {got:?}"
     );
     let errs = load_errors(&base(
         r#"

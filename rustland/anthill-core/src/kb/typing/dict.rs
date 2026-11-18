@@ -1403,12 +1403,18 @@ fn build_dispatching_dict_from_chain(
                 // Whether the callee's body reads the slot is no condition: a declared
                 // `requires` is owed because it is declared.
                 if let Some(callee_op) = rule_body_callee.filter(|&op| !kb.is_builtin(op)) {
+                    // An element the requirement writes at a parameter nothing in the clause
+                    // fixes (`Zeroable[T = U]` reached by `Ghost.probe(5, ?x)`) is no question
+                    // the provider facts answer: one loaded provider does not say the clause
+                    // means it, as in an operation body (§5.2). An element the requirement
+                    // leaves unwritten is, where they name one type.
+                    let unconstrained = disambig
+                        .map(|ctx| unconstrained_elements(kb, dep, ctx))
+                        .unwrap_or_default();
                     if !spec_is_a_marker(kb, dep.required_sort)
-                        && !dep_completes_to_a_unique_provider(kb, dep, callee_spec_sort)
+                        && (!unconstrained.is_empty()
+                            || !dep_completes_to_a_unique_provider(kb, dep, callee_spec_sort))
                     {
-                        let unconstrained = disambig
-                            .map(|ctx| unconstrained_elements(kb, dep, ctx))
-                            .unwrap_or_default();
                         let dep_text = render_requires_entry(kb, dep);
                         let holder =
                             sort_is_a_provided_spec(kb, callee_spec_sort).then_some(callee_spec_sort);
@@ -2878,9 +2884,12 @@ pub(super) fn build_op_scoped_dicts(
             // a declared `requires` is owed BECAUSE IT IS DECLARED and a callee that
             // ignores its own clause should DELETE it. The conjuncts left are the two
             // above plus the site gate, and each says why at its own line.
+            // An element written at a parameter nothing in the clause fixes is refused whatever
+            // the provider facts say, as on the sort half above.
             if park.is_some_and(|s| s.enclosing_op.is_none())
                 && !spec_is_a_marker(kb, dep.required_sort)
-                && !dep_completes_to_a_unique_provider(kb, &dep, callee_op)
+                && (!unconstrained_elements(kb, &dep, &disambig).is_empty()
+                    || !dep_completes_to_a_unique_provider(kb, &dep, callee_op))
                 && !read_where_applied(kb, usage, callee_op, &dep, &disambig)
                 && !open_at_a_slot_the_result_leaves(kb, &dep, &disambig, callee_op)
             {
@@ -2931,11 +2940,12 @@ pub(super) fn build_op_scoped_dicts(
                     }
                 }
                 let dep_text = render_requires_entry(kb, &dep);
+                let unconstrained = unconstrained_elements(kb, &dep, &disambig);
                 return Err(Box::new(unrescuable_rule_body_refusal(
                     kb,
                     &dep,
                     dep_text,
-                    Vec::new(),
+                    unconstrained,
                     callee_op,
                     None,
                 )).into());
@@ -3733,6 +3743,19 @@ fn unrescuable_rule_body_refusal(
                  type, since a rule-body goal reads no type bracket"
             .to_string(),
     };
+    // Where an element is written at a parameter nothing fixes, the provider facts are not
+    // asked: one loaded provider would answer for the facts, not for the clause.
+    let facts = if unconstrained.is_empty() {
+        format!(
+            ", and `{}`'s provider facts do not decide one either",
+            kb.qualified_name_of(dep.required_sort)
+        )
+    } else {
+        ": the requirement is written at a parameter nothing in the clause fixes, which a \
+         provider the loaded facts leave alone would answer for the facts and not for the \
+         clause, as in an operation body"
+            .to_string()
+    };
     RequirementRefusal {
         account_names_every_repair: true,
         no_scope_route: false,
@@ -3743,12 +3766,11 @@ fn unrescuable_rule_body_refusal(
         construction: format!(
             "this is a RULE-body goal, and nothing in the clause determines which \
              `{spec}` instance it means: no requirement the clause declares holds it, \
-             this call pins no element, and `{spec}`'s provider facts do not decide one \
-             either. Taking the dictionary from the argument's RUNTIME VALUE instead \
-             would turn a load error into a run-time one — the clause would load and \
-             then report by not answering (WI-20260922-0DK3H) — so it is refused where \
-             it is written. {repairs}, or call `{callee}` from an operation that \
-             declares the matching `requires`",
+             and this call pins no element{facts}. Taking the dictionary from the \
+             argument's RUNTIME VALUE instead would turn a load error into a run-time one \
+             — the clause would load and then report by not answering (WI-20260922-0DK3H) \
+             — so it is refused where it is written. {repairs}, or call `{callee}` from an \
+             operation that declares the matching `requires`",
             spec = kb.qualified_name_of(dep.required_sort),
             callee = kb.qualified_name_of(callee_op),
         ),

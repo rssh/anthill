@@ -142,8 +142,23 @@ fn ask(kb: &mut KnowledgeBase, pattern: &str) -> Vec<Solution> {
 /// `pattern`'s answers as `(its LAST positional under the solution, the solution is
 /// definite)` — the result column of a functional-relation goal, which is where `?r` stands.
 fn answers(kb: &mut KnowledgeBase, pattern: &str) -> Vec<(Option<i64>, bool)> {
-    use anthill_core::kb::term_view::{TermView, ViewHead};
     let goal = crate::common::query_pattern_term(kb, pattern);
+    answers_of(kb, pattern, goal)
+}
+
+/// [`answers`] of the goal built at run time from `pattern`, typed by no load: what the run
+/// time does with a goal whose written query the load refuses.
+fn run_time_answers(kb: &mut KnowledgeBase, pattern: &str) -> Vec<(Option<i64>, bool)> {
+    let goal = crate::common::run_time_goals(kb, &[pattern]).pop().expect("one goal");
+    answers_of(kb, pattern, goal)
+}
+
+fn answers_of(
+    kb: &mut KnowledgeBase,
+    pattern: &str,
+    goal: anthill_core::kb::load::QueryPattern,
+) -> Vec<(Option<i64>, bool)> {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
     // The goal as written: a goal that passes its callee a dictionary or an instance rides in
     // its citation marker.
     let written = anthill_core::kb::load::query_goal_as_written(kb, &goal);
@@ -514,9 +529,10 @@ fn kcna0(ns: &str, rest: &str) -> String {
 
 /// The clause `rule answer(?r) :- {goal}` over `decls` is REFUSED AT LOAD: the call's arguments
 /// fix the requirement, which no provider answers, as in its operation-body twin
-/// (WI-20261013-RYDNV's pinned class). The run-time half is the goal asked as a query, built at
-/// run time, which no load types: it has no answer, by a complete search — the call has no
-/// value at its arguments. The clause loaded and failed so until RYDNV.
+/// (WI-20261013-RYDNV's pinned class). So is the goal written as a query, typed where it is read
+/// (WI-20261113-S4D63; it ran and failed before). The run-time half is the goal built at run
+/// time, which no load types: it has no answer, by a complete search — the call has no value at
+/// its arguments. The clause loaded and failed so until RYDNV.
 #[track_caller]
 fn assert_kcna0_refused_and_fails(ns: &str, decls: &str, goal: &str, query: &str) {
     crate::common::assert_refused_naming(
@@ -525,8 +541,14 @@ fn assert_kcna0_refused_and_fails(ns: &str, decls: &str, goal: &str, query: &str
         "the clause, whose call fixes the requirement",
     );
     let mut kb = crate::common::load_kb_with(&kcna0(ns, decls));
-    let goal = crate::common::query_pattern_term(&mut kb, query);
-    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    // The query written as a query is typed where it is read, and refused as the clause is.
+    assert!(
+        !crate::common::query_pattern_refusals(&mut kb, query).is_empty(),
+        "{query}: the written query is refused, as the clause is"
+    );
+    // The goal built at run time, typed by no load, fails.
+    let goals = crate::common::run_time_goals(&mut kb, &[query]);
+    let (sols, stats) = kb.resolve_with_stats(&goals, &ResolveConfig::default());
     assert!(sols.is_empty(), "{query}: no answer; got {} solution(s)", sols.len());
     assert!(!stats.truncated && stats.errors.is_empty(), "{query}: a complete search: {stats:?}");
 }
@@ -598,9 +620,10 @@ fn a_provided_carrier_answers() {
 
 /// CONTROL, passes either way BY DESIGN, at run time: a body that never reads the slot no
 /// provider answers runs — the slot was skipped before and is a recorded absence now, refused
-/// only where it is read — asked as a query. The CLAUSE that writes the call is refused at
-/// load, as its operation-body twin is: the call fixes `Desc[T = Blue]`, and a declared
-/// `requires` is owed because it is declared (WI-20261013-RYDNV; it loaded and answered 5).
+/// only where it is read — the goal built at run time. The CLAUSE that writes the call is
+/// refused at load, as its operation-body twin is: the call fixes `Desc[T = Blue]`, and a
+/// declared `requires` is owed because it is declared (WI-20261013-RYDNV; it loaded and
+/// answered 5); so is the goal written as a query (WI-20261113-S4D63; it answered 5).
 #[test]
 fn a_body_that_never_reads_the_slot_runs() {
     let decl = "  operation noRead(x: Box) -> Int64 requires Desc[T = x.E] = 5\n";
@@ -613,8 +636,13 @@ fn a_body_that_never_reads_the_slot_runs() {
         "the clause, as its operation-body twin",
     );
     let mut kb = crate::common::load_kb_with(&kcna0("gfs6a.unread", decl));
+    let query = "test.gfs6a.unread.noRead(test.gfs6a.unread.Box.box(v: test.gfs6a.unread.Blue.blue()), ?r)";
+    assert!(
+        !crate::common::query_pattern_refusals(&mut kb, query).is_empty(),
+        "the written query is refused, as the clause is"
+    );
     assert_eq!(
-        answers(
+        run_time_answers(
             &mut kb,
             "test.gfs6a.unread.noRead(test.gfs6a.unread.Box.box(v: test.gfs6a.unread.Blue.blue()), ?r)"
         ),

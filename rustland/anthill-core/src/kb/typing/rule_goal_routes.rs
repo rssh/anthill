@@ -247,7 +247,8 @@ fn holds_an_operation_call(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool
 }
 
 /// Proposal 073 §6.2 — each goal of a query (`sites`, its goals and the goals in their proved
-/// slots) that calls a spec operation owing an instance, or is a `<=>` holding such a call, typed
+/// slots) that calls a spec operation owing an instance or an operation that takes dictionaries
+/// ([`takes_dictionaries`]), or is a `<=>` holding such a call, typed
 /// as a rule body's goal is ([`dispatch_calls_in_occ`]), each query variable at the type its goals
 /// give it: a call at a type a provider answers is decided here, as the member it
 /// reaches; one at a type nothing provides, or at a type nothing fixes, is refused, a query having
@@ -265,8 +266,10 @@ fn typed_spec_op_calls(
     let calls: Vec<Rc<NodeOccurrence>> = sites
         .iter()
         .filter(|site| match site.as_expr() {
-            Some(Expr::Apply { functor, .. }) if *functor == unify => calls_a_spec_operation(kb, site),
-            Some(Expr::Apply { functor, .. }) => owes_an_instance(kb, *functor),
+            Some(Expr::Apply { functor, .. }) if *functor == unify => calls_an_operation_owing_a_dictionary(kb, site),
+            Some(Expr::Apply { functor, .. }) => {
+                owes_an_instance(kb, *functor) || takes_dictionaries(kb, *functor)
+            }
             _ => false,
         })
         .cloned()
@@ -341,12 +344,24 @@ fn owes_an_instance(kb: &KnowledgeBase, functor: Symbol) -> bool {
         && !host_implements(kb, functor)
 }
 
-/// Does `goal` call, anywhere in it, a spec operation that owes an instance ([`owes_an_instance`])?
-fn calls_a_spec_operation(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>) -> bool {
+/// Is `functor` an operation whose call is handed dictionaries — its sort's `requires` or its
+/// own: a call the typer passes them to, as a rule body's call ([`dispatch_calls_in_occ`]), so
+/// none is built from the values when it runs.
+fn takes_dictionaries(kb: &mut KnowledgeBase, functor: Symbol) -> bool {
+    kb.op_record(functor).is_some()
+        && !kb.is_entity_constructor(functor)
+        && !op_dict_entries(kb, functor).is_empty()
+}
+
+/// Does `goal` call, anywhere in it, a spec operation that owes an instance ([`owes_an_instance`])
+/// or an operation that takes dictionaries ([`takes_dictionaries`])?
+fn calls_an_operation_owing_a_dictionary(kb: &mut KnowledgeBase, goal: &Rc<NodeOccurrence>) -> bool {
     let mut stack = vec![Rc::clone(goal)];
     while let Some(node) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
-        if matches!(expr, Expr::Apply { functor, .. } if owes_an_instance(kb, *functor)) {
+        if matches!(expr, Expr::Apply { functor, .. }
+            if owes_an_instance(kb, *functor) || takes_dictionaries(kb, *functor))
+        {
             return true;
         }
         for_each_child(expr, |c| stack.push(Rc::clone(c)));
