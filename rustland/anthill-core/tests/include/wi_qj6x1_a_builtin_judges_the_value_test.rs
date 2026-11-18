@@ -730,11 +730,6 @@ const STORE_SRC: &str = "namespace test.qjstore
   import anthill.persistence.filesystem.{IndexedFileStore}
   entity Bar(value: Int64)
   rule fact_monotonicity(Bar) <=> non_monotone() @[simp]
-  -- `IndexedFileStore` is a `Store` through `NonMonotonicStore` and through
-  -- `QueryableStore`, so a call of `Store.persist` there names the one it means.
-  operation persistIndexed(s: IndexedFileStore, f: Term, m: Meta) -> anthill.reflect.StoredRef[T = Term]
-    effects {Modify[s], Error} =
-    Store.persist[Store = NonMonotonicStore](s, f, m)
 end
 ";
 
@@ -842,10 +837,21 @@ fn retrieve_takes_a_pattern_an_occurrence_carries() {
         Box::new(IndexedFileStore::new(dir.path().to_path_buf(), FileConvention::Flat)),
     );
     let row = bar(&mut interp, 1);
-    // Proposal 074 §1.4: a host call writes no bracket, and `Store.persist` at an
-    // `IndexedFileStore` needs one, so it goes through an operation of the program's.
+    // `IndexedFileStore` is a `Store` through `NonMonotonicStore` and through `QueryableStore`,
+    // so a call of `Store.persist` there names the one it means, from the host as in a body
+    // (`Store.persist[Store = NonMonotonicStore](s, f, m)`; proposal 074 §1.4). Without the
+    // bracket the call is refused, naming both.
+    let args = anthill_core::eval::HostValue::all(&[store.clone(), row.clone(), crate::common::no_meta(interp.kb())]);
+    match interp.call("anthill.persistence.Store.persist", &args) {
+        Err(anthill_core::eval::EvalError::HostCallRefused { detail, .. }) => assert!(
+            detail.contains("anthill.persistence.NonMonotonicStore, anthill.persistence.QueryableStore"),
+            "{detail}"
+        ),
+        other => panic!("`Store.persist` at an `IndexedFileStore` with no bracket is refused; got {other:?}"),
+    }
+    let through = crate::common::sort_type(interp.kb_mut(), "anthill.persistence.NonMonotonicStore");
     interp
-        .call("test.qjstore.persistIndexed", &anthill_core::eval::HostValue::all(&[store.clone(), row.clone(), crate::common::no_meta(interp.kb())])).map(|h| h.value)
+        .call_bracketed("anthill.persistence.Store.persist", &[(Some("Store"), through)], &args)
         .expect("persist");
     let pattern = node_of(&mut interp, &row);
     let hits = interp

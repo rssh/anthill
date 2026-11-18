@@ -32,18 +32,23 @@ namespace test.wi182_distinct
   import anthill.reflect.{Term, fresh_var}
   import anthill.prelude.{String}
   operation main() -> Int64 = 0
-  -- `fresh_var`'s `T` is fixed by the result it is read at: a host call writes no bracket
-  -- and is typed as a body's call is (proposal 074 §1.4), so it calls this.
-  operation freshTerm(name: String) -> Term = fresh_var[T = Term](name)
 end
 "#;
     let mut interp = interp_for(src);
-    let v1 = interp
-        .call("test.wi182_distinct.freshTerm", &anthill_core::eval::HostValue::all(&[Value::Str("x".into())])).map(|h| h.value)
-        .expect("fresh_var #1");
-    let v2 = interp
-        .call("test.wi182_distinct.freshTerm", &anthill_core::eval::HostValue::all(&[Value::Str("x".into())])).map(|h| h.value)
-        .expect("fresh_var #2");
+    // `fresh_var`'s `T` is nothing its argument fixes: the host writes it, as a body writes
+    // `fresh_var[T = Term](name)` (proposal 074 §1.4).
+    let term = crate::common::sort_type(interp.kb_mut(), "anthill.reflect.Term");
+    let mut fresh = || {
+        interp
+            .call_bracketed(
+                "anthill.reflect.fresh_var",
+                &[(Some("T"), term.clone())],
+                &anthill_core::eval::HostValue::all(&[Value::Str("x".into())]),
+            )
+            .map(|h| h.value)
+    };
+    let v1 = fresh().expect("fresh_var #1");
+    let v2 = fresh().expect("fresh_var #2");
     let t1 = match v1 {
         Value::Term { id: t, .. } => t,
         other => panic!("expected Term, got {other:?}"),

@@ -945,6 +945,16 @@ let aa = Value::Str("aa".into()).into();                            // at String
 interp.call("pkg.Bulk.has", &[set, aa])?;                           // reads s.O = ByLength
 ```
 
+A call's bracket is written as a body writes it, each entry a key or a position with a type the host holds, and read by the typer as there:
+
+```rust
+let through = /* the type NonMonotonicStore */;
+interp.call_bracketed("anthill.persistence.Store.persist", &[(Some("Store"), through)], &[s, f, m])?; // Store.persist[Store = NonMonotonicStore](s, f, m)
+interp.call_bracketed("pkg.zeroOf", &[(Some("X"), int64)], &[])?;                                   // zeroOf[X = Int64]()
+```
+
+`call` is the call with no bracket. A host function no operation declares has nothing a bracket binds, and a call with one is refused.
+
 Handed over bare, the set is at `MySet[T = String]`, `O` open, and `has` is refused naming `O`: the value was built with a provider the call cannot read (kernel-language §5.2, the existential return). A result typed at a spec is the instance a body holds; `interp.carried(v)` opens it to its carrier's value.
 
 What the typer refuses about the call, and a requirement it parks for the report after every body is typed, is refused before anything runs (`EvalError::HostCallRefused`), in the sentence the same call's load error has in a body: `zeroOf()` over `zeroOf[X]() -> X requires Additive[T = X]` names `X`, `add2(7, 2, 3)` over `add2(x: Additive, …)` names `add2.x`. An operation with no declared signature (a host function registered by key) has nothing to type and is called with the values.

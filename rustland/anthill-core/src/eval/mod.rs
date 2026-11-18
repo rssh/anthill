@@ -341,6 +341,14 @@ impl FieldSymbols {
     }
 }
 
+/// A typed host call's key in `Interpreter::host_calls`: the operation, the hash-consed type of
+/// each argument, and the bracket's entries, each its key and its type's term.
+type HostCallKey = (
+    Symbol,
+    Vec<crate::kb::term::TermId>,
+    Vec<(Option<Symbol>, crate::kb::term::TermId)>,
+);
+
 /// WI-1045 — why [`Interpreter::frame_requirements_from_trees`] could not build a
 /// frame's requirement channel. Two causes with different owners, kept apart
 /// because collapsing them reported a missing stdlib namespace as an unresolvable
@@ -550,13 +558,14 @@ pub struct Interpreter {
     /// reaches them.
     pub(crate) host_entry_dispatch: bool,
     /// Proposal 074 §1.4 — a host call typed once per operation and argument types
-    /// ([`Self::call`]): the typed call node and its result type, keyed by the operation and
-    /// the hash-consed type of each argument. Typing mints type terms and fresh variables, so
-    /// a host calling one operation repeatedly would otherwise grow the term store per call.
+    /// ([`Self::call_bracketed`]): the typed call node and its result type, keyed by the
+    /// operation, the hash-consed type of each argument and the call's bracket. Typing mints
+    /// type terms and fresh variables, so a host calling one operation repeatedly would
+    /// otherwise grow the term store per call.
     /// Only a ground key is kept: a call at a type holding a variable is typed again. Cleared
     /// where a layer is loaded or discarded, as `op_body_cache` is: a layer's provision changes
     /// what a call dispatches to.
-    host_calls: HashMap<(Symbol, Vec<crate::kb::term::TermId>), (std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, Value)>,
+    host_calls: HashMap<HostCallKey, (std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, Value)>,
     /// Proposal 071 §1.3 — the requirement channel of the builtin currently running, or
     /// `None` outside one. A builtin enters no frame, and a host function that raises takes
     /// the `TypeValue` of what it raises out of this channel ([`Self::raise_error`]), as an
@@ -901,28 +910,57 @@ impl Interpreter {
     /// A host-implemented operation with no declared signature has nothing to type, and reads
     /// no requirement: it is called with the values.
     ///
-    /// It is the host's only entry: a host hands an operation no dictionary by hand
+    /// The call writes no bracket; [`Self::call_bracketed`] is the call that writes one. They
+    /// are the host's only entries: a host hands an operation no dictionary by hand
     /// (`docs/design/operation-call-model.md` §"Host-to-entry-op boundary").
     pub fn call(&mut self, qualified_name: &str, args: &[HostValue]) -> Result<HostValue, EvalError> {
+        self.call_bracketed(qualified_name, &[], args)
+    }
+
+    /// [`Self::call`] with the call's bracket: `op[k1 = t1, …](x1, …, xn)`, each entry a key
+    /// (`Some("Store")`, as a body writes `Store = …`) or a position (`None`) with the type the
+    /// host holds for it. The entries are the call's type arguments as a body's bracket gives
+    /// them, read by the typer as there: `call_bracketed("anthill.persistence.Store.persist",
+    /// &[(Some("Store"), non_monotonic_store)], &[s, f, m])` is `Store.persist[Store =
+    /// NonMonotonicStore](s, f, m)`, and `zeroOf` with `[(Some("X"), int64)]` is
+    /// `zeroOf[X = Int64]()`. A key is a label, matched as a body's is. A host has no scope, so
+    /// a key is not read through a type alias as a body's is: it is the spec's or the
+    /// parameter's own name.
+    pub fn call_bracketed(
+        &mut self,
+        qualified_name: &str,
+        bracket: &[(Option<&str>, Value)],
+        args: &[HostValue],
+    ) -> Result<HostValue, EvalError> {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
             EvalError::UnknownOperation {
                 name: qualified_name.to_string(),
             }
         })?;
+        let refused = |kb: &crate::kb::KnowledgeBase, detail: String| EvalError::HostCallRefused {
+            op: kb.qualified_name_of(sym).to_string(),
+            detail,
+        };
         let declared: Option<Vec<Value>> = crate::kb::op_info::lookup_operation_info(&self.kb, sym)
             .map(|rec| rec.params.into_iter().map(|(_, t)| t).collect());
         if declared.is_none() {
             if let Some(builtin) = self.builtins.get(&sym).cloned() {
+                if !bracket.is_empty() {
+                    return Err(refused(
+                        &self.kb,
+                        "it declares no signature, so a bracket has nothing to bind".to_string(),
+                    ));
+                }
                 let values: Vec<Value> = args.iter().map(|a| a.value.clone()).collect();
                 let value = self.call_host(sym, &builtin, &values, smallvec::SmallVec::new())?;
                 return Ok(value.into());
             }
         }
         let declared = declared.unwrap_or_default();
-        let refused = |kb: &crate::kb::KnowledgeBase, detail: String| EvalError::HostCallRefused {
-            op: kb.qualified_name_of(sym).to_string(),
-            detail,
-        };
+        let type_args: Vec<(Option<Symbol>, Value)> = bracket
+            .iter()
+            .map(|(k, t)| (k.map(|k| self.kb.intern(k)), t.clone()))
+            .collect();
         let names: Vec<Symbol> = (0..args.len())
             .map(|i| self.kb.intern(&format!("__host_argument_{i}")))
             .collect();
@@ -960,15 +998,24 @@ impl Interpreter {
             values.push(value);
             types.push(ty);
         }
-        // The key: each type's hash-consed term, where every one is ground.
-        let key: Option<Vec<crate::kb::term::TermId>> = types
+        // The key: each type's hash-consed term, the arguments' and the bracket's, where every
+        // one is ground.
+        let ground = |kb: &crate::kb::KnowledgeBase, t: &Value| match t {
+            Value::Term { id, .. } if crate::kb::typing::type_is_ground(kb, t) => Some(*id),
+            _ => None,
+        };
+        let key: Option<HostCallKey> = types
             .iter()
-            .map(|t| match t {
-                Value::Term { id, .. } if crate::kb::typing::type_is_ground(&self.kb, t) => Some(*id),
-                _ => None,
-            })
-            .collect();
-        let cached = key.as_ref().and_then(|k| self.host_calls.get(&(sym, k.clone())).cloned());
+            .map(|t| ground(&self.kb, t))
+            .collect::<Option<Vec<_>>>()
+            .zip(
+                type_args
+                    .iter()
+                    .map(|(k, t)| ground(&self.kb, t).map(|id| (*k, id)))
+                    .collect::<Option<Vec<_>>>(),
+            )
+            .map(|(arguments, bracket)| (sym, arguments, bracket));
+        let cached = key.as_ref().and_then(|k| self.host_calls.get(k).cloned());
         let (node, result_ty) = match cached {
             Some(hit) => hit,
             None => {
@@ -987,7 +1034,7 @@ impl Interpreter {
                             })
                             .collect(),
                         named_args: Vec::new(),
-                        type_args: Vec::new(),
+                        type_args,
                         recv_type: None,
                     },
                     span,
@@ -1024,7 +1071,7 @@ impl Interpreter {
                 }
                 let hit = (std::rc::Rc::clone(&typed.node), typed.ty);
                 if let Some(k) = key {
-                    self.host_calls.insert((sym, k), hit.clone());
+                    self.host_calls.insert(k, hit.clone());
                 }
                 hit
             }

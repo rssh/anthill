@@ -23,6 +23,12 @@
 //! the open-slot refusal of `build_op_scoped_dicts` removed,
 //! `a_slot_the_arguments_type_leaves_open_is_refused` fails (its body twin loads), and so do
 //! five rows of `wi_ee0ep_param_dictionary_test`.
+//!
+//! THE HOST'S BRACKET (`Interpreter::call_bracketed`), the last section: with the bracket not
+//! put on the call, `a_host_writes_the_calls_bracket`, `a_bracket_the_call_does_not_fit_is_
+//! refused_as_in_a_body` and `wi_qj6x1`'s `retrieve_takes_a_pattern_an_occurrence_carries`
+//! fail; `a_bracket_on_a_function_no_operation_declares_is_refused` passes either way by
+//! design (it is refused before a bracket is read). Measured by a temporary switch.
 
 use anthill_core::eval::{EvalError, HostValue, Interpreter, Value};
 
@@ -310,5 +316,65 @@ fn a_slot_the_arguments_type_leaves_open_is_refused() {
             assert!(detail.contains("leaves `O` open"), "names `O`: {detail}")
         }
         other => panic!("a bare set's `O` is open, and `has` is refused; got {other:?}"),
+    }
+}
+
+// ── the host's bracket ──────────────────────────────────────────────────────────────────
+
+/// 074 §1.4: A HOST WRITES THE CALL'S BRACKET (`Interpreter::call_bracketed`), and it is read as
+/// a body's: `zeroOf` with `[X = Int64]` is `zeroOf[X = Int64]()`, `0`, as its body twin
+/// answers; with `[Float]`, positionally, `0.0`. Bare, the call is refused naming `X`
+/// ([`a_parameter_no_argument_fixes_is_refused_naming_it`]). FAILS with the bracket not put on
+/// the call: refused naming `X`.
+#[test]
+fn a_host_writes_the_calls_bracket() {
+    let twin = "  operation zeroInt() -> Int64 = zeroOf[X = Int64]()";
+    let mut interp = interp_for(&SRC.replacen("\nend\n", &format!("\n{twin}\nend\n"), 1));
+    assert!(matches!(answer(&mut interp, "zeroInt", &[]), Value::Int(0)), "the body twin");
+    let int64 = crate::common::sort_type(interp.kb_mut(), "anthill.prelude.Int64");
+    let float = crate::common::sort_type(interp.kb_mut(), "anthill.prelude.Float");
+    let got = interp.call_bracketed(&op("zeroOf"), &[(Some("X"), int64)], &[]).map(|h| h.value);
+    assert!(matches!(got, Ok(Value::Int(0))), "`[X = Int64]`: {got:?}");
+    let got = interp.call_bracketed(&op("zeroOf"), &[(None, float)], &[]).map(|h| h.value);
+    assert!(matches!(got, Ok(Value::Float(z)) if z == 0.0), "`[Float]`: {got:?}");
+}
+
+/// A bracket the call does not fit is refused before anything runs, in the sentence its body
+/// twin's load error has: a key `zeroOf` does not declare, and a type nothing provides
+/// `Additive` at.
+#[test]
+fn a_bracket_the_call_does_not_fit_is_refused_as_in_a_body() {
+    let mut interp = interp_for(SRC);
+    for (key, sort, written) in [
+        ("Y", "anthill.prelude.Int64", "Y = Int64"),
+        ("X", "anthill.prelude.String", "X = anthill.prelude.String"),
+    ] {
+        let ty = crate::common::sort_type(interp.kb_mut(), sort);
+        match interp.call_bracketed(&op("zeroOf"), &[(Some(key), ty)], &[]) {
+            Err(EvalError::HostCallRefused { detail, .. }) => the_body_twin_says(
+                &format!("  operation twin() -> Int64 =\n    let z = zeroOf[{written}]()\n    1"),
+                &detail,
+            ),
+            other => panic!("`zeroOf[{written}]` from the host is refused; got {other:?}"),
+        }
+    }
+}
+
+/// A host function under a name no operation declares (here a sort's) has nothing a bracket
+/// binds: the call with one is refused, and the call without runs the function.
+#[test]
+fn a_bracket_on_a_function_no_operation_declares_is_refused() {
+    let mut interp = interp_for(SRC);
+    interp
+        .register_builtin(&op("Leaf"), |_, _| Ok(Value::Int(3)))
+        .expect("the name resolves");
+    let got = interp.call(&op("Leaf"), &[]).map(|h| h.value);
+    assert!(matches!(got, Ok(Value::Int(3))), "the control runs it: {got:?}");
+    let int64 = crate::common::sort_type(interp.kb_mut(), "anthill.prelude.Int64");
+    match interp.call_bracketed(&op("Leaf"), &[(Some("X"), int64)], &[]) {
+        Err(EvalError::HostCallRefused { detail, .. }) => {
+            assert!(detail.contains("a bracket has nothing to bind"), "{detail}")
+        }
+        other => panic!("a bracket on a signature-less function is refused; got {other:?}"),
     }
 }
