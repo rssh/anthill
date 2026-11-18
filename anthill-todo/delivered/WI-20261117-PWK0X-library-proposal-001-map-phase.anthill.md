@@ -3,9 +3,9 @@
 - id: WI-20261117-PWK0X-library-proposal-001-map-phase
 - created: 2026-11-17T21:38:23Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-17T22:16:08Z
+- status_at: 2026-11-18T04:14:15Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
