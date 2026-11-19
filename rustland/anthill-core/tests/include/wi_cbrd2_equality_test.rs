@@ -205,6 +205,28 @@ fn a_querys_equality_is_typed_where_it_is_read() {
     }
 }
 
+/// WI-20261109-FEM1J's composites asked as QUERIES (CBRD2's acceptance): `box(p: pt(1, 2)) =
+/// box(p: pt(1, 9))` holds through `Box`'s derived `eq`, which compares `p` through `Pt`'s own,
+/// and `!=` is its negation; `some(pt(1, 2)) = some(pt(1, 9))` holds through `Option`'s `eq`
+/// entered with `Pt`'s dictionary. Each pair is apart by structure, so a definite answer is the
+/// members'.
+#[test]
+fn a_composites_equality_asked_as_a_query_is_its_members() {
+    let mut kb = crate::common::load_kb_with(&program(
+        "test.cbrd2eq.fem1j",
+        "  sort Box\n    entity box(p: Pt)\n  end\n",
+    ));
+    let pt = |x: i64, y: i64| format!("test.cbrd2eq.fem1j.Pt.pt({x}, {y})");
+    let bx = |x: i64, y: i64| format!("test.cbrd2eq.fem1j.Box.box(p: {})", pt(x, y));
+    let some = |x: i64, y: i64| format!("anthill.prelude.Option.some({})", pt(x, y));
+    assert_eq!(answers(&mut kb, &format!("{} = {}", bx(1, 2), bx(1, 9))), (1, 1), "Box, equal by `Pt`'s `eq`");
+    assert_eq!(answers(&mut kb, &format!("{} != {}", bx(1, 2), bx(1, 9))), (0, 0), "Box, `!=`");
+    assert_eq!(answers(&mut kb, &format!("{} = {}", bx(1, 2), bx(2, 2))), (0, 0), "Box, apart");
+    assert_eq!(answers(&mut kb, &format!("{} = {}", some(1, 2), some(1, 9))), (1, 1), "Option, equal by `Pt`'s `eq`");
+    assert_eq!(answers(&mut kb, &format!("{} = {}", some(1, 2), some(2, 2))), (0, 0), "Option, apart");
+    assert_eq!(answers(&mut kb, &format!("{} != {}", some(1, 2), some(2, 2))), (1, 1), "Option, `!=`");
+}
+
 /// A `Term` PROVIDES `PartialEq`, ITS STRUCTURE: two terms built alike are equal, two built
 /// apart are not, and a term that is a `Float` compares as one (`as_term(nan)` is not equal to
 /// itself) while code holding a `nan` equals itself — the answers `=` gave terms before.
