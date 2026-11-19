@@ -1345,6 +1345,58 @@ fn route_goal(
         refused.push((refusal, Some(site.span.source)));
         return None;
     }
+    // 060.1 §8.2 (the user, 2026-11-04; and 2026-11-19 for a goal with no bracket) — a read the
+    // callee's clause takes off a NAMED requirement slot of a variable's type (`?p <=> box(a:
+    // ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)` in `sort Box` with `requires O: WeakOrd[T]`) is
+    // filled only by what the citation writes for the slot. A bracketed goal is read so above;
+    // one with no bracket is read the same way for those reads, and is refused, naming the
+    // slot, where its arguments' types leave it unwritten (`Box.order(Box.box(a: 1, b: 5),
+    // ?c)`), as the bracket that leaves it out is. Nothing is read from the value.
+    let carried: Vec<usize> = if bracketed {
+        Vec::new()
+    } else {
+        positions
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| matches!(declared.get(*j), Some(GuardRoute::NoGuard)))
+            .filter(|(_, &(crid, k))| {
+                callee_reads
+                    .get(&crid)
+                    .and_then(|reads| reads.get(k))
+                    .is_some_and(|read| read_off_a_named_slot(kb, crid, read))
+            })
+            .map(|(j, _)| j)
+            .collect()
+    };
+    let mut carried_built: SmallVec<[Option<TermId>; 2]> = SmallVec::new();
+    if !carried.is_empty() {
+        let mut misfits = Vec::new();
+        let routes = match bracketed_goal_routes(kb, site, callee, &mut misfits) {
+            Ok((routes, _)) => routes,
+            Err(refusal) => {
+                refused.push((refusal, Some(site.span.source)));
+                return None;
+            }
+        };
+        let mut slot_refused = false;
+        for misfit in misfits {
+            if matches!(
+                misfit,
+                CarriedMisfit::SlotUnwritten { .. }
+                    | CarriedMisfit::NotAnswered { .. }
+                    | CarriedMisfit::TwoProviders { .. }
+            ) {
+                refused.push(citation_misfit_error(kb, callee, site.span, misfit));
+                slot_refused = true;
+            }
+        }
+        if slot_refused {
+            return None;
+        }
+        carried_built = (0..total)
+            .map(|j| if carried.contains(&j) { routes.get(j).copied().flatten() } else { None })
+            .collect();
+    }
     if let Some((first, second)) = tie {
         refused.push((
             TypeError::Other {
@@ -1477,7 +1529,7 @@ fn route_goal(
     }
     let slots: Vec<GoalSlot> = (0..total)
         .map(|j| {
-            if let Some(Some(t)) = built.get(j) {
+            if let Some(Some(t)) = built.get(j).or(carried_built.get(j)) {
                 GoalSlot::Built(Value::term(*t))
             } else if let Some(GuardRoute::Declared(var)) = declared.get(j) {
                 GoalSlot::Own(Rc::clone(var))
@@ -2549,6 +2601,24 @@ fn sorts_requirement_call_read_slot(
     let slot = at_param?;
     let need = carrier_instance(kb, spec, slot)?;
     matches!(sort_states_requirement(kb, rid, spec, &Value::term(need)), SortStates::Once(_)).then_some(slot)
+}
+
+/// Is `read`, a read clause `rid` takes for a call, one a named requirement slot of a type its
+/// typing gives a variable may state — the slot's spec the read's, its sort the head of the type
+/// (`Box[T = t, O = o]` for `?p` beside `WeakOrd.compare(?x, ?y, ?c)` under `requires O:
+/// WeakOrd[T]`)? The citation's reading ([`bracketed_goal_routes`]) decides whether one does.
+fn read_off_a_named_slot(kb: &mut KnowledgeBase, rid: RuleId, read: &Rc<NodeOccurrence>) -> bool {
+    let Some((spec, _, _)) = call_read_parts(kb, read) else {
+        return false;
+    };
+    clause_var_stamps(kb, rid).into_iter().any(|(_, ty)| {
+        let TypeExtractor::Parameterized { base, .. } = extract_type(kb, &ty) else {
+            return false;
+        };
+        kb.named_requirement_slots(base)
+            .iter()
+            .any(|slot| slot.spec_base.is_some_and(|s| same_sort_canonical(kb, s, spec)))
+    })
 }
 
 /// The requirement of its sort that `read`, a read clause `rid` takes for a call, is

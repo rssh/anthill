@@ -68,7 +68,7 @@
 //! `a_column_the_citation_gives_no_type_pins_nothing` and
 //! `a_citation_outside_the_sort_reads_the_slot_its_argument_carries`.
 //!
-//! PASS EITHER WAY, BY DESIGN: `a_member_operation_and_an_uncited_clause_answer_as_before`,
+//! PASS EITHER WAY, BY DESIGN: `a_member_operation_answers_as_before`,
 //! `where_an_argument_fixes_it_the_other_instances_are_dropped`,
 //! `a_bound_at_the_callers_parameter_is_checked_through_its_domain_only`,
 //! and the stated limits at
@@ -184,7 +184,6 @@ const BOX_DRIVER: &str = r#"
     operation dirDesc() -> Int64 = Box.directOf[T = Int64, O = Descending](box(a: 1, b: 5))
     operation dirAsc() -> Int64 = Box.directOf[T = Int64, O = Ascending](box(a: 1, b: 5))
   end
-  rule uncited(?c) :- Box.order(Box.box(a: 1, b: 5), ?c)
 "#;
 
 fn box_program(ns: &str) -> String {
@@ -210,10 +209,9 @@ fn a_clause_typed_through_a_constructor_reads_its_sorts_requires() {
     );
 }
 
-/// CONTROLS — pass either way, BY DESIGN. A member operation reads the selection itself,
-/// and a clause no operation cites derives its dictionary from the values: `Int64`'s own.
+/// CONTROL — passes either way, BY DESIGN. A member operation reads the selection itself.
 #[test]
-fn a_member_operation_and_an_uncited_clause_answer_as_before() {
+fn a_member_operation_answers_as_before() {
     let ns = "wi0rrqp.ctl";
     let src = box_program(ns);
     assert_eq!(
@@ -221,11 +219,40 @@ fn a_member_operation_and_an_uncited_clause_answer_as_before() {
         (4, -4),
         "`directOf` dispatches through `O`",
     );
-    let mut kb = crate::common::load_kb_with(&src);
+}
+
+/// 060.1 §8.2 — A RULE GOAL THAT WRITES NO `O` IS REFUSED, naming the slot (the user,
+/// 2026-11-19, extending 2026-11-04's rule to a goal with no bracket). `rule uncited(?c) :-
+/// Box.order(Box.box(a: 1, b: 5), ?c)` and `Ranked.ordered(Ranked.ranked(a: 1, b: 5), ?c)` match
+/// terms whose `O` nothing writes. Each loaded, and its read found `Int64`'s own `compare` from
+/// the value when it ran — `-1`, a ranking among `Int64`'s own, `Ascending` and `Descending`.
+/// Over `Ranked`, whose column is typed `Self`, the witness written is the repair and answers
+/// `Descending`'s `4`. Over `Box`, whose `order(?p, ?c)` types no column, the bracket does not
+/// reach `?p`'s type, and the bracketed goal is refused as before (WI-20261116-AVKW0's gap): a
+/// rule goal has no spelling that writes `Box`'s `O` there. FAILS with the goal's named-slot
+/// reads left unrouted (measured): both unbracketed goals load.
+#[test]
+fn a_goal_writing_no_named_slot_is_refused() {
+    let ns = "wi0rrqp.unc";
+    let unwritten = "a supplied `O: anthill.prelude.WeakOrd` slot (write it in the type, or declare it)";
+    let boxed = |ranked: &str| {
+        program(ns, &format!("{BOX}{BOX_DRIVER}  rule uncited(?c) :- {ranked}.order(Box.box(a: 1, b: 5), ?c)\n"))
+    };
+    let ranked = |ranked: &str| {
+        program(ns, &format!("{RANKED}  rule uncited(?c) :- {ranked}.ordered(Ranked.ranked(a: 1, b: 5), ?c)\n"))
+    };
+    for (case, src) in [
+        ("`Box`, no bracket", boxed("Box")),
+        ("`Ranked`, no bracket", ranked("Ranked")),
+        ("`Box`, the witness written (AVKW0)", boxed("Box[T = Int64, O = Descending]")),
+    ] {
+        crate::common::assert_refused_naming(&crate::common::load_errors_of(&src), &[unwritten], case);
+    }
+    let mut kb = crate::common::load_kb_with(&ranked("Ranked[T = Int64, O = Descending]"));
     assert_eq!(
         crate::common::one_definite_int(&mut kb, &format!("{ns}.uncited")),
-        Some(-1),
-        "a rule goal hands `order` no dictionary",
+        Some(4),
+        "`Ranked`, the witness written",
     );
 }
 
@@ -1797,7 +1824,10 @@ fn a_slot_fixed_to_a_witness_that_does_not_answer_is_refused() {
 /// Pair2[T = ?v, …]` calls `compare` at `?v` and reads `O` as the citation fixes it, declaring
 /// nothing (`cmpT` loads). A call at the type of `U`, which no slot is at, is the clause's to
 /// declare, and is refused (`cmpU`). FAILS with the slot matched by any binding of the
-/// variable's type (measured before the fix): `cmpU` loads, its call reading no slot.
+/// variable's type (measured before the fix): `cmpU` loads, its call reading no slot. A
+/// citation of `cmpT` that leaves `O` unwritten is refused, naming the slot (060.1 §8.2, the
+/// user 2026-11-19). FAILS with a goal's named-slot reads left unrouted: the citation loads, its
+/// read taken from the value.
 #[test]
 fn a_named_slot_carries_a_call_at_its_own_carrier_only() {
     let src = |rule: &str| {
@@ -1814,11 +1844,16 @@ fn a_named_slot_carries_a_call_at_its_own_carrier_only() {
         &["cmpU.body", "a requirement of `WeakOrd` the clause declares"],
         "a call at `U`'s type",
     );
-    let mut kb = crate::common::load_kb_with(&src(
-        "  rule cmpT(?p: Pair2[T = ?v, U = String], ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?x, ?c)\n  \
-         rule viaT(?c) :- cmpT(pr(a: 4, b: \"s\"), ?c)\n",
-    ));
-    assert_eq!(crate::common::one_definite_int(&mut kb, "rrqp.slotat.viaT"), Some(0), "`Int64`'s own `compare(4, 4)`");
+    // The citation writes no `O` for the slot its read is at: refused, naming the slot (the
+    // user, 2026-11-19). It answered `Int64`'s own `compare(4, 4)`, read from the value.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src(
+            "  rule cmpT(?p: Pair2[T = ?v, U = String], ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?x, ?c)\n  \
+             rule viaT(?c) :- cmpT(pr(a: 4, b: \"s\"), ?c)\n",
+        )),
+        &["a supplied `O: anthill.prelude.WeakOrd` slot (write it in the type, or declare it)", "cmpT"],
+        "a citation leaving the slot open",
+    );
 }
 
 /// 060.1 §8.2 — A SORT'S NAMED REQUIREMENT SLOT IS FILLED ONLY BY WHAT THE CITATION WRITES, for
