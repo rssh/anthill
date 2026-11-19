@@ -1200,6 +1200,43 @@ fn route_goal(
                 if let Some(var) = handed {
                     return GuardRoute::Declared(var);
                 }
+                // A read the callee takes for a call that is its sort's requirement (060.1
+                // §8.2; a spec's own rule reads the spec, §3), at a concrete type the goal puts
+                // the call's receiver at: built here, as a guard's at that type is.
+                // `viaGood(?y) :- src(?y), Pred.good(?y)` over `sort Pred { rule good(?x: T) :-
+                // ok(?x) }` passes `Pred[T = Leaf]`'s. Where the provisions build none there, the
+                // goal is refused as for a guard.
+                if let Some((read_spec, slot, stated)) = sorts_call_read_instance(kb, crid, &read) {
+                    let at = guard_carrier_at_goal(kb, site, crid, slot);
+                    // At a type parameter of the caller, the requirement its one element: the
+                    // caller's own guard of the spec there, as for a slot read.
+                    let only_the_carrier = debruijn_vars(kb, stated) == [slot];
+                    if let Some(var) = at
+                        .as_ref()
+                        .filter(|_| only_the_carrier)
+                        .zip(writer.clause())
+                        .and_then(|(at, caller)| callers_own_guard(kb, fd, caller, read_spec, at))
+                    {
+                        return GuardRoute::Declared(var);
+                    }
+                    if let Some(at) = at.filter(|at| instance_is_concrete(kb, at)) {
+                        if sort_params.is_none() {
+                            match goal_sort_param_values(kb, site, callee) {
+                                Ok(params) => sort_params = Some(params),
+                                Err(refusal) => {
+                                    unread.get_or_insert(refusal);
+                                    return GuardRoute::NoGuard;
+                                }
+                            }
+                        }
+                        let sort_params = sort_params.as_deref().expect("read above");
+                        return match dictionary_at_goal(kb, site, callee, crid, slot, &Value::term(stated), &at, sort_params) {
+                            Ok(dict) => GuardRoute::Concrete(dict),
+                            Err(GoalDictMiss::Unfixed(_)) if bracketed => GuardRoute::NoGuard,
+                            Err(GoalDictMiss::Unfixed(why) | GoalDictMiss::Fetch(why)) => GuardRoute::Unbuilt(read_spec, why),
+                        };
+                    }
+                }
                 return slot_read_at_goal(kb, fd, writer.clause(), site, crid, &read)
                     .unwrap_or(GuardRoute::NoGuard);
             };
@@ -1798,26 +1835,10 @@ fn slot_read_at_goal(
     let at = goal.bindings.iter().find(|(k, _)| same_label(kb, *k, carrier)).map(|(_, v)| v.clone())?;
     if !concrete {
         // At a parameter of the caller, its only element: the caller's own guard of the spec there.
-        let caller = caller?;
         if goal.bindings.len() != 1 {
             return None;
         }
-        let caller_carrier = caller_param_at(kb, caller, &at)?;
-        let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(caller).to_vec();
-        let held: Vec<Rc<NodeOccurrence>> = clause_requirement_reads(kb, fd, &body)
-            .into_iter()
-            .filter_map(|own| {
-                let (own_spec, own_carrier, _) = guard_read_parts(kb, &own)?;
-                (own_carrier == caller_carrier && same_sort_canonical(kb, own_spec, entry.required_sort))
-                    .then(|| requirement_read_out(kb, fd, &own).map(Rc::clone))
-                    .flatten()
-            })
-            .collect();
-        // Two of the caller's guards hold it: which is the goal's to say, and it says neither.
-        return match held.as_slice() {
-            [one] => Some(GuardRoute::Declared(Rc::clone(one))),
-            _ => None,
-        };
+        return callers_own_guard(kb, fd, caller?, entry.required_sort, &at).map(GuardRoute::Declared);
     }
     let base = kb.make_sort_ref(goal.spec_sort);
     let spec = parameterized_value(kb, base, &goal.bindings, crate::kb::node_occurrence::empty_span(), None);
@@ -1825,6 +1846,34 @@ fn slot_read_at_goal(
         Ok(dict) => GuardRoute::Concrete(dict),
         Err(why) => GuardRoute::Unbuilt(entry.required_sort, why),
     })
+}
+
+/// The dictionary variable of the one guard of `spec` clause `caller` declares at its type
+/// parameter `at`, a type its typing stamped: what a goal of `caller` passes for a requirement
+/// of `spec` its callee reads there. `None` where `at` is no parameter of `caller`, or where no
+/// guard or two hold it — which of two is the goal's to say, and it says neither.
+fn callers_own_guard(
+    kb: &mut KnowledgeBase,
+    fd: Symbol,
+    caller: RuleId,
+    spec: Symbol,
+    at: &Value,
+) -> Option<Rc<NodeOccurrence>> {
+    let caller_carrier = caller_param_at(kb, caller, at)?;
+    let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(caller).to_vec();
+    let held: Vec<Rc<NodeOccurrence>> = clause_requirement_reads(kb, fd, &body)
+        .into_iter()
+        .filter_map(|own| {
+            let (own_spec, own_carrier, _) = guard_read_parts(kb, &own)?;
+            (own_carrier == caller_carrier && same_sort_canonical(kb, own_spec, spec))
+                .then(|| requirement_read_out(kb, fd, &own).map(Rc::clone))
+                .flatten()
+        })
+        .collect();
+    match held.as_slice() {
+        [one] => Some(Rc::clone(one)),
+        _ => None,
+    }
 }
 
 /// The type the type variable at frame slot `carrier` of `callee_clause` — its guard's carrier
@@ -2500,6 +2549,20 @@ fn sorts_requirement_call_read_slot(
     let slot = at_param?;
     let need = carrier_instance(kb, spec, slot)?;
     matches!(sort_states_requirement(kb, rid, spec, &Value::term(need)), SortStates::Once(_)).then_some(slot)
+}
+
+/// The requirement of its sort that `read`, a read clause `rid` takes for a call, is
+/// ([`call_read_is_the_sorts_requirement`]): its spec, the frame slot of the sort's parameter the
+/// call's receiver is typed at, and the requirement as the sort states it there, in `rid`'s frame.
+fn sorts_call_read_instance(kb: &mut KnowledgeBase, rid: RuleId, read: &Rc<NodeOccurrence>) -> Option<(Symbol, u32, TermId)> {
+    let (spec, op, args) = call_read_parts(kb, read)?;
+    let args = args.to_vec();
+    let slot = sorts_requirement_call_read_slot(kb, rid, spec, op, &args)?;
+    let need = carrier_instance(kb, spec, slot)?;
+    match sort_states_requirement(kb, rid, spec, &Value::term(need)) {
+        SortStates::Once(stated) => Some((spec, slot, stated)),
+        _ => None,
+    }
 }
 
 /// The De Bruijn indices `term` names, each once, in the order met.
