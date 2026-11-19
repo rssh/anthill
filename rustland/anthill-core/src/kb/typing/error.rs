@@ -736,6 +736,21 @@ pub enum TypeError {
         second: Symbol,
         by_name: bool,
     },
+    /// A call of the spec operation `op` that two requirements of the enclosing declaration
+    /// with no name both cover, at two instances of `spec` — `first` and `second`, rendered —
+    /// which nothing the call writes tells apart: `Conv.conv(x)` under `requires Conv[A = T, B
+    /// = Int64]` and `requires Conv[A = T, B = Bool]`, `conv` taking no `B` (the user,
+    /// 2026-11-19; kernel-language §5.2). Read from the first written it would be an answer by
+    /// the order of two lines, as [`TypeError::RequirementReadTie`]'s is. `apart` names the
+    /// parameters the two bind apart, which the call's bracket writes to pick one.
+    UnnamedRequirementTie {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        first: String,
+        second: String,
+        apart: Vec<String>,
+    },
     /// WI-20261013-50ZMN — a call that names a requirement of the enclosing
     /// declaration for the spec operation `op` (`[Mon = Plus]`, `Plus.combine(…)`),
     /// where that requirement is not the call's: it requires `held`, another instance
@@ -2378,6 +2393,26 @@ impl TypeError {
                      names — and that names neither: {advice}",
                 )
             }
+            TypeError::UnnamedRequirementTie {
+                op,
+                spec,
+                first,
+                second,
+                apart,
+                ..
+            } => {
+                let op_qn = kb.qualified_name_of(*op);
+                let member = short_name_of(op_qn);
+                let spec_name = short_name_of(kb.qualified_name_of(*spec));
+                let written = apart.iter().map(|p| format!("{p} = …")).collect::<Vec<_>>().join(", ");
+                format!(
+                    "a call of {op_qn} that two requirements of the enclosing declaration with no \
+                     name both cover, `{first}` and `{second}` — two instances of `{spec_name}`, \
+                     which nothing the call writes tells apart: write the one meant in the call's \
+                     bracket, `{spec_name}[…, {written}].{member}(…)`, or name the two \
+                     requirements and call through the name",
+                )
+            }
             TypeError::UnnamedRequirementBesideTwo {
                 spec,
                 first,
@@ -2848,6 +2883,7 @@ impl TypeError {
             | TypeError::ValueDirectedSelection { span, .. }
             | TypeError::ConflictingSelection { span, .. }
             | TypeError::RequirementReadTie { span, .. }
+            | TypeError::UnnamedRequirementTie { span, .. }
             | TypeError::NamedRequirementNotAtCall { span, .. }
             | TypeError::UnnamedRequirementBesideTwo { span, .. }
             | TypeError::InvalidTypeArgument { span, .. }
@@ -3290,6 +3326,17 @@ impl TypeError {
             // names what is wrong rather than where it was written.
             // WI-20261013-50ZMN: `requirement` — what is wrong is which requirement of
             // the enclosing declaration the call reads, however the call spelled it.
+            TypeError::UnnamedRequirementTie { op, spec, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "requirement".to_string(),
+                expected_type: format!(
+                    "the requirement of {} this call reads, as its bracket writes it",
+                    kb.qualified_name_of(*spec)
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
             TypeError::RequirementReadTie { op, spec, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),

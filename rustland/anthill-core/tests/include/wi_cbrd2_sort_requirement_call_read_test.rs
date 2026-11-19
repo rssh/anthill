@@ -167,8 +167,10 @@ end
 
 /// A sort stating `Conv` twice with no name, `[A = T, B = Int64]` and `[A = T, B = Bool]`, holds
 /// two dictionaries the goal of a rule guarding `Conv[A = X]` both fits: refused at the goal,
-/// naming both, not handed the first. A goal of a clause calling `Conv.conv` is left undecided,
-/// as the call itself is.
+/// naming both, not handed the first. The clause's own call `Conv.conv(?x, ?r)` is refused the
+/// same way (`wi_cbrd2_unnamed_requirement_tie_test`; it answered undecided, read from the
+/// value); written with its bracket, `Conv[A = T, B = Bool].conv(?x, ?r)`, a goal through
+/// `viaCall` answers `IntBool`'s `2`.
 #[test]
 fn two_requirements_the_goal_both_fits_are_refused() {
     let ns = "test.cbrd2.call.t";
@@ -195,7 +197,7 @@ namespace {ns}
     sort T = ?
     requires Conv[A = T, B = Int64]
     requires Conv[A = T, B = Bool]
-    rule direct(?x: T, ?r) :- Conv.conv(?x, ?r)
+    rule direct(?x: T, ?r) :- Conv[A = T, B = Bool].conv(?x, ?r)
     rule viaCall(?x: T, ?r) :- direct(?x, ?r)
 {extra}
   end
@@ -214,8 +216,8 @@ end
     );
     let mut kb = load_kb_with(&program(""));
     assert_eq!(
-        pattern_answer_counts(&mut kb, &format!("{ns}.viaBoth(?r)")),
-        (0, 1),
-        "`viaBoth(?r)`: undecided, not one of the two"
+        pattern_last_ints(&mut kb, &format!("{ns}.viaBoth(?r)")),
+        vec![2],
+        "`viaBoth(?r)`: the one the bracket writes"
     );
 }

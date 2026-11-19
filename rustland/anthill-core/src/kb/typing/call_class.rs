@@ -2762,13 +2762,29 @@ pub(super) fn read_requirement_by_name(
     let named = enclosing_selection_for(kb, selections, spec_sort);
     if named.is_none() {
         let entries = env.enclosing_frame_chain().entries();
-        let may_tie = names_two_requirements(entries)
-            && pinned_witness_for(kb, selections, spec_sort).is_none()
+        let unpinned = pinned_witness_for(kb, selections, spec_sort).is_none();
+        let named_tie = names_two_requirements(entries)
+            && unpinned
             && entries.iter().enumerate().any(|(i, a)| {
                 entries[i + 1..]
                     .iter()
                     .any(|b| named_apart_at_one_goal(kb, a, b))
             });
+        // Two with no name that reach the spec (the user, 2026-11-19): `requires Conv[A = T,
+        // B = Int64]` beside `requires Conv[A = T, B = Bool]`.
+        let unnamed_pair = unpinned
+            && entries
+                .iter()
+                .filter(|e| {
+                    e.binder.is_none()
+                        && (same_sort_canonical(kb, e.required_sort, spec_sort)
+                            || transitive_required_sorts(kb, e.required_sort)
+                                .iter()
+                                .any(|s| same_sort_canonical(kb, *s, spec_sort)))
+                })
+                .nth(1)
+                .is_some();
+        let may_tie = named_tie || unnamed_pair;
         if !may_tie {
             return Ok(false);
         }
@@ -2828,6 +2844,31 @@ pub(super) fn read_requirement_by_name(
                 }
             }
         }
+        // Two with no name the call reaches at two instances of the spec it does not tell apart
+        // (`Conv.conv(x)` under `Conv[A = T, B = Int64]` and `Conv[A = T, B = Bool]`): read from
+        // neither, as two names are not. Two at one instance, or one restating a named line, are
+        // one requirement (§5.2), and a call whose own element tells two apart reaches one.
+        let unnamed: Vec<RequiresEntry> = found
+            .iter()
+            .filter(|(path, v)| (!precise || *v == SigmaVerdict::Precise) && chain[path[0]].binder.is_none())
+            .filter_map(|(path, _)| node_at(&nodes, path).map(|n| n.entry.clone()))
+            .collect();
+        for (n, a) in unnamed.iter().enumerate() {
+            for b in &unnamed[n + 1..] {
+                let apart = requirement_bindings_apart(kb, spec_sort, &a.spec, &b.spec);
+                if apart.is_empty() {
+                    continue;
+                }
+                return Err(TypeError::UnnamedRequirementTie {
+                    span,
+                    op: fn_sym,
+                    spec: spec_sort,
+                    first: render_requires_entry(kb, a),
+                    second: render_requires_entry(kb, b),
+                    apart,
+                });
+            }
+        }
         return Ok(false);
     };
     let slot = enclosing_requirement_index(&chain, binder);
@@ -2859,6 +2900,30 @@ pub(super) fn read_requirement_by_name(
     );
     classify(kb, occ, class);
     Ok(true)
+}
+
+/// The parameters of `spec` (by local name) two of its requirements, `a` and `b`, bind to two
+/// types. Empty where they are one instance, however each is spelled, and where one leaves a
+/// parameter out that the other binds: an omitted binding restricts nothing.
+pub(super) fn requirement_bindings_apart(kb: &KnowledgeBase, spec: Symbol, a: &Value, b: &Value) -> Vec<String> {
+    sort_type_params_as_pairs(kb, kb.canonical_sort_sym(spec))
+        .iter()
+        .map(|(p, _)| kb.local_name_of(*p).to_owned())
+        .filter(|name| match (spec_binding_value(kb, a, name), spec_binding_value(kb, b, name)) {
+            (Some(x), Some(y)) => !views_structurally_equal(kb, &x, &y),
+            _ => false,
+        })
+        .collect()
+}
+
+/// The node of `nodes` at `path`, a path [`collect_requires_matches`] reports.
+fn node_at<'a>(nodes: &'a [RequiresNode], path: &[usize]) -> Option<&'a RequiresNode> {
+    let (first, rest) = path.split_first()?;
+    let mut node = nodes.get(*first)?;
+    for &k in rest {
+        node = node.sub_requires.get(k)?;
+    }
+    Some(node)
 }
 
 /// WI-20261013-50ZMN — a frame's entries, each over the chain of the sort it requires:

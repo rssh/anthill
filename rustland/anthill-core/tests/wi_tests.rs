@@ -2545,6 +2545,8 @@ mod wi_cbrd2_sort_requirement_composed_test;
 mod wi_cbrd2_goal_passes_sort_requirement_test;
 #[path = "include/wi_cbrd2_written_witness_test.rs"]
 mod wi_cbrd2_written_witness_test;
+#[path = "include/wi_cbrd2_unnamed_requirement_tie_test.rs"]
+mod wi_cbrd2_unnamed_requirement_tie_test;
 #[path = "include/wi_cbrd2_contract_member_goal_test.rs"]
 mod wi_cbrd2_contract_member_goal_test;
 #[path = "include/wi_cbrd2_bridge_slot_test.rs"]

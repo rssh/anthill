@@ -458,7 +458,9 @@ end
 /// swap (15) fails.
 ///
 /// Both reads are receiver-less `zero()` calls, which is the only route a body takes
-/// to an op slot at all; the sort slot would be read on that route or any other.
+/// to an op slot at all; the sort slot would be read on that route or any other. Each
+/// writes its instance in its bracket: bare, the two are refused, nothing at either
+/// telling the two unnamed requirements apart (kernel-language §5.2).
 ///
 /// CONTROL, RUN: with `DictChain::names` disambiguating over the COMPOSED list
 /// instead — the obvious implementation, and the wrong one — this fails
@@ -495,8 +497,8 @@ namespace wi822.collide
     sort HT = ?
     requires Zeroable[HT]
     operation probe[PT](x: HT, y: PT) -> Int64 requires Zeroable[T = PT] =
-      add(mul(10, Zeroable.describe(Zeroable.zero())),
-          Zeroable.describe(Zeroable.zero()))
+      add(mul(10, Zeroable.describe(Zeroable[T = HT].zero())),
+          Zeroable.describe(Zeroable[T = PT].zero()))
   end
   sort Driver
     operation drive(n: Int64) -> Int64 = Holder.probe[Leaf](pebble(), leaf())
@@ -504,18 +506,20 @@ namespace wi822.collide
 end
 "#;
     let got = eval_fresh(src, "wi822.collide.Driver.drive", 0);
-    // Both `zero()` reads resolve against the FIRST covering slot in chain order —
-    // the sort half's, since it is the prefix — so both answer 5. What this pins is
-    // that the program LOADS AND RUNS with two same-based slots in one frame: before
-    // the op-side disambiguation the two would be one name, and whichever dictionary
-    // was placed second would silently answer both reads.
+    // Each `zero()` names its instance in its bracket, so each reads its own slot: `HT`'s
+    // (the sort half's, `Pebble`, 5) and `PT`'s (the op half's, `Leaf`, 1). Written bare,
+    // the two calls are refused: two requirements with no name both cover them (the user,
+    // 2026-11-19; kernel-language §5.2), where they read the FIRST covering slot in chain
+    // order and answered 55. What this pins besides is that the program LOADS AND RUNS with
+    // two same-based slots in one frame: before the op-side disambiguation the two would be
+    // one name, and whichever dictionary was placed second would answer both reads.
     assert!(
-        matches!(got, Ok(Value::Int(55))),
-        "expected Ok(Int(55)) — the sort slot answers both reads (it is the chain \
-         prefix), and the op slot's colliding `__req_zeroable` base is renamed on the \
-         OP side so it does not shadow it. An unbound-requirement error means the \
-         collision moved the SORT slot's name, which every sort-keyed producer \
-         re-derives independently; got {got:?}"
+        matches!(got, Ok(Value::Int(51))),
+        "expected Ok(Int(51)) — the sort slot answers `Zeroable[T = HT]`, the op slot \
+         `Zeroable[T = PT]`, and the op slot's colliding `__req_zeroable` base is renamed on \
+         the OP side so it does not shadow the sort slot. A collapsed pair gives 55 or 11, a \
+         swap 15; an unbound-requirement error means the collision moved the SORT slot's \
+         name, which every sort-keyed producer re-derives independently; got {got:?}"
     );
 }
 

@@ -2937,6 +2937,88 @@ fn sort_requirement_read_node(
     (read, out)
 }
 
+/// What the sort clause `rid` is written in states for a call of a member of `spec` at the
+/// sort's parameter at frame slot `slot`, the call's bracket (`bracket`, its receiver's written
+/// type) writing what else it says ([`sort_requirement_for_call`]).
+pub(super) enum SortCallRequirement {
+    /// Nothing the call's bracket writes picks among what the sort states: the read the clause
+    /// takes for it is routed where the rule is cited, as before.
+    Unpicked,
+    /// The one requirement the bracket picks, in the clause's frame.
+    Picked(TermId),
+    /// Two with no name the call fits, rendered: refused, nothing at the call saying which.
+    Two(String, String),
+}
+
+/// [`SortCallRequirement`] of a call of `spec` at the sort parameter at frame slot `slot` of
+/// clause `rid`, written with the receiver bracket `bracket` (`Conv[A = T, B = Bool]`) or none.
+pub(super) fn sort_requirement_for_call(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    spec: Symbol,
+    slot: u32,
+    bracket: Option<&Value>,
+) -> SortCallRequirement {
+    let Some(carrier_key) = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(spec)) else {
+        return SortCallRequirement::Unpicked;
+    };
+    let globals = kb.rule_globals(rid).to_vec();
+    let mut named: Vec<(Symbol, TermId)> = vec![(carrier_key, kb.alloc(Term::Var(Var::DeBruijn(slot))))];
+    let mut written = false;
+    for (key, value) in bracket.map(|b| named_bindings(kb, b)).unwrap_or_default() {
+        if key == kb.local_name_of(carrier_key) {
+            continue;
+        }
+        let Some(param) = sort_type_params_as_pairs(kb, kb.canonical_sort_sym(spec))
+            .iter()
+            .map(|(p, _)| *p)
+            .find(|p| kb.local_name_of(*p) == key)
+        else {
+            continue;
+        };
+        let Ok(term) = crate::kb::node_occurrence::value_to_term(kb, &value) else {
+            continue;
+        };
+        named.push((param, place_sort_params(kb, &globals, term)));
+        written = true;
+    }
+    let asked = instance_term(kb, spec, named);
+    match sort_states_requirement(kb, rid, spec, &Value::term(asked)) {
+        SortStates::TwoInstances(first, second) => SortCallRequirement::Two(first, second),
+        SortStates::Once(stated) if written => SortCallRequirement::Picked(stated),
+        _ => SortCallRequirement::Unpicked,
+    }
+}
+
+/// The clause's read of its sort's requirement `stated` of `spec` at frame slot `slot` — the
+/// one it holds, or a new one ([`sort_requirement_read_node`], anchored at `anchor`) with the
+/// read to place before the body — and the variable its `out` binds.
+pub(super) fn sort_requirement_read_of(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    fd: Symbol,
+    spec: Symbol,
+    slot: u32,
+    stated: TermId,
+    anchor: &Rc<NodeOccurrence>,
+) -> (Rc<NodeOccurrence>, Option<Rc<NodeOccurrence>>) {
+    let elements = debruijn_vars(kb, stated).into_iter().filter(|v| *v != slot).collect();
+    let handed = HandedOn {
+        spec,
+        at_goal: GuardAtGoal {
+            carrier: slot,
+            elements,
+            instance: stated,
+        },
+    };
+    if let Some(var) = sort_requirement_read(kb, fd, rid, spec, &handed.at_goal) {
+        return (var, None);
+    }
+    let pass = kb.register_pass(SORT_REQUIREMENT_READ_PASS);
+    let (read, var) = sort_requirement_read_node(kb, rid, fd, pass, &handed, anchor);
+    (var, Some(read))
+}
+
 /// Kernel-language §5.3, 060.1 §8.2 — THE REQUIREMENTS CLAUSE `rid`'S SORT STATES AT ITS
 /// PARAMETER at frame slot `slot`, with no name and once, each as the guard the clause reads it
 /// as: its spec, its instance in the clause's frame and the variable its read binds, and the read

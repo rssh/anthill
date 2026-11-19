@@ -461,6 +461,8 @@ pub(super) fn infer_rule_body_requirements(
         // The clause's reads of its sort's requirements for its calls, and those to place.
         let mut sort_held: Vec<(ClauseGuard, Option<Rc<NodeOccurrence>>)> = Vec::new();
         let mut sort_reads: Vec<Rc<NodeOccurrence>> = Vec::new();
+        // The reads of the sort's requirements a call's bracket picked, by spec and instance.
+        let mut picked_reads: Vec<(Symbol, TermId, Rc<NodeOccurrence>)> = Vec::new();
         for (gi, demand) in demands {
             if let Some(out) = declared_guard_of(kb, rid, &guards, &demand) {
                 guarded.push((demand.call.call, vec![out], None));
@@ -482,6 +484,58 @@ pub(super) fn infer_rule_body_requirements(
             }
             if equation {
                 continue;
+            }
+            // Kernel-language §5.2 (the user, 2026-11-19) — a call at the sort's parameter that
+            // two requirements the sort states with no name both fit (`Conv.conv(?x, ?r)` with
+            // `?x: T` under `requires Conv[A = T, B = Int64]` and `requires Conv[A = T, B =
+            // Bool]`) is refused: read from neither, as an operation's call is. One its bracket
+            // picks (`Conv[A = T, B = Bool].conv(?x, ?r)`) reads that requirement, as a guard of
+            // the clause is read and a citation fills.
+            if clause_sort_supplies(kb, rid, demand.spec) {
+                let slots = sort_param_slots(kb, rid);
+                let slot = demand
+                    .carriers
+                    .first()
+                    .and_then(|c| c.inferred_type())
+                    .filter(|_| !slots.is_empty())
+                    .and_then(|at| caller_slot_at(kb, rid, &at, &slots));
+                if let Some(slot) = slot {
+                    let bracket = call_recv_type_of(&demand.call.call).cloned();
+                    match sort_requirement_for_call(kb, rid, demand.spec, slot, bracket.as_ref()) {
+                        SortCallRequirement::Two(first, second) => {
+                            if !refused_load && !refused_calls.contains(&(rid, demand.call.call.span.span)) {
+                                refused.push(two_sort_requirements_fit(kb, rid, &demand, &first, &second));
+                            }
+                            continue;
+                        }
+                        SortCallRequirement::Picked(stated) => {
+                            let held = picked_reads
+                                .iter()
+                                .find(|(spec, at, _)| *spec == demand.spec && *at == stated)
+                                .map(|(_, _, out)| Rc::clone(out));
+                            let out = match held {
+                                Some(out) => out,
+                                None => {
+                                    let (out, read) = sort_requirement_read_of(
+                                        kb,
+                                        rid,
+                                        fd_sym,
+                                        demand.spec,
+                                        slot,
+                                        stated,
+                                        &demand.call.call,
+                                    );
+                                    sort_reads.extend(read);
+                                    picked_reads.push((demand.spec, stated, Rc::clone(&out)));
+                                    out
+                                }
+                            };
+                            guarded.push((demand.call.call, vec![out], None));
+                            continue;
+                        }
+                        SortCallRequirement::Unpicked => {}
+                    }
+                }
             }
             if clause_sort_supplies(kb, rid, demand.spec) {
                 if let Some(at) = demand.carriers.first().and_then(|c| c.inferred_type()) {
@@ -725,6 +779,32 @@ fn undeclared_requirement(
         format!(
             "the clause declares none, and a rule takes no dictionary it does not declare: {}",
             crate::parse::desugar_target::DECLARE_A_REQUIREMENT,
+        ),
+    )
+}
+
+/// The refusal of `demand`'s call at the sort's parameter, which two requirements the sort
+/// states with no name both fit, `first` and `second` (kernel-language §5.2).
+fn two_sort_requirements_fit(
+    kb: &KnowledgeBase,
+    rid: RuleId,
+    demand: &SpecDemand,
+    first: &str,
+    second: &str,
+) -> (TypeError, Option<crate::span::SourceId>) {
+    let spec_name = short_name_of(kb.qualified_name_of(demand.spec)).to_owned();
+    let member = short_name_of(kb.qualified_name_of(demand.call.functor)).to_owned();
+    call_requirement_refusal(
+        kb,
+        rid,
+        &demand.call,
+        demand.spec,
+        format!("one requirement of `{spec_name}` the clause's sort states, at the type the call of `{member}` is at"),
+        format!(
+            "the sort states two with no name the call fits, `{first}` and `{second}` — two \
+             dictionaries — and nothing the call writes tells them apart: write the one meant in \
+             the call's bracket, `{spec_name}[…].{member}(…)`, or name the two requirements and \
+             call through the name"
         ),
     )
 }

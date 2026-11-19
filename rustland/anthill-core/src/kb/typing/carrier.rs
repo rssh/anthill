@@ -1728,6 +1728,36 @@ pub(super) fn scope_clause_at_carrier(
         .map(|e| direct_requires(kb, e))
         .unwrap_or_default();
     clauses.extend(env.sub_goal_requires().iter().cloned());
+    // TWO WRITTEN WITH NO NAME about this carrier, binding the spec's other parameters apart
+    // (`requires Conv[A = T, B = Int64]` beside `requires Conv[A = T, B = Bool]`), say two
+    // instances, and neither is the call's (the user, 2026-11-19; kernel-language §5.2): the
+    // first written is no answer, so no clause licenses the call's other parameters, and the
+    // call that leaves them unwritten is refused where its requirement is read
+    // ([`read_requirement_by_name`]). A bracket that writes them binds them before this.
+    let spec_canon_written = kb.canonical_sort_sym(spec_sort);
+    let unnamed_here: Vec<Value> = clauses
+        .iter()
+        .filter(|e| e.binder.is_none() && kb.canonical_sort_sym(e.required_sort) == spec_canon_written)
+        .filter(|e| {
+            unwrap_spec_view_value(kb, &e.spec).is_some_and(|(_, bindings)| {
+                bindings.iter().any(|(p, t)| {
+                    type_param_vid_in_sort(kb, spec_sort, *p) == Some(carrier_pvid) && rigid_of(kb, t) == Some(recv_carrier)
+                })
+            })
+        })
+        .map(|e| e.spec.clone())
+        .collect();
+    if unnamed_here
+        .iter()
+        .enumerate()
+        .any(|(i, a)| {
+            unnamed_here[i + 1..]
+                .iter()
+                .any(|b| !requirement_bindings_apart(kb, spec_sort, a, b).is_empty())
+        })
+    {
+        return None;
+    }
     // …AND WHAT EACH OF THEM IMPLIES (WI-20261005-KSSA4). `requires FiniteCollection[C = P,
     // Element = El, E = R]` says `P` is iterable too, at that element and effect —
     // `FiniteCollection` requires `Iterable` of its carrier, and a dictionary of the first
