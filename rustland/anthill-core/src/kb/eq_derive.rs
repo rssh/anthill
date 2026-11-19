@@ -1799,7 +1799,7 @@ fn noneq_provider_sorts(kb: &KnowledgeBase, noneq_sym: Option<Symbol>) -> Vec<Sy
 /// own fields, so a non-parametric boundary (`TotalFloat`) still shields its `Float`.
 /// The Total half reads the same list and is unmoved by the extra entries: a field
 /// whose head is parametric already excludes its composite there.
-fn composite_field_sorts(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
+pub(crate) fn composite_field_sorts(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     for ctor in kb.field_constructors_of_sort(sort) {
         let Some(fields) = kb.entity_field_types(ctor) else {

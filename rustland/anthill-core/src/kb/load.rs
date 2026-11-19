@@ -23272,7 +23272,7 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // where the member is entered, from the operands alone: at `Option[T = Float]` it does
     // not hold, and `eq(some(nan), some(nan))` is the member's `false`.
     let eq_providers = EqProviders::of(kb);
-    let mut entries: Vec<(Symbol, Symbol, bool)> = Vec::new();
+    let mut entries: Vec<(Symbol, Symbol)> = Vec::new();
     // Collected rather than built into `LoadError`s as we go: `carriers` comes from
     // two `HashMap` walks, so this loop visits carriers in an arbitrary order, and a
     // program with two erroring carriers must report them the same way on every load. Sorted
@@ -23329,7 +23329,7 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             },
         );
         for ctor in kb.field_constructors_of_sort(sort_sym) {
-            entries.push((ctor, target, partial));
+            entries.push((ctor, target));
         }
         // An `eq` the host implements (`Int64.eq`) compares the host's values, which no
         // operation heads: a term headed by `Int64.add` is a call or a quoted term, never an
@@ -23351,19 +23351,19 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
                 .map(|h| kb.canonical_sort_sym(h) == sort_canon)
                 .unwrap_or(false);
             if self_returning {
-                entries.push((op_sym, target, partial));
+                entries.push((op_sym, target));
             }
         }
     }
-    // Key each entry under BOTH the raw symbol and its canonical copy: the
-    // probe side (`eq_dispatch_target`) reads a goal-head functor raw (O(1),
-    // no per-probe canonicalization), and one qualified name can be interned
-    // under several Symbols.
-    for (functor, target, partial) in entries {
+    // Key each entry under BOTH the raw symbol and its canonical copy: one qualified name can
+    // be interned under several Symbols. No run-time reader asks by key (WI-20261105-CBRD2):
+    // the index answers which operations are a carrier's `eq` (`is_eq_dispatch_target`) and
+    // the load's own checks.
+    for (functor, target) in entries {
         let canon = kb.canonical_sym(functor);
-        kb.insert_eq_dispatch(functor, target, partial);
+        kb.insert_eq_dispatch(functor, target);
         if canon != functor {
-            kb.insert_eq_dispatch(canon, target, partial);
+            kb.insert_eq_dispatch(canon, target);
         }
     }
     ambiguous.sort_by(|(a, _), (b, _)| a.cmp(b));

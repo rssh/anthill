@@ -1727,9 +1727,10 @@ impl CallSigma {
     }
 }
 
-/// `goal`, a clause's conjunct at a call, with each comparison that holds no member typed at
-/// the call's arguments, as the same comparison written in an operation body is: one at the
-/// callee's type parameter (`eq(c, d)` over `c: T`, at a call at `Color`) has its member at the
+/// `goal`, a clause's conjunct at a call, with each comparison that holds no member, or one
+/// deferred to the callee's requirement, typed at the call's arguments, as the same comparison
+/// written in an operation body is: one at the callee's type parameter (`eq(c, d)` over `c: T`,
+/// at a call at `Color`; `neq(a, b)` under `requires PartialEq[T = T]`) has its member at the
 /// call's type, which the signature does not fix. One whose operands do not type there — a
 /// parameter of the caller the call hands over — keeps none, and does not decide until they
 /// are values.
@@ -1741,8 +1742,12 @@ fn comparisons_typed_at_the_call(kb: &mut KnowledgeBase, goal: Value) -> Value {
         let Some(expr) = node.as_expr() else { continue };
         if let Some((functor, pos, named)) = expr_call_parts(expr) {
             let arity = pos.len() + named.len();
+            // A comparison deferred to the callee's requirement is typed here too: at the call
+            // the requirement is at the call's types, and its member is theirs.
             if is_equality_comparison(kb, functor)
-                && !node.call_class().is_some_and(|class| goal_reads_member(kb, functor, arity, &class))
+                && !node
+                    .call_class()
+                    .is_some_and(|class| goal_reads_member(kb, functor, arity, &class) && !class.at_a_requirement())
             {
                 let class = typable_comparison(kb, &node, node.span).ok().and_then(|copy| {
                     type_check_node(kb, &TypingEnv::empty(), &copy, None).ok()?;

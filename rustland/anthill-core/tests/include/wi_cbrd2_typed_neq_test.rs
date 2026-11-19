@@ -9,8 +9,9 @@
 //! constructor names.
 //!
 //! The index names the member the typer does for each of these programs, so their verdicts
-//! are the same either way: what the rows measure is that the index is not read
-//! (`resolve::eq_index_reads_by_this_thread`), beside the verdicts.
+//! are the same either way: what the rows measured was that the index is not read
+//! (`resolve::eq_index_reads_by_this_thread`), beside the verdicts, until the index's run-time
+//! readers went (see the end of this note).
 //!
 //! ## What fails with the change backed out
 //!
@@ -34,10 +35,14 @@
 //! * A `neq` carried whatever its class: [`a_generic_neq_is_read_through_an_untyped_eq`] fails,
 //!   `needy(1, 2)` refused under `requires neq(a, b)` at `T` — the class deferred to `needy`'s
 //!   requirement ran the body where no frame holds it.
+//!
+//! THE INDEX READS ARE NO LONGER COUNTED (WI-20261105-CBRD2, part 5r): every run-time reader of
+//! the equality index is gone, and its counter with them, so no comparison can be decided by
+//! reading a value's constructor there. A back-out above that fails "on the index reads" is of
+//! code that no longer exists; the rows keep their verdicts.
 
 use anthill_core::kb::node_occurrence::Expr;
 use anthill_core::kb::proof_verify::{verify_proofs, ProofVerdict};
-use anthill_core::kb::resolve::eq_index_reads_by_this_thread;
 use anthill_core::kb::typing::{in_body_proof_goal, prove_from_gamma, FlowEnv};
 
 use crate::common::{load_errors_of, load_kb_with, load_stdlib_kb, query_pattern_term};
@@ -79,17 +84,14 @@ end
 
 /// `f`'s result and the equality index reads it made, the shared base loaded first so its own
 /// load is not counted.
-fn counting<R>(f: impl FnOnce() -> R) -> (R, usize) {
+fn counting<R>(f: impl FnOnce() -> R) -> R {
     drop(load_stdlib_kb());
-    let before = eq_index_reads_by_this_thread();
-    let r = f();
-    (r, eq_index_reads_by_this_thread() - before)
+    f()
 }
 
 /// The load errors of `src`, asserting the load read no equality index.
 fn errors_reading_no_index(src: &str) -> Vec<String> {
-    let (errs, reads) = counting(|| load_errors_of(src));
-    assert_eq!(reads, 0, "the load read the equality index; errors {errs:?}");
+    let errs = counting(|| load_errors_of(src));
     errs
 }
 
@@ -141,14 +143,13 @@ fn a_postcondition_neq_reads_its_carriers_eq() {
         );
         for (tag, color, discharged) in [("c", CUSTOM_EQ, false), ("s", STRUCTURAL_EQ, true)] {
             let mut kb = load_kb_with(&src(&format!("test.cbrd2.tneq.post{n}{tag}"), color, &ops));
-            let (verdict, reads) = counting(|| {
+            let verdict = counting(|| {
                 verify_proofs(&mut kb)
                     .into_iter()
                     .find(|r| r.rule_qn.ends_with("pick.ensures"))
                     .expect("the proof is reported")
                     .verdict
             });
-            assert_eq!(reads, 0, "`{goal}`: the proof read the equality index");
             assert_eq!(
                 matches!(verdict, ProofVerdict::Discharged),
                 discharged,
@@ -169,8 +170,7 @@ fn an_in_body_neq_reads_its_carriers_eq() {
         ("test.cbrd2.tneq.ins", STRUCTURAL_EQ, true),
     ] {
         let program = src(ns, color, ops);
-        let (mut kb, reads) = counting(|| load_kb_with(&program));
-        assert_eq!(reads, 0, "{ns}: the load read the equality index");
+        let mut kb = counting(|| load_kb_with(&program));
         let caller = kb.try_resolve_symbol(&format!("{ns}.caller")).expect("caller");
         let body = kb.op_body_node(caller).expect("caller's body");
         let Some(Expr::Proof {
@@ -180,11 +180,10 @@ fn an_in_body_neq_reads_its_carriers_eq() {
             panic!("caller's body is not the proof: {:?}", body.as_expr());
         };
         let (target, conclude) = (*target, conclude.clone());
-        let (proved, reads) = counting(|| {
+        let proved = counting(|| {
             let goal = in_body_proof_goal(&mut kb, target, conclude.as_ref());
             prove_from_gamma(&mut kb, &FlowEnv::empty(), &goal)
         });
-        assert_eq!(reads, 0, "{ns}: the proof read the equality index");
         assert_eq!(proved, discharged, "{ns}");
     }
 }
@@ -202,8 +201,7 @@ fn a_rule_body_neq_reads_its_carriers_eq() {
         let mut kb = load_kb_with(&src(ns, color, rules));
         for (rule, holds) in [("rc()", !custom), ("ro()", !custom), ("rn()", custom)] {
             let goal = query_pattern_term(&mut kb, &format!("{ns}.{rule}"));
-            let (got, reads) = counting(|| kb.resolve(&[goal], &Default::default()));
-            assert_eq!(reads, 0, "`{rule}` read the equality index");
+            let got = counting(|| kb.resolve(&[goal], &Default::default()));
             assert_eq!(got.iter().any(|s| s.is_definite()), holds, "{ns}: `{rule}`");
         }
     }
@@ -221,8 +219,7 @@ fn a_rule_body_neq_over_a_bound_variable_reads_its_carriers_eq() {
     ] {
         let mut kb = load_kb_with(&src(ns, color, rules));
         let goal = query_pattern_term(&mut kb, &format!("{ns}.rv(?c)"));
-        let (got, reads) = counting(|| kb.resolve(&[goal], &Default::default()));
-        assert_eq!(reads, 0, "{ns}: `rv(?c)` read the equality index");
+        let got = counting(|| kb.resolve(&[goal], &Default::default()));
         assert_eq!(got.iter().filter(|s| s.is_definite()).count(), rows, "{ns}: `rv(?c)`");
     }
 }
@@ -254,8 +251,7 @@ fn a_neq_reads_an_eq_bound_by_the_provision() {
     let rule_only = "  rule rc() :- neq(Green, Red)";
     let mut kb = load_kb_with(&src("test.cbrd2.tneq.bindr", color, rule_only));
     let goal = query_pattern_term(&mut kb, "test.cbrd2.tneq.bindr.rc()");
-    let (got, reads) = counting(|| kb.resolve(&[goal], &Default::default()));
-    assert_eq!(reads, 0, "`rc()` read the equality index");
+    let got = counting(|| kb.resolve(&[goal], &Default::default()));
     assert!(!got.iter().any(|s| s.is_definite()), "`sameColor` holds of `(Green, Red)`");
 }
 

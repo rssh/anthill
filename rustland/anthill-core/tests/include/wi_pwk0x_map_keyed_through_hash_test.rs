@@ -1,15 +1,20 @@
 //! A `Map` keys through `Hash[T = K]` (library proposal 001-map, phase 2a): `Map requires
-//! Hash[T = K]`, `Map.empty()` is handed the instance and the map keeps it. A key no `eq` of
-//! its own reaches is keyed by its structure; one whose sort writes its own `eq` is hashed
-//! through the instance and compared through `eq` with the stored keys of its bucket alone,
+//! Hash[T = K]`, `Map.empty()` is handed the instance and the map keeps it. A map whose `K`
+//! compares as its structure — read off `K`'s instance where the map is made, not off a key
+//! (WI-20261105-CBRD2: the equality index is no run-time reader) — keys by structure; one whose
+//! `K` reaches an `eq` of its own is hashed through the instance and compared through `eq` with
+//! the stored keys of its bucket alone,
 //! so a map never compares a key with every stored one (user, 2026-11-17: "Map with O(n) is
 //! unacceptable"). `Hash` is derived where `Eq` is structural and written beside an own `eq`.
 //!
 //! BACK-OUTS, each a temporary switch in one build (`wi_brt4y`'s rule-body row run beside):
-//!   * every key keyed by its structure: 6 FAIL — [`an_own_eq_with_its_hash_is_one_key`],
+//!   * every key keyed by its structure: 7 FAIL — [`an_own_eq_with_its_hash_is_one_key`],
 //!     [`a_composite_or_tuple_over_such_a_key_is_one_key`], [`the_laws_guard_agrees_with_an_own_eq`],
-//!     [`a_sorted_set_built_in_two_orders_is_one_key`], [`a_rule_body_map_is_said_by_its_key`]
-//!     and [`building_a_map_compares_a_key_with_its_bucket_alone`] (no comparison at all);
+//!     [`a_sorted_set_built_in_two_orders_is_one_key`], [`a_rule_body_map_is_said_by_its_key`],
+//!     [`building_a_map_compares_a_key_with_its_bucket_alone`] (no comparison at all) and
+//!     [`a_derived_hash_tells_constructors_apart`] (re-measured 2026-11-19 with the keying read
+//!     off `K`'s instance); every key hashed through the instance instead: 1 FAILS,
+//!     `wi_qj6x1_a_builtin_judges_the_value_test::a_runtime_handle_is_no_key`;
 //!   * a key compared with every stored key, not its bucket's: 1 FAILS,
 //!     [`building_a_map_compares_a_key_with_its_bucket_alone`] (4950 comparisons, not 0);
 //!   * the written key type judged at `Eq` alone: 2 FAIL,

@@ -26,7 +26,11 @@
 //! pass either way by design: the control, and the verdicts of a call whose spec operation's
 //! guard is at a type parameter.
 
-use anthill_core::kb::resolve::eq_index_reads_by_this_thread;
+//!
+//! THE INDEX READS ARE NO LONGER COUNTED (WI-20261105-CBRD2, part 5r): every run-time reader of
+//! the equality index is gone, and its counter with them, so no comparison can be decided by
+//! reading a value's constructor there. A back-out above that fails "on the index reads" is of
+//! code that no longer exists; the rows keep their verdicts.
 
 use crate::common::{load_errors_of, load_stdlib_kb};
 
@@ -71,11 +75,10 @@ end
 
 /// The load errors of `src` and the equality index reads the load made, the shared base
 /// loaded first so its own load is not counted.
-fn errors_and_index_reads(src: &str) -> (Vec<String>, usize) {
+fn errors_and_index_reads(src: &str) -> Vec<String> {
     drop(load_stdlib_kb());
-    let before = eq_index_reads_by_this_thread();
     let errs = load_errors_of(src);
-    (errs, eq_index_reads_by_this_thread() - before)
+    errs
 }
 
 const ADVICE: &str = "`===` compares any two values structurally";
@@ -133,8 +136,7 @@ fn a_guard_comparison_is_refuted_at_its_carriers_eq() {
              operation caller() -> Int64 = risky({arg})"
         );
         for (tag, color, owes) in [("c", CUSTOM_EQ, custom_owes), ("s", STRUCTURAL_EQ, !custom_owes)] {
-            let (errs, reads) = errors_and_index_reads(&src(&format!("test.cbrd2.egc.g{n}{tag}"), color, &ops));
-            assert_eq!(reads, 0, "`{guard}` at `risky({arg})`, {tag}: the load read the equality index");
+            let errs = errors_and_index_reads(&src(&format!("test.cbrd2.egc.g{n}{tag}"), color, &ops));
             assert_eq!(
                 errs.iter().any(|e| e.contains("undeclared effect: Boom")),
                 owes,
@@ -155,8 +157,7 @@ fn a_rule_body_precondition_is_refuted_at_its_carriers_eq() {
         ("test.cbrd2.egc.rbc", CUSTOM_EQ, true),
         ("test.cbrd2.egc.rbs", STRUCTURAL_EQ, false),
     ] {
-        let (errs, reads) = errors_and_index_reads(&src(ns, color, ops));
-        assert_eq!(reads, 0, "{ns}: the load read the equality index");
+        let errs = errors_and_index_reads(&src(ns, color, ops));
         assert_eq!(
             errs.iter().any(|e| e.contains("needy.requires")),
             refused,

@@ -799,15 +799,10 @@ pub(crate) struct SortOpsTable {
     /// sort's entity constructors and its SELF-RETURNING ops (the shapes its
     /// values are made of — `Set.insert`/`Set.empty`; a non-self-returning
     /// op like `Map.get` returns a DIFFERENT sort's value and must not key
-    /// dispatch here). Read per `eq`/`neq` goal on the structurally-unequal
-    /// path (`resolve.rs` `sem_eq_dispatch_target`) — one hash probe, no
-    /// string hashing, no KB scans.
+    /// dispatch here). NO RUN-TIME READER ASKS IT BY A VALUE'S HEAD (WI-20261105-CBRD2): a
+    /// typed comparison carries its member, and one no type reached is an error. Its values
+    /// answer which operations are a carrier's `eq` ([`KnowledgeBase::is_eq_dispatch_target`]).
     eq_dispatch: HashMap<Symbol, Symbol>,
-    /// WI-20261025-TSYS6 — the keys of [`Self::eq_dispatch`] whose carrier provides no
-    /// `Eq`: its own `eq` decides even identical operands, reflexivity being `Eq`'s law
-    /// (`eq_refl`) and not `PartialEq`'s (kernel-language.md §8.3). Written with each entry,
-    /// so a later load that gives the carrier `Eq` takes its key out.
-    eq_dispatch_partial: HashSet<Symbol>,
     /// The members of [`Self::eq_dispatch`], each under its symbol and its canonical copy, with
     /// whether every carrier whose `eq` it is provides `Eq` and the member is typed at it: then
     /// identical operands are equal by `eq_refl` and the member is not asked
@@ -8852,15 +8847,9 @@ impl KnowledgeBase {
     }
 
     /// WI-616 — record a `value-head functor → carrier's eq` dispatch
-    /// entry. Called only by `load::build_eq_dispatch_index`. `partial`: the carrier
-    /// provides no `Eq` ([`Self::eq_dispatch_is_partial`]).
-    pub(crate) fn insert_eq_dispatch(&mut self, functor: Symbol, target: Symbol, partial: bool) {
+    /// entry. Called only by `load::build_eq_dispatch_index`.
+    pub(crate) fn insert_eq_dispatch(&mut self, functor: Symbol, target: Symbol) {
         self.sort_ops.eq_dispatch.insert(functor, target);
-        if partial {
-            self.sort_ops.eq_dispatch_partial.insert(functor);
-        } else {
-            self.sort_ops.eq_dispatch_partial.remove(&functor);
-        }
     }
 
     /// Forget which members are a carrier's `eq` ([`Self::is_lawful_eq_member`]), ahead of the
@@ -8963,23 +8952,6 @@ impl KnowledgeBase {
             .unwrap_or(EqLaw::Never)
     }
 
-    /// WI-20261025-TSYS6 — is a value headed by `functor` of a carrier whose own `eq` decides
-    /// identical operands too — one with an `eq` of its own that provides no `Eq`? O(1).
-    pub(crate) fn eq_dispatch_is_partial(&self, functor: Symbol) -> bool {
-        let partial = self.sort_ops.eq_dispatch_partial.contains(&functor);
-        if partial {
-            crate::kb::resolve::note_eq_index_read();
-        }
-        partial
-    }
-
-    /// WI-20261025-TSYS6 — does any carrier's own `eq` decide identical operands
-    /// ([`Self::eq_dispatch_is_partial`])? One read that keeps semantic equality's hot path
-    /// free of head probes in a KB with none, which is nearly every KB.
-    pub(crate) fn has_partial_eq_dispatch(&self) -> bool {
-        !self.sort_ops.eq_dispatch_partial.is_empty()
-    }
-
     /// The sort of tuple types (proposal 004's extension), whose derived instances of
     /// `PartialEq` and `Eq` hold one sub-dictionary per component; `None` in a KB without the
     /// prelude.
@@ -8993,17 +8965,6 @@ impl KnowledgeBase {
         self.local_name_of(sort) == "NamedTuple"
             && self.named_tuple_sort()
             .is_some_and(|n| self.canonical_sort_sym(n) == self.canonical_sort_sym(sort))
-    }
-
-    /// WI-616 — the carrier `eq` override a value headed by `functor`
-    /// dispatches semantic equality through, if any. O(1); `None` = the value's
-    /// carrier has no own `eq` (structural equality is its instance).
-    pub(crate) fn eq_dispatch_target(&self, functor: Symbol) -> Option<Symbol> {
-        let target = self.sort_ops.eq_dispatch.get(&functor).copied();
-        if target.is_some() {
-            crate::kb::resolve::note_eq_index_read();
-        }
-        target
     }
 
     /// Is `op` the `eq` some carrier's equality is dispatched to? The one operation a
@@ -9144,14 +9105,6 @@ impl KnowledgeBase {
     /// first while taking the silent answer on an empty second.
     pub fn default_provider_index(&self) -> Option<&defaults::DefaultProviderIndex> {
         self.default_providers.as_ref()
-    }
-
-    /// WI-616 — whether ANY carrier in the KB overrides `eq` (the dispatch
-    /// index is non-empty). The resolver's semantic-eq fast path: when no
-    /// override exists at all, structurally-distinct operands need no
-    /// reachable-override scan.
-    pub(crate) fn has_eq_dispatch_entries(&self) -> bool {
-        !self.sort_ops.eq_dispatch.is_empty()
     }
 
     /// Canonicalize any symbol to the single resolved `Symbol` for its

@@ -114,8 +114,6 @@ thread_local! {
     /// it survives `bridge_op_to_eval`'s `mem::take` of the KB and is shared by
     /// every re-entrant bridge on the thread regardless of which KB instance runs.
     static BRIDGE_REENTRY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// [`eq_index_reads_by_this_thread`].
-    static EQ_INDEX_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// [`untyped_equalities_by_this_thread`].
     static UNTYPED_EQUALITIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -124,7 +122,7 @@ thread_local! {
 /// a resolver's `eq` goal whose call class names none, and the interpreter's `PartialEq.eq`
 /// reached with none. Such an equality is an error where it runs (kernel-language §8.3), so
 /// this counts the errors raised; its operands are not compared. An instrument
-/// for tests, as [`eq_index_reads_by_this_thread`] is: that a goal the resolver or a library
+/// for tests: that a goal the resolver or a library
 /// operation builds carries its member.
 pub fn untyped_equalities_by_this_thread() -> usize {
     UNTYPED_EQUALITIES.with(|c| c.get())
@@ -135,22 +133,6 @@ pub(crate) fn note_untyped_equality() {
     UNTYPED_EQUALITIES.with(|c| c.set(c.get() + 1));
 }
 
-/// How many times the equality index has answered a question about a value's constructor ON
-/// THIS THREAD, ever: the carrier's `eq` a value headed by it has, or that the `eq` decides
-/// identical operands — the member and the law a comparison no type reached is read at. A probe
-/// that finds nothing is not counted: it decides nothing. An instrument for
-/// what a verdict cannot show, as the index names the member and the law the typer would: that a
-/// typed comparison was decided at what the typer gave it. A test reads it before and after a
-/// load or a query and asserts on the difference; a libtest thread runs one test.
-pub fn eq_index_reads_by_this_thread() -> usize {
-    EQ_INDEX_READS.with(|c| c.get())
-}
-
-/// Count one read of the equality index ([`eq_index_reads_by_this_thread`]).
-pub(crate) fn note_eq_index_read() {
-    EQ_INDEX_READS.with(|c| c.set(c.get() + 1));
-}
-
 thread_local! {
     static UNPINNED_SPEC_GOALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static VALUE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -159,7 +141,7 @@ thread_local! {
 
 /// How many times a call's dictionaries were derived from its argument values ON THIS THREAD,
 /// ever (`typing::resolve_bridge_requirements`): a slot of the call's chain no one passed, built
-/// at the types the values carry. An instrument for tests, as [`eq_index_reads_by_this_thread`]
+/// at the types the values carry. An instrument for tests, as [`untyped_equalities_by_this_thread`]
 /// is.
 pub fn bridge_derivations_by_this_thread() -> usize {
     BRIDGE_DERIVATIONS.with(|c| c.get())
@@ -172,7 +154,7 @@ pub(crate) fn note_bridge_derivation() {
 
 /// How many dictionary reads for a call the search has answered ON THIS THREAD, ever, with no
 /// dictionary passed in: reads that look the provider up from the call's argument values. An
-/// instrument for tests, as [`eq_index_reads_by_this_thread`] is.
+/// instrument for tests, as [`untyped_equalities_by_this_thread`] is.
 pub fn value_reads_by_this_thread() -> usize {
     VALUE_READS.with(|c| c.get())
 }
@@ -181,7 +163,7 @@ pub fn value_reads_by_this_thread() -> usize {
 /// or its result-column view ON THIS THREAD, ever, with neither the member the typer pinned nor
 /// a dictionary a clause wove in: goals that, run as a call, have their member found from the
 /// argument's value. A goal answered from a hypothesis instead is counted too. An instrument for
-/// tests, as [`eq_index_reads_by_this_thread`] is.
+/// tests, as [`untyped_equalities_by_this_thread`] is.
 pub fn unpinned_spec_goals_by_this_thread() -> usize {
     UNPINNED_SPEC_GOALS.with(|c| c.get())
 }
@@ -6418,18 +6400,13 @@ enum OccPattern {
 ///   "reaches …" scans), which also fixes the empty-children (pure-leaf) verdict.
 /// * `chase_sigma` — whether a `Var(Global)` head is resolved through σ (the
 ///   dispatch-time gates chase; the structural gates read already-reduced values).
-/// * `head_check` — an optional head-level short-circuit ([`HeadCheck`]).
 /// * `opaque` — the verdict for an [`ViewHead::Opaque`] carrier (normally the
 ///   combine identity; [`HOLDS_OPAQUE`] is the gate that asks for it).
-/// * `depth_cap` — an optional `(cap, verdict-at-cap)` bound (only the
-///   `reaches_eq_override` scan caps, conservatively `true` at 256).
 #[derive(Clone, Copy)]
 pub(crate) struct GateSpec {
     combine: Combine,
     chase_sigma: bool,
-    head_check: HeadCheck,
     opaque: bool,
-    depth_cap: Option<(usize, bool)>,
 }
 
 /// How a [`GateSpec`] folds child verdicts — and, for a pure leaf with no child,
@@ -6442,54 +6419,12 @@ enum Combine {
     Any,
 }
 
-/// The head-level short-circuit a gate applies before recursing into children.
-/// Each reads only the head's `ViewHead` plus the KB's classification tables, so a
-/// gate is a fixed, `&self`-free predicate (the whole point of the unification —
-/// adding a value carrier can no longer silently omit an arm).
-#[derive(Clone, Copy)]
-enum HeadCheck {
-    /// No head short-circuit — always recurse (deep groundness).
-    AlwaysRecurse,
-    /// WI-616: the head functor is an eq-dispatch-index carrier (overrides `eq`),
-    /// read off either the `Functor` or the canonical bare-`Ref` spelling.
-    EqOverride,
-    /// Is the value equal to itself by `Eq`'s law alone? A `Float` is not (`nan`); a value
-    /// of a carrier whose own `eq` is lawful is; one whose `eq` is not, or is lawful only
-    /// on some carriers, may not be; a derived member's carrier is equal to itself where
-    /// its fields are, so its children are read.
-    SelfEqualByLaw,
-}
-
-/// The outcome of a [`HeadCheck`] at a node: a definite short-circuit verdict, or
-/// "descend into the children".
-enum HeadVerdict {
-    Stop(bool),
-    Recurse,
-}
-
-/// Reach-scan depth cap (WI-616): a buried-override scan on a pathologically deep
-/// value conservatively reports "reaches" at this depth rather than recursing
-/// unboundedly. Only [`REACHES_EQ_OVERRIDE`] caps.
-const REACH_DEPTH_CAP: usize = 256;
-
 /// WI-616 — deep groundness: no unbound variable anywhere inside a σ-walked value.
 pub(crate) const DEEP_GROUND: GateSpec = GateSpec {
     combine: Combine::All,
     chase_sigma: true,
-    head_check: HeadCheck::AlwaysRecurse,
     // A runtime handle (`Map`/`Closure`/…) has no unbound var leaf — ground.
     opaque: true,
-    depth_cap: None,
-};
-
-/// WI-616 — does the value structurally CONTAIN an eq-dispatch-override carrier?
-pub(crate) const REACHES_EQ_OVERRIDE: GateSpec = GateSpec {
-    combine: Combine::Any,
-    chase_sigma: true,
-    head_check: HeadCheck::EqOverride,
-    // An opaque carrier overrides nothing reachable here.
-    opaque: false,
-    depth_cap: Some((REACH_DEPTH_CAP, true)),
 };
 
 /// Does the value hold an opaque carrier — a closure, a runtime handle — anywhere? The
@@ -6497,52 +6432,8 @@ pub(crate) const REACHES_EQ_OVERRIDE: GateSpec = GateSpec {
 pub(crate) const HOLDS_OPAQUE: GateSpec = GateSpec {
     combine: Combine::Any,
     chase_sigma: false,
-    head_check: HeadCheck::AlwaysRecurse,
     opaque: true,
-    depth_cap: None,
 };
-
-/// Is the value equal to itself by `Eq`'s law, whatever it is compared with — so that a
-/// comparison of it with an identical value need not enter a member? See
-/// [`HeadCheck::SelfEqualByLaw`]. A variable and an opaque handle are not known to be;
-/// past the cap, no.
-pub(crate) const SELF_EQUAL_BY_LAW: GateSpec = GateSpec {
-    combine: Combine::All,
-    chase_sigma: true,
-    head_check: HeadCheck::SelfEqualByLaw,
-    opaque: false,
-    depth_cap: Some((REACH_DEPTH_CAP, false)),
-};
-
-impl HeadCheck {
-    /// The head-level short-circuit for this gate — reads the head and the KB's
-    /// classification tables only.
-    fn classify(self, kb: &KnowledgeBase, head: &ViewHead) -> HeadVerdict {
-        match self {
-            HeadCheck::AlwaysRecurse => HeadVerdict::Recurse,
-            // A composite's derived `eq` compares its constructor and each field through
-            // the field's own `eq`: it is an override exactly where a field is, so the scan
-            // looks inside it.
-            HeadCheck::EqOverride => match head
-                .functor_sym()
-                .and_then(|s| kb.eq_dispatch_target(s))
-            {
-                Some(target) if !kb.is_derived_member(target) => HeadVerdict::Stop(true),
-                _ => HeadVerdict::Recurse,
-            },
-            HeadCheck::SelfEqualByLaw => match head {
-                ViewHead::Const(Literal::Float(_)) => HeadVerdict::Stop(false),
-                _ => match head.functor_sym().and_then(|s| kb.eq_dispatch_target(s)) {
-                    Some(t) if kb.is_derived_member(t) => HeadVerdict::Recurse,
-                    Some(t) => {
-                        HeadVerdict::Stop(matches!(kb.eq_law_of_member(t), super::EqLaw::Always))
-                    }
-                    None => HeadVerdict::Recurse,
-                },
-            },
-        }
-    }
-}
 
 impl KnowledgeBase {
     /// Create a lazy search stream for the given goals. Representation-neutral
@@ -10110,9 +10001,10 @@ impl KnowledgeBase {
         // A tuple's equality the typer pinned to `NamedTuple`'s member compares each pair of
         // components at the member its sub-dictionary names, so one decided pair decides; with a
         // dictionary that is no term to read (a forward into a caller's frame) it is the member's,
-        // run through the bridge (step 4). One no type reached compares its components, each by
-        // these steps (eval's twin is in `semantic_equal`). One pinned to another member — a
-        // provision written at the tuple type — is that member's (step 4).
+        // run through the bridge (step 4). One pinned to another member — a provision written at
+        // the tuple type — is that member's (step 4). A typed tuple equality is pinned to one of
+        // the two, so one reached with no member is an error (WI-20261105-CBRD2): its components
+        // are not compared by their values.
         let tuple_pins = match pinned {
             Some(p)
                 if super::typing::impl_parent_sort_of_op(self, p.member)
@@ -10124,11 +10016,12 @@ impl KnowledgeBase {
         };
         match tuple_pins {
             None if pinned.is_none() => {
-                if let Some(pairs) = self.tuple_component_pairs(&a, &b) {
-                    if self.value_self_equal_by_law(&a, Some(subst)) && self.values_equal(&a, &b) {
-                        return sem_verdict(true, true);
-                    }
-                    return self.tuple_components_sem_eq(pairs, None, subst);
+                if self.tuple_component_pairs(&a, &b).is_some() {
+                    return BuiltinResult::Error(ResolveError::new(
+                        "a tuple equality reached with no member: a typed one is pinned to the \
+                         tuple's `eq`"
+                            .to_string(),
+                    ));
                 }
             }
             Some(Some((pins, labels))) => {
@@ -10144,48 +10037,23 @@ impl KnowledgeBase {
         // field is entered with (`some(7)` at `Option[T = Int64]`, not `some(nan)` at `Option[T
         // = Float]`). Without it its member decides identical operands too.
         //
-        // WI-20261025-TSYS6 — a goal no type reached reads it off its operands: an operand of
-        // a carrier whose own `eq` decides identical operands too (one that provides no `Eq`,
-        // or provides it under a condition) goes to that `eq`, unless every value inside is of
-        // a lawful carrier.
-        let lawful = match pinned {
-            Some(p) => p.lawful,
-            None => {
-                let own_eq_decides = self.has_partial_eq_dispatch()
-                    && (self.sem_eq_partial_head(&a) || self.sem_eq_partial_head(&b));
-                !own_eq_decides || self.value_self_equal_by_law(&a, Some(subst))
-            }
-        };
+        // A typed goal with no member to enter is at a member the host implements, an identity
+        // scalar's (`Int64.eq`; `Float`'s IEEE is step 1), or deferred to a requirement inside a
+        // proof, over skolems ([`Self::builtin_sem_eq`]): its law holds of identical operands,
+        // and two values apart are apart. Nothing is read off the operands' carriers: the
+        // equality index is no run-time reader (WI-20261105-CBRD2).
+        let lawful = pinned.is_none_or(|p| p.lawful);
         if lawful && self.values_equal(&a, &b) {
             return sem_verdict(true, true);
         }
-        // (3) No carrier overrides eq at all (the common KB): straight to
-        // the structural verdict — no per-operand probes or scans.
-        if pinned.is_none() && !self.has_eq_dispatch_entries() {
-            return sem_verdict(false, true);
-        }
-        // (4) Head-carrier override over GROUND operands ⇒ dispatch: the typer's pin, else the
-        // index.
-        let target = pinned.or_else(|| {
-            self.sem_eq_dispatch_target(&a)
-                .or_else(|| self.sem_eq_dispatch_target(&b))
-                .map(|member| PinnedEq {
-                    member,
-                    entry: None,
-                    lawful: false,
-                })
-        });
-        if let Some(target) = target {
+        // (3) The member the typer pinned, over GROUND operands.
+        if let Some(target) = pinned {
             if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
                 return BuiltinResult::delay();
             }
             return self.sem_eq_dispatch(target, a, b, subst);
         }
-        // (5) Buried override → suspend rather than mis-decide structurally.
-        if self.value_reaches_eq_override(&a, subst) || self.value_reaches_eq_override(&b, subst) {
-            return BuiltinResult::delay();
-        }
-        // (6) Structural verdict.
+        // (4) Structural verdict.
         sem_verdict(false, true)
     }
 
@@ -10444,30 +10312,6 @@ impl KnowledgeBase {
         }))
     }
 
-    /// WI-616 — the eq-dispatch index probe for one operand: its head functor's
-    /// entry (an entity constructor or self-returning op of an eq-overriding
-    /// carrier sort — see `load::build_eq_dispatch_index`). One O(1) hash
-    /// lookup; scalars and headless values read `None` (structural).
-    pub(crate) fn sem_eq_dispatch_target(&self, v: &Value) -> Option<Symbol> {
-        let functor = match v.head(self) {
-            ViewHead::Functor {
-                functor: s, ..
-            } => s,
-            _ => return None,
-        };
-        self.eq_dispatch_target(functor)
-    }
-
-    /// WI-20261025-TSYS6 — is `v` headed by a carrier whose own `eq` decides identical
-    /// operands too ([`KnowledgeBase::eq_dispatch_is_partial`])? Then neither reflexivity nor
-    /// a field-wise compare answers for it: its `eq` does.
-    pub(crate) fn sem_eq_partial_head(&self, v: &Value) -> bool {
-        match v.head(self) {
-            ViewHead::Functor { functor, .. } => self.eq_dispatch_is_partial(functor),
-            _ => false,
-        }
-    }
-
     /// WI-616 — prove the dispatched carrier equality `target(a, b)` by a
     /// bounded SUB-RESOLUTION (a fresh [`SearchStream`], fresh depth budget —
     /// rules-backed instances need no SLD→eval bridge; ordinary SLD is the
@@ -10702,20 +10546,7 @@ impl KnowledgeBase {
     /// walk; a value / occurrence carrier reads its head directly and chases
     /// a `Var(Global)` head through `resolve_as_value` below. Only the σ-chasing
     /// gates walk/chase; the structural gates read already-reduced values verbatim.
-    /// `depth` increments on each child and each σ-chase (never on the term-walk),
-    /// so a capped gate ([`REACHES_EQ_OVERRIDE`]) counts exactly as its twins did.
-    pub(crate) fn fold_gate(
-        &self,
-        v: &Value,
-        subst: Option<&Substitution>,
-        depth: usize,
-        spec: GateSpec,
-    ) -> bool {
-        if let Some((cap, at_cap)) = spec.depth_cap {
-            if depth >= cap {
-                return at_cap;
-            }
-        }
+    pub(crate) fn fold_gate(&self, v: &Value, subst: Option<&Substitution>, spec: GateSpec) -> bool {
         // A Term carrier leads with `walk_view` when a σ is present; the
         // structural gates pass `subst: None` — no bindings to follow —
         // and read the head as-is (an inert empty σ, without minting one per call).
@@ -10737,7 +10568,7 @@ impl KnowledgeBase {
                 match subst.and_then(|s| s.resolve_as_value(vid)) {
                     Some(bound) => {
                         let bound = bound.clone();
-                        self.fold_gate(&bound, subst, depth + 1, spec)
+                        self.fold_gate(&bound, subst, spec)
                     }
                     None => false,
                 }
@@ -10746,16 +10577,13 @@ impl KnowledgeBase {
             // a bare variable satisfies no gate.
             ViewHead::Var(_) => false,
             ViewHead::Opaque => spec.opaque,
-            head => match spec.head_check.classify(self, &head) {
-                HeadVerdict::Stop(verdict) => verdict,
-                HeadVerdict::Recurse => {
-                    let pos_arity = match head {
-                        ViewHead::Functor { pos_arity, .. } => pos_arity,
-                        _ => 0,
-                    };
-                    self.fold_gate_children(v, subst, depth, pos_arity, spec)
-                }
-            },
+            head => {
+                let pos_arity = match head {
+                    ViewHead::Functor { pos_arity, .. } => pos_arity,
+                    _ => 0,
+                };
+                self.fold_gate_children(v, subst, pos_arity, spec)
+            }
         }
     }
 
@@ -10766,14 +10594,13 @@ impl KnowledgeBase {
         &self,
         v: &Value,
         subst: Option<&Substitution>,
-        depth: usize,
         pos_arity: usize,
         spec: GateSpec,
     ) -> bool {
         for i in 0..pos_arity {
             match v.pos_arg(self, i) {
                 Some(child) => {
-                    let r = self.fold_gate(&child.to_value(), subst, depth + 1, spec);
+                    let r = self.fold_gate(&child.to_value(), subst, spec);
                     match spec.combine {
                         Combine::Any if r => return true,
                         Combine::All if !r => return false,
@@ -10794,7 +10621,7 @@ impl KnowledgeBase {
         for key in v.named_keys(self) {
             match v.named_arg(self, key) {
                 Some(child) => {
-                    let r = self.fold_gate(&child.to_value(), subst, depth + 1, spec);
+                    let r = self.fold_gate(&child.to_value(), subst, spec);
                     match spec.combine {
                         Combine::Any if r => return true,
                         Combine::All if !r => return false,
@@ -10816,26 +10643,7 @@ impl KnowledgeBase {
     /// walks through the ONE view-generic fold; scalars and runtime handles are
     /// ground.
     pub(crate) fn value_deep_ground(&self, v: &Value, subst: &Substitution) -> bool {
-        self.fold_gate(v, Some(subst), 0, DEEP_GROUND)
-    }
-
-    /// [`SELF_EQUAL_BY_LAW`] over a value, σ-threaded where a σ is given.
-    pub(crate) fn value_self_equal_by_law(&self, v: &Value, subst: Option<&Substitution>) -> bool {
-        self.fold_gate(v, subst, 0, SELF_EQUAL_BY_LAW)
-    }
-
-    /// WI-616 — the σ-threaded reach scan ([`REACHES_EQ_OVERRIDE`]) whose every
-    /// carrier (term / entity / tuple / occurrence, WI-685) reads through the ONE
-    /// view-generic fold.
-    ///
-    /// TWO READERS, ONE QUESTION — "would a STRUCTURAL verdict over this value be the
-    /// wrong relation?". [`Self::sem_eq_values_at`] outcome 5 asks it of an `eq` OPERAND
-    /// and suspends; WI-20260827-P1TPE's decline in [`Self::unfold_eq_operand`] asks it
-    /// of a case-split ARM'S RESIDUAL, the value that arm's `unify` goal is about to
-    /// compare, and declines the whole unfold. Both are the same predicate on the same
-    /// carrier, so a change to what counts as an override moves both together.
-    fn value_reaches_eq_override(&self, v: &Value, subst: &Substitution) -> bool {
-        self.fold_gate(v, Some(subst), 0, REACHES_EQ_OVERRIDE)
+        self.fold_gate(v, Some(subst), DEEP_GROUND)
     }
 
     /// WI-511: structural value equality that is CARRIER-AWARE — routes through
@@ -16213,7 +16021,7 @@ impl KnowledgeBase {
             Ok(v) if faults.is_empty() => v,
             _ => return None,
         };
-        if self.fold_gate(&other, None, 0, HOLDS_OPAQUE) {
+        if self.fold_gate(&other, None, HOLDS_OPAQUE) {
             return None;
         }
         // OTHER as a goal occurrence for the Node `unify(result, OTHER)` goal, through
@@ -18658,7 +18466,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         kb.assert_rule(myeq_head, vec![myeq_body], sort, domain, None);
-        kb.insert_eq_dispatch(box_sym, myeq, false);
+        kb.insert_eq_dispatch(box_sym, myeq);
 
         // `eq(box(1), box(2))` — two DISTINCT ground `box` operands (no reflexivity
         // shortcut), so dispatch fires `myeq(box(1), box(2))`, which truncates.
@@ -18707,7 +18515,7 @@ mod tests {
         // and the outer truncated flag must stay clear.
         let myeq0 = kb.intern("myeq0");
         let box0_sym = kb.intern("box0");
-        kb.insert_eq_dispatch(box0_sym, myeq0, false);
+        kb.insert_eq_dispatch(box0_sym, myeq0);
         let mk_box0 = |kb: &mut KnowledgeBase, n: i64| {
             let lit = kb.alloc(Term::Const(Literal::Int(n)));
             kb.alloc(Term::Fn {
@@ -18848,7 +18656,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         kb.assert_rule(head, vec![body_eq], sort, domain, None);
-        kb.insert_eq_dispatch(box_f, myeq_f, false);
+        kb.insert_eq_dispatch(box_f, myeq_f);
 
         let mk_box = |kb: &mut KnowledgeBase, n: i64| {
             let lit = kb.alloc(Term::Const(Literal::Int(n)));

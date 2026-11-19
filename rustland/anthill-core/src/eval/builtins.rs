@@ -6580,7 +6580,8 @@ fn map_empty(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
         .ok_or_else(|| EvalError::Internal("this KB declares no `Hash.hash`".to_string()))?;
     crate::kb::typing::resolve_op_target_checked(&interp.kb, key_hash.impl_sort(), hash_op)
         .map_err(|refusal| EvalError::dispatch_refused(&interp.kb, hash_op, key_hash.impl_sort(), refusal))?;
-    let handle = interp.alloc_map(super::map_arena::MapBody::keyed_by(key_hash));
+    let structural = keys_compare_as_structure(interp.kb_mut(), &key_hash);
+    let handle = interp.alloc_map(super::map_arena::MapBody::keyed_by(key_hash, structural));
     Ok(Value::Map(handle))
 }
 
@@ -6632,9 +6633,64 @@ pub fn map_key_comparisons_by_this_thread() -> u64 {
     MAP_KEY_COMPARISONS.with(|c| c.get())
 }
 
+/// Do the keys `K`'s `Hash` instance `key_hash` reads compare as their structure? Read off the
+/// instance, `K`'s type, and not off a key: `K`'s `PartialEq` (the `Eq` the `Hash` holds first,
+/// and the `PartialEq` that holds first — a tuple's `Eq` is its labelled `PartialEq` itself)
+/// compares as structure when its provider's does ([`sort_equality_is_structure`]) and each
+/// instance it holds for a parameter or a component does. A conservative answer: `false` keys
+/// through the instance, which is right for every `K`, and slower.
+pub(crate) fn keys_compare_as_structure(kb: &mut crate::kb::KnowledgeBase, key_hash: &Dictionary) -> bool {
+    let Some(eq) = key_hash.sub(0) else { return false };
+    let partial = if eq.labels().is_some() { Some(eq) } else { eq.sub(0) };
+    let Some(partial) = partial else { return false };
+    let eq_op = kb.eq_functor();
+    instance_equality_is_structure(kb, &partial, eq_op)
+}
+
+/// [`keys_compare_as_structure`] of one `PartialEq` instance and the instances it holds.
+fn instance_equality_is_structure(kb: &crate::kb::KnowledgeBase, partial: &Dictionary, eq_op: crate::intern::Symbol) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    sort_equality_is_structure(kb, partial.impl_sort(), eq_op, &mut seen)
+        && (0..partial.arity())
+            .all(|k| partial.sub(k).is_some_and(|sub| instance_equality_is_structure(kb, &sub, eq_op)))
+}
+
+/// Does `sort`'s equality compare as structure, its own type parameters left to the instances
+/// that hold them? An identity scalar's (`Int64`, `String`, …) and a tuple's do; a derived
+/// member does when every sort its fields name does; a member of the carrier's own, written,
+/// as clauses or by the host (`Float`'s IEEE), does not. A sort met again on the way is read
+/// as structure: a recursive one's field is compared by the member being asked, and a sort an
+/// earlier field already named answered `true` there — a `false` anywhere ends the walk, the
+/// fields read with `all`, which this answer relies on.
+fn sort_equality_is_structure(
+    kb: &crate::kb::KnowledgeBase,
+    sort: crate::intern::Symbol,
+    eq_op: crate::intern::Symbol,
+    seen: &mut std::collections::HashSet<crate::intern::Symbol>,
+) -> bool {
+    let sort = kb.canonical_sort_sym(sort);
+    if crate::kb::eq_derive::is_identity_scalar(kb, sort) || kb.is_named_tuple_sort(sort) {
+        return true;
+    }
+    if !seen.insert(sort) {
+        return true;
+    }
+    let Ok(member) = crate::kb::typing::resolve_op_target_checked(kb, sort, eq_op) else {
+        return false;
+    };
+    if !kb.is_derived_member(member) {
+        return false;
+    }
+    let params: Vec<crate::intern::Symbol> = kb.type_param_syms_of(sort).iter().map(|p| kb.canonical_sort_sym(*p)).collect();
+    crate::kb::eq_derive::composite_field_sorts(kb, sort).into_iter().all(|field| {
+        params.contains(&kb.canonical_sort_sym(field)) || sort_equality_is_structure(kb, field, eq_op, seen)
+    })
+}
+
 /// Where a key stands in a map ([`map_slot`]).
 enum MapSlot {
-    /// No `eq` of its own reaches the key: its structure is its slot.
+    /// The map's `K` compares as its structure (`MapBody::structural_keys`): the key's
+    /// structure is its slot.
     Structural(super::map_arena::MapKey),
     /// One does, and the key, hashed to `hash`, is equal to `key`, a stored key of that bucket.
     Stored { hash: i64, key: super::map_arena::MapKey },
@@ -6643,9 +6699,10 @@ enum MapSlot {
     New { hash: i64, key: super::map_arena::MapKey },
 }
 
-/// The slot `key` addresses in `body`, read through the map's `Hash[T = K]` instance. A key no
-/// `eq` of its own reaches is keyed by its structure, a tuple at the labels its type names
-/// ([`canonical_map_key`]); one that reaches one is hashed through the instance and compared
+/// The slot `key` addresses in `body`, read through the map's `Hash[T = K]` instance. In a map
+/// whose `K` compares as its structure ([`super::map_arena::MapBody::structural_keys`], read off `K`'s instance
+/// where the map was made) a key is keyed by its structure, a tuple at the labels its type
+/// names ([`canonical_map_key`]); in any other it is hashed through the instance and compared
 /// through `eq` with the stored keys of its bucket alone. `body` is the map's own copy, so the
 /// `hash` and `eq` members run with no borrow of the arena held.
 fn map_slot(
@@ -6657,7 +6714,7 @@ fn map_slot(
     let eq = body.key_hash().sub(0).ok_or_else(|| {
         EvalError::Internal("a map's `Hash` instance holds no `Eq` to compare its keys through".to_string())
     })?;
-    if !interp.kb.fold_gate(key, None, 0, crate::kb::resolve::REACHES_EQ_OVERRIDE) {
+    if body.structural_keys() {
         return Ok(MapSlot::Structural(map_key(&interp.kb, &canonical_map_key(&interp.kb, key, &eq)?)?));
     }
     let partial = eq.sub(0).ok_or_else(|| {
@@ -7433,14 +7490,6 @@ mod tests {
         Interpreter::new(crate::kb::KnowledgeBase::new())
     }
 
-    /// A tuple is read through the KB's `TupleLiteral`, which the prelude defines, its
-    /// positional components under `_N` labels the KB holds.
-    fn dummy_for_tuples() -> Interpreter {
-        let mut kb = crate::kb::KnowledgeBase::new();
-        crate::kb::load::register_prelude(&mut kb);
-        kb.intern_positional_labels(1);
-        Interpreter::new(kb)
-    }
 
     /// WI-881 — every `host_fn_by_key` entry's declared ARITY is the arity its function
     /// actually accepts.

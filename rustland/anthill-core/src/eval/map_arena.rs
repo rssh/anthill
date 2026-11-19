@@ -142,18 +142,29 @@ pub struct MapBody {
     buckets: ImHashMap<i64, ImVector<MapKey>>,
     /// `K`'s `Hash` instance, handed to the map's construction: every key is read through it.
     key_hash: super::dictionary::Dictionary,
+    /// Do `K`'s keys compare as their structure (`builtins::keys_compare_as_structure`)? Read
+    /// off `K`'s instance once, where the map is made: a key is then keyed by its structure,
+    /// and otherwise hashed and compared through the instance.
+    structural: bool,
 }
 
 impl MapBody {
-    /// An empty map whose keys are read through `key_hash`, `K`'s `Hash` instance.
-    pub fn keyed_by(key_hash: super::dictionary::Dictionary) -> Self {
+    /// An empty map whose keys are read through `key_hash`, `K`'s `Hash` instance; `structural`
+    /// when `K`'s equality is its structure.
+    pub fn keyed_by(key_hash: super::dictionary::Dictionary, structural: bool) -> Self {
         Self {
             lookup: ImHashMap::new(),
             order: ImOrdMap::new(),
             next: 0,
             buckets: ImHashMap::new(),
             key_hash,
+            structural,
         }
+    }
+
+    /// Do this map's keys compare as their structure ([`Self::keyed_by`])?
+    pub fn structural_keys(&self) -> bool {
+        self.structural
     }
 
     /// `K`'s `Hash` instance, which every key of this map is read through.
@@ -427,7 +438,7 @@ mod tests {
     #[test]
     fn alloc_and_drop_reclaims() {
         let arena = MapArenaRef::new();
-        let h = arena.alloc(MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit)));
+        let h = arena.alloc(MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit), true));
         assert_eq!(arena.live(), 1);
         drop(h);
         assert_eq!(arena.live(), 0);
@@ -436,7 +447,7 @@ mod tests {
     #[test]
     fn clone_bumps_refcount() {
         let arena = MapArenaRef::new();
-        let h = arena.alloc(MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit)));
+        let h = arena.alloc(MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit), true));
         let h2 = h.clone();
         drop(h);
         assert_eq!(arena.live(), 1);
@@ -478,7 +489,7 @@ mod tests {
         );
 
         // And the round-trip out of `keys` addresses that slot again.
-        let mut body = MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit));
+        let mut body = MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit), true);
         body.insert(via_symbolref.clone(), Value::Int(1));
         let back = body.keys().next().cloned().expect("one key");
         assert_eq!(
@@ -529,7 +540,7 @@ mod tests {
         );
 
         // One slot, reachable through each spelling.
-        let mut body = MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit));
+        let mut body = MapBody::keyed_by(Dictionary::wrapping_for_test(Value::Unit), true);
         body.insert(via_ref.clone(), Value::Int(4));
         assert_eq!(
             body.get(&name_key(&kb, c)).and_then(|v| match v {

@@ -7,8 +7,7 @@
 //! dispatched, as it does through a dictionary, rather than inside a comparison by value.
 //!
 //! Each row counts the equalities compared with no member the typer chose
-//! (`untyped_equalities_by_this_thread`) and the equality index's reads
-//! (`eq_index_reads_by_this_thread`) around the run, after the load.
+//! (`untyped_equalities_by_this_thread`) around the run, after the load.
 //!
 //! ## What fails with the change backed out
 //!
@@ -18,19 +17,19 @@
 //! * An `eq` member with no body or host implementation left the spec operation, as before
 //!   (`pins_an_equality_member` false): every row fails on the untyped count.
 //! * The bridge confirming the pinned member off the operands' values (`eq_bridge_target`
-//!   reading `sem_eq_dispatch_target`, as before): [`a_clause_written_member_is_pinned_and_proved`]
-//!   fails on the index count.
+//!   reading `sem_eq_dispatch_target`, as before) failed
+//!   [`a_clause_written_member_is_pinned_and_proved`] on the index count, measured in part 5p;
+//!   the reader and its count are gone since part 5r.
 
 use anthill_core::eval::{EvalError, HostValue, Value};
-use anthill_core::kb::resolve::{eq_index_reads_by_this_thread, untyped_equalities_by_this_thread};
+use anthill_core::kb::resolve::untyped_equalities_by_this_thread;
 
-/// Run `entry` (no arguments) over `src`; its result, and the untyped equalities and index
-/// reads the run made.
-fn run(src: &str, entry: &str) -> (Result<Value, EvalError>, usize, usize) {
+/// Run `entry` (no arguments) over `src`; its result, and the untyped equalities the run made.
+fn run(src: &str, entry: &str) -> (Result<Value, EvalError>, usize) {
     let mut interp = crate::common::interp_for(src);
-    let (untyped, reads) = (untyped_equalities_by_this_thread(), eq_index_reads_by_this_thread());
+    let untyped = untyped_equalities_by_this_thread();
     let got = interp.call(entry, &HostValue::all(&[])).map(|h| h.value);
-    (got, untyped_equalities_by_this_thread() - untyped, eq_index_reads_by_this_thread() - reads)
+    (got, untyped_equalities_by_this_thread() - untyped)
 }
 
 const COLOR: &str = "namespace cbrd2.cw.color
@@ -51,14 +50,13 @@ end
 ";
 
 /// `red = red` and `red = blue` over a `ceq` written as clauses: 1 and 0, each proved through
-/// `ceq`'s clauses, with no comparison by value and no read of the index.
+/// `ceq`'s clauses, with no comparison by value.
 #[test]
 fn a_clause_written_member_is_pinned_and_proved() {
     for (entry, want) in [("cbrd2.cw.color.same", 1), ("cbrd2.cw.color.other", 0)] {
-        let (got, untyped, reads) = run(COLOR, entry);
+        let (got, untyped) = run(COLOR, entry);
         assert!(matches!(got, Ok(Value::Int(v)) if v == want), "{entry}: {got:?}");
         assert_eq!(untyped, 0, "{entry}: an equality compared with no member");
-        assert_eq!(reads, 0, "{entry}: the member confirmed off the operands' values");
     }
 }
 
@@ -73,7 +71,7 @@ fn a_total_float_equality_is_its_member() {
   operation tf() -> Bool = eq(TotalFloat(raw: nan()), TotalFloat(raw: nan()))
 end
 ";
-    let (got, untyped, _) = run(src, "cbrd2.cw.tf.tf");
+    let (got, untyped) = run(src, "cbrd2.cw.tf.tf");
     assert!(matches!(got, Ok(Value::Bool(true))), "{got:?}");
     assert_eq!(untyped, 0, "an equality compared with no member");
 }
@@ -97,7 +95,7 @@ fn an_equality_member_nothing_defines_fails_at_its_dispatch() {
   operation drive() -> Int64 = if PartialEq.eq(red(), blue()) then 1 else 0
 end
 ";
-    let (got, untyped, _) = run(src, "cbrd2.cw.witness.drive");
+    let (got, untyped) = run(src, "cbrd2.cw.witness.drive");
     assert!(
         matches!(&got, Err(EvalError::OperationBodyMissing { name, .. }) if name == "cbrd2.cw.witness.ColorEq.eq"),
         "{got:?}"

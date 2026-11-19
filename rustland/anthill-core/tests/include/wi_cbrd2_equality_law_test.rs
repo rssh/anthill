@@ -11,9 +11,9 @@
 //! pinned to such a member keeps the law, as its class says; a direct call of the member does
 //! not.
 //!
-//! The verdicts are the ones the operands gave, so the rows measure the reading
-//! (`resolve::eq_index_reads_by_this_thread`, which counts each answer the index gives about a
-//! constructor) beside them.
+//! The verdicts are the ones the operands gave, so the rows measured the reading
+//! (`resolve::eq_index_reads_by_this_thread`, which counted each answer the index gave about a
+//! constructor) beside them, until the index's run-time readers went (see the end of this note).
 //!
 //! ## What fails with the change backed out
 //!
@@ -34,9 +34,12 @@
 //!   route through the caller's frame alone
 //!   [`an_equality_call_filling_its_members_requirement_keeps_its_law`], `atR()` answering 0.
 //!   The branch for a pinned member's own slots carries the law too; no program here reaches
-//!   it.
+//!   it.//!
+//! THE INDEX READS ARE NO LONGER COUNTED (WI-20261105-CBRD2, part 5r): every run-time reader of
+//! the equality index is gone, and its counter with them, so no comparison can be decided by
+//! reading a value's constructor there. The back-outs above that fail "on the index reads" are
+//! of code that no longer exists; the rows keep their verdicts.
 
-use anthill_core::kb::resolve::eq_index_reads_by_this_thread;
 
 use crate::common::{load_kb_with, load_stdlib_kb, query_pattern_term, run_int64};
 
@@ -60,20 +63,18 @@ end
     )
 }
 
-/// `f`'s result and the index's answers it read, the shared base loaded first.
-fn counting<R>(f: impl FnOnce() -> R) -> (R, usize) {
+/// `f`'s result, the shared base loaded first.
+fn counting<R>(f: impl FnOnce() -> R) -> R {
     drop(load_stdlib_kb());
-    let before = eq_index_reads_by_this_thread();
-    let r = f();
-    (r, eq_index_reads_by_this_thread() - before)
+    f()
 }
 
-/// Whether `<ns>.<rule>` holds definitely, and the index's answers its search read.
-fn holds(src: &str, ns: &str, rule: &str) -> (bool, usize) {
+/// Whether `<ns>.<rule>` holds definitely.
+fn holds(src: &str, ns: &str, rule: &str) -> bool {
     let mut kb = load_kb_with(src);
     let goal = query_pattern_term(&mut kb, &format!("{ns}.{rule}"));
-    let (got, reads) = counting(|| kb.resolve(&[goal], &Default::default()));
-    (got.iter().any(|s| s.is_definite()), reads)
+    let got = counting(|| kb.resolve(&[goal], &Default::default()));
+    got.iter().any(|s| s.is_definite())
 }
 
 /// `pt(x: 1) = pt(x: 1)` holds by the law where `Pt` provides `Eq`, and is `Pt.eq`'s `false`
@@ -84,8 +85,7 @@ fn a_rule_body_equality_reads_its_law_off_the_member() {
     for (ns, lawful) in [("test.cbrd2.law.rl", true), ("test.cbrd2.law.rp", false)] {
         let program = src(ns, lawful, rules);
         for (rule, want) in [("same()", lawful), ("apart()", false)] {
-            let (got, reads) = holds(&program, ns, rule);
-            assert_eq!(reads, 0, "{ns}: `{rule}` read the equality index");
+            let got = holds(&program, ns, rule);
             assert_eq!(got, want, "{ns}: `{rule}`");
         }
     }
@@ -102,8 +102,7 @@ fn a_composite_equality_reads_its_law_off_the_dictionary() {
     for (ns, lawful) in [("test.cbrd2.law.ol", true), ("test.cbrd2.law.op", false)] {
         let program = src(ns, lawful, rules);
         for (rule, want) in [("same()", lawful), ("floats()", true), ("nans()", false)] {
-            let (got, reads) = holds(&program, ns, rule);
-            assert_eq!(reads, 0, "{ns}: `{rule}` read the equality index");
+            let got = holds(&program, ns, rule);
             assert_eq!(got, want, "{ns}: `{rule}`");
         }
     }
@@ -133,8 +132,7 @@ fn an_operation_body_equality_reads_its_law_off_the_class() {
         let program = src(ns, lawful, ops);
         let want = i64::from(lawful);
         for (entry, want) in [("same", want), ("someSame", want), ("atX", 1), ("atInt", 0)] {
-            let (got, reads) = counting(|| run_int64(&program, &format!("{ns}.{entry}")));
-            assert_eq!(reads, 0, "{ns}: `{entry}` read the equality index");
+            let got = counting(|| run_int64(&program, &format!("{ns}.{entry}")));
             assert_eq!(got, Ok(want), "{ns}: `{entry}`");
         }
     }
@@ -167,8 +165,7 @@ fn an_equality_call_through_a_dictionary_keeps_its_law() {
 end
 "#;
     for (entry, want) in [("atY", 1), ("apartY", 0)] {
-        let (got, reads) = counting(|| run_int64(program, &format!("test.cbrd2.law.dict.{entry}")));
-        assert_eq!(reads, 0, "`{entry}` read the equality index");
+        let got = counting(|| run_int64(program, &format!("test.cbrd2.law.dict.{entry}")));
         assert_eq!(got, Ok(want), "`{entry}`");
     }
 }
@@ -202,8 +199,7 @@ fn an_equality_call_filling_its_members_requirement_keeps_its_law() {
 end
 "#;
     for (entry, want) in [("atR", 1), ("apartR", 0)] {
-        let (got, reads) = counting(|| run_int64(program, &format!("test.cbrd2.law.slot.{entry}")));
-        assert_eq!(reads, 0, "`{entry}` read the equality index");
+        let got = counting(|| run_int64(program, &format!("test.cbrd2.law.slot.{entry}")));
         assert_eq!(got, Ok(want), "`{entry}`");
     }
 }

@@ -3985,13 +3985,11 @@ the refutation is an ordinary resolution of the negated goal and `=` is the
 dispatched semantic test of §8.3 — so `{ Boom :- eq(c, Red) }` at `risky(Green)`
 drops `Boom` exactly when that carrier's `eq(Green, Red)` is *false*, and keeps it
 when the carrier calls them equal even though they are structurally distinct. A
-carrier with no override is decided structurally, since structural equality *is*
-its instance. The undecided cases keep the effect on the general rule above, and
-they are the ones a *structural* answer would get wrong: an operand still ranging
-over a runtime parameter or a rule variable; an **override reachable inside** an operand whose own
-carrier declares none (`eq(some(Green), some(Red))` over `Option[Color]`) — there is
-no instance at the head to dispatch, and recursing structurally would ignore
-`Color`'s; and — until WI-1125 — a carrier supplying a **`neq`**, which *nothing
+composite's derived `eq` is its instance as an own `eq` is: `eq(o, some(Red))` over
+`o: Option[Color]` is `Option`'s `eq` entered with `Color`'s dictionary, so `Color`'s
+own `eq` decides it at `risky(some(Green))` (WI-20261105-CBRD2: nothing reads a value's
+carrier). The undecided cases keep the effect on the general rule above: an operand
+still ranging over a runtime parameter or a rule variable; and — until WI-1125 — a carrier supplying a **`neq`**, which *nothing
 dispatches*: equality dispatch keys `PartialEq.eq` suppliers, and every evaluator
 computes `neq` as the negation of the dispatched `eq` (its body in `PartialEq`, §8.3). WI-755 held
 that case as a narrowed typer gate on this route alone; **WI-1125 decided `neq` is

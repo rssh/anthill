@@ -9,8 +9,7 @@
 //! as "a STRUCTURAL FORMER", and a sort applied to a tuple derived no equality.
 //!
 //! Each row is over a `Pt` whose own `eq` compares `x` alone, so `pt(1, 2)` and `pt(1, 9)` are
-//! equal by it and apart by structure: an answer of `true` is `Pt`'s member. The rows count the
-//! equality index's reads (`resolve::eq_index_reads_by_this_thread`) beside the answers.
+//! equal by it and apart by structure: an answer of `true` is `Pt`'s member.
 //!
 //! ## What fails with the change backed out
 //!
@@ -59,9 +58,13 @@
 //!
 //! [`a_tuple_with_a_component_without_equality_is_refused`] passes under every switch but the
 //! first, by design: the refusals it asserts held before.
+//!
+//! THE INDEX READS ARE NO LONGER COUNTED (WI-20261105-CBRD2, part 5r): every run-time reader of
+//! the equality index is gone, and its counter with them, so no comparison can be decided by
+//! reading a value's constructor there. A back-out above that fails "on the index reads" is of
+//! code that no longer exists; the rows keep their verdicts.
 
 use anthill_core::eval::Value;
-use anthill_core::kb::resolve::eq_index_reads_by_this_thread;
 
 use crate::common::{interp_for, load_errors_of, load_kb_with, pattern_answer_counts};
 
@@ -84,22 +87,18 @@ end
     )
 }
 
-/// `entry`'s `Bool` answer and the equality index's reads it made, on a fresh interpreter.
-fn run(src: &str, entry: &str) -> (bool, usize) {
+/// `entry`'s `Bool` answer, on a fresh interpreter.
+fn run(src: &str, entry: &str) -> bool {
     let mut interp = interp_for(src);
-    let before = eq_index_reads_by_this_thread();
-    let v = match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
+    match interp.call(entry, &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{entry}: expected a Bool, got {other:?}"),
-    };
-    (v, eq_index_reads_by_this_thread() - before)
+    }
 }
 
-/// The query `pattern`'s `(definite, total)` answers and the index's reads.
-fn ask(kb: &mut anthill_core::kb::KnowledgeBase, pattern: &str) -> ((usize, usize), usize) {
-    let before = eq_index_reads_by_this_thread();
-    let got = pattern_answer_counts(kb, pattern);
-    (got, eq_index_reads_by_this_thread() - before)
+/// The query `pattern`'s `(definite, total)` answers.
+fn ask(kb: &mut anthill_core::kb::KnowledgeBase, pattern: &str) -> (usize, usize) {
+    pattern_answer_counts(kb, pattern)
 }
 
 /// T1: `(pt(1, 2), 3) = (pt(1, 9), 3)` holds through `Pt`'s `eq`, and `(pt(1, 2), 3) = (pt(2,
@@ -122,10 +121,10 @@ fn a_typed_tuple_equality_reads_its_components_members() {
         (format!("({}, 3) = ({}, 3)", pt(1, 2), pt(1, 9)), (1, 1)),
         (format!("({}, 3) = ({}, 3)", pt(1, 2), pt(2, 9)), (0, 0)),
     ] {
-        assert_eq!(ask(&mut kb, &pattern), (want, 0), "`{pattern}`");
+        assert_eq!(ask(&mut kb, &pattern), want, "`{pattern}`");
     }
     for (entry, want) in [("op", true), ("opApart", false)] {
-        assert_eq!(run(&program, &format!("{ns}.{entry}")), (want, 0), "`{entry}`");
+        assert_eq!(run(&program, &format!("{ns}.{entry}")), want, "`{entry}`");
     }
 }
 
@@ -153,7 +152,7 @@ fn a_requirement_at_a_tuple_is_handed_its_dictionary() {
         ("nested", true),
         ("unit", true),
     ] {
-        assert_eq!(run(&program, &format!("{ns}.{entry}")), (want, 0), "`{entry}`");
+        assert_eq!(run(&program, &format!("{ns}.{entry}")), want, "`{entry}`");
     }
 }
 
@@ -170,9 +169,9 @@ fn a_sort_applied_to_a_tuple_derives_its_equality() {
          operation holderEq() -> Bool = holder(xs: [(pt(1, 2), 3)]) = holder(xs: [(pt(1, 9), 3)])",
     );
     let mut kb = load_kb_with(&program);
-    assert_eq!(ask(&mut kb, &format!("{ns}.listHolds()")), ((1, 1), 0));
-    assert_eq!(ask(&mut kb, &format!("{ns}.listApart()")), ((0, 0), 0));
-    assert_eq!(run(&program, &format!("{ns}.holderEq")), (true, 0));
+    assert_eq!(ask(&mut kb, &format!("{ns}.listHolds()")), (1, 1));
+    assert_eq!(ask(&mut kb, &format!("{ns}.listApart()")), (0, 0));
+    assert_eq!(run(&program, &format!("{ns}.holderEq")), true);
 }
 
 /// T7, T8, T5: a tuple with a component providing no `PartialEq` has none, and `PartialEq.eq`
@@ -212,8 +211,8 @@ fn a_tuples_law_is_its_components() {
         "  operation nanPair() -> Bool = (Float.div(0.0, 0.0), 1) = (Float.div(0.0, 0.0), 1)\n  \
          operation plain() -> Bool = (1, \"a\") = (1, \"a\")",
     );
-    assert_eq!(run(&program, &format!("{ns}.nanPair")).0, false);
-    assert_eq!(run(&program, &format!("{ns}.plain")).0, true);
+    assert_eq!(run(&program, &format!("{ns}.nanPair")), false);
+    assert_eq!(run(&program, &format!("{ns}.plain")), true);
 }
 
 /// A sort whose equality needs one of its parameters lawful — a field `s: Set[T = F]`, its
@@ -240,8 +239,8 @@ fn a_sort_needing_a_lawful_parameter_loads() {
          operation same() -> Bool = g(s: {{1, 2}}) = g(s: {{1, 2}})\n  \
          operation apart() -> Bool = g(s: {{1, 2}}) = g(s: {{1, 3}})\nend\n"
     );
-    assert_eq!(run(&program, &format!("{ns}.same")).0, true);
-    assert_eq!(run(&program, &format!("{ns}.apart")).0, false);
+    assert_eq!(run(&program, &format!("{ns}.same")), true);
+    assert_eq!(run(&program, &format!("{ns}.apart")), false);
 }
 
 /// A rule's `=` at a tuple holding an unbound component is decided by a component that is: `(?a,
@@ -255,8 +254,8 @@ fn a_decided_component_decides_a_tuple_with_an_unbound_one() {
         ns,
         "  fact v(1)\n  rule apart(?a) :- (?a, 3) = (1, 4)\n  rule bound(?a) :- (?a, 3) = (1, 3), v(?a)",
     ));
-    assert_eq!(ask(&mut kb, &format!("{ns}.apart(?a)")), ((0, 0), 0));
-    assert_eq!(ask(&mut kb, &format!("{ns}.bound(?a)")), ((1, 1), 0));
+    assert_eq!(ask(&mut kb, &format!("{ns}.apart(?a)")), (0, 0));
+    assert_eq!(ask(&mut kb, &format!("{ns}.bound(?a)")), (1, 1));
 }
 
 /// An `Eq` requirement at a tuple is handed the tuple's `Eq` dictionary where each component
@@ -266,7 +265,7 @@ fn an_eq_requirement_at_a_tuple_is_handed_its_dictionary() {
     let ns = "test.jwcnn.eqreq";
     let decl = "  operation sameEq[A](a: A, b: A) -> Bool requires Eq[T = A] = PartialEq.eq(a, b)\n";
     let program = src(ns, &format!("{decl}  operation pair() -> Bool = sameEq((pt(1, 2), 3), (pt(1, 9), 3))"));
-    assert_eq!(run(&program, &format!("{ns}.pair")), (true, 0));
+    assert_eq!(run(&program, &format!("{ns}.pair")), true);
     let errs = load_errors_of(&src(
         "test.jwcnn.eqreqf",
         &format!("{decl}  operation floats() -> Bool = sameEq((1, 0.5), (1, 0.5))"),
@@ -315,11 +314,11 @@ fn a_value_wider_than_its_tuple_type_is_compared_at_its_labels() {
         ("eqListWider", true),
         ("eqOpWider", true),
     ] {
-        assert_eq!(run(&program, &format!("{ns}.{entry}")).0, want, "`{entry}`");
+        assert_eq!(run(&program, &format!("{ns}.{entry}")), want, "`{entry}`");
     }
     let mut kb = load_kb_with(&program);
-    assert_eq!(ask(&mut kb, &format!("{ns}.ruleSame()")).0, (1, 1), "ruleSame");
-    assert_eq!(ask(&mut kb, &format!("{ns}.ruleApart()")).0, (0, 0), "ruleApart");
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleSame()")), (1, 1), "ruleSame");
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleApart()")), (0, 0), "ruleApart");
 }
 
 /// `neq` at a tuple type is `PartialEq`'s body run with the tuple's instance, `NamedTuple`'s
@@ -343,9 +342,9 @@ fn neq_at_a_tuple_type_runs_at_the_tuples_instance() {
          rule ruleSame() :- neq(wideA(), wideB())\n  \
          rule ruleApart() :- neq(wideA(), wideC())",
     );
-    assert_eq!(run(&program, &format!("{ns}.sameNq")).0, false, "sameNq");
-    assert_eq!(run(&program, &format!("{ns}.apartNq")).0, true, "apartNq");
+    assert_eq!(run(&program, &format!("{ns}.sameNq")), false, "sameNq");
+    assert_eq!(run(&program, &format!("{ns}.apartNq")), true, "apartNq");
     let mut kb = load_kb_with(&program);
-    assert_eq!(ask(&mut kb, &format!("{ns}.ruleSame()")).0, (0, 0), "ruleSame");
-    assert_eq!(ask(&mut kb, &format!("{ns}.ruleApart()")).0, (1, 1), "ruleApart");
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleSame()")), (0, 0), "ruleSame");
+    assert_eq!(ask(&mut kb, &format!("{ns}.ruleApart()")), (1, 1), "ruleApart");
 }
