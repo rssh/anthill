@@ -458,6 +458,9 @@ pub(super) fn infer_rule_body_requirements(
         let mut guarded: Vec<WeaveTarget> = Vec::new();
         let mut groups: Vec<(usize, SpecDemand, Vec<Rc<NodeOccurrence>>)> = Vec::new();
         let mut reads_before: Vec<Vec<Rc<NodeOccurrence>>> = vec![Vec::new(); sites.len()];
+        // The clause's reads of its sort's requirements for its calls, and those to place.
+        let mut sort_held: Vec<(ClauseGuard, Option<Rc<NodeOccurrence>>)> = Vec::new();
+        let mut sort_reads: Vec<Rc<NodeOccurrence>> = Vec::new();
         for (gi, demand) in demands {
             if let Some(out) = declared_guard_of(kb, rid, &guards, &demand) {
                 guarded.push((demand.call.call, vec![out], None));
@@ -479,6 +482,29 @@ pub(super) fn infer_rule_body_requirements(
             }
             if equation {
                 continue;
+            }
+            if clause_sort_supplies(kb, rid, demand.spec) {
+                if let Some(at) = demand.carriers.first().and_then(|c| c.inferred_type()) {
+                    let mut reads = Vec::new();
+                    let mut placed = Vec::new();
+                    if let Some(dict) = composed_from_sort_requirements(
+                        kb,
+                        rid,
+                        fd_sym,
+                        &mut sort_held,
+                        demand.spec,
+                        &at,
+                        &demand.call.call,
+                        &demand.call.call,
+                        &mut reads,
+                        &mut placed,
+                    ) {
+                        sort_reads.extend(placed);
+                        reads_before[gi].extend(reads);
+                        guarded.push((demand.call.call, vec![dict], None));
+                        continue;
+                    }
+                }
             }
             // A receiver bracket that writes the spec's carrier at a concrete type fixes the
             // instance at the call (`FiniteCollection[C = List[T = String]].size(?ls, ?n)`), as
@@ -656,7 +682,8 @@ pub(super) fn infer_rule_body_requirements(
             reached.iter().all(|r| *r),
             "P7VP4: an inferred demand's call was not found in its body"
         );
-        let mut body_out: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(new_body.len() + 2);
+        let mut body_out: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(new_body.len() + sort_reads.len() + 2);
+        body_out.extend(sort_reads);
         for (goal, reads) in new_body.into_iter().zip(reads_before) {
             body_out.extend(reads);
             body_out.push(goal);
@@ -1056,7 +1083,7 @@ fn composed_from_guards(
     type_global_vars(kb, at, &mut vars);
     let mut opened: HashMap<u32, VarId> = HashMap::new();
     for v in vars {
-        let param = caller_param_at(kb, rid, &Value::Var(Var::Global(v)))?;
+        let param = clause_param_slot_at(kb, rid, &Value::Var(Var::Global(v)))?;
         opened.insert(param, v);
     }
     // The guards at those parameters, each instance opened at the variables the typing names
@@ -1118,7 +1145,7 @@ fn composed_from_guards(
     // is what the citation chose (`cmpOrd[A = Int64, Ord = Descending]`), and its chain is that
     // choice's (§8.7): `WeakOrd.compare` under `Ord[T = A]` runs `Descending`'s. Nothing is read
     // from the call's values.
-    let at_parameter = caller_param_at(kb, rid, &at_written).is_some();
+    let at_parameter = clause_param_slot_at(kb, rid, &at_written).is_some();
     let tree = if at_parameter {
         let scope = ResolutionScope {
             available_requires: &entries,
@@ -1156,6 +1183,77 @@ fn composed_from_guards(
         tree
     };
     composed_dictionary_node(kb, rid, &tree, &held, site, reads)
+}
+
+/// The frame slot of the type parameter of clause `rid` that `at` is: one its head introduces
+/// ([`caller_param_at`]), or a parameter of the sort it is written in ([`sort_param_slots`]).
+fn clause_param_slot_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value) -> Option<u32> {
+    caller_param_at(kb, rid, at).or_else(|| {
+        let slots = sort_param_slots(kb, rid);
+        if slots.is_empty() {
+            return None;
+        }
+        caller_slot_at(kb, rid, at, &slots)
+    })
+}
+
+/// Kernel-language §5.3 — A RULE OF A SORT HOLDS THE REQUIREMENTS ITS SORT STATES, as the
+/// sort's operations do: a call of clause `rid` at an instance built over the sort's parameters
+/// (`?y = ?x` at `Self`, `Box[T = T]`, in `sort Box requires PartialEq[T = T]`) takes the
+/// dictionary the provisions build there from the sort's requirements at those parameters, each
+/// read as a guard of the clause is ([`sort_requirements_at_slot`]) and filled where the rule is
+/// cited. `held` keeps the clause's reads of them across its calls, each with the read to place
+/// before the body where the clause held none (taken out of it once placed). A call at the
+/// parameter itself is the sort's requirement already ([`call_read_is_the_sorts_requirement`]),
+/// and is left to it. `None` where `at` is no such instance, or the provisions build none.
+#[allow(clippy::too_many_arguments)]
+fn composed_from_sort_requirements(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    fd_sym: Symbol,
+    held: &mut Vec<(ClauseGuard, Option<Rc<NodeOccurrence>>)>,
+    spec: Symbol,
+    at: &Value,
+    site: &Rc<NodeOccurrence>,
+    anchor: &Rc<NodeOccurrence>,
+    reads: &mut Vec<Rc<NodeOccurrence>>,
+    placed: &mut Vec<Rc<NodeOccurrence>>,
+) -> Option<Rc<NodeOccurrence>> {
+    let slots = sort_param_slots(kb, rid);
+    if slots.is_empty() || instance_is_concrete(kb, at) || caller_slot_at(kb, rid, at, &slots).is_some() {
+        return None;
+    }
+    let mut vars: Vec<VarId> = Vec::new();
+    type_global_vars(kb, at, &mut vars);
+    let mut at_slots: Vec<u32> = Vec::new();
+    for v in vars {
+        at_slots.push(caller_slot_at(kb, rid, &Value::Var(Var::Global(v)), &slots)?);
+    }
+    for &slot in &at_slots {
+        if held.iter().any(|(g, _)| g.carrier == slot) {
+            continue;
+        }
+        for (req_spec, instance, out, read) in sort_requirements_at_slot(kb, rid, fd_sym, slot, anchor) {
+            held.push((ClauseGuard { spec: req_spec, carrier: slot, out, instance }, read));
+        }
+    }
+    let guards: Vec<ClauseGuard> = held
+        .iter()
+        .filter(|(g, _)| at_slots.contains(&g.carrier))
+        .map(|(g, _)| ClauseGuard {
+            spec: g.spec,
+            carrier: g.carrier,
+            out: Rc::clone(&g.out),
+            instance: g.instance.clone(),
+        })
+        .collect();
+    let dict = composed_from_guards(kb, rid, &guards, spec, at, site, reads)?;
+    for (g, read) in held.iter_mut() {
+        if at_slots.contains(&g.carrier) {
+            placed.extend(read.take());
+        }
+    }
+    Some(dict)
 }
 
 /// The dictionary node of resolution `tree` for [`composed_from_guards`]: a provision's

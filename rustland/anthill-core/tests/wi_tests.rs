@@ -2539,6 +2539,8 @@ mod wi_cbrd2_sort_requirement_call_read_test;
 mod wi_cbrd2_guard_chain_read_test;
 #[path = "include/wi_cbrd2_bracket_built_dictionary_test.rs"]
 mod wi_cbrd2_bracket_built_dictionary_test;
+#[path = "include/wi_cbrd2_sort_requirement_composed_test.rs"]
+mod wi_cbrd2_sort_requirement_composed_test;
 #[path = "include/wi_cbrd2_contract_member_goal_test.rs"]
 mod wi_cbrd2_contract_member_goal_test;
 #[path = "include/wi_cbrd2_bridge_slot_test.rs"]

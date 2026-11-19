@@ -2082,7 +2082,7 @@ pub(super) fn caller_param_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value) -
 
 /// The frame slot among `params` of clause `rid` that `at` — a type its typing stamped on a
 /// body leaf — is, read as [`caller_param_at`] reads a declared type parameter.
-fn caller_slot_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value, params: &[u32]) -> Option<u32> {
+pub(super) fn caller_slot_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value, params: &[u32]) -> Option<u32> {
     let crate::kb::term_view::ViewHead::Var(target) = crate::kb::term_view::TermView::head(at, kb) else {
         return None;
     };
@@ -2120,7 +2120,7 @@ pub(super) fn frame_slot_of(globals: &[VarId], var: VarId) -> Option<u32> {
 /// The frame slots of clause `rid` that stand for parameters of the sort it is written in: the
 /// clause variable a typed head at the parameter (`?x: T`) is bound to. A parameter no typed
 /// head names has none.
-fn sort_param_slots(kb: &KnowledgeBase, rid: RuleId) -> Vec<u32> {
+pub(super) fn sort_param_slots(kb: &KnowledgeBase, rid: RuleId) -> Vec<u32> {
     let globals = kb.rule_globals(rid);
     kb.type_param_syms_of(kb.rule_domain(rid))
         .iter()
@@ -2713,6 +2713,22 @@ fn add_sort_requirement_read(
     pass: crate::kb::occurrence::PassId,
     handed: &HandedOn,
 ) {
+    let anchor = Rc::clone(kb.rule_body_nodes(rid).first().expect("a clause with a goal has a body"));
+    let (read, _) = sort_requirement_read_node(kb, rid, fd, pass, handed, &anchor);
+    kb.prepend_generated_body_goals(rid, vec![read]);
+}
+
+/// The read of the requirement `handed` names, for clause `rid`, in the form a written guard's
+/// read has ([`add_sort_requirement_read`]), anchored at `anchor`, and the variable its `out`
+/// binds — a new clause variable, the frame extended by it. The caller places the read.
+fn sort_requirement_read_node(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    fd: Symbol,
+    pass: crate::kb::occurrence::PassId,
+    handed: &HandedOn,
+    anchor: &Rc<NodeOccurrence>,
+) -> (Rc<NodeOccurrence>, Rc<NodeOccurrence>) {
     let HandedOn {
         spec,
         at_goal: GuardAtGoal {
@@ -2721,7 +2737,6 @@ fn add_sort_requirement_read(
             instance,
         },
     } = *handed;
-    let anchor = Rc::clone(kb.rule_body_nodes(rid).first().expect("a clause with a goal has a body"));
     let d_index = kb.rule_globals(rid).len() as u32;
     let dict_name = kb.intern("dict");
     let d = kb.fresh_var(dict_name);
@@ -2732,8 +2747,9 @@ fn add_sort_requirement_read(
     let spec_ref = Value::term(kb.alloc(Term::Ref(spec)));
     let out_label = kb.intern(REQUIREMENT_OUT_LABEL);
     let carrier_label = kb.intern(PROVIDER_CARRIER_TYPE_LABEL);
+    let out = node(Expr::Var(Var::DeBruijn(d_index)));
     let named_args = vec![
-        (out_label, node(Expr::Var(Var::DeBruijn(d_index)))),
+        (out_label, Rc::clone(&out)),
         (carrier_label, node(Expr::Const(Literal::Bool(true)))),
     ];
     let read = NodeOccurrence::synthesized_expr(
@@ -2751,11 +2767,78 @@ fn add_sort_requirement_read(
             named_args,
             type_args: Vec::new(),
         },
-        anchor,
+        Rc::clone(anchor),
         pass,
         owner,
     );
-    kb.prepend_generated_body_goals(rid, vec![read]);
+    (read, out)
+}
+
+/// Kernel-language §5.3, 060.1 §8.2 — THE REQUIREMENTS CLAUSE `rid`'S SORT STATES AT ITS
+/// PARAMETER at frame slot `slot`, with no name and once, each as the guard the clause reads it
+/// as: its spec, its instance in the clause's frame and the variable its read binds, and the read
+/// itself where the clause holds none yet ([`sort_requirement_read_node`], anchored at
+/// `anchor`), for the caller to place. `PartialEq[T = T]` of `sort Box requires PartialEq[T =
+/// T]` at `T`'s slot: the condition `Box`'s equality at `Self` is built over in its rules, as in
+/// its operations. A requirement stated under a name is the citation's to write (§8.2), and two
+/// the slot's instance both fit are no one requirement: neither is returned.
+pub(super) fn sort_requirements_at_slot(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    fd: Symbol,
+    slot: u32,
+    anchor: &Rc<NodeOccurrence>,
+) -> Vec<(Symbol, Value, Rc<NodeOccurrence>, Option<Rc<NodeOccurrence>>)> {
+    let pass = kb.register_pass(SORT_REQUIREMENT_READ_PASS);
+    let domain = kb.rule_domain(rid);
+    let globals = kb.rule_globals(rid).to_vec();
+    let mut specs: Vec<Symbol> = Vec::new();
+    for entry in requires_chain(kb, domain) {
+        if entry.binder.is_some() || specs.iter().any(|s| same_sort_canonical(kb, *s, entry.required_sort)) {
+            continue;
+        }
+        let Some(key) = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(entry.required_sort)) else {
+            continue;
+        };
+        let at_slot = spec_binding_value(kb, &entry.spec, kb.local_name_of(key)).is_some_and(|binding| {
+            let var = match binding.head(kb) {
+                ViewHead::Var(Var::Global(v)) => Some(v),
+                _ => ref_or_nullary_name_view(kb, &binding).and_then(|s| type_param_global_var(kb, s)),
+            };
+            var.and_then(|v| frame_slot_of(&globals, v)) == Some(slot)
+        });
+        if at_slot {
+            specs.push(entry.required_sort);
+        }
+    }
+    let mut out = Vec::new();
+    for spec in specs {
+        let Some(key) = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(spec)) else {
+            continue;
+        };
+        let at = kb.alloc(Term::Var(Var::DeBruijn(slot)));
+        let asked = instance_term(kb, spec, vec![(key, at)]);
+        let SortStates::Once(stated) = sort_states_requirement(kb, rid, spec, &Value::term(asked)) else {
+            continue;
+        };
+        let elements = debruijn_vars(kb, stated).into_iter().filter(|v| *v != slot).collect();
+        let handed = HandedOn {
+            spec,
+            at_goal: GuardAtGoal {
+                carrier: slot,
+                elements,
+                instance: stated,
+            },
+        };
+        match sort_requirement_read(kb, fd, rid, spec, &handed.at_goal) {
+            Some(var) => out.push((spec, Value::term(stated), var, None)),
+            None => {
+                let (read, var) = sort_requirement_read_node(kb, rid, fd, pass, &handed, anchor);
+                out.push((spec, Value::term(stated), var, Some(read)));
+            }
+        }
+    }
+    out
 }
 
 /// A guard's read (`find_dictionary(WeakOrd[T = ?#1], WeakOrd, ?#1, out: ?#0, carrier_type:
