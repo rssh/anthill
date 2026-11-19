@@ -1772,11 +1772,11 @@ pub(super) fn is_equality_comparison(kb: &KnowledgeBase, op: Symbol) -> bool {
 
 /// Does a goal read `class`, the member the typer gave a comparison `op`, where the comparison is
 /// a goal's (a contract's, an in-body proof's): any of an `eq`'s, and a `neq`'s where it enters
-/// its body through a dictionary, which the goal reads its `eq` through
-/// ([`KnowledgeBase::neq_as_not_eq`]). A `neq` deferred to the operation's requirement would run
-/// its body where no frame holds that requirement, and is read through an untyped `eq` instead.
+/// its body through a dictionary or is deferred to a requirement, which the goal reads its `eq`
+/// through ([`KnowledgeBase::neq_as_not_eq`]).
 pub(super) fn goal_reads_comparison_member(kb: &KnowledgeBase, op: Symbol, class: &CallClass) -> bool {
-    is_semantic_equality(kb, op) || (kb.is_neq_op(op) && class.enters_spec_body_through_dictionary())
+    is_semantic_equality(kb, op)
+        || (kb.is_neq_op(op) && (class.enters_spec_body_through_dictionary() || class.at_a_requirement()))
 }
 
 /// Is a goal of `op` with `arity` arguments one a contract clause or an effect guard writes as
@@ -2099,6 +2099,43 @@ impl CallClass {
     /// ([`Self::spec_body_provider`])?
     pub(crate) fn enters_spec_body_through_dictionary(&self) -> bool {
         self.spec_body_provider().is_some()
+    }
+
+    /// Is this call deferred to a requirement — the slot of the frame's (`DeferToRequirement`)
+    /// or a dictionary evaluated where it runs (`DeferToDictionary`)? Its member is the one that
+    /// requirement holds, which the typer chose without naming it.
+    pub(crate) fn at_a_requirement(&self) -> bool {
+        matches!(self, CallClass::DeferToRequirement { .. } | CallClass::DeferToDictionary { .. })
+    }
+
+    /// The call of `sibling` (whose short name is `sibling_short`), another operation of the
+    /// spec, at the requirement this call is deferred to: `neq`'s body `Bool.not(eq(a, b))` at
+    /// `requires Eq[T = A]` calls `eq` at that requirement. `None` for a call deferred to none.
+    pub(crate) fn sibling_at_requirement(&self, sibling: Symbol, sibling_short: Symbol) -> Option<CallClass> {
+        match self {
+            CallClass::DeferToRequirement {
+                resolved_spec,
+                slot,
+                proj_path,
+                enclosing_sort,
+                enclosing_op,
+                ..
+            } => Some(CallClass::DeferToRequirement {
+                spec_op_sym: sibling,
+                op_short_sym: sibling_short,
+                resolved_spec: resolved_spec.clone(),
+                slot: *slot,
+                proj_path: proj_path.clone(),
+                enclosing_sort: *enclosing_sort,
+                enclosing_op: *enclosing_op,
+            }),
+            CallClass::DeferToDictionary { dict, .. } => Some(CallClass::DeferToDictionary {
+                spec_op_sym: sibling,
+                op_short_sym: sibling_short,
+                dict: *dict,
+            }),
+            _ => None,
+        }
     }
 
     /// The call of `sibling`, another operation of the spec, that a call entering the spec's

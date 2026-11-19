@@ -478,9 +478,10 @@ end
 
 /// The law at an operation's own type parameter: under the operation's `requires Eq[T = T]` an
 /// abstract `x: T` is equal to itself, and so under `requires Ord[T = T]`, which requires `Eq` in
-/// turn; under `requires PartialEq[T = T]` it is not, nor is a parameter of another type than the
-/// one the requirement names. The requirement names `T`, the parameter's type is `T`'s variable:
-/// read as one type, as a sort's `requires Eq[T = T]` and `x: T` are.
+/// turn; under `requires PartialEq[T = T]` it is not; and a comparison at a parameter of another
+/// type than the one the requirement names does not type, and is refused at load. The requirement
+/// names `T`, the parameter's type is `T`'s variable: read as one type, as a sort's `requires
+/// Eq[T = T]` and `x: T` are.
 ///
 /// Back-out (measured, then removed: `eq_required_at` comparing the requirement's binding with
 /// the parameter's type structurally, over the operation's direct `requires` and its sort's
@@ -527,10 +528,23 @@ end
     assert!(matches!(v, ProofVerdict::Discharged), "`Ord[T]` requires `Eq[T]`; got {v:?}");
     let v = verdict("test.jee0e.own5", "wrap[T](x: T) -> T requires PartialEq[T = T]", "eq(result, x)");
     assert!(undecided(&v), "`PartialEq[T]` alone gives no law; got {v:?}");
-    let v = verdict(
-        "test.jee0e.own6",
-        "wrap[A, B](a: A, x: B) -> B requires Eq[T = A]",
-        "eq(result, x)",
+    // `x` is a `B`, which nothing the operation requires gives a `PartialEq`: the comparison
+    // does not type, and is refused at load, as `eq(x, x)` in the body is (WI-20261105-CBRD2).
+    let errs = crate::common::load_errors_of(&format!(
+        r#"namespace test.jee0e.own6
+  import anthill.prelude.{{Int64, Bool, Eq, Ord, PartialEq}}
+  import anthill.prelude.PartialEq.{{eq, neq}}
+  sort Box
+    operation wrap[A, B](a: A, x: B) -> B requires Eq[T = A]
+      ensures eq(result, x)
+      = x
+    proof wrap.ensures by derivation end
+  end
+end
+"#
+    ));
+    assert!(
+        errs.iter().any(|e| e.contains("wrap.ensures") && e.contains("requires PartialEq[T = …]")),
+        "`Eq` is required at `A`, and `x` is a `B`: {errs:?}"
     );
-    assert!(undecided(&v), "`Eq` is required at `A`, and `x` is a `B`; got {v:?}");
 }

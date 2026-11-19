@@ -1302,9 +1302,11 @@ fn ill_typed_comparison_text(kb: &KnowledgeBase, comparison: &Value, cause: &Typ
         }
         other => other.format(kb),
     };
+    // A cause that already proposes it (a comparison's missing `requires`) is not told twice.
+    let why = if why.contains(STRUCTURAL_EQUALITY) { why } else { format!("{why}; {STRUCTURAL_EQUALITY}") };
     (
         format!("`{}` to compare two values of one type", format_precondition_clause(kb, comparison)),
-        format!("{why}; {STRUCTURAL_EQUALITY}"),
+        why,
     )
 }
 

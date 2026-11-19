@@ -5141,6 +5141,20 @@ impl SearchStream {
         else {
             return None;
         };
+        // A classified call keeps its class: the pair is the comparison its member makes.
+        if let Value::Node(o) = goal {
+            if let (Some(class), Some(Expr::Apply { pos_args, .. })) = (o.call_class(), o.as_expr()) {
+                let pair = o.rebuilt_expr(Expr::Apply {
+                    recv_type: None,
+                    functor,
+                    pos_args: pos_args[..2].to_vec(),
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                });
+                pair.set_classification(class);
+                return Some(Value::Node(pair));
+            }
+        }
         let (a, b) = (goal.pos_arg(kb, 0)?.to_value(), goal.pos_arg(kb, 1)?.to_value());
         Some(kb.make_goal_value(functor, vec![a, b]))
     }
@@ -10018,6 +10032,16 @@ impl KnowledgeBase {
         // implements (`Int64.eq`, `Bool.eq`) is no member to dispatch to: its operands are
         // compared below as their carrier's are, typed all the same.
         let (pinned, typed): (Option<PinnedEq>, bool) = match goal {
+            // A comparison deferred to a requirement, inside a proof — a contract's over the
+            // operation's parameters, proved over skolems — has the member that requirement
+            // holds: the typer chose it, and its law decides identical operands
+            // (`reconsider_verdict_over_skolem`). Outside a proof no frame holds the
+            // requirement, and it is compared with no member, counted as such.
+            Value::Node(o)
+                if self.gamma_proof_depth > 0 && o.call_class().is_some_and(|class| class.at_a_requirement()) =>
+            {
+                (None, true)
+            }
             Value::Node(o) => {
                 let (target, through) = match o.apply_dispatch() {
                     node_occurrence::ApplyDispatch::Pin(t) => (Some(t), false),
@@ -15178,9 +15202,10 @@ impl KnowledgeBase {
     /// ([`super::typing::CallClass::sibling_through_dictionary`]), or an untyped one where the
     /// instance has no `eq` of its own. A call no type reached — no classification on the
     /// occurrence, or a goal on no occurrence (a goal built by hand) — has no dictionary, and
-    /// its `eq` is untyped. Any other typed call keeps the body: one deferred to a requirement
-    /// or a dictionary reads the instance at dispatch, and one whose provider names no `eq` it
-    /// may enter raises that where the body runs.
+    /// its `eq` is untyped. A call deferred to a requirement or a dictionary is `eq` deferred to
+    /// the same one ([`super::typing::CallClass::sibling_at_requirement`]). Any other typed call
+    /// keeps the body: one whose provider names no `eq` it may enter raises that where the body
+    /// runs.
     ///
     /// One written with labels is read in its parameters' order; one written with a `Bool`
     /// result column is `eq` at the negated column.
@@ -15200,11 +15225,15 @@ impl KnowledgeBase {
         let typed = match goal {
             Value::Node(o) => match o.call_class() {
                 None => None,
+                // A `neq` deferred to a requirement reads its `eq` at that requirement.
+                Some(class) if class.at_a_requirement() => {
+                    let eq_short = self.intern("eq");
+                    class.sibling_at_requirement(eq, eq_short).map(|eq_class| (eq_class, Rc::clone(o)))
+                }
                 Some(class) => match class.sibling_through_dictionary(self, eq) {
                     Some(SiblingCall::Member(eq_class)) => Some((eq_class, Rc::clone(o))),
                     Some(SiblingCall::SpecsOwn) => None,
-                    // The body raises the refusal; a call deferred to a requirement or a
-                    // dictionary reads the instance at dispatch.
+                    // The body raises the refusal.
                     Some(SiblingCall::Refused) | None => return None,
                 },
             },

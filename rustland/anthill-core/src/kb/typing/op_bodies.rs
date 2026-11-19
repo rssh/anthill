@@ -1406,7 +1406,11 @@ fn type_contract_comparisons(
     }
     for (part, conj) in conjuncts {
         let mut refused = Vec::new();
-        type_conjunct_comparisons(kb, &cenv, op_sym, &conj, site, &mut refused);
+        // An `ensures` is proved over the operation's parameters and has no call to be typed
+        // at; a `requires` and a guard are decided at each call, typed at its arguments
+        // (`CallSigma::clause_goal`).
+        let proved_only = matches!(part, ContractPart::Ensures);
+        type_conjunct_comparisons(kb, &cenv, op_sym, &conj, site, proved_only, &mut refused);
         errors.extend(refused.into_iter().map(|(comparison, cause)| match cause {
             // A field projection that names nothing is refused as its own error.
             Refusal::Projection(e) => e,
@@ -1423,7 +1427,7 @@ fn type_contract_comparisons(
         // a guard at every call; an `ensures` is only proved.
         let refuted = matches!(part, ContractPart::Requires | ContractPart::EffectGuard);
         if let Some(negated) = negated_comparison_term(kb, &conj).filter(|_| refuted) {
-            type_conjunct_comparisons(kb, &cenv, op_sym, &Value::term(negated), site, &mut Vec::new());
+            type_conjunct_comparisons(kb, &cenv, op_sym, &Value::term(negated), site, false, &mut Vec::new());
         }
     }
 }
@@ -1458,13 +1462,15 @@ enum Refusal {
 
 /// Type each comparison of the contract conjunct `conj` ([`type_contract_comparisons`]), put the
 /// member it gets on its node, and keep the typed conjunct beside the one loaded; each refused
-/// comparison, as written, and why, into `refused`.
+/// comparison, as written, and why, into `refused`. `proved_only`: the conjunct is only proved
+/// (an `ensures`), so a comparison left at a spec operation no requirement answers is refused.
 fn type_conjunct_comparisons(
     kb: &mut KnowledgeBase,
     cenv: &TypingEnv,
     op_sym: Symbol,
     conj: &Value,
     site: crate::span::SourceSpan,
+    proved_only: bool,
     refused: &mut Vec<(Value, Refusal)>,
 ) {
     let occ = crate::kb::node_occurrence::value_as_occurrence(kb, conj);
@@ -1497,6 +1503,32 @@ fn type_conjunct_comparisons(
             }
         };
         match type_check_node(kb, cenv, &copy, None) {
+            // A comparison an `ensures` makes at a type nothing the operation requires answers
+            // — `eq(result, x)` over `x: B` under `requires Eq[T = A]` — does not type, as the
+            // same comparison in the body does not. A `requires` or a guard is typed at each
+            // call instead (`effects { Boom :- eq(c, d) }` over a spec's `c: T, d: T`).
+            // A spec's own operation compares at its own parameter, as `req_insertion` reads it.
+            Ok(_) if let Some(CallClass::UnresolvedSpecOp {
+                spec_op_sym,
+                spec_sort_sym,
+                abstract_params,
+                span,
+                enclosing_sort,
+            }) = copy.call_class().filter(|_| comparison && proved_only)
+                && enclosing_sort != Some(spec_sort_sym) =>
+            {
+                let e = TypeError::MissingRequiresForSpecOp {
+                    span,
+                    spec_op_sym,
+                    spec_sort_sym,
+                    abstract_params,
+                    site: RequiresSite::Operation {
+                        op: op_sym,
+                        sort: enclosing_sort.filter(|s| kb.has_kind(*s, crate::intern::SymbolKind::Sort)),
+                    },
+                };
+                refused.push((Value::Node(Rc::clone(&call)), Refusal::Comparison(e)));
+            }
             Ok(_) => {
                 let written = call.as_expr().and_then(expr_call_parts).map(|(f, p, n)| (f, p.len() + n.len()));
                 let class = copy
