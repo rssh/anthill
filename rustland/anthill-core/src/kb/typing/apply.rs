@@ -4270,12 +4270,13 @@ fn check_apply_call(
                     // PinNow, or ConcreteApplyWithin when the impl's OWN sort declares
                     // `requires` (so its dict threads) — the Unique-arm discipline. Only
                     // an impl this runtime can run is rewritten, a body or its host
-                    // implementation; one with neither stays the spec op. Asked for a body
-                    // alone, a host member was left as the spec op, which has no body:
-                    // the program loaded clean and died at run time (MEASURED,
+                    // implementation; one with neither stays the spec op — except an `eq`'s
+                    // member, which is pinned whatever backs it ([`pins_an_equality_member`]).
+                    // Asked for a body alone, a host member was left as the spec op, which
+                    // has no body: the program loaded clean and died at run time (MEASURED,
                     // `wi_c6gk8_known_type_call_test::a_higher_kinded_members_host_
                     // implementation_is_pinned`).
-                    if op_is_interpretable(kb, impl_op) {
+                    if op_is_interpretable(kb, impl_op) || pins_an_equality_member(kb, fn_sym, impl_op) {
                         classify_pin_or_apply_within(
                             kb,
                             occ,
@@ -5912,7 +5913,8 @@ fn check_apply_call(
                     // `op_is_executable`, a rule-body goal over such a member answered `no
                     // solutions` and its negation succeeded, where the unpinned call stays
                     // undecided (MEASURED).
-                    if (impl_op_sym != fn_sym && op_is_interpretable(kb, impl_op_sym))
+                    if (impl_op_sym != fn_sym
+                        && (op_is_interpretable(kb, impl_op_sym) || pins_an_equality_member(kb, fn_sym, impl_op_sym)))
                         || through_spec_op
                     {
                         // Pass the `resolved_tree` to the shared tail: a same-sort

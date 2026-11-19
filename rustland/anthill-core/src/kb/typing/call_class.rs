@@ -1697,6 +1697,25 @@ pub(crate) fn op_is_interpretable(kb: &KnowledgeBase, op: Symbol) -> bool {
     kb.is_interpreter_mapped_op(op) || op_has_runnable_body(kb, op)
 }
 
+/// Is the call of `fn_sym` dispatched to `impl_op` an equality, whose member is pinned though it
+/// has no body or host implementation? Left the spec operation, an `eq` is compared by its
+/// operands' values (eval's step 2b), a comparison with no member. Pinned, a member written as
+/// clauses is proved through them ([`eq_member_written_as_clauses`]), and one nothing defines
+/// raises `OperationBodyMissing` where the call is dispatched, as it does through a dictionary.
+pub(crate) fn pins_an_equality_member(kb: &KnowledgeBase, fn_sym: Symbol, impl_op: Symbol) -> bool {
+    impl_op != fn_sym && is_semantic_equality(kb, fn_sym)
+}
+
+/// Is `op` a carrier's `eq` written as clauses (`provides PartialEq[T = Color, eq = ceq]` over
+/// `rule ceq(red, red) :- true`, `Set.eq`, `TotalFloat.eq`)? The one operation the interpreter
+/// runs by proving its clauses (eval's `eq_bridge_target`): a typed `=` at such a carrier is
+/// pinned to it ([`pins_an_equality_member`]) and proved there.
+pub(crate) fn eq_member_written_as_clauses(kb: &KnowledgeBase, op: Symbol) -> bool {
+    !op_has_runnable_body(kb, op)
+        && (kb.has_clauses_under(op) || kb.has_clauses_under(kb.canonical_sym(op)))
+        && kb.is_eq_dispatch_target(op)
+}
+
 /// WI-20261001-80ZV8 — WHERE A [`CallClass::ConcreteApplyWithin`] CALLEE'S FRAME COMES
 /// FROM: the sort-level requirement dictionaries its body reads by `__req_*` name.
 ///

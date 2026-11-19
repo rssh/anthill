@@ -4740,23 +4740,21 @@ impl Interpreter {
         Ok(self.cached_operation_body(target))
     }
 
-    /// WI-625 — the eval→SLD bridge's Site-B gate: if `target` is a body-less
-    /// carrier `eq` op invoked DIRECTLY over two GROUND operands that dispatch
-    /// their semantic equality to `target`, return the eq-dispatch INDEX symbol
-    /// (`dispatched`) as the resolvable predicate. This is the `Set.eq`/`Map.eq`
-    /// shape a typer PinNow leaves when it pins a concrete-receiver `eq(...)`
-    /// (WI-210/WI-350, gap 6), and the op a dictionary `resolveOp` yields for an
-    /// `Eq[Set]` witness (gap 4). The interpreter has no equational-rewrite
-    /// engine; the resolver evaluates the rule clauses.
+    /// WI-625 — the eval→SLD bridge's Site-B gate: if `target` is a carrier `eq` written as
+    /// clauses ([`crate::kb::typing::eq_member_written_as_clauses`]) invoked over two GROUND
+    /// operands, return the symbol its clauses are filed under as the resolvable predicate.
+    /// This is the `Set.eq` / `TotalFloat.eq` / `ceq` a typed `=` is pinned to
+    /// (`typing::pins_an_equality_member`), and the op a dictionary yields for an `Eq[Set]`
+    /// witness (gap 4). The interpreter has no equational-rewrite engine; the resolver
+    /// evaluates the rule clauses.
     ///
-    /// Returns the INDEX symbol, not the caller's `target`: the resolver keys its
-    /// rule clauses off the index value (as `semantic_equal` does), and a caller
-    /// may hold a non-canonical interning of the op whose goal would match no
-    /// clause. Ground-gated because `=` is a test that must not bind (a sub-proof
-    /// over a non-ground operand could enumerate bindings — the resolver Delays
-    /// there). A body-less op that is NOT these operands' carrier eq, or a
-    /// non-ground pair, is not bridged — a loud `UnknownOperation` /
-    /// `OperationBodyMissing`.
+    /// The member is the one the call was typed or dispatched at, and is not confirmed off the
+    /// operands' values (WI-20261105-CBRD2: the equality index is no run-time reader of a
+    /// typed call). Returned as `target`, or its canonical image where the caller holds another
+    /// interning whose goal would match no clause. Ground-gated because `=` is a test that must
+    /// not bind (a sub-proof over a non-ground operand could enumerate bindings — the resolver
+    /// Delays there). Any other body-less op, or a non-ground pair, is not bridged — a loud
+    /// `UnknownOperation` / `OperationBodyMissing`.
     ///
     /// WI-20261011-CR6GD — THE ONE OPERATION A CALL RUNS BY ITS CLAUSES, and it stays the
     /// one. Any other operation with clauses and nothing else is defined relationally:
@@ -4766,16 +4764,10 @@ impl Interpreter {
     /// dictionary, a host entry, a rule body's bridge — is told so by
     /// `unrunnable_target_error`.
     pub(crate) fn eq_bridge_target(&self, target: Symbol, args: &[Value]) -> Option<Symbol> {
-        if args.len() != 2 || self.kb.op_body_node(target).is_some() {
+        if args.len() != 2 || !crate::kb::typing::eq_member_written_as_clauses(&self.kb, target) {
             return None;
         }
-        let dispatched = self
-            .kb
-            .sem_eq_dispatch_target(&args[0])
-            .or_else(|| self.kb.sem_eq_dispatch_target(&args[1]))?;
-        if self.kb.canonical_sym(dispatched) != self.kb.canonical_sym(target) {
-            return None;
-        }
+        let dispatched = if self.kb.has_clauses_under(target) { target } else { self.kb.canonical_sym(target) };
         let empty = crate::kb::subst::Substitution::new();
         if !self.kb.value_deep_ground(&args[0], &empty)
             || !self.kb.value_deep_ground(&args[1], &empty)
