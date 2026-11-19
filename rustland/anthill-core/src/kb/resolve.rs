@@ -10341,7 +10341,7 @@ impl KnowledgeBase {
         if !bound {
             return Some(WovenEquality::Waiting);
         }
-        let Some((member, _)) = self.dictionary_dispatch_target(*functor, requirements, subst) else {
+        let Some((member, dict)) = self.dictionary_dispatch_target(*functor, requirements, subst) else {
             return Some(WovenEquality::NoMember);
         };
         let call = o.rebuilt_expr(Expr::Apply {
@@ -10351,11 +10351,65 @@ impl KnowledgeBase {
             named_args: named_args.clone(),
             type_args: type_args.clone(),
         });
-        call.set_classification(super::typing::CallClass::PinNow {
+        // A member that reads its provider's dictionary (`Box`'s `eq`, under `Box provides
+        // PartialEq :- PartialEq[T]`) is entered through the one the read bound, as a call
+        // the typer built the dictionary for is ([`Self::classified_entry`]).
+        let entered = dict.and_then(|dict| self.entered_through(*functor, member, &dict));
+        call.set_classification(entered.unwrap_or(super::typing::CallClass::PinNow {
             spec_op_sym: *functor,
             impl_op_sym: member,
-        });
+        }));
         Some(WovenEquality::At(Value::node(call)))
+    }
+
+    /// The class of a call of `spec_op` that enters `member` through `dict`, where the member
+    /// reads it: its dictionary is `dict`'s term, at the provider `dict` names. `None` for a
+    /// member the dictionary owes nothing, and for a tuple's labelled dictionary, which keeps
+    /// the pin alone.
+    fn entered_through(
+        &mut self,
+        spec_op: Symbol,
+        member: Symbol,
+        dict: &crate::eval::value::Dictionary,
+    ) -> Option<super::typing::CallClass> {
+        let provider = dict.impl_sort();
+        if matches!(self.dictionary_owed_to(provider, member), DictionaryOwed::Nothing) {
+            return None;
+        }
+        let term = self.dictionary_term(dict)?;
+        Some(super::typing::CallClass::ConcreteApplyWithin {
+            fn_target_sym: member,
+            callee_spec_sort: super::typing::impl_parent_sort_of_op(self, member)?,
+            spec_op_sym: spec_op,
+            enclosing_sort: None,
+            resolved_tree: Some(super::typing::ResolvedRequiresNode::Leaf {
+                impl_sort: provider,
+                spec_sort: super::typing::dispatch_spec_of_op(self, spec_op).or_provider(provider),
+                bindings: SmallVec::new(),
+            }),
+            frame: super::typing::CalleeFrame::Dict(term),
+            enclosing_op: None,
+        })
+    }
+
+    /// The term carrier of `dict`: the dictionary's functor, its sub-dictionaries positional
+    /// and its provider at `impl` (`requirement-channel.md` §9). `None` for a tuple's labelled
+    /// dictionary.
+    fn dictionary_term(&mut self, dict: &crate::eval::value::Dictionary) -> Option<TermId> {
+        if dict.labels().is_some() {
+            return None;
+        }
+        let (ctor, impl_key) = super::term_view::dictionary_view_syms(self)?;
+        let mut subs: SmallVec<[TermId; 4]> = SmallVec::new();
+        for k in 0..dict.arity() {
+            subs.push(self.dictionary_term(&dict.sub(k)?)?);
+        }
+        let provider = self.alloc(Term::Ref(dict.impl_sort()));
+        Some(self.alloc(Term::Fn {
+            functor: ctor,
+            pos_args: subs,
+            named_args: SmallVec::from_elem((impl_key, provider), 1),
+        }))
     }
 
     /// WI-616 — the eq-dispatch index probe for one operand: its head functor's

@@ -314,17 +314,20 @@ end
 /// nothing here; write the sort's name"), and `Box[T = T]` there loaded clean and answered
 /// NOTHING, its `T` a reference to the parameter's symbol (MEASURED; the second predates the
 /// proposal). The `?x: T` form of the same bounds, lowered by the type door, always answered.
+/// The sort requires `PartialEq[T = T]`, which the equality at `Option[T = Self]` is built
+/// from where the rule is cited; with no requirement it is refused at load.
 #[test]
 fn a_bound_that_is_a_term_reads_self_and_the_sorts_parameters() {
     let program = |ns: &str, bound: &str| {
         format!(
             r#"
 namespace {ns}
-  import anthill.prelude.{{Int64, Option}}
+  import anthill.prelude.{{Int64, Option, PartialEq}}
   import anthill.prelude.Option.{{some}}
   sort Box
     sort T = ?
     entity box(v: T)
+    requires PartialEq[T = T]
     rule twin(x: {bound}, y: {bound}) :- y = x
   end
   rule both(1) :- Box.twin(some(box(v: 1)), some(box(v: 1)))

@@ -433,15 +433,15 @@ pub(super) fn infer_rule_body_requirements(
         // dispatched through that guard's dictionary, as one at a column typed by it is: `?h`
         // of `?l <=> cons(?h, ?t)` under `rule evenS[E](?l: List[T = E]) :- WeakOrd[T = E]`
         // is an `E`. It takes no read of its own.
-        let guards: Vec<(Symbol, u32, Rc<NodeOccurrence>)> = if kb.rule_type_params(rid).is_empty() {
+        let guards: Vec<ClauseGuard> = if kb.rule_type_params(rid).is_empty() {
             Vec::new()
         } else {
             clause_requirement_reads(kb, fd_sym, &body)
                 .iter()
                 .filter_map(|read| {
-                    let (spec, carrier, _) = guard_read_parts(kb, read)?;
-                    let out = requirement_read_out(kb, fd_sym, read)?;
-                    Some((spec, carrier, Rc::clone(out)))
+                    let (spec, carrier, instance) = guard_read_parts(kb, read)?;
+                    let out = Rc::clone(requirement_read_out(kb, fd_sym, read)?);
+                    Some(ClauseGuard { spec, carrier, out, instance })
                 })
                 .collect()
         };
@@ -449,10 +449,23 @@ pub(super) fn infer_rule_body_requirements(
         let refused_load = kb.has_a_refused_guard(rid);
         let mut guarded: Vec<WeaveTarget> = Vec::new();
         let mut groups: Vec<(usize, SpecDemand, Vec<Rc<NodeOccurrence>>)> = Vec::new();
+        let mut reads_before: Vec<Vec<Rc<NodeOccurrence>>> = vec![Vec::new(); sites.len()];
         for (gi, demand) in demands {
             if let Some(out) = declared_guard_of(kb, rid, &guards, &demand) {
                 guarded.push((demand.call.call, vec![out], None));
                 continue;
+            }
+            // At an instance a provision builds from the guards (`Box[T = A]` under
+            // `PartialEq[T = A]`), the call takes the dictionary it builds.
+            if let Some(at) = demand.carriers.first().and_then(|c| c.inferred_type()) {
+                let mut reads = Vec::new();
+                if let Some(dict) =
+                    composed_from_guards(kb, rid, &guards, demand.spec, &at, &demand.call.call, &mut reads)
+                {
+                    reads_before[gi].extend(reads);
+                    guarded.push((demand.call.call, vec![dict], None));
+                    continue;
+                }
             }
             // A receiver bracket that writes the spec's carrier at a concrete type fixes the
             // instance at the call (`FiniteCollection[C = List[T = String]].size(?ls, ?n)`), as
@@ -511,7 +524,6 @@ pub(super) fn infer_rule_body_requirements(
                 }
             }
         }
-        let mut reads_before: Vec<Vec<Rc<NodeOccurrence>>> = vec![Vec::new(); sites.len()];
         let mut targets: Vec<WeaveTarget> = guarded;
         for (gi, witness, calls) in groups {
             let (read, out) = inferred_read(
@@ -534,13 +546,15 @@ pub(super) fn infer_rule_body_requirements(
         // all of them, in chain order — the layout `call_op_bridged` reads them back in.
         for (gi, demand) in slot_calls {
             // 060.1 §1 — a slot at a type parameter the clause declares a guard of its spec at
-            // is filled by that guard's dictionary; one the callee states at a concrete
+            // is filled by that guard's dictionary, and one at an instance a provision builds
+            // from the guards by the dictionary it builds; one the callee states at a concrete
             // instance, or one the clause's sort supplies, takes a read of its own; any other,
             // at a type the call's arguments give, is the clause's refusal.
             let entries = op_dict_entries(kb, demand.call.functor).entries().to_vec();
+            let mut composed_reads = Vec::new();
             let routes: Vec<SlotRoute> = entries
                 .iter()
-                .map(|entry| slot_route(kb, rid, &guards, &demand.call, entry))
+                .map(|entry| slot_route(kb, rid, &guards, &demand.call, entry, &mut composed_reads))
                 .collect();
             if let Some((entry, route)) = entries
                 .iter()
@@ -557,6 +571,7 @@ pub(super) fn infer_rule_body_requirements(
                 }
                 continue;
             }
+            reads_before[gi].extend(composed_reads);
             let mut outs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(demand.chain.len());
             for (k, spec) in demand.chain.iter().enumerate() {
                 if let Some(SlotRoute::Guard(out)) = routes.get(k) {
@@ -951,14 +966,216 @@ struct SpecDemand {
     of_the_sort: bool,
 }
 
-/// The dictionary of the guard of clause `rid` (`guards`: its spec, its carrier's frame slot
-/// and its read's `out`) that `demand`'s call is at: the type the clause's typing stamped on
-/// the call's carrier argument is the parameter the guard states the call's spec at. `None`
-/// for a call at any other type.
+/// A guard clause `rid` declares (060.1 §1), as the weave reads it: its spec, the frame slot of
+/// the type parameter it is at, the variable its read binds, and its instance as written, the
+/// clause's type parameters at their frame slots.
+struct ClauseGuard {
+    spec: Symbol,
+    carrier: u32,
+    out: Rc<NodeOccurrence>,
+    instance: Value,
+}
+
+/// 060.1 §1 — the dictionary of `spec` at `at`, an instance over clause `rid`'s type parameters
+/// that no guard states, as the provisions build it from the guards: `=` at `Box[T = A]` under
+/// `PartialEq[T = A]` is `Box`'s `PartialEq` holding the guard's dictionary as its condition, as
+/// an operation body's call at `Box[T = A]` under `requires PartialEq[T = A]` is. A condition a
+/// guard holds in its spec's chain (`PartialEq[T = A]` of `Eq[T = A]`) is that sub-dictionary,
+/// read by a goal pushed onto `reads`, which stands before the call. `None` where `at` is no such
+/// instance, or the provisions build none from the guards.
+fn composed_from_guards(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    guards: &[ClauseGuard],
+    spec: Symbol,
+    at: &Value,
+    site: &Rc<NodeOccurrence>,
+    reads: &mut Vec<Rc<NodeOccurrence>>,
+) -> Option<Rc<NodeOccurrence>> {
+    if guards.is_empty() || instance_is_concrete(kb, at) || caller_param_at(kb, rid, at).is_some() {
+        return None;
+    }
+    // Each variable of `at` is one of the clause's type parameters, as its typing names it.
+    let mut vars: Vec<VarId> = Vec::new();
+    type_global_vars(kb, at, &mut vars);
+    let mut opened: HashMap<u32, VarId> = HashMap::new();
+    for v in vars {
+        let param = caller_param_at(kb, rid, &Value::Var(Var::Global(v)))?;
+        opened.insert(param, v);
+    }
+    // The guards at those parameters, each instance opened at the variables the typing names
+    // the parameters with, are the scope the instance's conditions are answered from. The
+    // parameters are rigid there, as an operation's are in its body: the guard at `A` answers
+    // `A`, and not every instance `A` could be.
+    let frame: Vec<VarId> = kb
+        .rule_globals(rid)
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, &own)| opened.get(&(i as u32)).copied().unwrap_or(own))
+        .collect();
+    let rigids: Vec<(VarId, TermId)> = opened
+        .values()
+        .map(|&v| (v, kb.alloc(Term::Var(Var::Rigid(v)))))
+        .collect();
+    let held: Vec<&ClauseGuard> = guards.iter().filter(|g| opened.contains_key(&g.carrier)).collect();
+    let mut entries: Vec<RequiresEntry> = Vec::with_capacity(held.len());
+    for g in &held {
+        let instance = crate::kb::node_occurrence::open_value_type(kb, &g.instance, &frame).0;
+        entries.push(RequiresEntry {
+            required_sort: g.spec,
+            spec: requirement_spec_view(kb, g.spec, &instance)?,
+            supply: SupplySource::Required,
+            binder: None,
+        });
+    }
+    // As an operation body's goal: the call's instance at the rigid parameters, the scope's
+    // entries at their variables, and `param_rigids` joining the two.
+    let params: Vec<VarId> = opened.values().copied().collect();
+    let at = rewrite_type_leaves(kb, at, &|kb, leaf| match leaf.head(kb) {
+        ViewHead::Var(Var::Global(v)) if params.contains(&v) => Some(Value::term(kb.alloc(Term::Var(Var::Rigid(v))))),
+        _ => None,
+    })
+    .unwrap_or_else(|| at.clone());
+    if entries.is_empty() {
+        return None;
+    }
+    let spec = kb.canonical_sort_sym(spec);
+    let param = spec_carrier_param_or_sole(kb, spec)?;
+    let spec_qn = kb.qualified_name_of(spec).to_string();
+    let short = kb.local_name_of(param).to_owned();
+    let goal = SortGoal {
+        spec_sort: spec,
+        bindings: smallvec::smallvec![(spec_param_key(kb, &spec_qn, &short, param), at)],
+        carrier: None,
+        left_open: SmallVec::new(),
+    };
+    let empty = Substitution::new();
+    let sigma = SigmaCtx {
+        subst: &empty,
+        param_rigids: &rigids,
+    };
+    let scope = ResolutionScope {
+        available_requires: &[],
+        sigma: Some(&sigma),
+        pin: None,
+        sub_goal_requires: &entries,
+    };
+    let ResolutionResult::Resolved(tree) = resolve(kb, &goal, &scope) else {
+        return None;
+    };
+    composed_dictionary_node(kb, rid, &tree, &held, site, reads)
+}
+
+/// The dictionary node of resolution `tree` for [`composed_from_guards`]: a provision's
+/// `Dictionary` over the nodes of its conditions, and a condition answered from the scope the
+/// guard's dictionary there (`held[i]` the guard of scope entry `i`), or the sub-dictionary its
+/// projection names, read by `Dictionary.sub` into a variable of the clause.
+fn composed_dictionary_node(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    tree: &ResolvedRequiresNode,
+    held: &[&ClauseGuard],
+    site: &Rc<NodeOccurrence>,
+    reads: &mut Vec<Rc<NodeOccurrence>>,
+) -> Option<Rc<NodeOccurrence>> {
+    let node = |e: Expr| NodeOccurrence::new_expr(e, site.span, site.owner);
+    match tree {
+        ResolvedRequiresNode::FromScope {
+            scope_index,
+            projection,
+            ..
+        } => {
+            let mut dict = Rc::clone(&held.get(*scope_index)?.out);
+            for &k in projection {
+                let sub = kb.try_resolve_symbol("anthill.realization.runtime.Dictionary.sub")?;
+                let index = kb.rule_globals(rid).len() as u32;
+                let name = kb.intern("dict");
+                let var = kb.fresh_var(name);
+                let bounds = kb.rule_type_bounds(rid).to_vec();
+                kb.extend_rule_frame_with_bounds(rid, &[var], bounds);
+                let out = node(Expr::Var(Var::DeBruijn(index)));
+                reads.push(node(Expr::Apply {
+                    recv_type: None,
+                    functor: sub,
+                    pos_args: vec![dict, node(Expr::Const(Literal::Int(k as i64))), Rc::clone(&out)],
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                }));
+                dict = out;
+            }
+            Some(dict)
+        }
+        ResolvedRequiresNode::Leaf { impl_sort, .. } => Some(node(Expr::Dictionary {
+            impl_sort: *impl_sort,
+            subs: Vec::new(),
+            labels: None,
+        })),
+        ResolvedRequiresNode::Conditional {
+            impl_sort,
+            sub_resolutions,
+            labels,
+            ..
+        } => {
+            let subs = sub_resolutions
+                .iter()
+                .map(|sub| composed_dictionary_node(kb, rid, sub, held, site, reads))
+                .collect::<Option<Vec<_>>>()?;
+            Some(node(Expr::Dictionary {
+                impl_sort: *impl_sort,
+                subs,
+                labels: labels.clone(),
+            }))
+        }
+    }
+}
+
+/// The `SortView(Spec, …)` a `requires` line stores for `instance`, an application of `spec`
+/// (`PartialEq[T = A]`): the form a [`RequiresEntry`] holds. `None` for an argument that is no
+/// term.
+fn requirement_spec_view(kb: &mut KnowledgeBase, spec: Symbol, instance: &Value) -> Option<Value> {
+    let view = kb.try_resolve_symbol("anthill.reflect.SortView")?;
+    let args = parametric_view_parts(kb, instance).map(|(_, args)| args).unwrap_or_default();
+    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for (key, value) in &args {
+        let short = kb.intern(kb.local_name_of(*key).to_owned().as_str());
+        let Value::Term { id, .. } = value else { return None };
+        named.push((short, *id));
+    }
+    kb.canonicalize_record_named_args(view, &mut named);
+    let name = kb.make_name_term_from_sym(spec);
+    Some(Value::term(kb.alloc(Term::Fn {
+        functor: view,
+        pos_args: SmallVec::from_elem(name, 1),
+        named_args: named,
+    })))
+}
+
+/// The variables of type `ty`, through every child of it, onto `out` once each.
+fn type_global_vars<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<VarId>) {
+    match ty.head(kb) {
+        ViewHead::Var(Var::Global(v)) => {
+            if !out.contains(&v) {
+                out.push(v);
+            }
+        }
+        ViewHead::Functor { pos_arity, .. } => {
+            view_any_child(kb, ty, pos_arity, |c| {
+                type_global_vars(kb, c, out);
+                false
+            });
+        }
+        _ => {}
+    }
+}
+
+/// The dictionary of the guard of clause `rid` that `demand`'s call is at: the type the
+/// clause's typing stamped on the call's carrier argument is the parameter the guard states the
+/// call's spec at. `None` for a call at any other type.
 fn declared_guard_of(
     kb: &mut KnowledgeBase,
     rid: RuleId,
-    guards: &[(Symbol, u32, Rc<NodeOccurrence>)],
+    guards: &[ClauseGuard],
     demand: &SpecDemand,
 ) -> Option<Rc<NodeOccurrence>> {
     if guards.is_empty() {
@@ -968,8 +1185,8 @@ fn declared_guard_of(
     let param = caller_param_at(kb, rid, &at)?;
     guards
         .iter()
-        .find(|(spec, carrier, _)| *carrier == param && same_sort_canonical(kb, *spec, demand.spec))
-        .map(|(_, _, out)| Rc::clone(out))
+        .find(|g| g.carrier == param && same_sort_canonical(kb, g.spec, demand.spec))
+        .map(|g| Rc::clone(&g.out))
 }
 
 /// How slot `entry` of a rule-body call's dictionary chain is filled ([`slot_route`]).
@@ -989,14 +1206,16 @@ enum SlotRoute {
 /// [`SlotRoute`] of slot `entry` of `call`'s chain in clause `rid`. The slot's carrier binding
 /// is the declared type of some of the callee's parameters, and the types the clause's typing
 /// stamped on the arguments there say where the slot is: at a parameter the clause states a
-/// guard of the slot's spec at (`guards`: spec, carrier frame slot, the read's `out`), at a
+/// guard of the slot's spec at, at a
 /// concrete type, or at another type of the clause.
 fn slot_route(
     kb: &mut KnowledgeBase,
     rid: RuleId,
-    guards: &[(Symbol, u32, Rc<NodeOccurrence>)],
+    guards: &[ClauseGuard],
     call: &DemandCall,
     entry: &RequiresEntry,
+    // The reads a composed dictionary's projections take ([`composed_from_guards`]).
+    reads: &mut Vec<Rc<NodeOccurrence>>,
 ) -> SlotRoute {
     if type_is_ground(kb, &entry.spec) || clause_sort_supplies(kb, rid, entry.required_sort) {
         return SlotRoute::Read;
@@ -1076,16 +1295,25 @@ fn slot_route(
     }
     for ty in &at {
         if let Some(param) = caller_param_at(kb, rid, ty) {
-            if let Some((_, _, out)) = guards
+            if let Some(g) = guards
                 .iter()
-                .find(|(spec, carrier, _)| *carrier == param && same_sort_canonical(kb, *spec, entry.required_sort))
+                .find(|g| g.carrier == param && same_sort_canonical(kb, g.spec, entry.required_sort))
             {
-                return SlotRoute::Guard(Rc::clone(out));
+                return SlotRoute::Guard(Rc::clone(&g.out));
             }
         }
     }
     if at.iter().any(|ty| instance_is_concrete(kb, ty)) {
         return SlotRoute::Read;
+    }
+    for ty in &at {
+        let mut composed_reads = Vec::new();
+        if let Some(dict) =
+            composed_from_guards(kb, rid, guards, entry.required_sort, ty, &call.call, &mut composed_reads)
+        {
+            reads.extend(composed_reads);
+            return SlotRoute::Guard(dict);
+        }
     }
     if !at.iter().any(|ty| type_reaches_the_head(kb, rid, ty)) {
         // Read off a parameter's type, an instance the clause's typing left open in the body
@@ -1138,7 +1366,7 @@ fn carried_by_a_named_slot(kb: &mut KnowledgeBase, rid: RuleId, demand: &SpecDem
 fn declared_guard_requires(
     kb: &mut KnowledgeBase,
     rid: RuleId,
-    guards: &[(Symbol, u32, Rc<NodeOccurrence>)],
+    guards: &[ClauseGuard],
     demand: &SpecDemand,
 ) -> bool {
     if guards.is_empty() {
@@ -1150,9 +1378,9 @@ fn declared_guard_requires(
     let Some(param) = caller_param_at(kb, rid, &at) else {
         return false;
     };
-    guards.iter().any(|(spec, carrier, _)| {
-        *carrier == param
-            && transitive_required_sorts(kb, *spec)
+    guards.iter().any(|g| {
+        g.carrier == param
+            && transitive_required_sorts(kb, g.spec)
                 .iter()
                 .any(|s| same_sort_canonical(kb, *s, demand.spec))
     })

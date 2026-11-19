@@ -65,8 +65,9 @@ namespace wi738.operand
   -- THE FALSE NEGATIVE: add(?x,?x) nested under eq.
   rule doubled(?x, ?y) :- num(v: ?x), eq(?y, add(?x, ?x))
 
-  -- The line the fix must not cross: a DATA constructor is not a call.
-  rule ctor_same(?x) :- eq(some(?x), some(?x))
+  -- The line the fix must not cross: a DATA constructor is not a call. Its element is typed:
+  -- an equality at an instance no type fixes is refused at load.
+  rule ctor_same(?x: Int64) :- eq(some(?x), some(?x))
 
   -- A plain comparison on BOUND vars: no call in operand position.
   rule distinct(?x, ?y) :- num(v: ?x), num(v: ?y), neq(?x, ?y)

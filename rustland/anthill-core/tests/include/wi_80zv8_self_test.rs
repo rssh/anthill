@@ -722,14 +722,17 @@ fn self_as_a_rule_variable_bound_is_the_written_form() {
     assert_eq!(shown_rows(&mut kb, "wi80zv8.rule2.Tag.pick"), red);
 }
 
+/// `Box` requires `PartialEq[T = T]`: the equality at `Box[T = T]` is built from it where the
+/// rule is cited, and with no requirement is refused at load.
 fn rule_tie_program(ns: &str, bound: &str) -> String {
     format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Int64, String}}
+  import anthill.prelude.{{Int64, String, PartialEq}}
   sort Box
     sort T = ?
     entity box(v: T)
+    requires PartialEq[T = T]
     rule twin(?x: {bound}, ?y: {bound}) :- ?y = ?x
   end
   rule both(1) :- Box.twin(box(v: 1), box(v: 1))

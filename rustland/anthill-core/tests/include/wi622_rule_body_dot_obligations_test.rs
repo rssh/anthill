@@ -96,14 +96,14 @@ fn rule_body_return_only_type_param_dot_dispatches() {
     // `UnconstrainedTypeParam` ("expected a type for 'T', got unconstrained").
     // WI-622 skips that op-body-only obligation in rule-body context: the dot
     // dispatches (`make(?g)`) and `T` floats, pinned by resolution-time
-    // unification or left a harmless phantom.
+    // unification or left a harmless phantom. The comparison is `===`: an `=` at the
+    // `Option[T = T]` it returns is at an instance nothing fixes, and is refused at load.
     let src = format!(
         r#"
 namespace anthill.test.wi622utp
-  import anthill.prelude.PartialEq.{{eq}}
 {GADGET}
   rule uses(?g, ?r)
-    :- gholder(g: ?g), eq(?r, ?g.make())
+    :- gholder(g: ?g), ?r === ?g.make()
 end
 "#
     );

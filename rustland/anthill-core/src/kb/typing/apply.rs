@@ -6003,18 +6003,13 @@ fn check_apply_call(
                             node: Rc::clone(occ),
                         });
                     }
-                    // WI-20260918-CKD4J — A RULE-BODY GOAL WHOSE TYPE IS STILL OPEN IS
-                    // NOT REFUSED HERE. A rule body reaches eval through the SLD bridge,
-                    // which resolves the provider from the CONCRETE argument values
-                    // (`call_op_bridged`) and suspends when it cannot — WI-945 states the
-                    // same for an element unpinned at load: it is "the ORDINARY case
-                    // there, every goal argument being a variable". MEASURED: with
-                    // `Option` providing `PartialEq[Option] :- PartialEq[T]`,
-                    // `eq(some(?x), some(?x))` typed its goal as
-                    // `PartialEq[Option[T = TypeVar[?_]]]`, the condition over the open
-                    // element failed, and the rule was refused at load — where before the
-                    // row existed the same call had no candidate and passed. A GROUND goal
-                    // is still refused: nothing later can change its answer.
+                    // A RULE-BODY GOAL WHOSE TYPE IS STILL OPEN IS NOT REFUSED HERE: a
+                    // provision's condition over the open part (`Option` providing
+                    // `PartialEq[Option] :- PartialEq[T]`, at `Option[T = A]`) is answered by
+                    // what the clause declares, directly or through that provision (060.1 §1),
+                    // so the call is handed to its clause, which builds the dictionary from
+                    // its guards or is refused where they build none. A GROUND goal is still
+                    // refused: nothing later can change its answer.
                     if env.in_rule_body() {
                         let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
                         // OPEN = a logic var or a sort parameter (`type_value_is_ground`),
@@ -6026,6 +6021,9 @@ fn check_apply_call(
                             .iter()
                             .any(|(_, v)| !type_is_ground(kb, v) || type_mentions_type_var(kb, v));
                         if open {
+                            if env.clause_supplies_requirements(pos_args, named_args) {
+                                dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
+                            }
                             return Ok(TypeResult {
                                 ty: resolved_ret.clone(),
                                 env: env.clone(),
