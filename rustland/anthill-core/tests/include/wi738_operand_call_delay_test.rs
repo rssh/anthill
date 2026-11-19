@@ -210,16 +210,21 @@ fn wi738_three_arg_graph_form_still_binds() {
 /// a `Value::Term`, since `walk_view` yields `Value::term` for any `Term::Fn`.
 ///
 /// Without the `Term` arm of `is_unreduced_builtin_call` this goal keeps the old
-/// silent lie: `sub(2,1)` and `1` differ as TERMS, so `neq` is structurally true
-/// and the goal is PROVED — even though 2-1 = 1 and the guard is false. That is
+/// silent lie: `sub(2,1)` and `1` differ as TERMS, so the inequality is structurally
+/// true and the goal is PROVED — even though 2-1 = 1 and the guard is false. That is
 /// the same carrier asymmetry `op_call_as_occ` already avoids by handling both.
+///
+/// Written `1 !== sub(2,1)` since WI-20261105-CBRD2: a goal built by hand has no type, and
+/// a `neq` there is an equality no type reached, an error, which would pass this row by the
+/// error. `!==` evaluates its operands as `neq` did. MEASURED then: with a `Term` operand
+/// read as data in `is_written_call`, the goal is proved and the row fails.
 #[test]
 fn wi738_term_carried_operand_also_delays() {
     let mut kb = load_kb();
     let one = int(&mut kb, 1);
     let two = int(&mut kb, 2);
     let sub_call = goal(&mut kb, "anthill.prelude.Additive.sub", &[two, one]);
-    let g = goal(&mut kb, "anthill.prelude.PartialEq.neq", &[one, sub_call]);
+    let g = goal(&mut kb, "anthill.kernel.struct_neq", &[one, sub_call]);
     let cfg = ResolveConfig {
         max_solutions: 10,
         definite_only: true,
@@ -228,7 +233,7 @@ fn wi738_term_carried_operand_also_delays() {
     let sols = kb.resolve(&[g], &cfg);
     assert!(
         sols.is_empty(),
-        "neq(1, sub(2,1)) must NOT be proved — 2-1=1, so the guard is false. A \
+        "1 !== sub(2,1) must NOT be proved — 2-1=1, so the guard is false. A \
          Term-carried builtin operand must delay exactly like a Node-carried one; \
          got {} definite solution(s).",
         sols.len(),

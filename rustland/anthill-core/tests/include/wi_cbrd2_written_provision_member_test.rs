@@ -105,7 +105,8 @@ fn a_sort_writing_its_own_eq_keeps_it() {
 /// the member, which a typed `=` at it calls; with none, it is refused, naming the condition;
 /// with one reaching `PartialEq` through another spec (`:- Eq[T]`), whose slot a member's
 /// comparison at the parameter is not read through (as a written member's is not), it is given
-/// none and answers as before, its `=` compared with no member — the control, counted.
+/// none, and its `=` is an equality with no member: an error where it runs (kernel-language
+/// §8.3, WI-20261105-CBRD2), neither rule answering — the control, counted.
 #[test]
 fn a_parametric_written_provision_is_given_its_member_or_refused() {
     let src = |ns: &str, cond: &str| {
@@ -140,9 +141,11 @@ end
             drop(load_stdlib_kb());
             let goal = query_pattern_term(&mut kb, &format!("{ns}.{rule}"));
             let before = untyped_equalities_by_this_thread();
-            let got = kb.resolve(&[goal], &Default::default());
+            let (got, stats) = kb.resolve_with_stats(&[goal], &Default::default());
             untyped += untyped_equalities_by_this_thread() - before;
-            assert_eq!(got.iter().any(|s| s.is_definite()), want, "{ns}: `{rule}`");
+            let errored = stats.errors.iter().any(|e| e.message.contains("with no `eq` member"));
+            assert_eq!(errored, !with_member, "{ns}: `{rule}` raises the error: {:?}", stats.errors);
+            assert_eq!(got.iter().any(|s| s.is_definite()), want && with_member, "{ns}: `{rule}`");
         }
         assert_eq!(untyped == 0, with_member, "{ns}: {untyped} equalities compared with no member");
     }

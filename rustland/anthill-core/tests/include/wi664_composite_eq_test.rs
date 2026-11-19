@@ -8,12 +8,9 @@
 //! `===` (`struct_eq`) stays structural throughout (hash-consing intact).
 
 use anthill_core::eval::Interpreter;
-use anthill_core::intern::Symbol;
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
-use smallvec::SmallVec;
 
 fn interp(src: &str) -> Interpreter {
     crate::common::interp_for(src)
@@ -172,80 +169,35 @@ fn totalfloat_boundary_stays_reflexive() {
 
 // ── AXIS 2: resolver (SLD) field-wise semantic equality ──────────────────────
 
-/// A `point(x, y)` term with real Float LITERAL leaves. In a rule body `nan` is a
-/// symbolic const the resolver never folds, so `value_f64` can't see it; a
-/// `Literal::Float` IS unwrapped, so this is what actually exercises the resolver's
-/// field-wise IEEE path (the pre-existing const-folding gap is orthogonal).
-fn point_term(
-    kb: &mut KnowledgeBase,
-    ctor: Symbol,
-    x: Symbol,
-    y: Symbol,
-    xv: f64,
-    yv: f64,
-) -> TermId {
-    use anthill_core::kb::term::Literal;
-    let xt = kb.alloc(Term::Const(Literal::Float(xv.into())));
-    let yt = kb.alloc(Term::Const(Literal::Float(yv.into())));
-    kb.make_entity_term(
-        ctor,
-        SmallVec::new(),
-        SmallVec::from_slice(&[(x, xt), (y, yt)]),
-    )
+/// `pattern`, a query over [`SRC`] written with its names in full, typed where it is read
+/// (proposal 073 §6.2): how many answers it has. A goal built by hand is an equality no type
+/// reached, an error (kernel-language §8.3).
+fn typed_answers(kb: &mut KnowledgeBase, pattern: &str) -> usize {
+    let goals = crate::common::query_goals(kb, &[pattern]);
+    kb.resolve(&goals, &ResolveConfig::default()).len()
 }
 
-fn eq_goal(kb: &mut KnowledgeBase, eq_sym: Symbol, a: TermId, b: TermId) -> TermId {
-    kb.alloc(Term::Fn {
-        functor: eq_sym,
-        pos_args: SmallVec::from_slice(&[a, b]),
-        named_args: SmallVec::new(),
-    })
-}
-
-/// The resolver mirror (`sem_eq_core` → field-wise): resolving `eq(point(nan,0),
-/// point(nan,0))` yields 0 solutions (false), while a NaN-free equal pair yields 1
-/// and a field-differing pair yields 0. Keeps resolver == interpreter == codegen
-/// (the WI-616/645 discipline) for Float-containing composites.
+/// The resolver mirror (field-wise): `eq(point(nan,0), point(nan,0))` yields 0 answers
+/// (false), while a NaN-free equal pair yields 1 and a field-differing pair yields 0. Keeps
+/// resolver == interpreter == codegen (the WI-616/645 discipline) for Float-containing
+/// composites. Each is a written query, its `=` the member `Point`'s derived equality is.
 #[test]
 fn resolver_field_wise_eq_agrees() {
     let mut kb = crate::common::load_kb_with(SRC);
-    let cfg = ResolveConfig::default();
-    let eq_sym = kb
-        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
-        .expect("PartialEq.eq");
-    // The `point` constructor's functor — scanned by short name over the
-    // entity registry (WI-632 retired `resolve_entity_functor`; this test just
-    // needs the unique `point` ctor of its own fixture).
-    let ctor = {
-        let funcs: Vec<_> = kb.entity_field_type_functors().collect();
-        funcs
-            .into_iter()
-            .find(|&f| kb.local_name_of(f) == "point")
-            .expect("point constructor")
-    };
-    let fields = kb.entity_field_names(ctor).expect("point fields").to_vec();
-    let (x, y) = (fields[0], fields[1]);
-
-    let pnan = point_term(&mut kb, ctor, x, y, f64::NAN, 0.0);
-    let g_nan = eq_goal(&mut kb, eq_sym, pnan, pnan);
+    let p = "test.wi664.Point.point";
+    let nan = "anthill.prelude.Float.nan";
     assert_eq!(
-        kb.resolve(&[g_nan], &cfg).len(),
+        typed_answers(&mut kb, &format!("{p}(x: {nan}, y: 0.0) = {p}(x: {nan}, y: 0.0)")),
         0,
         "eq(point(nan,0), point(nan,0)) must be false in SLD (field-wise IEEE), matching eval"
     );
-
-    let p12 = point_term(&mut kb, ctor, x, y, 1.0, 2.0);
-    let g_eq = eq_goal(&mut kb, eq_sym, p12, p12);
     assert_eq!(
-        kb.resolve(&[g_eq], &cfg).len(),
+        typed_answers(&mut kb, &format!("{p}(x: 1.0, y: 2.0) = {p}(x: 1.0, y: 2.0)")),
         1,
         "eq(point(1,2), point(1,2)) must resolve (field-wise all-equal)"
     );
-
-    let p13 = point_term(&mut kb, ctor, x, y, 1.0, 3.0);
-    let g_ne = eq_goal(&mut kb, eq_sym, p12, p13);
     assert_eq!(
-        kb.resolve(&[g_ne], &cfg).len(),
+        typed_answers(&mut kb, &format!("{p}(x: 1.0, y: 2.0) = {p}(x: 1.0, y: 3.0)")),
         0,
         "eq(point(1,2), point(1,3)) must not resolve (y differs)"
     );

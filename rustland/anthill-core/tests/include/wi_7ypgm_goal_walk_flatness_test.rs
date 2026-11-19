@@ -419,11 +419,13 @@ fn the_arity_plus_one_view_reads_an_entity_goal() {
 }
 
 /// `is_unreduced_builtin_call` — WI-738's soundness floor, on the carrier the walk
-/// builds. `[num(?x), neq(sub(?x, 1), 1)]` with `fact Num(v: 2)`: `2 - 1 = 1`, so the
-/// guard is FALSE and the conjunction has NO definite solution.
+/// builds. `[num(?x), sub(?x, 1) !== 1]` with `fact Num(v: 2)`: `2 - 1 = 1`, so the
+/// guard is FALSE and the conjunction has NO definite solution. Written `!==`, a builtin
+/// that reads its operands so and chooses no member: a hand-built `neq` is an equality no
+/// type reached, an error (WI-20261105-CBRD2), and would pass by the error instead.
 ///
 /// FAILS when the predicate's `Entity` arm is removed: the operand reads as ordinary
-/// DATA, `neq` compares the TERM `sub(2,1)` to the term `1` structurally, they differ,
+/// DATA, `!==` compares the TERM `sub(2,1)` to the term `1` structurally, they differ,
 /// and the goal is PROVED — WI-738's "silently, unconditionally TRUE" verbatim, one
 /// carrier over. That is a wrong answer, not a missing one.
 #[test]
@@ -443,10 +445,10 @@ end
     // CONTROL: the operand written GROUND in a single goal — no σ, no walk, so it
     // stays a `Value::Term` and takes the arm WI-738 added. Passes either way.
     let sub_g = call(&mut kb, "anthill.prelude.Additive.sub", &[two, one]);
-    let neq_g = call(&mut kb, "anthill.prelude.PartialEq.neq", &[sub_g, one]);
+    let neq_g = call(&mut kb, "anthill.kernel.struct_neq", &[sub_g, one]);
     assert!(
         definite(&mut kb, &[neq_g]).is_empty(),
-        "CONTROL: `neq(sub(2,1), 1)` as a lone Term goal already delayed (WI-738)",
+        "CONTROL: `sub(2,1) !== 1` as a lone Term goal already delayed (WI-738)",
     );
 
     let x = var(&mut kb, "x");
@@ -458,10 +460,10 @@ end
          reaching the operand at all",
     );
     let sub_x = call(&mut kb, "anthill.prelude.Additive.sub", &[x, one]);
-    let g2 = call(&mut kb, "anthill.prelude.PartialEq.neq", &[sub_x, one]);
+    let g2 = call(&mut kb, "anthill.kernel.struct_neq", &[sub_x, one]);
     assert!(
         definite(&mut kb, &[g1, g2]).is_empty(),
-        "`[num(?x), neq(sub(?x,1), 1)]` must NOT be proved — `?x` is 2 and 2-1 = 1, \
+        "`[num(?x), sub(?x,1) !== 1]` must NOT be proved — `?x` is 2 and 2-1 = 1, \
          so the guard is false. A definite solution here is the structural lie the \
          WI-738 floor exists to stop, reached through the `Value::Entity` operand the \
          goal walk builds once σ has bound `?x`",
@@ -577,15 +579,19 @@ end
 /// an answer link's leaf to `Term::Var`, which the first arm chases, and that interning
 /// IS the leak this ticket closes.
 ///
-/// `[loose(?x, ?y), eq(?y, 1), simple(?y)]` as TERM goals: `loose` links `?y` to a
-/// fresh var its body never binds, so `eq` delays on it and ROTATES behind `simple`;
-/// `simple(?y)` then binds the link to 1; `eq` retries and must now decide. The truth
+/// `[loose(?x, ?y), nonvar(?y), simple(?y)]` as TERM goals: `loose` links `?y` to a
+/// fresh var its body never binds, so `nonvar` delays on it and ROTATES behind `simple`;
+/// `simple(?y)` then binds the link to 1; `nonvar` retries and must now decide. The truth
 /// is ONE definite solution.
 ///
-/// MEASURED: 1 at HEAD, 0 with the walk transient and this arm missing, 1 again with
-/// it. `walk_arg` is one `value_global_var` read now, so there is no list to leave a
-/// spelling out of. The row FAILS when that read is narrowed back to
-/// `v.clone()` / `v`.
+/// MEASURED (WI-7YPGM): 1 at HEAD, 0 with the walk transient and this arm missing, 1 again
+/// with it. `walk_arg` is one `value_global_var` read now, so there is no list to leave a
+/// spelling out of.
+///
+/// PASSES EITHER WAY NOW (MEASURED 2026-11-19, WI-20261105-CBRD2): with `walk_arg` returning a
+/// bare `Value::Var` unwalked the row still answers 1, under the `eq` it was written with and
+/// under the `nonvar` it is written with now — the link no longer reaches the argument slot
+/// on that carrier. It stays as the rotation's row; the arm is guarded by no row.
 #[test]
 fn a_rotated_builtin_reads_the_link_its_sibling_bound() {
     let mut kb = load_with_stdlib(
@@ -598,14 +604,11 @@ end
 ",
     );
     let (x, y) = (var(&mut kb, "x"), var(&mut kb, "y"));
-    let one = kb.alloc(Term::Const(Literal::Int(1)));
     let g1 = call(&mut kb, "ypgm_w.loose", &[x, y]);
-    let eq_sym = kb.eq_functor();
-    let g2 = kb.alloc(Term::Fn {
-        functor: eq_sym,
-        pos_args: SmallVec::from_slice(&[y, one]),
-        named_args: SmallVec::new(),
-    });
+    // `nonvar`: a builtin that reads its argument through `walk_arg` and waits while
+    // `value_is_unbound_var` says it is one. A hand-built `eq` was the probe, and is an
+    // equality no type reached now, an error (WI-20261105-CBRD2).
+    let g2 = call(&mut kb, "anthill.reflect.nonvar", &[y]);
     let g3 = call(&mut kb, "ypgm_w.simple", &[y]);
 
     // CONTROL: the same pair WITHOUT the loose link, so `?y` is never on the
@@ -614,13 +617,13 @@ end
     assert_eq!(
         definite(&mut kb, &[g2, g3]).len(),
         1,
-        "CONTROL: `[eq(?y, 1), simple(?y)]` decides without an answer link in play",
+        "CONTROL: `[nonvar(?y), simple(?y)]` decides without an answer link in play",
     );
 
     assert_eq!(
         definite(&mut kb, &[g1, g2, g3]).len(),
         1,
-        "`eq(?y, 1)` delayed on the link, rotated behind `simple(?y)`, and must read \
+        "`nonvar(?y)` delayed on the link, rotated behind `simple(?y)`, and must read \
          the binding `simple` made. `0` here is the retry reading a `Value::Var` \
          `walk_arg` never chased — a LOST SOLUTION, not a delay",
     );

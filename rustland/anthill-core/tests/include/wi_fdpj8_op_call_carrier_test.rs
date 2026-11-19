@@ -61,6 +61,17 @@
 //!
 //! # What each row measures, and what fails when the change is backed out
 //!
+//! **THE `eq` AND `neq` COLUMNS ARE WRITTEN `===` AND `!==` SINCE WI-20261105-CBRD2.** A goal
+//! these rows build by hand has no type, and its `eq` or `neq` is an equality no type reached,
+//! an error where it runs (kernel-language §8.3), which would pass the `neq` column by the
+//! error and fail the `eq` column. `===` and `!==` evaluate their operands as `eq` did and
+//! choose no member, so the carrier is what the rows still measure. RE-MEASURED then, on the
+//! code as it stands (the functions named below have been replaced since): (A), dropping the
+//! arity test from `is_written_call`'s view arm, turns [`a_bare_nullary_op_name_is_still_data`]
+//! red, and (E), an `Entity` read as data there, turns
+//! [`an_op_call_operand_decides_on_the_entity_carrier`] red. The table is the one measured when
+//! this ticket landed.
+//!
 //! MEASURED by mutating each shipped change one at a time and re-running, not
 //! predicted. The back-outs are:
 //!
@@ -256,18 +267,18 @@ fn an_op_call_operand_decides_on_the_term_carrier() {
 
     for (qn, arg, want, why) in [
         (
-            "anthill.prelude.PartialEq.neq",
+            "anthill.kernel.struct_neq",
             four,
             0,
-            "`neq(dbl(2), 4)` must NOT be proved — `dbl(2)` is 4. A definite solution \
+            "`dbl(2) !== 4` must NOT be proved — `dbl(2)` is 4. A definite solution \
              is the structural lie WI-738's floor exists to stop, reached one carrier \
              over",
         ),
         (
-            "anthill.prelude.PartialEq.eq",
+            "anthill.kernel.struct_eq",
             four,
             1,
-            "`eq(dbl(2), 4)` must be proved — a delay cannot produce this answer, so \
+            "`dbl(2) === 4` must be proved — a delay cannot produce this answer, so \
              it is what attributes the row to the REDUCTION and not to the delay",
         ),
         (
@@ -295,8 +306,8 @@ fn an_op_call_operand_decides_on_the_entity_carrier() {
     let five = kb.alloc(Term::Const(Literal::Int(5)));
 
     for (qn, arg, want) in [
-        ("anthill.prelude.PartialEq.neq", four, 0),
-        ("anthill.prelude.PartialEq.eq", four, 1),
+        ("anthill.kernel.struct_neq", four, 0),
+        ("anthill.kernel.struct_eq", four, 1),
         ("anthill.prelude.Int64.lt", five, 1),
     ] {
         let x = var(&mut kb, "x");
@@ -456,7 +467,9 @@ fn an_undecidable_pair_is_not_reported_as_non_unifiable() {
 /// as a call is the reading WI-20260902-VZC2C explicitly refused at `reduce_op_value`
 /// ("a bare nullary op in an ARROW-typed slot is §5.4's unapplied function value").
 ///
-/// `eq(tau, tau)` holds by reflexivity over one shared `TermId`. MEASURED red when the
+/// `tau === tau` holds by reflexivity over one shared `TermId` (written `eq(tau, tau)` until
+/// WI-20261105-CBRD2: a goal built by hand has no type, and its `eq` is an equality no type
+/// reached, an error). MEASURED red when the
 /// arity test is dropped from `is_unreduced_op_call`'s view arm (back-out (A)): both
 /// operands report un-reduced, the goal delays, and the answer is LOST — 0 where 1 is
 /// required — rather than refused. It is green under (R) and under (D), so it is a
@@ -468,11 +481,11 @@ fn a_bare_nullary_op_name_is_still_data() {
         .try_resolve_symbol("fdpj8.tau")
         .expect("`fdpj8.tau` must resolve");
     let bare = kb.alloc(Term::Ref(tau));
-    let g = call(&mut kb, "anthill.prelude.PartialEq.eq", &[bare, bare]);
+    let g = call(&mut kb, "anthill.kernel.struct_eq", &[bare, bare]);
     assert_eq!(
         definite(&mut kb, &[g]),
         1,
-        "`eq(tau, tau)` over a BARE nullary op name must hold by reflexivity: a bare \
+        "`tau === tau` over a BARE nullary op name must hold by reflexivity: a bare \
          name in operand position is §5.4's unapplied function value — DATA — and \
          delaying on it loses an answer rather than refusing one",
     );

@@ -1311,7 +1311,17 @@ fn ill_typed_comparison_text(kb: &KnowledgeBase, comparison: &Value, cause: &Typ
 }
 
 /// What a refusal of an equality no type reaches proposes instead.
-pub(super) const STRUCTURAL_EQUALITY: &str = "`===` compares any two values structurally";
+/// The sentence an equality no type reached is refused in where it runs (WI-20261105-CBRD2,
+/// kernel-language §8.3): the resolver's goal and the interpreter's call alike.
+pub(crate) fn equality_with_no_member_message(comparison: &str) -> String {
+    format!(
+        "`{comparison}` compares two values with no `eq` member: no type reached the comparison, \
+         so no carrier's equality was chosen. Write it where it is typed — a rule body, a written \
+         query, `KB.execute` — to compare at its carrier's member; {STRUCTURAL_EQUALITY}"
+    )
+}
+
+pub(crate) const STRUCTURAL_EQUALITY: &str = "`===` compares any two values structurally";
 
 /// [`STRUCTURAL_EQUALITY`] as a refusal's last clause, where the call it refuses is `eq` or
 /// `neq`; empty for any other call.

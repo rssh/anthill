@@ -930,51 +930,32 @@ const INSTFACT_SRC: &str = r#"
     end
 "#;
 
-/// A `gap2.instfact.Tagged.tagged(key: k, note: n)` entity term.
-fn tagged_entity(kb: &mut KnowledgeBase, k: i64, n: i64) -> TermId {
-    let f = kb
-        .try_resolve_symbol("gap2.instfact.Tagged.tagged")
-        .expect("Tagged.tagged");
-    let key = kb.intern("key");
-    let note = kb.intern("note");
-    let kt = int_term(kb, k);
-    let nt = int_term(kb, n);
-    kb.alloc(Term::Fn {
-        functor: f,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(key, kt), (note, nt)]),
-    })
+/// `pattern`, a query over [`INSTFACT_SRC`] written with its names in full, typed where it is
+/// read (proposal 073 §6.2): how many answers it has, and how many of them are definite. A goal
+/// built by hand is an equality no type reached, an error (kernel-language §8.3).
+fn typed_answers(kb: &mut KnowledgeBase, pattern: &str) -> (usize, usize) {
+    let goals = common::query_goals(kb, &[pattern]);
+    let sols = kb.resolve(&goals, &ResolveConfig::default());
+    (sols.len(), sols.iter().filter(|s| s.residual.is_empty()).count())
 }
+
+const T: &str = "gap2.instfact.Tagged.tagged";
 
 #[test]
 fn instance_fact_eq_dispatches_at_resolution() {
     let mut kb = common::load_kb_with(INSTFACT_SRC);
     // tagged(1,9) vs tagged(1,8): structurally UNEQUAL (`note` differs), but the
-    // instance-fact `taggedEq` compares only `key` ⇒ EQUAL. Pre-gap-2 the SLD eq
-    // builtin answered structurally (0 solutions); now it dispatches to taggedEq.
-    let a = tagged_entity(&mut kb, 1, 9);
-    let b = tagged_entity(&mut kb, 1, 8);
-    let g = goal(&mut kb, EQ, &[a, b]);
-    let sols = kb.resolve(&[g], &ResolveConfig::default());
+    // instance-fact `taggedEq` compares only `key` ⇒ EQUAL: one definite answer, the op having
+    // run at resolution. Keys apart ⇒ taggedEq false ⇒ no answer, so the op genuinely RAN.
     assert_eq!(
-        sols.len(),
-        1,
-        "eq(tagged(1,9), tagged(1,8)) must dispatch to the instance-fact taggedEq ⇒ equal by key",
+        typed_answers(&mut kb, &format!("{T}(key: 1, note: 9) = {T}(key: 1, note: 8)")),
+        (1, 1),
+        "equal by key through taggedEq"
     );
-    assert!(
-        sols[0].residual.is_empty(),
-        "the instance-fact op ran at resolution — a definite solution"
-    );
-
-    // tagged(1,9) vs tagged(2,9): keys differ ⇒ taggedEq false ⇒ NO solution
-    // (so the op genuinely RAN — it is not a blanket "always equal").
-    let a2 = tagged_entity(&mut kb, 1, 9);
-    let b2 = tagged_entity(&mut kb, 2, 9);
-    let g2 = goal(&mut kb, EQ, &[a2, b2]);
     assert_eq!(
-        kb.resolve(&[g2], &ResolveConfig::default()).len(),
-        0,
-        "eq(tagged(1,9), tagged(2,9)): keys differ ⇒ taggedEq false",
+        typed_answers(&mut kb, &format!("{T}(key: 1, note: 9) = {T}(key: 2, note: 9)")),
+        (0, 0),
+        "keys differ ⇒ taggedEq false"
     );
 }
 
@@ -982,52 +963,33 @@ fn instance_fact_eq_dispatches_at_resolution() {
 fn instance_fact_inside_a_composite_is_reached() {
     // `some(tagged(1,9))` vs `some(tagged(1,8))`: an instance-fact carrier inside
     // `Option`. `Option`'s derived `eq` compares the element by its type's `eq`
-    // (WI-20261109-FEM1J), here `taggedEq`, which reads the keys alone: equal. Before, the
-    // resolver delayed on the buried carrier rather than answer the structural `false`.
+    // (WI-20261109-FEM1J), here `taggedEq`, which reads the keys alone: equal.
     let mut kb = common::load_kb_with(INSTFACT_SRC);
-    let some = kb
-        .try_resolve_symbol("anthill.prelude.Option.some")
-        .expect("Option.some");
-    let answers = |kb: &mut KnowledgeBase, key_b: i64| {
-        let inner_a = tagged_entity(kb, 1, 9);
-        let inner_b = tagged_entity(kb, key_b, 8);
-        let sa = kb.alloc(Term::Fn {
-            functor: some,
-            pos_args: SmallVec::from_slice(&[inner_a]),
-            named_args: SmallVec::new(),
-        });
-        let sb = kb.alloc(Term::Fn {
-            functor: some,
-            pos_args: SmallVec::from_slice(&[inner_b]),
-            named_args: SmallVec::new(),
-        });
-        let g = goal(kb, EQ, &[sa, sb]);
-        let sols = kb.resolve(&[g], &ResolveConfig::default());
-        (sols.len(), sols.iter().filter(|s| s.residual.is_empty()).count())
-    };
-    assert_eq!(answers(&mut kb, 1), (1, 1), "equal keys: one definite answer");
-    assert_eq!(answers(&mut kb, 2), (0, 0), "keys apart: refuted");
+    let some = "anthill.prelude.Option.some";
+    assert_eq!(
+        typed_answers(&mut kb, &format!("{some}({T}(key: 1, note: 9)) = {some}({T}(key: 1, note: 8))")),
+        (1, 1),
+        "equal keys: one definite answer"
+    );
+    assert_eq!(
+        typed_answers(&mut kb, &format!("{some}({T}(key: 1, note: 9)) = {some}({T}(key: 2, note: 8))")),
+        (0, 0),
+        "keys apart: refuted"
+    );
 }
 
 #[test]
 fn instance_fact_neq_dispatches_at_resolution() {
     let mut kb = common::load_kb_with(INSTFACT_SRC);
-    // neq is the De Morgan dual: keys equal ⇒ NOT neq ⇒ no solution.
-    let a = tagged_entity(&mut kb, 1, 9);
-    let b = tagged_entity(&mut kb, 1, 8);
-    let g = goal(&mut kb, "anthill.prelude.PartialEq.neq", &[a, b]);
+    // neq is the De Morgan dual: keys equal ⇒ NOT neq ⇒ no answer; keys differ ⇒ neq holds.
     assert_eq!(
-        kb.resolve(&[g], &ResolveConfig::default()).len(),
-        0,
-        "neq(tagged(1,9), tagged(1,8)): keys equal ⇒ taggedEq true ⇒ neq false",
+        typed_answers(&mut kb, &format!("{T}(key: 1, note: 9) != {T}(key: 1, note: 8)")),
+        (0, 0),
+        "keys equal ⇒ taggedEq true ⇒ neq false"
     );
-    // keys differ ⇒ neq holds.
-    let a2 = tagged_entity(&mut kb, 1, 9);
-    let b2 = tagged_entity(&mut kb, 2, 9);
-    let g2 = goal(&mut kb, "anthill.prelude.PartialEq.neq", &[a2, b2]);
     assert_eq!(
-        kb.resolve(&[g2], &ResolveConfig::default()).len(),
-        1,
-        "neq(tagged(1,9), tagged(2,9)): keys differ ⇒ neq true",
+        typed_answers(&mut kb, &format!("{T}(key: 1, note: 9) != {T}(key: 2, note: 9)")),
+        (1, 1),
+        "keys differ ⇒ neq true"
     );
 }

@@ -231,12 +231,14 @@ fn an_unreduced_call_is_an_undecided_residual_naming_its_cause() {
 /// A PARKED goal keeps its place behind its siblings, so a sibling that fails still refutes
 /// the clause: 0 answers, and the search is complete — a refutation, not an undecided answer.
 /// Passes against the tree before this ticket too (the hook FAILED the goal); fails if a
-/// parked goal residualizes on the spot instead of rotating.
+/// parked goal residualizes on the spot instead of rotating. The sibling is `1 === 2`: a goal
+/// built at run time has no type, and its `=` would be an equality no type reached, an error
+/// (WI-20261105-CBRD2), not a refutation.
 #[test]
 fn a_failing_sibling_still_refutes_a_parked_goal() {
     let mut kb = kb();
-    let (sols, stats) = goals(&mut kb, &[TAG, "1 = 2"]);
-    assert!(sols.is_empty(), "`1 = 2` refutes the clause; got {} answers", sols.len());
+    let (sols, stats) = goals(&mut kb, &[TAG, "1 === 2"]);
+    assert!(sols.is_empty(), "`1 === 2` refutes the clause; got {} answers", sols.len());
     assert!(!stats.truncated, "and the search is complete: the answer is 0, definitely");
 }
 

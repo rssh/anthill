@@ -122,7 +122,8 @@ thread_local! {
 
 /// How many equalities have been compared ON THIS THREAD, ever, with no member the typer chose:
 /// a resolver's `eq` goal whose call class names none, and the interpreter's `PartialEq.eq`
-/// reached with none. Such an equality is answered by its operands' values. An instrument
+/// reached with none. Such an equality is an error where it runs (kernel-language §8.3), so
+/// this counts the errors raised; its operands are not compared. An instrument
 /// for tests, as [`eq_index_reads_by_this_thread`] is: that a goal the resolver or a library
 /// operation builds carries its member.
 pub fn untyped_equalities_by_this_thread() -> usize {
@@ -9985,7 +9986,9 @@ impl KnowledgeBase {
     }
 
     /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `PartialEq.eq` spec
-    /// op, for a goal no member answers. Outcomes, in order:
+    /// op. A goal no type reached — no member the typer chose — is an ERROR once its operands
+    /// are in (WI-20261105-CBRD2, kernel-language §8.3): residualized, the message naming
+    /// `===`, its operands not compared. A typed goal is decided as follows, in order:
     ///
     /// 1. **Reflexivity** — structurally identical operands are equal under any
     ///    lawful `Eq` instance: verdict with no lookups (the hot path, and
@@ -10014,7 +10017,8 @@ impl KnowledgeBase {
     ///
     /// A goal the typer pinned to a carrier's own `eq` (`PartialEq.eq` at `Pt`, pinned to
     /// `Pt.eq`) dispatches to that member, the type known at load deciding it
-    /// (WI-20260909-SM910); the index decides only a goal nothing typed. At three positional
+    /// (WI-20260909-SM910); the index answers the steps above only for a typed goal whose
+    /// member the host implements (`Int64.eq`), and goes with CBRD2's next step. At three positional
     /// arguments the third is the result column, as [`Self::builtin_cmp`] reads its own:
     /// `eq(a, b, ?r)` binds `?r` to the verdict, where it answered with `?r` free.
     fn builtin_sem_eq(
@@ -10068,6 +10072,10 @@ impl KnowledgeBase {
             EqOperands::Ready(a, b) => {
                 if !typed {
                     note_untyped_equality();
+                    let printed = crate::persistence::print::TermPrinter::new(self).print_value(goal);
+                    return BuiltinResult::Error(ResolveError::new(
+                        super::typing::equality_with_no_member_message(&printed),
+                    ));
                 }
                 // The law is asked of identical operands alone.
                 let pinned = pinned.map(|p| PinnedEq {
@@ -10809,25 +10817,6 @@ impl KnowledgeBase {
     /// ground.
     pub(crate) fn value_deep_ground(&self, v: &Value, subst: &Substitution) -> bool {
         self.fold_gate(v, Some(subst), 0, DEEP_GROUND)
-    }
-
-    /// WI-616 — does `v` STRUCTURALLY CONTAIN (at any depth) a value headed by an
-    /// eq-dispatch-index functor? Outcome 3's scan: an overriding carrier buried
-    /// under non-overriding structure makes the structural verdict unsound, so the
-    /// compare suspends instead of deciding. Present structure only — an unbound
-    /// variable is not (yet) an overriding value, matching the structural test's
-    /// instantiation-time semantics. Conservative `true` at the depth cap
-    /// ([`REACH_DEPTH_CAP`]).
-    ///
-    /// WI-625 gap 1: an eval-side entry with a fresh, empty σ — a bridged
-    /// interpreter's operand `Value`s are already reified, carrying no resolution
-    /// bindings — so the interpreter's `semantic_equal` suspends on a buried
-    /// override exactly where the resolver delays, and the bridge never imports a
-    /// membership-wrong structural verdict.
-    pub(crate) fn value_has_buried_eq_override(&self, v: &Value) -> bool {
-        // No σ — the operands are already reified; `None` is the inert empty σ the
-        // reach scan would otherwise never consult, without minting one per call.
-        self.fold_gate(v, None, 0, REACHES_EQ_OVERRIDE)
     }
 
     /// [`SELF_EQUAL_BY_LAW`] over a value, σ-threaded where a σ is given.
@@ -18618,6 +18607,17 @@ mod tests {
         );
     }
 
+    /// `goal`, an `eq` of two operands, as the typer leaves it at a carrier whose `eq` is
+    /// `member`: pinned to it (`CallClass::PinNow`).
+    fn pinned_eq(kb: &mut KnowledgeBase, eq: Symbol, member: Symbol, goal: TermId) -> Value {
+        let occ = crate::kb::node_occurrence::value_as_occurrence(kb, &Value::term(goal));
+        occ.set_classification(crate::kb::typing::CallClass::PinNow {
+            spec_op_sym: eq,
+            impl_op_sym: member,
+        });
+        Value::Node(occ)
+    }
+
     #[test]
     fn wi628_carrier_eq_truncation_taints_outer_stream() {
         // WI-628 REMAINING half: a guard goal routing through a carrier `eq` whose
@@ -18672,6 +18672,9 @@ mod tests {
         };
         let box1 = mk_box(&mut kb, 1);
         let box2 = mk_box(&mut kb, 2);
+        // The goal is the equality the typer pins to the carrier's `eq` (WI-20261105-CBRD2: one
+        // no type reached is an error, and the index decides no goal); the sub-proof it runs
+        // is the one the index dispatched to before.
         let eq_goal = kb.alloc(Term::Fn {
             functor: eq_sym,
             pos_args: SmallVec::from_slice(&[box1, box2]),
@@ -18685,8 +18688,9 @@ mod tests {
             definite_only: true,
             ..Default::default()
         };
+        let pinned = pinned_eq(&mut kb, eq_sym, myeq, eq_goal);
         let (sols, truncated) =
-            kb.resolve_goals_with_truncation(vec![Value::term(eq_goal)], &config);
+            kb.resolve_goals_with_truncation(vec![pinned], &config);
         assert!(
             truncated,
             "a truncated carrier-eq sub-proof must set the OUTER stream's truncated flag \
@@ -18719,8 +18723,9 @@ mod tests {
             pos_args: SmallVec::from_slice(&[b0a, b0b]),
             named_args: SmallVec::new(),
         });
+        let pinned = pinned_eq(&mut kb, eq_sym, myeq0, eq_goal0);
         let (sols0, truncated0) =
-            kb.resolve_goals_with_truncation(vec![Value::term(eq_goal0)], &config);
+            kb.resolve_goals_with_truncation(vec![pinned], &config);
         assert!(
             !truncated0,
             "a COMPLETE (unprovable) carrier-eq must leave the outer truncated flag clear"
@@ -18735,8 +18740,9 @@ mod tests {
         // taints truncated (the fold runs before the delay_mode branch, so the flag
         // is set on the residualize path too, not only under definite_only).
         let default_cfg = ResolveConfig::default();
+        let pinned = pinned_eq(&mut kb, eq_sym, myeq, eq_goal);
         let (sols_d, truncated_d) =
-            kb.resolve_goals_with_truncation(vec![Value::term(eq_goal)], &default_cfg);
+            kb.resolve_goals_with_truncation(vec![pinned], &default_cfg);
         assert!(
             truncated_d,
             "truncation must taint the outer flag in default delay mode too, not only definite_only"
@@ -18870,13 +18876,17 @@ mod tests {
 
         // End-to-end: the outer stream's truncated flag must stay CLEAR (the eq still
         // residualizes as an undecided delay, but that is a flounder, not truncation).
+        // The goal is the equality the typer pins to the carrier's `eq` (WI-20261105-CBRD2: one
+        // no type reached is an error, and the index decides no goal); the sub-proof it runs
+        // is the one the index dispatched to before.
         let eq_goal = kb.alloc(Term::Fn {
             functor: eq_sym,
             pos_args: SmallVec::from_slice(&[box1, box2]),
             named_args: SmallVec::new(),
         });
+        let pinned = pinned_eq(&mut kb, eq_sym, myeq_f, eq_goal);
         let (sols, truncated) =
-            kb.resolve_goals_with_truncation(vec![Value::term(eq_goal)], &ResolveConfig::default());
+            kb.resolve_goals_with_truncation(vec![pinned], &ResolveConfig::default());
         assert!(
             !truncated,
             "a FLOUNDERED (complete) carrier-eq must NOT taint the outer truncated flag"
@@ -21257,54 +21267,40 @@ mod tests {
 
     // ── Arithmetic and comparison builtin tests ──────────────────
 
+    /// An equality no type reached is an error where it runs (WI-20261105-CBRD2, kernel-language
+    /// §8.3): a goal built by hand — `eq(42, 42)`, `eq(1, 2)`, `neq("hello", "world")` — is not
+    /// compared by its operands' values. It comes back residual, not refuted and not proved, and
+    /// the search records the error naming `===`. Before, the three answered true, false and true.
     #[test]
-    fn builtin_eq_succeeds_on_equal_ints() {
+    fn an_equality_no_type_reached_is_an_error() {
         let mut kb = kb_with_prelude();
         let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
-        let a = kb.alloc(Term::Const(Literal::Int(42)));
-        let b = kb.alloc(Term::Const(Literal::Int(42)));
-        let goal = kb.alloc(Term::Fn {
-            functor: eq_sym,
-            pos_args: SmallVec::from_slice(&[a, b]),
-            named_args: SmallVec::new(),
-        });
-        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(solutions.len(), 1, "eq(42, 42) should succeed");
-    }
-
-    #[test]
-    fn builtin_eq_fails_on_different_ints() {
-        let mut kb = kb_with_prelude();
-        let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
-        let a = kb.alloc(Term::Const(Literal::Int(1)));
-        let b = kb.alloc(Term::Const(Literal::Int(2)));
-        let goal = kb.alloc(Term::Fn {
-            functor: eq_sym,
-            pos_args: SmallVec::from_slice(&[a, b]),
-            named_args: SmallVec::new(),
-        });
-        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(solutions.len(), 0, "eq(1, 2) should fail");
-    }
-
-    /// A `neq` goal no type reached is `not(eq(a, b))` (`neq_as_not_eq`).
-    #[test]
-    fn untyped_neq_succeeds_on_different() {
-        let mut kb = kb_with_prelude();
         let neq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.neq");
-        let a = kb.alloc(Term::Const(Literal::String("hello".into())));
-        let b = kb.alloc(Term::Const(Literal::String("world".into())));
-        let goal = kb.alloc(Term::Fn {
-            functor: neq_sym,
-            pos_args: SmallVec::from_slice(&[a, b]),
-            named_args: SmallVec::new(),
-        });
-        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(
-            solutions.len(),
-            1,
-            "neq(\"hello\", \"world\") should succeed"
-        );
+        let int = |kb: &mut KnowledgeBase, n: i64| kb.alloc(Term::Const(Literal::Int(n)));
+        let string = |kb: &mut KnowledgeBase, s: &str| kb.alloc(Term::Const(Literal::String(s.into())));
+        let cases = [
+            (eq_sym, int(&mut kb, 42), int(&mut kb, 42)),
+            (eq_sym, int(&mut kb, 1), int(&mut kb, 2)),
+            (neq_sym, string(&mut kb, "hello"), string(&mut kb, "world")),
+        ];
+        for (functor, a, b) in cases {
+            let goal = kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_slice(&[a, b]),
+                named_args: SmallVec::new(),
+            });
+            let (solutions, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+            assert!(
+                matches!(solutions.as_slice(), [s] if !s.residual.is_empty()),
+                "the goal comes back residual: {} solutions",
+                solutions.len()
+            );
+            assert!(
+                stats.errors.iter().any(|e| e.message.contains("with no `eq` member") && e.message.contains("`===`")),
+                "the error is recorded, naming `===`: {:?}",
+                stats.errors
+            );
+        }
     }
 
     #[test]

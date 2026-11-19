@@ -251,6 +251,10 @@ pub enum EvalError {
     /// answer. A PROGRAM error, the sibling of [`Self::AmbiguousSpecOpDispatch`]; `detail` is
     /// `kb::typing::per_application_supply`'s sentence, which the load face quotes too.
     UndeterminedDictionaryDispatch { detail: String },
+    /// WI-20261105-CBRD2 — `PartialEq.eq` reached with no member the typer chose: a call no
+    /// type reached, at any carrier. Its operands are not compared by their values (§8.3);
+    /// `operands` is how they print.
+    EqualityWithNoMember { operands: String },
     /// WI-757 — the WI-722 macro contract's DIAGNOSTIC channel for a HOST macro:
     /// it read its argument occurrences, found them definitively untranslatable,
     /// and says why. An anthill-written macro reaches the same channel by
@@ -710,6 +714,7 @@ impl EvalError {
             | EvalError::UnpinnedRequirement { .. }
             | EvalError::AmbiguousSpecOpDispatch { .. }
             | EvalError::UndeterminedDictionaryDispatch { .. }
+            | EvalError::EqualityWithNoMember { .. }
             | EvalError::MacroRejected { .. }
             | EvalError::UnboundTypeParam { .. }
             | EvalError::KbReadFailed(_)
@@ -1017,6 +1022,11 @@ impl std::fmt::Display for EvalError {
             EvalError::UndeterminedDictionaryDispatch { detail } => {
                 write!(f, "cannot dispatch through the dictionary: {detail}")
             }
+            EvalError::EqualityWithNoMember { operands } => write!(
+                f,
+                "{}",
+                crate::kb::typing::equality_with_no_member_message(&format!("eq({operands})"))
+            ),
             // WI-757: the same sentence the typer renders into a load error, so a
             // macro invoked at runtime and one expanded at compile time report the
             // rejection identically (only the location wrapper differs).

@@ -3710,10 +3710,9 @@ impl Interpreter {
         // `eq(a, b)`, at the spec's own `T`, entered with the dictionary of the carrier its
         // caller was typed at — it is that dictionary's member, as a receiver-less sibling's is
         // (step 3c). Not in another spec's body: an `eq` there may be at another type than the
-        // carrier its dictionary is for. Otherwise a call no type reaches, or one at a
-        // composite with no `eq` of its own: the spec declares no implementation, so its
-        // operands are compared by their values, as the resolver's `SemEq` compares a goal no
-        // type reaches.
+        // carrier its dictionary is for. Otherwise a call no type reaches: the spec declares no
+        // implementation, and the call is an error, as the resolver's `SemEq` goal no type
+        // reaches is (WI-20261105-CBRD2).
         if self.is_eq_spec_op(target) {
             let in_its_spec = self.stack.top().is_some_and(|frame| {
                 crate::kb::typing::impl_parent_sort_of_op(&self.kb, frame.op)
@@ -3729,7 +3728,7 @@ impl Interpreter {
                     return Ok(outcome);
                 }
             }
-            return Ok(StepOutcome::Deliver(self.eq_by_value(&arg_values)?));
+            return Err(self.eq_with_no_member(&arg_values));
         }
 
         // 3. Anthill-defined operation body.

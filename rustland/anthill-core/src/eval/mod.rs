@@ -525,9 +525,9 @@ pub struct Interpreter {
     pub(crate) reflect: ReflectSymbols,
     pub(crate) error_layer: Option<ErrorLayer>,
     /// `anthill.prelude.PartialEq.eq`, the spec operation a call reaches when no member was
-    /// found for it: one no type reaches, or one at a composite with no `eq` of its own.
-    /// The spec declares no implementation; `dispatch_resolved_operation` compares such a
-    /// call's operands by their values ([`Self::eq_by_value`]). Resolved once, under both
+    /// found for it: one no type reaches. The spec declares no implementation, and every
+    /// provision of it has a member (kernel-language §8.3), so `dispatch_resolved_operation`
+    /// raises such a call ([`Self::eq_with_no_member`]). Resolved once, under both
     /// spellings one qualified name can be interned with — the name's own and the
     /// declaration's — as a host registration is ([`Self::is_eq_spec_op`]).
     pub(crate) eq_spec_op: [Option<Symbol>; 2],
@@ -1803,15 +1803,18 @@ impl Interpreter {
         self.eq_spec_op.contains(&Some(sym))
     }
 
-    /// `PartialEq.eq` reached with no member ([`Self::eq_spec_op`]): the operands compared by
-    /// their values ([`builtins::builtin_eq`]), entered as a host call is
-    /// ([`Self::call_host`]) — one that reads a variable the rule has not bound waits.
-    pub(crate) fn eq_by_value(&mut self, args: &[Value]) -> Result<Value, EvalError> {
+    /// `PartialEq.eq` reached with no member ([`Self::eq_spec_op`]): a call no type reached,
+    /// an error (`EvalError::EqualityWithNoMember`, kernel-language §8.3) — its operands are
+    /// not compared by their values. One that reads a variable the rule has not bound waits
+    /// first, as a host call does ([`Self::call_host`]).
+    pub(crate) fn eq_with_no_member(&mut self, args: &[Value]) -> EvalError {
         if args.iter().any(|a| self.mentions_unknown(a)) {
-            return Err(self.reads_unknown("`anthill.prelude.PartialEq.eq`"));
+            return self.reads_unknown("`anthill.prelude.PartialEq.eq`");
         }
         crate::kb::resolve::note_untyped_equality();
-        builtins::builtin_eq(self, args)
+        let printer = crate::persistence::print::TermPrinter::new(&self.kb);
+        let operands = args.iter().map(|a| printer.print_value(a)).collect::<Vec<_>>().join(", ");
+        EvalError::EqualityWithNoMember { operands }
     }
 
     /// The suspension a read of one of the caller's unknowns raises: the call cannot be

@@ -475,51 +475,56 @@ namespace test.wi8rjk8req
     operation put(b: IntBag, key: Int64) -> IntBag = b
     operation get(b: IntBag, key: Int64) -> Option[Int64] = none
   end
+
+  -- The redexes, typed in an operation body: the rewriter types `miss`'s guard there.
+  operation apart() -> Option[Int64] = Bag.get(Bag.put(IntBag.ibag, 2), 1)
+  operation same() -> Option[Int64] = Bag.get(Bag.put(IntBag.ibag, 2), 2)
 end
 "#;
     let mut kb = crate::common::load_kb_with(SRC);
-    let ibag = call(&mut kb, "test.wi8rjk8req.IntBag.ibag", &[]);
-    let two = int(&mut kb, 2);
-    let one = int(&mut kb, 1);
-    // get(put(ibag, 2), 1): the keys differ, so `miss` strips the `put` …
-    let put2 = call(&mut kb, "test.wi8rjk8req.Bag.put", &[ibag, two]);
-    let g = call(&mut kb, "test.wi8rjk8req.Bag.get", &[put2, one]);
-    let out = kb.simplify(g);
+    // The body's call and the head of its first argument, after the load's rewrites.
+    let body = |kb: &KnowledgeBase, op: &str| {
+        let node = kb.op_body_node(sym(kb, op)).expect("a body").clone();
+        let Some(Expr::Apply { pos_args, .. }) = node.as_expr() else {
+            panic!("`{op}` is a call: {:?}", node.as_expr())
+        };
+        // The first argument is an application (`put(…)`) or a nullary name (`ibag`).
+        let first = match pos_args[0].as_expr() {
+            Some(Expr::Apply { functor, .. }) => kb.local_name_of(*functor).to_string(),
+            Some(Expr::VarRef { name }) => kb.local_name_of(*name).to_string(),
+            other => panic!("`{op}`'s first argument: {other:?}"),
+        };
+        (crate::common::head_short(kb, &node), first)
+    };
+    // get(put(ibag, 2), 1): the keys differ, so `miss` strips the `put`, leaving
+    // `get(ibag, 1)` — a rewrite over the STRIPPED bag, not a no-op.
     assert_eq!(
-        head_name(&kb, out),
-        "test.wi8rjk8req.Bag.get",
-        "`miss` must fire over a carrier that provides Bag AND with `neq(1, 2)` proved, \
-         leaving `get(ibag, 1)`; got {:?}",
-        kb.get_term(out),
+        body(&kb, "test.wi8rjk8req.apart"),
+        ("get".to_string(), "ibag".to_string()),
+        "`miss` must fire over a carrier that provides Bag AND with `neq(1, 2)` proved",
     );
-    match kb.get_term(out) {
-        Term::Fn { pos_args, .. } => assert_eq!(
-            pos_args[0], ibag,
-            "the surviving `get` must be over the STRIPPED bag, which is what makes this \
-             a rewrite and not a no-op",
-        ),
-        other => panic!("expected a `get` apply, got {other:?}"),
-    }
     // … and the SAME key does not: `neq(2, 2)` is refuted, so the redex stands even
     // though the `requires` guard holds. Both guards must pass, not either.
-    let g_same = call(&mut kb, "test.wi8rjk8req.Bag.get", &[put2, two]);
     assert_eq!(
-        kb.simplify(g_same),
-        g_same,
-        "with the keys EQUAL the value guard is refuted, so `miss` must not strip the \
-         `put` — the `requires` guard holding is not enough",
+        body(&kb, "test.wi8rjk8req.same"),
+        ("get".to_string(), "put".to_string()),
+        "with the keys EQUAL the value guard is refuted, so `miss` must not strip the `put`",
     );
 
-    // And the value guard holding is not enough either: over a carrier that does NOT
-    // provide `Bag`, `equation_is_requires_guarded` keeps the law dormant.
+    // And over a carrier that does NOT provide `Bag`, `equation_is_requires_guarded` keeps
+    // the law dormant. No typed program writes that redex — `Bag.put(plain, 2)` is refused
+    // at load, nothing providing `Bag` at `Plain` — so it is built by hand, and PASSES EITHER
+    // WAY now: a redex built by hand has no type, its guard's `neq` is an equality no type
+    // reached (WI-20261105-CBRD2), and the guard is never held over it.
+    let two = int(&mut kb, 2);
+    let one = int(&mut kb, 1);
     let plain = call(&mut kb, "test.wi8rjk8req.Plain.plain", &[]);
     let put_plain = call(&mut kb, "test.wi8rjk8req.Bag.put", &[plain, two]);
     let g_plain = call(&mut kb, "test.wi8rjk8req.Bag.get", &[put_plain, one]);
     assert_eq!(
         kb.simplify(g_plain),
         g_plain,
-        "`neq(1, 2)` holds, but `Plain` does not provide `Bag`, so the sort-level \
-         `requires Eq[T = K]` guard declines — the composition is a conjunction",
+        "`Plain` does not provide `Bag`, so the sort-level `requires Eq[T = K]` guard declines",
     );
 }
 
