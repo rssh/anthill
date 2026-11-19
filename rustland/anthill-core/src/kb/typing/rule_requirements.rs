@@ -592,11 +592,19 @@ pub(super) fn infer_rule_body_requirements(
             let typed_at_the_spec = demand.carriers.first().and_then(|c| c.inferred_type()).is_some_and(|ty| {
                 sort_functor_of_view(kb, &ty).is_some_and(|s| same_sort_canonical(kb, s, demand.spec))
             });
+            let at = demand.carriers.first().and_then(|c| c.inferred_type());
+            // The clause's sort supplies its requirement at its own parameters (§5.3, "as the
+            // sort's operations do"), not at another type its typing infers: `rule twin(x:
+            // Option[T = Box], y: Option[T = Box]) :- y = x` in `sort Box requires PartialEq[T =
+            // T]` compares two `Box[T = ?t]`s, `?t` no parameter of the sort, and declares
+            // nothing there (the user, 2026-11-19: a rule takes no dictionary it does not
+            // declare). The same clause outside the sort is refused for it.
+            let sort_supplies_here = clause_sort_supplies(kb, rid, demand.spec)
+                && at.as_ref().is_none_or(|at| type_over_sort_params(kb, rid, at));
             let unsupplied = !demand.of_the_sort
                 && !typed_at_the_spec
-                && !clause_sort_supplies(kb, rid, demand.spec)
+                && !sort_supplies_here
                 && !carried_by_a_named_slot(kb, rid, &demand);
-            let at = demand.carriers.first().and_then(|c| c.inferred_type());
             if unsupplied && at.as_ref().is_some_and(|at| type_reaches_the_head(kb, rid, at)) {
                 if !refused_load && !refused_calls.contains(&(rid, demand.call.call.span.span)) {
                     refused.push(undeclared_requirement(kb, rid, &demand.call, demand.spec));
@@ -756,6 +764,38 @@ pub(super) fn clause_sort_supplies(kb: &KnowledgeBase, rid: RuleId, spec: Symbol
         || transitive_required_sorts(kb, domain)
             .iter()
             .any(|s| same_sort_canonical(kb, *s, spec))
+}
+
+/// Is `at`, a type clause `rid`'s typing stamped on a call's carrier, one the clause's sort can
+/// supply its requirement at: built from the sort's parameters alone — each type variable it
+/// names one of them ([`sort_param_slots`]) — or from none. A bare variable the typing gave an
+/// expression and no clause variable (`lub(?a, top)`'s result, a generic call's) is a type it did
+/// not read, not another one, and answers as before; the type of an untyped variable of the
+/// clause (`?x` of `rule anyLinked(?x, ?y)`), or a type over another variable (`Box[T = ?t]`),
+/// is another type, which the clause declares nothing at.
+fn type_over_sort_params(kb: &mut KnowledgeBase, rid: RuleId, at: &Value) -> bool {
+    let mut vars: Vec<VarId> = Vec::new();
+    type_global_vars(kb, at, &mut vars);
+    if vars.is_empty() {
+        return true;
+    }
+    let slots = sort_param_slots(kb, rid);
+    let at_params = !slots.is_empty()
+        && vars
+            .iter()
+            .all(|&v| caller_slot_at(kb, rid, &Value::Var(Var::Global(v)), &slots).is_some());
+    if at_params {
+        return true;
+    }
+    let ViewHead::Var(Var::Global(bare)) = at.head(kb) else {
+        return false;
+    };
+    let typed_a_variable = clause_var_stamps(kb, rid).iter().any(|(_, ty)| {
+        let mut named: Vec<VarId> = Vec::new();
+        type_global_vars(kb, ty, &mut named);
+        named.contains(&bare)
+    });
+    !typed_a_variable
 }
 
 /// 060.1 §1 — the refusal of a rule-body call that needs a dictionary of `spec` at a type the

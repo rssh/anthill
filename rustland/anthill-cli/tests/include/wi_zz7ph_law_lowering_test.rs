@@ -441,7 +441,7 @@ namespace test.zz7ph.prem
   sort Spec
     sort T = ?
     operation weight(a: T) -> Int64
-    rule related(?a, ?b) :- eq(weight(?a), 7), eq(weight(?b), 7)
+    rule related(?a: T, ?b: T) :- eq(weight(?a), 7), eq(weight(?b), 7)
     rule same_weight: eq(weight(?a), weight(?b)) :- related(?a, ?b)
   end
 
@@ -520,7 +520,7 @@ namespace test.zz7ph.inl
   sort PScope
     sort T = ?
     requires anthill.prelude.PartialOrd[T = T]
-    rule both(?x, ?w) :- gt(?x, ?w), gt(?w, ?x)
+    rule both(?x: T, ?w: T) :- gt(?x, ?w), gt(?w, ?x)
   end
 
   rule outer :- PScope.both(?a, ?b)

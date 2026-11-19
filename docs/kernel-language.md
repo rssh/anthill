@@ -2712,7 +2712,12 @@ A], WeakOrd.compare(?a, ?b, ?c)`, `rule ints(?c) :- cmp(1, 2, ?c)` loads, `rule 
 cmp(?a, ?b, ?c)` loads and hands `cmp` the dictionary it holds, at every turn of a recursion
 too. A rule of a sort holds the requirements its sort states, as the sort's operations do: in
 `sort Holder` with `requires Marker[T = T]`, `rule viaH(?x: T, ?t) :- keep(?x, ?t)` passes
-`keep` its `Marker[A]` at `T`, and `Holder[T = Int64].viaH(1, ?t)` answers through `Int64`'s;
+`keep` its `Marker[A]` at `T`, and `Holder[T = Int64].viaH(1, ?t)` answers through `Int64`'s.
+It holds them at the sort's own parameters, and at an instance built of them (`Self`), not at
+another type the clause's typing infers: in `sort Box` with `requires PartialEq[T = T]`, `rule
+twin(x: Option[T = Box], y: Option[T = Box]) :- y = x` compares two of ANY box, whose element
+is no parameter of the sort, and is refused, as the same rule outside the sort is; at `Option[T
+= Self]` it loads, and so does `twin[E](…) :- PartialEq[T = E], y = x`;
 a requirement the sort states at another instance, or under two names, is refused at the goal.
 A citation fixes the clause's declared type parameters at the citing call's
 instantiation, as an operation call's are, and a dictionary it passes is the requirement's,
@@ -4969,7 +4974,13 @@ inert channel is very good at hiding.
 
 A constraint's goals — its invariant and guard, a quantifier's condition and body —
 are held to what a rule body's goals are held to (§5.3), an ordinary denial's
-included. Without a label, the name before `:-` is the invariant; a labeled denial
+included. A constraint types its variables as a rule head types its columns: a variable
+written with its type, `?a: T`, has it as its bound wherever in the constraint it is
+written, once, as a head's is, and a call at it is read at that type. So a spec's law over
+its own parameter says so — `WeakOrd`'s `eq(compare(?a: T, ?b: T), 0) :- eq(?a, ?b)` — as a
+call at a type the constraint does not write is a type no head column reaches (§5.3), and is
+refused. In a quantified form a typed variable is read by the guard as without its type:
+`forall ?n: num(v: ?n) -: gt(?n: Int64, 0)`. Without a label, the name before `:-` is the invariant; a labeled denial
 with no invariant is `constraint name: false :- guard`.
 
 The quantified forms from proposal 023 are enforced through KB guards. The

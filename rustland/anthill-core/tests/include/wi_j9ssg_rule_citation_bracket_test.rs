@@ -212,7 +212,8 @@ fn a_bracket_on_a_paren_less_reference_is_refused() {
 /// 060.1 §3 — A SPEC'S OWN RULE READS THE SPEC AT ITS OWN PARAMETER, as the spec's operations
 /// do, and declares nothing: `le` in `sort Cmp2` calls `cmp2` at `T`, and a citation from an
 /// operation holding `Cmp2[T = A]` hands it the caller's dictionary, `Up`'s `1` and `Down`'s
-/// `0`; the spec's law `cmp2_refl` is written the same way. A citation at `T = Int64`, which
+/// `0`; the spec's law `cmp2_refl` is written over the same `T`, its variable typed (a
+/// constraint types its variables as a rule head does, §6.2). A citation at `T = Int64`, which
 /// both `Up` and `Down` provide, is refused at load, naming both, as an operation's call
 /// `Cmp2[T = Int64].cmp2(1, 5)` is. FAILS with the clause's sort read as no supplier of its own
 /// spec: `le` is refused, "the clause declares none". FAILS with the citation's
@@ -223,7 +224,7 @@ fn a_specs_own_rule_reads_the_spec_at_its_own_parameter() {
     let ns = "j9ssg.law";
     let spec = "  sort Cmp2\n    sort T = ?\n    operation cmp2(a: T, b: T) -> Int64\n    \
                 rule le(?a: T, ?b: T) :- cmp2(?a, ?b, ?c), Int64.lte(?c, 0)\n    \
-                constraint cmp2_refl: eq(cmp2(?a, ?a), 0) :- le(?a, ?a)\n  end\n  \
+                constraint cmp2_refl: eq(cmp2(?a: T, ?a), 0) :- le(?a, ?a)\n  end\n  \
                 sort Up\n    import anthill.prelude.Numeric.{sub}\n    provides Cmp2[T = Int64]\n    \
                 operation cmp2(a: Int64, b: Int64) -> Int64 = sub(a, b)\n  end\n  \
                 sort Down\n    import anthill.prelude.Numeric.{sub}\n    provides Cmp2[T = Int64]\n    \

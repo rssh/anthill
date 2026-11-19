@@ -197,7 +197,7 @@ sort anthill.prelude.WeakOrd
   -- for it is a channel that states the obligation without pretending to check it.
   -- It used to cite `Int64.div_nonzero` as the idiom it followed; that constraint is
   -- gone, and the idiom was the misleading half of what this row is doing.
-  constraint compare_congruent: eq(compare(?a, ?b), 0) :- eq(?a, ?b)
+  constraint compare_congruent: eq(compare(?a: T, ?b: T), 0) :- eq(?a, ?b)
 end
 
 -- Ord: the TOTAL order whose kernel IS `Eq` — C++'s `strong_ordering`, Haskell's and

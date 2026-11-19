@@ -3078,7 +3078,7 @@ mod s8cyd_implicit_cite_tests {
             rule positive(?x) :- gt(?x, 0)
             rule weight(?a) <=> weight(?a)
             fact gte(weight(?a), -5) <=> true
-            constraint weight_sane: gte(weight(?a), 0) :- ?a === ?a
+            constraint weight_sane: gte(weight(?a: T), 0) :- ?a === ?a
           end
         end
     "#;

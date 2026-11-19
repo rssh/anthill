@@ -316,9 +316,17 @@ end
 /// proposal). The `?x: T` form of the same bounds, lowered by the type door, always answered.
 /// The sort requires `PartialEq[T = T]`, which the equality at `Option[T = Self]` is built
 /// from where the rule is cited; with no requirement it is refused at load.
+///
+/// At ANY box — `Option[T = Box[T = ?]]`, or the bare `Option[T = Box]` — the element is a
+/// type the clause's typing infers, not the sort's `T`, and the sort's requirement says
+/// nothing of it: the clause declares nothing there and is refused, as a rule takes no
+/// dictionary it does not declare (the user, 2026-11-19; the same clause outside the sort is
+/// refused for it). It loaded, and its equality found `PartialEq` from the value when it ran.
+/// Declaring it, `twin[E](…) :- PartialEq[T = E], y = x`, is the repair. FAILS with the sort's
+/// requirement taken to supply any instance: both any-box bounds load.
 #[test]
 fn a_bound_that_is_a_term_reads_self_and_the_sorts_parameters() {
-    let program = |ns: &str, bound: &str| {
+    let program = |ns: &str, rule: &str| {
         format!(
             r#"
 namespace {ns}
@@ -328,26 +336,42 @@ namespace {ns}
     sort T = ?
     entity box(v: T)
     requires PartialEq[T = T]
-    rule twin(x: {bound}, y: {bound}) :- y = x
+    {rule}
   end
   rule both(1) :- Box.twin(some(box(v: 1)), some(box(v: 1)))
 end
 "#
         )
     };
+    let twin = |bound: &str| format!("rule twin(x: {bound}, y: {bound}) :- y = x");
     for (ns, bound) in [
         ("wi80zv8b.term1", "Option[T = Self]"),
         ("wi80zv8b.term2", "Option[T = Box[T = T]]"),
-        ("wi80zv8b.term3", "Option[T = Box[T = ?]]"),
-        ("wi80zv8b.term4", "Option[T = Box]"),
     ] {
-        let mut kb = load_kb_with(&program(ns, bound));
+        let mut kb = load_kb_with(&program(ns, &twin(bound)));
         assert_eq!(
             shown_rows(&mut kb, &format!("{ns}.both")),
             vec![("1".to_owned(), true)],
             "{bound}"
         );
     }
+    for (ns, bound) in [
+        ("wi80zv8b.term3", "Option[T = Box[T = ?]]"),
+        ("wi80zv8b.term4", "Option[T = Box]"),
+    ] {
+        assert_refused_naming(
+            &load_errors(&program(ns, &twin(bound))),
+            &["twin.body", "a requirement of `PartialEq` the clause declares"],
+            bound,
+        );
+    }
+    let declared = "rule twin[E](x: Option[T = Box[T = E]], y: Option[T = Box[T = E]]) :- PartialEq[T = E], y = x";
+    let mut kb = load_kb_with(&program("wi80zv8b.term5", declared));
+    assert_eq!(
+        shown_rows(&mut kb, "wi80zv8b.term5.both"),
+        vec![("1".to_owned(), true)],
+        "the requirement declared at the element"
+    );
 }
 
 // ── A sort's parameter needs a carrier ──────────────────────────────────────

@@ -119,8 +119,11 @@ end
 
 /// ACCEPTANCE (under-determined case): a polymorphic rule whose carrier is not pinned to any
 /// concrete sort leaves its requirement to the clause where something can supply it — here the
-/// `requires` of the sort it is written in, whose citation supplies it: it loads (WI-292: a rule
-/// that legitimately propagates its requirement is never flagged). Nothing provides `Relatable`,
+/// `requires` of the sort it is written in, whose citation supplies it: written at the sort's
+/// parameter, `anyLinked(?x: T, ?y: T)`, it loads (WI-292: a rule that legitimately propagates
+/// its requirement is never flagged). Untyped, its columns are at a type the clause's typing
+/// infers, no parameter of the sort, and it is refused: the sort's requirement is at its own
+/// parameter, and a rule takes no dictionary it does not declare (the user, 2026-11-19). Nothing provides `Relatable`,
 /// so at namespace level, in no sort that requires it, the same rule is refused at load: no value
 /// can carry an instance, so no condition of its clause could hold (WI-20261013-RYDNV; it
 /// loaded, and its call dispatched on a value that could have none).
@@ -135,7 +138,7 @@ namespace test.wi642.poly
   sort Linking
     sort T = ?
     requires Relatable[T = T]
-    rule anyLinked(?x, ?y) :- related(?x, ?y)
+    rule anyLinked(?x: T, ?y: T) :- related(?x, ?y)
   end
 end
 "#
@@ -143,7 +146,13 @@ end
     let (_kb, errs) = try_load(&src);
     assert!(
         errs.is_empty(),
-        "a polymorphic rule in a sort that requires its spec must not error; got:\n{}",
+        "a polymorphic rule at the parameter of a sort that requires its spec must not error; got:\n{}",
+        fmt_errs(&errs),
+    );
+    let (_kb, errs) = try_load(&src.replace("anyLinked(?x: T, ?y: T)", "anyLinked(?x, ?y)"));
+    assert!(
+        errs.len() == 1 && fmt_errs(&errs).contains("a requirement of `Relatable` the clause declares"),
+        "untyped, at a type the sort's requirement is not at, the rule is refused; got:\n{}",
         fmt_errs(&errs),
     );
     let src = format!(

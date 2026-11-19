@@ -30409,6 +30409,12 @@ struct Loader<'a> {
     // A `typed_var` reaching `convert_term` with this false is a misuse (a type
     // annotation on a variable outside a rule pattern) and is reported loudly.
     in_rule_head: bool,
+    // Active while converting a CONSTRAINT's goals: a constraint is a headless rule (§6.2),
+    // its variables bound in its goals, so a variable's written type (`?a: T`) is read
+    // there as a head's is — recorded into `rule_head_type_bounds` and installed on the
+    // constraint's clause ([`Self::assert_constraint_goal_clause`]), where the typer reads
+    // it (the user, 2026-11-19: a constraint's variables are typed as a rule's are).
+    in_constraint_goals: bool,
     // WI-20260904-B8ESG — the CLAUSE HEAD (a rule's or a fact's) being converted, so
     // `convert_term`'s `Term::Fn` arm can record each head-ARGUMENT compound whose functor
     // was WRITTEN, for the post-load undefined-name check.
@@ -30950,6 +30956,7 @@ impl<'a> Loader<'a> {
             source_id,
             current_owner: None,
             in_rule_head: false,
+            in_constraint_goals: false,
             clause_head: None,
             in_quoted_term: false,
             const_fold: ConstFold::Off,
@@ -34283,10 +34290,10 @@ impl<'a> Loader<'a> {
                         Term::Var(Var::Global(vid)) => Some(*vid),
                         _ => None,
                     };
-                    if !self.in_rule_head {
+                    if !self.in_rule_head && !self.in_constraint_goals {
                         self.errors.push(LoadError::Other {
                             message: "WI-582: a variable type annotation (`?x: T`) is only \
-                                      meaningful in a rule head pattern"
+                                      meaningful in a rule head pattern or a constraint"
                                 .to_string(),
                         });
                     } else if let Some(vid) = vid_opt {
@@ -40178,6 +40185,16 @@ impl<'a> Loader<'a> {
     }
 
     fn build_body_atom_occurrence_inner(&mut self, parse_id: ParseTermId) -> Rc<NodeOccurrence> {
+        // A constraint's typed variable (`?a: T`) is its variable here: the type is the bound
+        // the constraint's clause takes, recorded where the goal was first converted
+        // ([`Self::assert_constraint_goal_clause`]).
+        if self.in_constraint_goals && is_typed_variable_mark(self.parsed, parse_id) {
+            if let Term::Fn { pos_args, .. } = self.parsed.terms.get(parse_id).clone() {
+                if let Some(&var) = pos_args.first() {
+                    return self.build_body_atom_occurrence_inner(var);
+                }
+            }
+        }
         let parse_id = self.citation_read_as_dot(parse_id);
         // WI-753 — set by the `Term::Fn` arm when the node it builds is a reflect form
         // written as data, which the tail re-reads into its keyed occurrence.
@@ -50103,7 +50120,13 @@ impl<'a> Loader<'a> {
         // item because the FIRST conversion of a goal (`reject_binding_unify_in_contract`)
         // is the one memoized and stored.
         let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
+        // A variable's written type in the constraint's goals is recorded as its bound, as
+        // a rule head's is; the constraint's clause takes the bounds.
+        let prev_constraint = std::mem::replace(&mut self.in_constraint_goals, true);
+        let prev_bounds = std::mem::take(&mut self.rule_head_type_bounds);
         self.load_constraint_inner(c, domain);
+        self.rule_head_type_bounds = prev_bounds;
+        self.in_constraint_goals = prev_constraint;
         self.const_fold = prev_fold;
     }
 
@@ -50219,9 +50242,31 @@ impl<'a> Loader<'a> {
             .collect();
         self.descs_emitted_by_convert = prev_descs;
         self.current_owner = prev_owner;
+        // The variables' written types (`?a: T`), each its bound, which the typer reads as a
+        // rule head's: a constraint is typed as a rule is. A bound's own type variables — the
+        // enclosing sort's parameter `T` — join the clause's frame, as a rule head's bound's
+        // do (WI-20260911-5G28A), so the clause's typing reads `?a` at the sort's `T`.
+        let bounds = std::mem::take(&mut self.rule_head_type_bounds);
+        let mut bound_vars: Vec<VarId> = Vec::new();
+        for (_, bound) in &bounds {
+            for v in self.kb.collect_vars(bound) {
+                if bound_var_joins_frame(self.kb, v, false) && !bound_vars.contains(&v) {
+                    bound_vars.push(v);
+                }
+            }
+        }
         let bottom = self.kb.alloc(Term::Bottom);
-        self.kb
-            .assert_rule_debruijn_with_nodes(bottom, body_nodes, ClauseKind::Constraint, domain, None);
+        let rid = self.kb.assert_rule_debruijn_with_bound_vars(
+            bottom,
+            body_nodes,
+            &bound_vars,
+            ClauseKind::Constraint,
+            domain,
+            None,
+        );
+        if !bounds.is_empty() {
+            self.kb.install_rule_type_bounds(rid, &bounds);
+        }
     }
 
     /// Store the inert `Constraint(head(…) [, guard(…)])` reflection fact for a

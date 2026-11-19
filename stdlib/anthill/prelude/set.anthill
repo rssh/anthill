@@ -48,7 +48,7 @@ sort anthill.prelude.Set
   rule eq(?a, ?b) :- subset(?a, ?b), subset(?b, ?a)
   rule subset(empty(), ?) :- true
   rule subset(insert(?s, ?x), ?s2) :- contains(?s2, ?x), subset(?s, ?s2)
-  rule contains(insert(?, ?y), ?x) :- PartialEq.eq(?x, ?y)
+  rule contains(insert(?, ?y), ?x: T) :- PartialEq.eq(?x, ?y)
   rule contains(insert(?s, ?), ?x) :- contains(?s, ?x)
 
   -- Laws. The genuinely-reducing (terminating, LHS→RHS shrinking) laws are tagged
