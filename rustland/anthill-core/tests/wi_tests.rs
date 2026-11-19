@@ -2535,6 +2535,8 @@ mod wi_cbrd2_equality_law_test;
 mod wi_cbrd2_sort_requirement_handed_on_test;
 #[path = "include/wi_cbrd2_sort_requirement_call_read_test.rs"]
 mod wi_cbrd2_sort_requirement_call_read_test;
+#[path = "include/wi_cbrd2_guard_chain_read_test.rs"]
+mod wi_cbrd2_guard_chain_read_test;
 #[path = "include/wi_cbrd2_contract_member_goal_test.rs"]
 mod wi_cbrd2_contract_member_goal_test;
 #[path = "include/wi_cbrd2_bridge_slot_test.rs"]

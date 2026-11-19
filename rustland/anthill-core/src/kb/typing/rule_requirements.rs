@@ -464,7 +464,9 @@ pub(super) fn infer_rule_body_requirements(
                 continue;
             }
             // At an instance a provision builds from the guards (`Box[T = A]` under
-            // `PartialEq[T = A]`), the call takes the dictionary it builds.
+            // `PartialEq[T = A]`), the call takes the dictionary it builds; at a guard's own
+            // parameter, a spec the guard's chain holds (`eq` under `Eq[T = A]`) takes the
+            // guard's sub-dictionary. A spec the chain holds at another instance is no guard's.
             if let Some(at) = demand.carriers.first().and_then(|c| c.inferred_type()) {
                 let mut reads = Vec::new();
                 if let Some(dict) =
@@ -497,7 +499,6 @@ pub(super) fn infer_rule_body_requirements(
                 && !fixed_at_the_call
                 && !typed_at_the_spec
                 && !clause_sort_supplies(kb, rid, demand.spec)
-                && !declared_guard_requires(kb, rid, &guards, &demand)
                 && !carried_by_a_named_slot(kb, rid, &demand);
             let at = demand.carriers.first().and_then(|c| c.inferred_type());
             if unsupplied && at.as_ref().is_some_and(|at| type_reaches_the_head(kb, rid, at)) {
@@ -995,8 +996,9 @@ struct ClauseGuard {
 /// `PartialEq[T = A]` is `Box`'s `PartialEq` holding the guard's dictionary as its condition, as
 /// an operation body's call at `Box[T = A]` under `requires PartialEq[T = A]` is. A condition a
 /// guard holds in its spec's chain (`PartialEq[T = A]` of `Eq[T = A]`) is that sub-dictionary,
-/// read by a goal pushed onto `reads`, which stands before the call. `None` where `at` is no such
-/// instance, or the provisions build none from the guards.
+/// read by a goal pushed onto `reads`, which stands before the call — and so is `spec` itself at
+/// the guard's own parameter (§5.3: `eq(?x, ?y)` under `Eq[T = A]`, `?x: A`). `None` where `at`
+/// is no such instance, or the provisions build none from the guards.
 fn composed_from_guards(
     kb: &mut KnowledgeBase,
     rid: RuleId,
@@ -1071,19 +1073,29 @@ fn composed_from_guards(
         param_rigids: &rigids,
     };
     // At the parameter itself, a guard whose spec holds `spec` in its chain answers it
-    // (`PartialEq[T = A]` of `EuclideanDomain[T = A]`): its sub-dictionary — in an equation,
-    // which nothing cites; another clause's call there takes a read its citation fills
-    // through that guard ([`declared_guard_requires`]).
+    // (`PartialEq[T = A]` of `EuclideanDomain[T = A]`, `PartialOrd[T = A]` of `WeakOrd[T =
+    // A]`): its sub-dictionary, read off the guard's dictionary by `Dictionary.sub`. The guard
+    // is what the citation chose (`cmpOrd[A = Int64, Ord = Descending]`), and its chain is that
+    // choice's (§8.7): `WeakOrd.compare` under `Ord[T = A]` runs `Descending`'s. Nothing is read
+    // from the call's values.
     let at_parameter = caller_param_at(kb, rid, &at_written).is_some();
-    if at_parameter && !kb.has_equational_head(rid) {
-        return None;
-    }
     let tree = if at_parameter {
         let scope = ResolutionScope {
             available_requires: &entries,
             sigma: Some(&sigma),
             pin: None,
             sub_goal_requires: &[],
+        };
+        // The call fixes the carrier and nothing else of the spec: what the guard's chain
+        // writes for the rest (`Iterable[C = C, Element = Element, E = E]` of
+        // `FiniteCollection[C = A]`) is the guard's, and the goal leaves it open.
+        let goal = SortGoal {
+            left_open: sort_type_params_as_pairs(kb, spec)
+                .iter()
+                .map(|(p, _)| *p)
+                .filter(|p| *p != param)
+                .collect(),
+            ..goal
         };
         let (scope_index, projection) = scope_chain_cover(kb, &scope, &goal)?;
         ResolvedRequiresNode::FromScope {
@@ -1396,32 +1408,6 @@ fn carried_by_a_named_slot(kb: &mut KnowledgeBase, rid: RuleId, demand: &SpecDem
                 .and_then(|spec| spec_binding_value(kb, &spec, &carrier_key))
                 .is_some_and(|carrier| crate::kb::term_view::views_structurally_equal(kb, &carrier, &at))
         })
-    })
-}
-
-/// Does a guard of clause `rid` at the type `demand`'s call is at state a spec that requires the
-/// call's: `Base.op(?x, ?r)` under `Derived[T = A]`, `?x: A`, where `Derived` requires `Base`. The
-/// declared requirement holds its spec's chain (§8.7), and the call's read is routed through it.
-fn declared_guard_requires(
-    kb: &mut KnowledgeBase,
-    rid: RuleId,
-    guards: &[ClauseGuard],
-    demand: &SpecDemand,
-) -> bool {
-    if guards.is_empty() {
-        return false;
-    }
-    let Some(at) = demand.carriers.first().and_then(|c| c.inferred_type()) else {
-        return false;
-    };
-    let Some(param) = caller_param_at(kb, rid, &at) else {
-        return false;
-    };
-    guards.iter().any(|g| {
-        g.carrier == param
-            && transitive_required_sorts(kb, g.spec)
-                .iter()
-                .any(|s| same_sort_canonical(kb, *s, demand.spec))
     })
 }
 
