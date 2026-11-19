@@ -2032,6 +2032,55 @@ pub(super) fn instance_is_concrete(kb: &mut KnowledgeBase, ty: &Value) -> bool {
     type_is_ground(kb, ty) && !names_a_variable(kb, ty) && !leaves_a_slot_open(kb, ty)
 }
 
+/// The type of a rule-body goal's argument that is a construction (`pr(a: 4, b: 5)`, `[5]`),
+/// at its arguments' types; `None` for any other argument, and for a construction whose fields
+/// that does not fix. An entity's is left open where nothing in it writes a parameter — a named
+/// requirement slot (`Pair2[…, O = ?]`) — for the column it meets to say ([`goal_arg_type`]
+/// requires it concrete).
+pub(super) fn construction_type_at_goal(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Value> {
+    match arg.as_expr() {
+        Some(Expr::Constructor { .. } | Expr::Apply { .. }) if !holds_an_operation_call(kb, arg) => {
+            entity_construction_type(kb, arg)
+        }
+        Some(Expr::ListLit(_) | Expr::SetLit(_)) => goal_arg_type(kb, arg),
+        Some(Expr::Ref(ctor)) if kb.entity_field_types(*ctor).is_some_and(|f| f.is_empty()) => goal_arg_type(kb, arg),
+        _ => None,
+    }
+}
+
+/// The type of `arg`, a construction of an entity, at its fields' types ([`goal_arg_type`]), each
+/// concrete; the parameters no field fixes left open. `None` for any other argument, and where a
+/// field's type is not concrete.
+fn entity_construction_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Value> {
+    let (Some(
+        Expr::Constructor {
+            name: functor,
+            pos_args,
+            named_args,
+            ..
+        }
+        | Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        },
+    )) = arg.as_expr()
+    else {
+        return None;
+    };
+    kb.entity_field_types(*functor)?;
+    let pos: Vec<Value> = pos_args.iter().map(|a| goal_arg_type(kb, a)).collect::<Option<_>>()?;
+    let named: Vec<(Symbol, Value)> = named_args
+        .iter()
+        .map(|(k, a)| Some((*k, goal_arg_type(kb, a)?)))
+        .collect::<Option<_>>()?;
+    if pos.iter().chain(named.iter().map(|(_, t)| t)).any(|t| !instance_is_concrete(kb, t)) {
+        return None;
+    }
+    Some(constructor_value_type(kb, *functor, &pos, &named))
+}
+
 /// The type of a rule-body goal's argument: a variable's, as the clause's typing stamps it (a
 /// fresh variable where it stamps none: a type the clause has not fixed), a literal's, and a
 /// constructor's at its arguments' types. `None` for a constructor whose type the value typer
@@ -2058,29 +2107,10 @@ fn goal_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Val
     }
     match arg.as_expr() {
         Some(Expr::Const(lit)) => Some(literal_sort(kb, lit)),
-        Some(
-            Expr::Constructor {
-                name: functor,
-                pos_args,
-                named_args,
-                ..
-            }
-            | Expr::Apply {
-                functor,
-                pos_args,
-                named_args,
-                ..
-            },
-        ) if kb.entity_field_types(*functor).is_some() => {
-            let pos: Vec<Value> = pos_args.iter().map(|a| goal_arg_type(kb, a)).collect::<Option<_>>()?;
-            let named: Vec<(Symbol, Value)> = named_args
-                .iter()
-                .map(|(k, a)| Some((*k, goal_arg_type(kb, a)?)))
-                .collect::<Option<_>>()?;
-            if pos.iter().chain(named.iter().map(|(_, t)| t)).any(|t| !instance_is_concrete(kb, t)) {
-                return None;
-            }
-            let ty = constructor_value_type(kb, *functor, &pos, &named);
+        Some(Expr::Constructor { name: functor, .. } | Expr::Apply { functor, .. })
+            if kb.entity_field_types(*functor).is_some() =>
+        {
+            let ty = entity_construction_type(kb, arg)?;
             instance_is_concrete(kb, &ty).then_some(ty)
         }
         // A constructor written with no field, `rod()`, is its bare name.

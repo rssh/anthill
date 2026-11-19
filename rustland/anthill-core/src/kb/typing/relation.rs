@@ -1920,9 +1920,11 @@ fn rule_goal_edge(
     goal: &Rc<NodeOccurrence>,
     callee: Symbol,
 ) -> Result<PendingCitationRoutes, TypeError> {
+    // A construction written in the goal is at its arguments' types (`pr(a: 4, b: 5)` at
+    // `Pair2[T = Int64, U = Int64]`), as the goal's guard routes read it.
     let arg_type = |kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>| match arg.as_expr() {
         Some(Expr::Const(lit)) => Some(literal_sort(kb, lit)),
-        _ => arg.inferred_type(),
+        _ => construction_type_at_goal(kb, arg).or_else(|| arg.inferred_type()),
     };
     let (edge, _) = goal_edge_citation(
         kb,
@@ -2560,7 +2562,15 @@ fn carried_slot_reading(
             else {
                 continue;
             };
-            if resolved_var(kb, held).is_none() {
+            // A slot the clause's own type WRITES at a witness (`?p: Pair2[T = ?v, U = String, O
+            // = Down]`) is fixed there, whatever the citation passes: the witness, read at the
+            // types the citation fixes (`Down` at `T = Int64`). Any other binding that is no
+            // variable of the clause's typing — the sort's own parameter, in its own rules — is
+            // the frame's, as before.
+            let a_variable = resolved_var(kb, held).is_some();
+            let written_witness =
+                !a_variable && matches!(slot_selection_of(kb, base, slot, held, SlotPinSource::Carrier), Ok(Some(_)));
+            if !a_variable && !written_witness {
                 continue;
             }
             // [`carried_slot`]'s invariant: the declaration order and the chain's agree, and
