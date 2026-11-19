@@ -194,14 +194,16 @@ fn holds_woven_call(occ: &Rc<NodeOccurrence>) -> bool {
     false
 }
 
-/// An EQUATION is left alone: it is no clause whose body runs as goals. Asserted over the
-/// POPULATION — every equational rule the stdlib and this fixture load — rather than one
-/// fixture, because the equation that drove the exclusion is a stdlib law: String's
-/// untagged `rule isEmpty(?s) <=> eq(length(?s), 0)`, whose `length` is a spec operation at
-/// a carrier not known at load. FAILS with the exclusion backed out. An equation that
-/// DECLARES its requirements — a law over `[A]` with `:- Additive[T = A]`, WI-20261117-V0RPW
-/// — has its calls woven through them, as any clause's declared ones are: each woven call
-/// reads one of its declared slots, and none an inferred one, which is what this asks.
+/// An EQUATION gets no condition of its own: nothing cites it, so no read of its own could be
+/// filled. Asserted over the POPULATION — every equational rule the stdlib and this fixture
+/// load — rather than one fixture, because the equation that drove the exclusion is a stdlib
+/// law: String's untagged `rule isEmpty(?s) <=> eq(length(?s), 0)`, whose `length` is a spec
+/// operation at a carrier not known at load. FAILS with the exclusion backed out. An equation
+/// that DECLARES its requirements — a law over `[A]` with `:- Additive[T = A]`,
+/// WI-20261117-V0RPW — has its calls woven through them, as any clause's declared ones are:
+/// each woven call reads a dictionary its declared slots make — a slot, one a conditional
+/// provision builds from them (`Dictionary(?d, impl: List)`), or a slot's sub-dictionary read
+/// by `Dictionary.sub` — and the body holds no read of its own, which is what this asks.
 #[test]
 fn an_equation_gets_no_inferred_condition() {
     let kb = crate::common::load_kb_with(ORD_PROGRAM);
@@ -210,27 +212,70 @@ fn an_equation_gets_no_inferred_condition() {
         .into_iter()
         .filter(|&rid| kb.has_equational_head(rid))
         .filter(|&rid| {
-            let declared = kb.rule_declared_dictionary_slots(rid);
-            kb.rule_body_nodes(rid)
-                .iter()
-                .any(|n| holds_woven_call_reading_other_than(n, &declared))
+            let body = kb.rule_body_nodes(rid);
+            let mut from_declared: Vec<u32> = kb.rule_declared_dictionary_slots(rid).to_vec();
+            sub_dictionary_reads(&kb, body, &mut from_declared);
+            body.iter().any(|n| {
+                holds_inferred_read(&kb, n) || holds_woven_call_reading_other_than(n, &from_declared)
+            })
         })
         .map(|rid| format!("{rid:?}"))
         .collect();
     assert!(woven.is_empty(), "equations with an inferred woven call: {woven:?}");
 }
 
-/// Does this stored body hold a woven call that reads a dictionary other than a declared
-/// slot of its clause (`declared`)?
+/// The variables a `Dictionary.sub` goal of `body` binds from one of `declared`, onto it, to a
+/// fixed point: the sub-dictionaries of declared slots.
+fn sub_dictionary_reads(kb: &anthill_core::kb::KnowledgeBase, body: &[Rc<NodeOccurrence>], declared: &mut Vec<u32>) {
+    use anthill_core::kb::term::Var;
+    let Some(sub) = kb.try_resolve_symbol("anthill.realization.runtime.Dictionary.sub") else { return };
+    loop {
+        let before = declared.len();
+        for goal in body {
+            if let Some(Expr::Apply { functor, pos_args, .. }) = goal.as_expr() {
+                if let (true, [from, _, out]) = (*functor == sub, pos_args.as_slice()) {
+                    if let (Some(Expr::Var(Var::DeBruijn(f))), Some(Expr::Var(Var::DeBruijn(o)))) = (from.as_expr(), out.as_expr()) {
+                        if declared.contains(f) && !declared.contains(o) {
+                            declared.push(*o);
+                        }
+                    }
+                }
+            }
+        }
+        if declared.len() == before {
+            return;
+        }
+    }
+}
+
+/// Does this stored body hold a read the weave made for its clause to be handed?
+fn holds_inferred_read(kb: &anthill_core::kb::KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        if anthill_core::kb::typing::is_inferred_requirement_read(kb, &o) {
+            return true;
+        }
+        let Some(expr) = o.as_expr() else { continue };
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
+}
+
+/// Does this stored body hold a woven call that reads a dictionary made of anything but the
+/// clause's declared slots and their sub-dictionaries (`declared`)?
 fn holds_woven_call_reading_other_than(occ: &Rc<NodeOccurrence>, declared: &[u32]) -> bool {
+    fn made_of_declared(r: &Rc<NodeOccurrence>, declared: &[u32]) -> bool {
+        match r.as_expr() {
+            Some(Expr::Var(anthill_core::kb::term::Var::DeBruijn(d))) => declared.contains(d),
+            Some(Expr::Dictionary { subs, .. }) => subs.iter().all(|s| made_of_declared(s, declared)),
+            _ => false,
+        }
+    }
     let mut stack = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
         let Some(expr) = o.as_expr() else { continue };
         if let Expr::ApplyWithin { requirements, .. } = expr {
-            let reads_declared = requirements.iter().all(|r| {
-                matches!(r.as_expr(), Some(Expr::Var(anthill_core::kb::term::Var::DeBruijn(d))) if declared.contains(d))
-            });
-            if !reads_declared {
+            if !requirements.iter().all(|r| made_of_declared(r, declared)) {
                 return true;
             }
         }

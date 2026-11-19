@@ -1523,7 +1523,7 @@ fn type_conjunct_comparisons(
 /// projection in the clause's term form, `field_access(receiver, name)`, written as the body
 /// lowering writes it, and every node at `site`, the operation's declaration, so a refusal
 /// points there.
-fn typable_comparison(
+pub(super) fn typable_comparison(
     kb: &mut KnowledgeBase,
     cmp: &Rc<NodeOccurrence>,
     site: crate::span::SourceSpan,

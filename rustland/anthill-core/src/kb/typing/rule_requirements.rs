@@ -325,11 +325,19 @@ pub(super) fn infer_rule_body_requirements(
         dict: kb.intern("dict"),
     };
     for rid in kb.live_rule_ids() {
-        // An EQUATION is no clause whose body runs as goals: an untagged one is an inert
-        // law (`rule isEmpty(?s) <=> eq(length(?s), 0)`, which this pass wove before it
-        // was excluded), and a guarded one's guard is run by the rewriter at match time,
-        // which binds no read.
-        if kb.is_fact(rid) || kb.has_equational_head(rid) {
+        // An untagged EQUATION with no requirement declared is an inert law (`rule
+        // isEmpty(?s) <=> eq(length(?s), 0)`, which this pass wove before it was excluded),
+        // and a `@[simp]` one's guard is run by the rewriter, typed at the redex it matched
+        // (`guard_goals_typed_at`). A guarded equation that declares its requirements (`rule
+        // mul_div: div[A](mul(?a, ?b: A), ?b) = ?a :- EuclideanDomain[T = A], …, neq(?b,
+        // zero)`) is a clause the resolver runs where a proof uses it, its guards' reads
+        // supplied there: its calls take the dictionaries those reads bind. Nothing cites an
+        // equation, so a call no guard of it covers takes no read of its own, and is left as
+        // written.
+        let equation = kb.has_equational_head(rid);
+        if kb.is_fact(rid)
+            || (equation && (kb.is_directional_equation(rid) || kb.rule_type_params(rid).is_empty()))
+        {
             continue;
         }
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
@@ -467,6 +475,9 @@ pub(super) fn infer_rule_body_requirements(
                     continue;
                 }
             }
+            if equation {
+                continue;
+            }
             // A receiver bracket that writes the spec's carrier at a concrete type fixes the
             // instance at the call (`FiniteCollection[C = List[T = String]].size(?ls, ?n)`), as
             // an argument at a concrete type does.
@@ -556,6 +567,9 @@ pub(super) fn infer_rule_body_requirements(
                 .iter()
                 .map(|entry| slot_route(kb, rid, &guards, &demand.call, entry, &mut composed_reads))
                 .collect();
+            if equation && routes.iter().any(|r| !matches!(r, SlotRoute::Guard(_))) {
+                continue;
+            }
             if let Some((entry, route)) = entries
                 .iter()
                 .zip(&routes)
@@ -992,7 +1006,7 @@ fn composed_from_guards(
     site: &Rc<NodeOccurrence>,
     reads: &mut Vec<Rc<NodeOccurrence>>,
 ) -> Option<Rc<NodeOccurrence>> {
-    if guards.is_empty() || instance_is_concrete(kb, at) || caller_param_at(kb, rid, at).is_some() {
+    if guards.is_empty() || instance_is_concrete(kb, at) {
         return None;
     }
     // Each variable of `at` is one of the clause's type parameters, as its typing names it.
@@ -1032,6 +1046,7 @@ fn composed_from_guards(
     // As an operation body's goal: the call's instance at the rigid parameters, the scope's
     // entries at their variables, and `param_rigids` joining the two.
     let params: Vec<VarId> = opened.values().copied().collect();
+    let at_written = at.clone();
     let at = rewrite_type_leaves(kb, at, &|kb, leaf| match leaf.head(kb) {
         ViewHead::Var(Var::Global(v)) if params.contains(&v) => Some(Value::term(kb.alloc(Term::Var(Var::Rigid(v))))),
         _ => None,
@@ -1055,14 +1070,38 @@ fn composed_from_guards(
         subst: &empty,
         param_rigids: &rigids,
     };
-    let scope = ResolutionScope {
-        available_requires: &[],
-        sigma: Some(&sigma),
-        pin: None,
-        sub_goal_requires: &entries,
-    };
-    let ResolutionResult::Resolved(tree) = resolve(kb, &goal, &scope) else {
+    // At the parameter itself, a guard whose spec holds `spec` in its chain answers it
+    // (`PartialEq[T = A]` of `EuclideanDomain[T = A]`): its sub-dictionary — in an equation,
+    // which nothing cites; another clause's call there takes a read its citation fills
+    // through that guard ([`declared_guard_requires`]).
+    let at_parameter = caller_param_at(kb, rid, &at_written).is_some();
+    if at_parameter && !kb.has_equational_head(rid) {
         return None;
+    }
+    let tree = if at_parameter {
+        let scope = ResolutionScope {
+            available_requires: &entries,
+            sigma: Some(&sigma),
+            pin: None,
+            sub_goal_requires: &[],
+        };
+        let (scope_index, projection) = scope_chain_cover(kb, &scope, &goal)?;
+        ResolvedRequiresNode::FromScope {
+            scope_index,
+            spec_sort: spec,
+            projection,
+        }
+    } else {
+        let scope = ResolutionScope {
+            available_requires: &[],
+            sigma: Some(&sigma),
+            pin: None,
+            sub_goal_requires: &entries,
+        };
+        let ResolutionResult::Resolved(tree) = resolve(kb, &goal, &scope) else {
+            return None;
+        };
+        tree
     };
     composed_dictionary_node(kb, rid, &tree, &held, site, reads)
 }

@@ -2812,11 +2812,13 @@ fn check_apply_call(
             // declassified any other carrier back to a plain atom, silently undoing this
             // very flatten.
             let before = substituted_op_effects.len();
+            // A guard is a clause of the operation whose row this is — the override the WI-606
+            // fallback threads, where it threads one — and is refuted as typed in its signature.
             let incurred = push_effect_with_guard_discharge(
                 kb,
                 flow,
                 &subst,
-                fn_sym,
+                return_owner,
                 &guard_sigma,
                 op_has_guarded,
                 walked,

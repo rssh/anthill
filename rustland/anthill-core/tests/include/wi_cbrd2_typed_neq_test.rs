@@ -260,7 +260,8 @@ fn a_neq_reads_an_eq_bound_by_the_provision() {
 }
 
 /// A `neq` typed at an operation's type parameter is deferred to its requirement, which a goal
-/// at the call has no frame for: it is read through an untyped `eq`, at the arguments.
+/// at the call has no frame for: it is typed at the call's arguments, at `Int64`'s member
+/// (`wi_cbrd2_call_site_comparison_test`).
 #[test]
 fn a_generic_neq_is_read_through_an_untyped_eq() {
     for (ns, needy, arg, holds) in [

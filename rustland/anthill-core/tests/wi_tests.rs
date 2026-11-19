@@ -2523,6 +2523,8 @@ mod wi_cbrd2_structural_unfold_test;
 mod wi_cbrd2_effect_guard_comparison_test;
 #[path = "include/wi_cbrd2_composed_rule_requirement_test.rs"]
 mod wi_cbrd2_composed_rule_requirement_test;
+#[path = "include/wi_cbrd2_call_site_comparison_test.rs"]
+mod wi_cbrd2_call_site_comparison_test;
 #[path = "include/wi_cbrd2_equality_law_test.rs"]
 mod wi_cbrd2_equality_law_test;
 #[path = "include/wi_cbrd2_sort_requirement_handed_on_test.rs"]

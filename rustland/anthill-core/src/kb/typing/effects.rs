@@ -1709,7 +1709,8 @@ pub(super) fn precondition_proved(
 
 impl CallSigma {
     /// The goal a proof asks of `op`'s contract or guard conjunct `conj` at this call
-    /// ([`clause_goal`]).
+    /// ([`clause_goal`]), each comparison its signature leaves with no member typed at the
+    /// call ([`comparisons_typed_at_the_call`]).
     pub(super) fn clause_goal(
         &self,
         kb: &mut KnowledgeBase,
@@ -1717,7 +1718,48 @@ impl CallSigma {
         conj: &Value,
         reading: ClauseReading,
     ) -> Option<Value> {
-        clause_goal(kb, op, conj, &self.terms, &self.args, reading)
+        let goal = clause_goal(kb, op, conj, &self.terms, &self.args, reading)?;
+        // The clause as stored, which the substitution left as it was, is no copy to type.
+        if matches!((conj, &goal), (Value::Node(a), Value::Node(b)) if Rc::ptr_eq(a, b)) {
+            return Some(goal);
+        }
+        Some(comparisons_typed_at_the_call(kb, goal))
+    }
+}
+
+/// `goal`, a clause's conjunct at a call, with each comparison that holds no member typed at
+/// the call's arguments, as the same comparison written in an operation body is: one at the
+/// callee's type parameter (`eq(c, d)` over `c: T`, at a call at `Color`) has its member at the
+/// call's type, which the signature does not fix. One whose operands do not type there — a
+/// parameter of the caller the call hands over — keeps none, and does not decide until they
+/// are values.
+fn comparisons_typed_at_the_call(kb: &mut KnowledgeBase, goal: Value) -> Value {
+    let occ = crate::kb::node_occurrence::value_as_occurrence(kb, &goal);
+    let mut stack = vec![Rc::clone(&occ)];
+    let mut typed = false;
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        if let Some((functor, pos, named)) = expr_call_parts(expr) {
+            let arity = pos.len() + named.len();
+            if is_equality_comparison(kb, functor)
+                && !node.call_class().is_some_and(|class| goal_reads_member(kb, functor, arity, &class))
+            {
+                let class = typable_comparison(kb, &node, node.span).ok().and_then(|copy| {
+                    type_check_node(kb, &TypingEnv::empty(), &copy, None).ok()?;
+                    copy.call_class().filter(|class| goal_reads_member(kb, functor, arity, class))
+                });
+                if let Some(class) = class {
+                    node.set_classification(class);
+                    typed = true;
+                }
+            }
+        }
+        crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    if typed {
+        Value::Node(occ)
+    } else {
+        goal
     }
 }
 

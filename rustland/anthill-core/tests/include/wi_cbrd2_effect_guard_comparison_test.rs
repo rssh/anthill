@@ -167,10 +167,9 @@ fn a_rule_body_precondition_is_refuted_at_its_carriers_eq() {
 
 /// A spec call dispatched to its implementation is charged the implementation's guarded
 /// effect: `Chk.risky(Green, Red)` over the custom `Color` owes `Boom`, over the structural one
-/// nothing. The verdicts only: the spec operation's own guard, `eq(c, d)` at `T`, is refuted
-/// at the call untyped, the equality index naming `Color.eq` (one read over the custom
-/// `Color`) — a comparison at a callee's type parameter has its member at the call's type,
-/// which no load types yet.
+/// nothing. The verdicts only: the spec operation's own guard, `eq(c, d)` at `T`, is typed at
+/// the call's arguments, where its member is `Color`'s
+/// (`wi_cbrd2_call_site_comparison_test`).
 #[test]
 fn a_dispatched_implementations_guard_is_refuted_at_its_carriers_eq() {
     let chk = "  sort Chk\n    sort T = ?\n    \
