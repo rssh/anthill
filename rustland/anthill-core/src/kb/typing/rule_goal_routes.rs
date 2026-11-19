@@ -1697,7 +1697,7 @@ fn dictionary_at_goal(
 /// The dictionary of the ground `spec` at its carrier's type `at`, built from the provisions as
 /// a read at those types fetches it; `Err` with what the fetch says where it fetches none — no
 /// provision there, or two that answer — said of the goal at load.
-fn fetch_at_goal(kb: &mut KnowledgeBase, spec: &Value, at: &Value) -> Result<Value, String> {
+pub(super) fn fetch_at_goal(kb: &mut KnowledgeBase, spec: &Value, at: &Value) -> Result<Value, String> {
     let none = Substitution::new();
     match fetch_dictionary_from_type(kb, &none, spec, at, DefaultRung::Consult, None) {
         FindDictFetch::Fetched(dict) => Ok(dict),

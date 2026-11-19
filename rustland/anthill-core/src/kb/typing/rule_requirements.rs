@@ -482,12 +482,29 @@ pub(super) fn infer_rule_body_requirements(
             }
             // A receiver bracket that writes the spec's carrier at a concrete type fixes the
             // instance at the call (`FiniteCollection[C = List[T = String]].size(?ls, ?n)`), as
-            // an argument at a concrete type does.
-            let fixed_at_the_call = call_recv_type_of(&demand.call.call).cloned().is_some_and(|instance| {
-                spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(demand.spec))
-                    .and_then(|key| spec_binding_value(kb, &instance, kb.local_name_of(key)))
-                    .is_some_and(|carrier| instance_is_concrete(kb, &carrier))
+            // an argument at a concrete type does: its dictionary is built here, from the
+            // provisions at the bracket's types, and nothing is read from the call's values when
+            // it runs. Refused where the provisions build none.
+            let fixed_at_the_call = call_recv_type_of(&demand.call.call).cloned().and_then(|instance| {
+                let carrier = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(demand.spec))
+                    .and_then(|key| spec_binding_value(kb, &instance, kb.local_name_of(key)))?;
+                instance_is_concrete(kb, &carrier).then_some((instance, carrier))
             });
+            if let Some((instance, carrier)) = fixed_at_the_call {
+                match fetch_at_goal(kb, &instance, &carrier) {
+                    Ok(dict) => {
+                        let call = &demand.call.call;
+                        let built = NodeOccurrence::new_expr(Expr::Spliced(dict), call.span, call.owner);
+                        guarded.push((Rc::clone(call), vec![built], None));
+                    }
+                    Err(why) => {
+                        if !refused_load && !refused_calls.contains(&(rid, demand.call.call.span.span)) {
+                            refused.push(bracket_builds_no_dictionary(kb, rid, &demand, &instance, why));
+                        }
+                    }
+                }
+                continue;
+            }
             // A carrier typed at the spec itself — a spec that receives on itself, `size(s:
             // Sp)` — is dispatched by its value's sort, as an operation's parameter of that type
             // is (`operation viaSp(s: Sp) -> Int64 = Sp.dflt(s)` declares nothing): there is no
@@ -496,7 +513,6 @@ pub(super) fn infer_rule_body_requirements(
                 sort_functor_of_view(kb, &ty).is_some_and(|s| same_sort_canonical(kb, s, demand.spec))
             });
             let unsupplied = !demand.of_the_sort
-                && !fixed_at_the_call
                 && !typed_at_the_spec
                 && !clause_sort_supplies(kb, rid, demand.spec)
                 && !carried_by_a_named_slot(kb, rid, &demand);
@@ -683,6 +699,30 @@ fn undeclared_requirement(
             "the clause declares none, and a rule takes no dictionary it does not declare: {}",
             crate::parse::desugar_target::DECLARE_A_REQUIREMENT,
         ),
+    )
+}
+
+/// The refusal of `demand`'s call, whose receiver bracket writes `instance` at a concrete type
+/// where the provisions build no dictionary: `why` is what the fetch says (nothing provides it
+/// there, or two do).
+fn bracket_builds_no_dictionary(
+    kb: &KnowledgeBase,
+    rid: RuleId,
+    demand: &SpecDemand,
+    instance: &Value,
+    why: String,
+) -> (TypeError, Option<crate::span::SourceId>) {
+    call_requirement_refusal(
+        kb,
+        rid,
+        &demand.call,
+        demand.spec,
+        format!(
+            "a `{}` the provisions build at the instance the call's bracket writes, `{}`",
+            short_name_of(kb.qualified_name_of(demand.spec)),
+            type_display_name_value(kb, instance),
+        ),
+        why,
     )
 }
 
