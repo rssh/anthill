@@ -11,6 +11,11 @@
 //! anything is derived (`Interpreter::call_op_bridged`). The verdicts are the ones the run gave:
 //! undecided, and a failing sibling still refutes.
 //!
+//! So does a call of a spec operation no provider of which supplies a member this interpreter
+//! runs: `Shape.area(sq(n: 2))`, `Sq.area` a mapping in cpp only. The bridge found `Sq.area` from
+//! the value (`resolve::value_dispatches_by_this_thread`; `wi_c6gk8`'s two) and then could not
+//! run it; undecided either way.
+//!
 //! ## What fails with the change backed out
 //!
 //! Measured with a temporary switch, then removed. The control is the switch unset: every row
@@ -18,11 +23,13 @@
 //!
 //! * The early answer off: [`a_call_nothing_runs_derives_nothing`] fails, 5 derivations;
 //!   its verdicts stand.
+//! * A provider's member counted as run whatever runs it: [`a_member_only_another_language_implements_is_not_looked_up`]
+//!   fails on the dispatches; its verdicts stand.
 //! * [`a_call_something_runs_still_answers`] passes either way: the control, a call the early
 //!   answer must not take.
 
 use anthill_core::eval::Value;
-use anthill_core::kb::resolve::bridge_derivations_by_this_thread;
+use anthill_core::kb::resolve::{bridge_derivations_by_this_thread, value_dispatches_by_this_thread};
 
 use crate::common::{load_kb_with, load_stdlib_kb, query_unary};
 
@@ -98,4 +105,43 @@ end
     let mut kb = load_kb_with(src);
     assert_eq!(rows(&mut kb, "test.cbrd2.run.has"), vec![("1".to_string(), true)]);
     assert_eq!(rows(&mut kb, "test.cbrd2.run.four"), vec![("1".to_string(), true)]);
+}
+
+/// `Shape.area(sq(n: 2), 4)` and its negation, `Sq.area` implemented in cpp only, are each
+/// undecided, and nothing is looked up from the value for a member this interpreter cannot run.
+#[test]
+fn a_member_only_another_language_implements_is_not_looked_up() {
+    let src = r#"
+namespace test.cbrd2.cpp
+  import anthill.prelude.{Int64}
+  sort Shape
+    sort C = ?
+    operation area(c: C) -> Int64
+  end
+  sort Sq
+    import test.cbrd2.cpp.Shape
+    entity sq(n: Int64)
+    provides Shape[C = Sq]
+    operation area(s: Sq) -> Int64 @[host_implemented]
+  end
+  fact item(1)
+  rule noArea(?x) :- item(?x), not(Shape.area(sq(n: 2), 4))
+  rule hasArea(?x) :- item(?x), Shape.area(sq(n: 2), 4)
+end
+namespace test.cbrd2.cpp
+  provides Sq language cpp
+    operation_map {
+      area: "($1.n * $1.n)"
+    }
+  end
+end
+"#;
+    let mut kb = load_kb_with(src);
+    drop(load_stdlib_kb());
+    for qn in ["test.cbrd2.cpp.hasArea", "test.cbrd2.cpp.noArea"] {
+        let before = value_dispatches_by_this_thread();
+        let answers = rows(&mut kb, qn);
+        assert_eq!(answers, vec![("1".to_string(), false)], "{qn}: undecided");
+        assert_eq!(value_dispatches_by_this_thread() - before, 0, "{qn}: a member looked up from the value");
+    }
 }

@@ -673,15 +673,28 @@ pub(super) fn runs_nothing_of_its_own(kb: &KnowledgeBase, op: Symbol) -> bool {
 }
 
 /// Proposal 073 §1 (WI-20261105-CBRD2) — no call of `op` can run in this knowledge base: it
-/// runs nothing of its own ([`runs_nothing_of_its_own`]), and nothing provides the sort it is
-/// a member of, so no dispatch finds a member at any carrier. Its run ends where the dispatch
-/// does, `OperationBodyMissing` (`Interpreter::unrunnable_target_error`), which the resolver
-/// reads as unreduced (kernel-language §8.3): `Set.insert(Set.empty(), 1)`, which nothing
-/// implements. The resolver's bridge answers such a call so before it would derive, from the
-/// argument values, the dictionaries nothing would be entered with (`call_op_bridged`).
-pub(crate) fn no_call_of_it_runs(kb: &KnowledgeBase, op: Symbol) -> bool {
+/// runs nothing of its own ([`runs_nothing_of_its_own`]), and no provider of the sort it is a
+/// member of supplies one the running interpreter runs (`runs_here`), so no dispatch finds a
+/// member at any carrier. Its run ends where the dispatch does, `OperationBodyMissing`
+/// (`Interpreter::unrunnable_target_error`), which the resolver reads as unreduced
+/// (kernel-language §8.3): `Set.insert(Set.empty(), 1)`, which nothing implements, and
+/// `Shape.area(sq(n: 2))` where `Sq.area` is a mapping in another language only. The
+/// resolver's bridge answers such a call so before it would derive, from the argument values,
+/// the dictionaries nothing would be entered with, or find from the value a member it cannot
+/// run (`call_op_bridged`).
+pub(crate) fn no_call_of_it_runs(
+    kb: &KnowledgeBase,
+    op: Symbol,
+    runs_here: impl Fn(&KnowledgeBase, Symbol) -> bool,
+) -> bool {
     runs_nothing_of_its_own(kb, op)
-        && impl_parent_sort_of_op(kb, op).is_none_or(|sort| provides_rows_of_spec(kb, sort).next().is_none())
+        && impl_parent_sort_of_op(kb, op).is_none_or(|sort| {
+            // A provider whose resolution is refused is left to the dispatch, which reports it.
+            provides_rows_of_spec(kb, sort).all(|row| {
+                resolve_op_target_checked(kb, row.provider, op)
+                    .is_ok_and(|member| member == op || !runs_here(kb, member))
+            })
+        })
 }
 
 /// WI-20260909-M8QWJ — the first member of `spec_canon`, or of a sort it provides, that

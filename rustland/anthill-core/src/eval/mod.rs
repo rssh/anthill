@@ -1398,9 +1398,14 @@ impl Interpreter {
         }
         use crate::kb::typing::BridgeRequirements;
         // Proposal 073 §1 (WI-20261105-CBRD2) — a call nothing in the knowledge base can run
-        // ends where its dispatch would, unreduced (`Set.insert(Set.empty(), 1)`), before a
-        // dictionary is derived from its argument values for a member that does not exist.
-        if dispatched_through.is_none() && crate::kb::typing::no_call_of_it_runs(&self.kb, sym) {
+        // here ends where its dispatch would, unreduced (`Set.insert(Set.empty(), 1)`, a member
+        // only another language implements), before a dictionary is derived from its argument
+        // values, or a member found from them, for nothing this interpreter runs.
+        let builtins = &self.builtins;
+        let runs_here = |kb: &crate::kb::KnowledgeBase, member: Symbol| {
+            builtins.contains_key(&member) || crate::kb::typing::op_is_interpretable(kb, member)
+        };
+        if dispatched_through.is_none() && crate::kb::typing::no_call_of_it_runs(&self.kb, sym, runs_here) {
             return Err(self.unrunnable_target_error(sym));
         }
         // WI-20260909-NAR1X — THE CALLER'S DICTIONARY, WHERE THE CALLER HAS ONE.
