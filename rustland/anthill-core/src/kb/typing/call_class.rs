@@ -1820,13 +1820,35 @@ pub(super) fn is_contract_member_goal(kb: &KnowledgeBase, op: Symbol, arity: usi
         && (kb.body_less_bool_relation(op) || kb.body_less_relation_arity(op).is_some_and(|n| arity == n + 1))
 }
 
+/// Is a goal of `op` with `arity` arguments one a contract clause or an effect guard writes as
+/// the call of a spec operation with a default body, read through the `Bool` view
+/// ([`KnowledgeBase::bare_bodied_bool_relation`]) — `effects { E :- isEmpty(xs) }` over
+/// `Iterable.isEmpty(c: C) -> Bool = Stream.isEmpty(iterator(c))` (WI-20261105-CBRD2)? Not one a
+/// resolver builtin answers (`PartialOrd.gt`), which no dispatch reaches, nor one of a sort whose
+/// values are instances (`Stream.isEmpty(s: Self)`), whose receiver is the instance a call makes
+/// (`CallSigma::instances_paired_at_the_call`).
+pub(super) fn is_contract_default_goal(kb: &KnowledgeBase, op: Symbol, arity: usize) -> bool {
+    !is_equality_comparison(kb, op)
+        && !kb.is_builtin(op)
+        && defaulted_spec_op_parent(kb, op).is_some_and(|sort| !is_abstract_carrier_sort(kb, sort))
+        && kb.bare_bodied_bool_relation(op)
+        && kb.op_record(op).and_then(|r| r.signature.as_ref()).is_some_and(|sig| sig.params.len() == arity)
+}
+
 /// Does a goal of `op` with `arity` arguments the typer classified `class` keep the class when a
-/// proof reads it: a comparison's member ([`goal_reads_comparison_member`]), or the member a
+/// proof reads it: a comparison's member ([`goal_reads_comparison_member`]), the member a
 /// contract's goal of a body-less spec member is pinned to ([`is_contract_member_goal`]), which
-/// the resolver's views read off the pin.
+/// the resolver's views read off the pin, or, for a goal of a spec operation with a default body
+/// ([`is_contract_default_goal`]), the pin or the dictionary the call enters its member through,
+/// which the resolver's reduction hands its bridge (`KnowledgeBase::classified_entry`).
 pub(super) fn goal_reads_member(kb: &KnowledgeBase, op: Symbol, arity: usize, class: &CallClass) -> bool {
     goal_reads_comparison_member(kb, op, class)
         || (is_contract_member_goal(kb, op, arity) && matches!(class, CallClass::PinNow { .. }))
+        || (is_contract_default_goal(kb, op, arity)
+            && matches!(
+                class,
+                CallClass::PinNow { .. } | CallClass::ConcreteApplyWithin { frame: CalleeFrame::Dict(_), .. }
+            ))
 }
 
 /// Is a call of `functor` at the type `ty` `=` at a tuple, whose equality is its components'

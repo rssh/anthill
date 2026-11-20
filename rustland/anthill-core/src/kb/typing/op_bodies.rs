@@ -1476,27 +1476,36 @@ fn type_conjunct_comparisons(
     let occ = crate::kb::node_occurrence::value_as_occurrence(kb, conj);
     // Each comparison, and each goal calling a body-less spec member (`Pred.ok(x)`, its twin
     // `Pred.ok(x, true)`, `Desc.describe(x, 3)`), the walk reaches through the goal's
-    // connectives; a call inside a comparison's operand is the comparison's to type.
-    let mut calls: Vec<(Rc<NodeOccurrence>, bool)> = Vec::new();
+    // connectives; a call inside a comparison's operand is the comparison's to type. A goal of a
+    // spec operation with a default body (`isEmpty(xs)`, [`is_contract_default_goal`]) is typed
+    // where it types, and left as it was where it does not: such goals were typed nowhere, and
+    // one at a type nothing provides (`gt(x, 0)` over `x: T`) still loads (WI-347's rows).
+    // (the call, a comparison, typed only where it types)
+    let mut calls: Vec<(Rc<NodeOccurrence>, bool, bool)> = Vec::new();
     let mut stack = vec![Rc::clone(&occ)];
     while let Some(node) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
         if let Some((functor, pos, named)) = expr_call_parts(expr) {
             if is_equality_comparison(kb, functor) {
-                calls.push((Rc::clone(&node), true));
+                calls.push((Rc::clone(&node), true, false));
                 continue;
             }
             if is_contract_member_goal(kb, functor, pos.len() + named.len()) {
-                calls.push((Rc::clone(&node), false));
+                calls.push((Rc::clone(&node), false, false));
+                continue;
+            }
+            if is_contract_default_goal(kb, functor, pos.len() + named.len()) {
+                calls.push((Rc::clone(&node), false, true));
                 continue;
             }
         }
         crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
     }
     let mut kept = false;
-    for (call, comparison) in calls {
+    for (call, comparison, is_optional) in calls {
         let copy = match typable_comparison(kb, &call, site) {
             Ok(copy) => copy,
+            Err(_) if is_optional => continue,
             Err(e) => {
                 refused.push((Value::Node(Rc::clone(&call)), Refusal::Projection(e)));
                 continue;
@@ -1539,6 +1548,7 @@ fn type_conjunct_comparisons(
                     kept = true;
                 }
             }
+            Err(_) if is_optional => {}
             Err(e) if comparison => refused.push((Value::Node(Rc::clone(&call)), Refusal::Comparison(e))),
             Err(e) => refused.push((Value::Node(Rc::clone(&call)), Refusal::Call(e))),
         }

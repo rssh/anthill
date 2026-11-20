@@ -1788,6 +1788,11 @@ fn names_a_binding(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
 /// call's type, which the signature does not fix. One whose operands do not type there — a
 /// parameter of the caller the call hands over — keeps none, and does not decide until they
 /// are values.
+///
+/// So is a goal of a body-less spec member the clause writes ([`is_contract_member_goal`])
+/// with no pin (WI-20261105-CBRD2): `requires Pred.ok(x)` over `x: T` is typed at its callee's
+/// `T` and pinned to no member there, and at `gen(leaf(v: 3))` it is `Leaf.ok`'s goal; left
+/// unpinned, the proof's dispatch found `Leaf.ok` from the value.
 fn comparisons_typed_at_the_call(kb: &mut KnowledgeBase, goal: Value) -> Value {
     let occ = crate::kb::node_occurrence::value_as_occurrence(kb, &goal);
     let mut stack = vec![Rc::clone(&occ)];
@@ -1798,7 +1803,9 @@ fn comparisons_typed_at_the_call(kb: &mut KnowledgeBase, goal: Value) -> Value {
             let arity = pos.len() + named.len();
             // A comparison deferred to the callee's requirement is typed here too: at the call
             // the requirement is at the call's types, and its member is theirs.
-            if is_equality_comparison(kb, functor)
+            if (is_equality_comparison(kb, functor)
+                || is_contract_member_goal(kb, functor, arity)
+                || is_contract_default_goal(kb, functor, arity))
                 && !node
                     .call_class()
                     .is_some_and(|class| goal_reads_member(kb, functor, arity, &class) && !class.at_a_requirement())
