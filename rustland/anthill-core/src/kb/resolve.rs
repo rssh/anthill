@@ -135,7 +135,6 @@ pub(crate) fn note_untyped_equality() {
 
 thread_local! {
     static VALUE_DISPATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static UNPINNED_SPEC_GOALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static VALUE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static VALUE_PAIRINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static BRIDGE_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -187,24 +186,6 @@ pub fn value_dispatches_by_this_thread() -> usize {
 /// Count one dispatch to a member found from a value ([`value_dispatches_by_this_thread`]).
 pub(crate) fn note_value_dispatch() {
     VALUE_DISPATCHES.with(|c| c.set(c.get() + 1));
-}
-
-/// How many goals of a body-less spec operation the search has admitted through its `Bool` view
-/// or its result-column view ON THIS THREAD, ever, with neither the member the typer pinned nor
-/// a dictionary a clause wove in: goals that, run as a call, have their member found from the
-/// argument's value. A goal answered from a hypothesis instead is counted too. An instrument for
-/// tests, as [`untyped_equalities_by_this_thread`] is.
-pub fn unpinned_spec_goals_by_this_thread() -> usize {
-    UNPINNED_SPEC_GOALS.with(|c| c.get())
-}
-
-/// Count `goal`, a goal of the body-less spec operation `f` a view of it admitted, where it
-/// carries neither a pin nor a woven dictionary ([`unpinned_spec_goals_by_this_thread`]).
-fn note_unpinned_spec_goal(goal: &Value, f: Symbol) {
-    let woven = matches!(goal, Value::Node(o) if matches!(o.as_expr(), Some(Expr::ApplyWithin { .. })));
-    if !woven && goal_pin(goal, f).is_none() {
-        UNPINNED_SPEC_GOALS.with(|c| c.set(c.get() + 1));
-    }
 }
 
 /// The member the typer pinned goal `goal`, spelled with `f`, to: another operation than `f`.
@@ -3602,9 +3583,6 @@ impl SearchStream {
             if declared_arity == Some(pos_arity + named_arity)
                 && kb.dispatched_bool_relation(&goal_val, f)
             {
-                if !kb.bare_bodied_bool_relation(f) {
-                    note_unpinned_spec_goal(&goal_val, f);
-                }
                 // In a proof from Γ, a hypothesis that is the goal as written answers it: an
                 // `if isEmpty(xs)` branch, a callee's own guard, a `forall` antecedent.
                 // Rewritten first, the goal heads `eq` and no such hypothesis matches it.
@@ -3798,9 +3776,6 @@ impl SearchStream {
         // candidate selection rather than matched a second time.
         let mut hypotheses: Option<Vec<Candidate>> = None;
         if let Some((f, n)) = kb.functional_relation_goal(&goal_val) {
-            if kb.functional_relation_arity(f).is_none() {
-                note_unpinned_spec_goal(&goal_val, f);
-            }
             if let Some(FunctionalRelationCall { call, result }) =
                 kb.functional_relation_call(&goal_val, f, n)
             {

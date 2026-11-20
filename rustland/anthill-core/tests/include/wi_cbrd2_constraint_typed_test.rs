@@ -11,13 +11,15 @@
 //! fact.
 //!
 //! The verdicts are the ones the values gave, so the rows measure the reading
-//! (`resolve::unpinned_spec_goals_by_this_thread`, which counts the goals of a body-less spec
-//! operation the search read with neither a pin nor a woven dictionary) beside them.
+//! beside them: a member, a dictionary or an instance found from a value
+//! (`resolve::value_dispatches_by_this_thread`, `bridge_derivations_by_this_thread`,
+//! `value_pairings_by_this_thread`).
 //!
 //! ## What fails with the change backed out
 //!
 //! Measured with a temporary switch (the goals left as lowered), then removed. The control is
-//! the switch unset: every row passes.
+//! the switch unset: every row passes. Measured again on these counters (2026-11-20), and the
+//! verdicts again with a second switch making each count 0.
 //!
 //! * [`a_constraint_is_decided_at_its_member`] and [`a_guard_added_at_run_time_is_typed`] fail
 //!   on the count, their verdicts unchanged.
@@ -33,7 +35,9 @@ use std::rc::Rc;
 
 use anthill_core::eval::Value;
 use anthill_core::kb::load::{LoadError, LoadOptions};
-use anthill_core::kb::resolve::unpinned_spec_goals_by_this_thread;
+use anthill_core::kb::resolve::{
+    bridge_derivations_by_this_thread, value_dispatches_by_this_thread, value_pairings_by_this_thread,
+};
 use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::{ClauseKind, GuardCheck, KnowledgeBase};
 use smallvec::SmallVec;
@@ -66,12 +70,17 @@ end
     )
 }
 
-/// `f`'s result and the goals it read with no member, the shared base loaded first.
+/// What this thread has found from a value: a member, a dictionary, an instance.
+fn read_from_values() -> usize {
+    value_dispatches_by_this_thread() + bridge_derivations_by_this_thread() + value_pairings_by_this_thread()
+}
+
+/// `f`'s result and what it found from a value, the shared base loaded first.
 fn counting<R>(f: impl FnOnce() -> R) -> (R, usize) {
     drop(load_stdlib_kb());
-    let before = unpinned_spec_goals_by_this_thread();
+    let before = read_from_values();
     let r = f();
-    (r, unpinned_spec_goals_by_this_thread() - before)
+    (r, read_from_values() - before)
 }
 
 /// Each quantifier over `src(leaf(v: 3))` and over `src(leaf(v: 1))`, with the goal and its
@@ -96,9 +105,9 @@ fn a_constraint_is_decided_at_its_member() {
     .enumerate()
     {
         let src = program(&format!("test.cbrd2.ct.c{n}"), &format!("  {facts}\n  constraint chk: {constraint}"));
-        let (errs, unpinned) = counting(|| unrendered_load_errors_of(&src));
+        let (errs, reads) = counting(|| unrendered_load_errors_of(&src));
         let errs: Vec<&LoadError> = errs.iter().map(|e| e.peel()).collect();
-        assert_eq!(unpinned, 0, "`{constraint}` over `{facts}` read a goal with no member");
+        assert_eq!(reads, 0, "`{constraint}` over `{facts}`: read from the value");
         if violated {
             assert!(
                 matches!(errs.as_slice(), [LoadError::ConstraintViolated { label: Some(l) }] if l == "chk"),
@@ -174,8 +183,8 @@ fn a_guard_added_at_run_time_is_typed() {
     let mut kb = load_kb_with(&program(ns, "  fact src(leaf(v: 3))"));
     let guard = no_ok_guard(&mut kb, ns);
     kb.add_guard(guard);
-    let (checks, unpinned) = counting(|| kb.check_all_guards());
-    assert_eq!(unpinned, 0, "the check read a goal with no member");
+    let (checks, reads) = counting(|| kb.check_all_guards());
+    assert_eq!(reads, 0, "the check: read from the value");
     assert_eq!(checks, vec![GuardCheck::Violated(None)]);
 }
 

@@ -36,9 +36,10 @@
 //! (`Interpreter::call_op_bridged`), and the host entry paired it from the list. The bridge
 //! pairs it as a body does now.
 //!
-//! The two left (`ycz0j`, `x5sb4`) are a guard goal `Iterable.isEmpty(nil)` the typer leaves
-//! with no member, which the interpreter dispatches from the value: the unpinned goals'
-//! item, not this one.
+//! The two left (`ycz0j`, `x5sb4`) were a guard goal `Iterable.isEmpty(nil)` the typer left
+//! with no member, which the interpreter dispatched from the value; such a goal is read at its
+//! member since (`wi_cbrd2_contract_member_goal_test`'s
+//! `a_guard_naming_a_default_body_is_read_at_its_member`).
 //!
 //! ## What fails with the change backed out
 //!

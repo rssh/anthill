@@ -9,15 +9,20 @@
 //! a type nothing provides it at — is refused at load.
 //!
 //! The verdicts are the ones the values gave, so the rows measure the reading
-//! (`resolve::unpinned_spec_goals_by_this_thread`) beside them.
+//! beside them: a member, a dictionary or an instance found from a value
+//! (`resolve::value_dispatches_by_this_thread`, `bridge_derivations_by_this_thread`,
+//! `value_pairings_by_this_thread`).
 //!
 //! ## What fails with the change backed out
 //!
 //! Measured with a temporary switch (no goal of a spec's member typed), then removed. The
-//! control is the switch unset: every row passes.
+//! control is the switch unset: every row passes. Measured again on these counters (2026-11-20),
+//! and the verdicts again with a second switch making each count 0.
 //!
-//! * [`a_precondition_naming_a_member_is_proved_at_it`] and
-//!   [`a_guard_naming_a_member_is_refuted_at_it`] fail on the count, their verdicts unchanged.
+//! * [`a_precondition_naming_a_member_is_proved_at_it`],
+//!   [`a_guard_naming_a_member_is_refuted_at_it`] and
+//!   [`a_generic_callees_member_goal_is_typed_at_the_call`] fail on the count, their verdicts
+//!   unchanged.
 //! * [`a_member_goal_at_a_type_nothing_provides_is_refused`] fails: the program loads clean.
 //! * A member of another type than `Bool` left out (`Desc.describe(x, 3)`, its result-column
 //!   form): [`a_precondition_naming_a_member_is_proved_at_it`] fails at it, on the count.
@@ -42,7 +47,9 @@
 //! at `Stream.isEmpty`, `wi_j9ssg_rule_citation_bracket_test`'s bracket on a paren-less
 //! reference reports twice.
 
-use anthill_core::kb::resolve::{unpinned_spec_goals_by_this_thread, value_pairings_by_this_thread};
+use anthill_core::kb::resolve::{
+    bridge_derivations_by_this_thread, value_dispatches_by_this_thread, value_pairings_by_this_thread,
+};
 
 use crate::common::{load_errors_of, load_stdlib_kb};
 
@@ -76,12 +83,17 @@ end
     )
 }
 
-/// The load's errors and the goals it read with no member, the shared base loaded first.
-fn errors_and_unpinned(src: &str) -> (Vec<String>, usize) {
+/// What this thread has found from a value: a member, a dictionary, an instance.
+fn read_from_values() -> usize {
+    value_dispatches_by_this_thread() + bridge_derivations_by_this_thread() + value_pairings_by_this_thread()
+}
+
+/// The load's errors and what it found from a value, the shared base loaded first.
+fn errors_and_reads(src: &str) -> (Vec<String>, usize) {
     drop(load_stdlib_kb());
-    let before = unpinned_spec_goals_by_this_thread();
+    let before = read_from_values();
     let errs = load_errors_of(src);
-    (errs, unpinned_spec_goals_by_this_thread() - before)
+    (errs, read_from_values() - before)
 }
 
 /// `f(leaf(v: 3))` proves `requires Pred.ok(x)`, its twin and `not(Pred.ok(x))`'s refusal the
@@ -106,8 +118,8 @@ fn a_precondition_naming_a_member_is_proved_at_it() {
         let decls = format!(
             "  operation f(x: Leaf) -> Int64 requires {clause} = 1\n  operation g() -> Int64 = f({arg})"
         );
-        let (errs, unpinned) = errors_and_unpinned(&src(&format!("test.cbrd2.cm.p{n}"), &decls));
-        assert_eq!(unpinned, 0, "`requires {clause}` at f({arg}) read a goal with no member");
+        let (errs, reads) = errors_and_reads(&src(&format!("test.cbrd2.cm.p{n}"), &decls));
+        assert_eq!(reads, 0, "`requires {clause}` at f({arg}): read from the value");
         assert_eq!(
             errs.iter().any(|e| e.contains("f.requires") && e.contains("precondition")),
             refused,
@@ -116,8 +128,8 @@ fn a_precondition_naming_a_member_is_proved_at_it() {
     }
     let decls = "  operation f(x: Leaf) -> Int64 requires Pred.ok(x) = 1\n  \
                  fact src(leaf(v: 3))\n  rule r(?t) :- src(?y), ?t <=> f(?y)";
-    let (errs, unpinned) = errors_and_unpinned(&src("test.cbrd2.cm.rule", decls));
-    assert_eq!(unpinned, 0, "the rule body's call read a goal with no member");
+    let (errs, reads) = errors_and_reads(&src("test.cbrd2.cm.rule", decls));
+    assert_eq!(reads, 0, "the rule body's call: read from the value");
     assert!(errs.is_empty(), "{errs:?}");
 }
 
@@ -130,8 +142,8 @@ fn a_guard_naming_a_member_is_refuted_at_it() {
             "  operation risky(x: Leaf) -> Int64 effects {{ Boom :- Pred.ok(x) }} = 0\n  \
              operation caller() -> Int64 = risky({arg})"
         );
-        let (errs, unpinned) = errors_and_unpinned(&src(&format!("test.cbrd2.cm.g{n}"), &decls));
-        assert_eq!(unpinned, 0, "the guard at risky({arg}) read a goal with no member");
+        let (errs, reads) = errors_and_reads(&src(&format!("test.cbrd2.cm.g{n}"), &decls));
+        assert_eq!(reads, 0, "the guard at risky({arg}): read from the value");
         assert_eq!(errs.iter().any(|e| e.contains("undeclared effect: Boom")), owes, "risky({arg}): {errs:?}");
     }
 }
@@ -160,8 +172,8 @@ fn a_generic_callees_member_goal_is_typed_at_the_call() {
             "  operation f[A](x: A) -> Int64 requires Pred[T = A] requires Pred.ok(x) = 1\n  \
              operation g() -> Int64 = f({arg})"
         );
-        let (errs, unpinned) = errors_and_unpinned(&src(&format!("test.cbrd2.cm.gen{n}"), &decls));
-        assert_eq!(unpinned, 0, "the generic callee's goal at f({arg}) read with no member");
+        let (errs, reads) = errors_and_reads(&src(&format!("test.cbrd2.cm.gen{n}"), &decls));
+        assert_eq!(reads, 0, "the generic callee's goal at f({arg}): read from the value");
         assert_eq!(
             errs.iter().any(|e| e.contains("f.requires") && e.contains("precondition")),
             refused,
@@ -173,8 +185,8 @@ fn a_generic_callees_member_goal_is_typed_at_the_call() {
             "  operation risky[A](x: A) -> Int64 requires Pred[T = A] effects {{ Boom :- Pred.ok(x) }} = 0\n  \
              operation caller() -> Int64 = risky({arg})"
         );
-        let (errs, unpinned) = errors_and_unpinned(&src(&format!("test.cbrd2.cm.genr{n}"), &decls));
-        assert_eq!(unpinned, 0, "the generic guard at risky({arg}) read with no member");
+        let (errs, reads) = errors_and_reads(&src(&format!("test.cbrd2.cm.genr{n}"), &decls));
+        assert_eq!(reads, 0, "the generic guard at risky({arg}): read from the value");
         assert_eq!(errs.iter().any(|e| e.contains("undeclared effect: Boom")), owes, "risky({arg}): {errs:?}");
     }
 }
