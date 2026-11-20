@@ -3,9 +3,9 @@
 - id: WI-20260923-DK0QJ-a-named-slot-reached-with
 - created: 2026-09-23T18:41:30Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-20T19:14:30Z
+- status_at: 2026-11-20T19:46:50Z
 
 - acceptance: cargo-test
 
