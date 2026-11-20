@@ -354,19 +354,34 @@ fn takes_dictionaries(kb: &mut KnowledgeBase, functor: Symbol) -> bool {
 }
 
 /// Does `goal` call, anywhere in it, a spec operation that owes an instance ([`owes_an_instance`])
-/// or an operation that takes dictionaries ([`takes_dictionaries`])?
+/// or an operation that takes dictionaries ([`takes_dictionaries`])? Inside a compound form — a
+/// `let`, an `if`, a `match`, a `lambda` — any spec operation's call owes one, a resolver builtin's
+/// too (WI-20261105-CBRD2): the interpreter evaluates the form, where no builtin answers it, so
+/// `6 <=> (let a = 5  a + 1)` is typed as a rule body's form is and its `a + 1` is `Int64.add`'s
+/// call, where the run dispatched `Additive.add` from the value.
 fn calls_an_operation_owing_a_dictionary(kb: &mut KnowledgeBase, goal: &Rc<NodeOccurrence>) -> bool {
-    let mut stack = vec![Rc::clone(goal)];
-    while let Some(node) = stack.pop() {
+    let mut stack = vec![(Rc::clone(goal), false)];
+    while let Some((node, in_form)) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
         if matches!(expr, Expr::Apply { functor, .. }
-            if owes_an_instance(kb, *functor) || takes_dictionaries(kb, *functor))
+            if owes_an_instance(kb, *functor)
+                || takes_dictionaries(kb, *functor)
+                || (in_form && spec_op_in_a_form(kb, *functor)))
         {
             return true;
         }
-        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        let in_form = in_form || !pattern_child_indices(expr).is_empty() || node.is_compound_syntax();
+        for_each_child(expr, |c| stack.push((Rc::clone(c), in_form)));
     }
     false
+}
+
+/// Is `functor` a spec operation the interpreter dispatches when a compound form calls it: a
+/// body-less member or a defaulted one, whatever a resolver builtin or a host binding answers for
+/// it elsewhere — `Additive.add`, which the run dispatched to `Int64.add` from the value
+/// ([`calls_an_operation_owing_a_dictionary`]).
+fn spec_op_in_a_form(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    lookup_spec_op_dispatch(kb, functor).is_some() || defaulted_spec_op_parent(kb, functor).is_some()
 }
 
 /// The calls in a query's typed goal `typed` that the typer left open — to a clause's condition,

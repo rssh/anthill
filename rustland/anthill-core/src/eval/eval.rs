@@ -3757,6 +3757,7 @@ impl Interpreter {
                 .flatten()
             {
                 if impl_target != target {
+                    crate::kb::resolve::note_value_dispatch();
                     // WI-455: name the op we actually RUN. The ring was fed with
                     // `target` (the spec op) by the dispatch wrapper; the override
                     // below is a different op, so without this a runaway loop
@@ -3837,6 +3838,7 @@ impl Interpreter {
             .flatten()
         {
             if impl_target != target {
+                crate::kb::resolve::note_value_dispatch();
                 // WI-455: same as the carrier-override arm above — the ring must
                 // name the impl that runs, not just the body-less spec op the call
                 // was written against.

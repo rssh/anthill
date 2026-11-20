@@ -797,9 +797,15 @@ fn a_call_in_a_branch_not_taken_costs_its_clause_nothing() {
 /// parameter `u`, the `match` case's `x` and the `let`'s `s` are bound inside the form, where no
 /// read before the goal sees them, and the read takes every argument as a witness — `u` in
 /// `Apply.shift(?a, u)` too, where `?a` carries the instance. An operation's own `requires`
-/// there is refused, as before; a spec operation on the lambda's parameter is dispatched by the
-/// value, as before: `Int64`'s own -1 under every citation. FAILS with the binder test
-/// (`names_a_binder`) answering no: the refused spellings load.
+/// there is refused, as before, and so is a spec operation on the lambda's parameter where the
+/// clause declares nothing for it (WI-20261105-CBRD2; the user, 2026-11-20): it was dispatched by
+/// the value, `Int64`'s own -1 under every citation, `Descending`'s and `Ascending`'s included.
+/// Declared, `rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], …`, each citation's dictionary
+/// answers: `Descending`'s 4, `Ascending`'s -4, `Int64`'s own -1. FAILS with the binder test
+/// (`names_a_binder`) answering no: the refused spellings load; and with the spec operation's
+/// refusal backed out (`apply.rs`, the open carrier no clause supplies): the lambda's spelling
+/// loads. The `match` and `let` spellings of the spec operation are refused either way, as an
+/// ambiguous dispatch among the providers of `WeakOrd`.
 #[test]
 fn a_call_naming_a_forms_own_binder_keeps_its_class() {
     for (what, rule) in [
@@ -825,12 +831,31 @@ fn a_call_naming_a_forms_own_binder_keeps_its_class() {
             what,
         );
     }
-    let by_value = cited_counts(
-        "rydnv.binderspec",
+    for (what, rule) in [
+        (
+            "a lambda's parameter",
+            "  rule r(?a, ?b, ?c) :- ?c <=> Apply.appAt(lambda (u) -> WeakOrd.compare(u, ?b), ?a)",
+        ),
+        (
+            "a match case's binder",
+            "  rule r(?a, ?b, ?c) :- ?c <=> (match some(?a)\n    case some(x) -> WeakOrd.compare(x, ?b)\n    case none -> 0)",
+        ),
+        ("a let's binder", "  rule r(?a, ?b, ?c) :- ?c <=> (let s = ?a\n    WeakOrd.compare(s, ?b))"),
+    ] {
+        let errs = crate::common::load_errors_of(&program("rydnv.binderspec", &[ORDERS, FORM_DECLS], rule));
+        crate::common::assert_refused_naming(
+            &errs,
+            &["anthill.prelude.WeakOrd.compare"],
+            &format!("a spec operation on {what}, nothing declared"),
+        );
+    }
+    let declared = cited_counts(
+        "rydnv.binderspecd",
         &format!(
-            "{FORM_DECLS}  rule r(?a, ?b, ?c) :- ?c <=> Apply.appAt(lambda (u) -> WeakOrd.compare(u, ?b), ?a)"
+            "{FORM_DECLS}  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], \
+             ?c <=> Apply.appAt(lambda (u) -> WeakOrd.compare(u, ?b), ?a)"
         ),
         "r",
     );
-    assert_eq!(by_value, [(1, Some(-1)), (1, Some(-1)), (1, Some(-1))], "by the value");
+    assert_eq!(declared, [(1, Some(4)), (1, Some(-4)), (1, Some(-1))], "each citation's dictionary");
 }

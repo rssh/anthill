@@ -842,7 +842,7 @@ fn data_slot_arg_hints(
 /// binding PATTERN rather than a value. Kept beside `for_each_child`'s arms in spirit:
 /// every constructor that binds is listed, so a new binder form is a visible omission
 /// here rather than a silent mis-typing of its pattern.
-fn pattern_child_indices(expr: &Expr) -> SmallVec<[usize; 4]> {
+pub(super) fn pattern_child_indices(expr: &Expr) -> SmallVec<[usize; 4]> {
     let mut out = SmallVec::new();
     match expr {
         // `f(pattern)` / `f(pattern, body)` — the pattern is child 0. `LambdaWithin` is

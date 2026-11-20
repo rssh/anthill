@@ -134,6 +134,7 @@ pub(crate) fn note_untyped_equality() {
 }
 
 thread_local! {
+    static VALUE_DISPATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static UNPINNED_SPEC_GOALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static VALUE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static VALUE_PAIRINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -172,6 +173,20 @@ pub fn value_pairings_by_this_thread() -> usize {
 /// Count one pairing from a value's own sort ([`value_pairings_by_this_thread`]).
 pub(crate) fn note_value_pairing() {
     VALUE_PAIRINGS.with(|c| c.set(c.get() + 1));
+}
+
+/// How many calls the interpreter has dispatched ON THIS THREAD, ever, to a member it found from
+/// an argument value's own sort: a spec operation's call no typer classified, run by a caller with
+/// no types (the resolver's bridge, the host entry), whose member is the carrier's override or the
+/// provider of the value's sort (`dispatch_resolved_operation`'s steps 3 and 3b). The run-time
+/// choice proposal 073 removes; an instrument for tests, as [`value_reads_by_this_thread`] is.
+pub fn value_dispatches_by_this_thread() -> usize {
+    VALUE_DISPATCHES.with(|c| c.get())
+}
+
+/// Count one dispatch to a member found from a value ([`value_dispatches_by_this_thread`]).
+pub(crate) fn note_value_dispatch() {
+    VALUE_DISPATCHES.with(|c| c.set(c.get() + 1));
 }
 
 /// How many goals of a body-less spec operation the search has admitted through its `Bool` view

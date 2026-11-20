@@ -5792,6 +5792,30 @@ fn check_apply_call(
                                     // condition of the clause reads.
                                     if env.clause_supplies_requirements(pos_args, named_args) {
                                         dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
+                                    } else if env.in_rule_body()
+                                        && env.enclosing_op().is_none()
+                                        && !kb.is_builtin(fn_sym)
+                                        && !host_implements(kb, fn_sym)
+                                    {
+                                        // Under a form of a rule, an argument naming one of the
+                                        // form's binders (`lambda (u) -> WeakOrd.compare(u, ?b)`):
+                                        // no read before the goal takes a dictionary for it, so
+                                        // where the clause declares none it is refused, as an
+                                        // operation's own `requires` there is (WI-20261105-CBRD2;
+                                        // the user, 2026-11-20). It ran on the member the value's
+                                        // sort gave, whatever a citation passed. A guard at the
+                                        // call's binding (`WeakOrd[T = A]` over `u: A`) holds it.
+                                        if let CallClass::UnresolvedSpecOp { abstract_params, .. } = &class {
+                                            if !clause_holds_the_spec(kb, env, &held_views, &sigma, spec_sort, abstract_params) {
+                                                return Err(TypeError::MissingRequiresForSpecOp {
+                                                    span,
+                                                    spec_op_sym: fn_sym,
+                                                    spec_sort_sym: spec_sort,
+                                                    abstract_params: abstract_params.clone(),
+                                                    site: RequiresSite::Clause,
+                                                });
+                                            }
+                                        }
                                     }
                                     classify(kb, occ, class)
                                 }
@@ -7656,6 +7680,28 @@ fn open_result_only_call(
     {
         return None;
     }
+    (!clause_holds_the_spec(kb, env, held, sigma, spec, abstract_params)).then(|| {
+        TypeError::MissingRequiresForSpecOp {
+            span: *span,
+            spec_op_sym: op,
+            spec_sort_sym: spec,
+            abstract_params: abstract_params.clone(),
+            site: RequiresSite::Clause,
+        }
+    })
+}
+
+/// Does the clause typed in `env` hold the requirement of `spec` a call leaving
+/// `abstract_params` open reads: a guard of the spec at the call's own binding (`held`), or a
+/// `requires` of the sort the rule is written in ([`rule_sort_requires`])?
+fn clause_holds_the_spec(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    held: &[HeldSpecView],
+    sigma: &SigmaCtx,
+    spec: Symbol,
+    abstract_params: &[Symbol],
+) -> bool {
     // Each parameter the call leaves abstract is where the guard is: the two meet in one σ class.
     // One the call's typing ties to nothing (a result column, which the argument check does not
     // bind at an open type) says nothing of which guard it is at, and any guard of the spec
@@ -7669,16 +7715,8 @@ fn open_result_only_call(
             untied || call == map.get(p).and_then(|g| sigma_class_terminal(kb, sigma, g))
         })
     };
-    let held_by_a_guard = held
-        .iter()
-        .any(|h| same_sort_canonical(kb, h.spec_sort, spec) && at_the_guard(h));
-    (!held_by_a_guard && !rule_sort_requires(kb, env, spec)).then(|| TypeError::MissingRequiresForSpecOp {
-        span: *span,
-        spec_op_sym: op,
-        spec_sort_sym: spec,
-        abstract_params: abstract_params.clone(),
-        site: RequiresSite::Clause,
-    })
+    held.iter().any(|h| same_sort_canonical(kb, h.spec_sort, spec) && at_the_guard(h))
+        || rule_sort_requires(kb, env, spec)
 }
 
 /// Is the rule typed in `env` written in `spec`, or in a sort whose `requires` reach it — so that
