@@ -136,6 +136,7 @@ pub(crate) fn note_untyped_equality() {
 thread_local! {
     static UNPINNED_SPEC_GOALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static VALUE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static VALUE_PAIRINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static BRIDGE_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -157,6 +158,20 @@ pub(crate) fn note_bridge_derivation() {
 /// instrument for tests, as [`untyped_equalities_by_this_thread`] is.
 pub fn value_reads_by_this_thread() -> usize {
     VALUE_READS.with(|c| c.get())
+}
+
+/// How many values the resolver's bridge has paired with a dictionary found from their own sort
+/// ON THIS THREAD, ever: a value handed to an operation at a sort whose values are instances
+/// (`Stream.isEmpty(s: Self)` given a `List`) with no instance made where the call was typed
+/// (`Interpreter::pair_by_own_sort`). An instrument for tests, as
+/// [`value_reads_by_this_thread`] is.
+pub fn value_pairings_by_this_thread() -> usize {
+    VALUE_PAIRINGS.with(|c| c.get())
+}
+
+/// Count one pairing from a value's own sort ([`value_pairings_by_this_thread`]).
+pub(crate) fn note_value_pairing() {
+    VALUE_PAIRINGS.with(|c| c.set(c.get() + 1));
 }
 
 /// How many goals of a body-less spec operation the search has admitted through its `Bool` view

@@ -1710,7 +1710,9 @@ pub(super) fn precondition_proved(
 impl CallSigma {
     /// The goal a proof asks of `op`'s contract or guard conjunct `conj` at this call
     /// ([`clause_goal`]), each comparison its signature leaves with no member typed at the
-    /// call ([`comparisons_typed_at_the_call`]).
+    /// call ([`comparisons_typed_at_the_call`]), and each argument at a parameter typed by a
+    /// sort with abstract values paired with its sort's dictionary
+    /// ([`Self::instances_paired_at_the_call`]).
     pub(super) fn clause_goal(
         &self,
         kb: &mut KnowledgeBase,
@@ -1723,8 +1725,60 @@ impl CallSigma {
         if matches!((conj, &goal), (Value::Node(a), Value::Node(b)) if Rc::ptr_eq(a, b)) {
             return Some(goal);
         }
-        Some(comparisons_typed_at_the_call(kb, goal))
+        let goal = comparisons_typed_at_the_call(kb, goal);
+        Some(self.instances_paired_at_the_call(kb, goal))
     }
+
+    /// Proposal 073 §2 — `goal`, a clause's conjunct at this call, with each argument of an
+    /// operation's call at a parameter typed by a sort with abstract values paired with its
+    /// sort's dictionary, as a rule body's is at load ([`pack_calls_under`]): the guard
+    /// `Error[EmptyStream] :- isEmpty(s)` of `head(cons(7, nil))` asks `isEmpty(Instance(<List's
+    /// Stream>, cons(7, nil)))`, and the bridge that evaluates it reads `List`'s dictionary from
+    /// it, nothing from the list. An argument the call substituted is at the type the call gave
+    /// it — `[]` handed to `xs: List[T = Int64]` is a `List[T = Int64]`, which the empty list
+    /// alone does not say — and one whose type the call does not know is left as it is.
+    ///
+    /// An argument naming what the caller binds is not paired: `List.head(xs)` under `if
+    /// isEmpty(xs)` asks `isEmpty(xs)` of the facts the branch knows about `xs` itself (WI-567),
+    /// which `isEmpty(Instance(d, xs))` no longer matches, and a goal over a name that is no
+    /// value is never evaluated, so no bridge reads its sort. Nor is a term the call hands two
+    /// parameters (`f([], [])`): which of their types it is read at is not the term's to say.
+    fn instances_paired_at_the_call(&self, kb: &mut KnowledgeBase, goal: Value) -> Value {
+        let Some(instance) = kb.try_resolve_symbol("anthill.realization.runtime.Instance") else {
+            return goal;
+        };
+        let occ = crate::kb::node_occurrence::value_as_occurrence(kb, &goal);
+        let mut typed: Vec<(TermId, Value)> = self
+            .args
+            .iter()
+            .filter(|(_, arg)| !names_a_binding(kb, arg))
+            .filter_map(|(param, arg)| Some((*self.terms.get(param)?, arg.inferred_type()?)))
+            .collect();
+        let terms: Vec<TermId> = typed.iter().map(|(t, _)| *t).collect();
+        typed.retain(|(t, _)| terms.iter().filter(|u| *u == t).count() == 1);
+        let packed = pack_calls_under(kb, &occ, instance, &typed);
+        if Rc::ptr_eq(&packed, &occ) {
+            goal
+        } else {
+            Value::Node(packed)
+        }
+    }
+}
+
+/// Does `occ` name, anywhere, something the caller binds — a variable, or a name that is no
+/// constructor (a parameter, a `let`, a field) — rather than being a value throughout?
+fn names_a_binding(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(occ)];
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        match expr {
+            Expr::VarRef { .. } | Expr::Var(_) => return true,
+            Expr::Ref(name) | Expr::Ident(name) if !kb.is_constructor_symbol(*name) => return true,
+            _ => {}
+        }
+        crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
 }
 
 /// `goal`, a clause's conjunct at a call, with each comparison that holds no member, or one

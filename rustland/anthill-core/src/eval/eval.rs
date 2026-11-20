@@ -387,6 +387,9 @@ impl Interpreter {
         // A collection literal a rule holds as its own term is the collection it builds.
         let carrier = self.collection_literal_sort(carrier).unwrap_or(carrier);
         let carrier = self.kb.canonical_sort_sym(carrier);
+        if self.bridge_mode() {
+            crate::kb::resolve::note_value_pairing();
+        }
         let carrier_ty = Value::term(self.kb.make_sort_ref(carrier));
         let dict_term = crate::kb::typing::dictionary_at_in_scope(
             &mut self.kb,

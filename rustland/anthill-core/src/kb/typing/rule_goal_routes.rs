@@ -841,7 +841,7 @@ fn pack_call_arguments(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<Rc<Nod
     let instance_sym = kb.try_resolve_symbol("anthill.realization.runtime.Instance")?;
     let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
     let packed: Vec<Rc<NodeOccurrence>> =
-        body.iter().map(|g| pack_calls_under(kb, g, instance_sym)).collect();
+        body.iter().map(|g| pack_calls_under(kb, g, instance_sym, &[])).collect();
     packed
         .iter()
         .zip(&body)
@@ -849,11 +849,14 @@ fn pack_call_arguments(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<Rc<Nod
         .then_some(packed)
 }
 
-/// [`pack_call_arguments`] for the tree under `node`, children first.
-fn pack_calls_under(
+/// [`pack_call_arguments`] for the tree under `node`, children first. `known` gives the type of
+/// an argument by its term where the caller knows more of it than the argument itself says (a
+/// call's argument substituted into its callee's guard).
+pub(super) fn pack_calls_under(
     kb: &mut KnowledgeBase,
     node: &Rc<NodeOccurrence>,
     instance_sym: Symbol,
+    known: &[(TermId, Value)],
 ) -> Rc<NodeOccurrence> {
     let Some(expr) = node.as_expr() else {
         return Rc::clone(node);
@@ -861,7 +864,7 @@ fn pack_calls_under(
     let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
     for_each_child(expr, |c| children.push(Rc::clone(c)));
     let rebuilt: Vec<Rc<NodeOccurrence>> =
-        children.iter().map(|c| pack_calls_under(kb, c, instance_sym)).collect();
+        children.iter().map(|c| pack_calls_under(kb, c, instance_sym, known)).collect();
     let node = crate::kb::simp_rewrite::reassemble(node, &rebuilt);
     let (functor, pos_args, named_args) = match node.as_expr() {
         Some(Expr::Apply {
@@ -896,7 +899,7 @@ fn pack_calls_under(
         .enumerate()
         .map(|(i, a)| {
             let at = pos_params.get(i).copied().flatten().and_then(|p| params.get(p));
-            match at.and_then(|(_, ty)| pack_at_type(kb, a, ty, instance_sym)) {
+            match at.and_then(|(_, ty)| pack_at_type(kb, a, ty, instance_sym, known)) {
                 Some(packed) => {
                     changed = true;
                     packed
@@ -909,7 +912,7 @@ fn pack_calls_under(
         .iter()
         .map(|(k, a)| {
             let at = params.iter().find(|(p, _)| kb.local_name_of(*p) == kb.local_name_of(*k));
-            match at.map(|(_, ty)| ty.clone()).and_then(|ty| pack_at_type(kb, a, &ty, instance_sym)) {
+            match at.map(|(_, ty)| ty.clone()).and_then(|ty| pack_at_type(kb, a, &ty, instance_sym, known)) {
                 Some(packed) => {
                     changed = true;
                     (*k, packed)
@@ -960,6 +963,7 @@ fn pack_at_type(
     arg: &Rc<NodeOccurrence>,
     expected: &Value,
     instance_sym: Symbol,
+    known: &[(TermId, Value)],
 ) -> Option<Rc<NodeOccurrence>> {
     match arg.as_expr()? {
         Expr::Apply { functor, .. } if *functor == instance_sym => return None,
@@ -967,8 +971,22 @@ fn pack_at_type(
     }
     if let Some(sort) = abstract_carrier_of(kb, expected) {
         let untyped_var = matches!(arg.as_expr(), Some(Expr::Var(_))) && arg.inferred_type().is_none();
-        let ty = goal_arg_type(kb, arg).filter(|_| !untyped_var)?;
-        if abstract_carrier_of(kb, &ty).is_some() || !instance_is_concrete(kb, &ty) {
+        // A type the typer gave the argument where its value alone says less (`[]` handed to a
+        // `List[T = Int64]`) is the argument's: its own stamp, or the one `known` gives its term.
+        let known_ty = (!known.is_empty())
+            .then(|| {
+                let term = crate::kb::node_occurrence::occurrence_to_term(kb, arg);
+                known.iter().find(|(t, _)| *t == term).map(|(_, ty)| ty.clone())
+            })
+            .flatten();
+        let ty = match arg.inferred_type().or(known_ty).filter(|t| instance_is_concrete(kb, t)) {
+            Some(t) => t,
+            None => goal_arg_type(kb, arg).filter(|_| !untyped_var)?,
+        };
+        // A type its element leaves open (`[]`'s `List[T = ?]`) still names its carrier, and a
+        // provision that does not read the open part builds there (`List provides Stream`);
+        // one that does (`ListShow` over `Show[T = E]`) fails to, and the value is left as it is.
+        if abstract_carrier_of(kb, &ty).is_some() {
             return None;
         }
         let carrier = sort_functor_of_view(kb, &ty)?;
@@ -986,7 +1004,7 @@ fn pack_at_type(
             let mut changed = false;
             let packed: Vec<Rc<NodeOccurrence>> = elems
                 .iter()
-                .map(|e| match pack_at_type(kb, e, &elem, instance_sym) {
+                .map(|e| match pack_at_type(kb, e, &elem, instance_sym, known) {
                     Some(p) => {
                         changed = true;
                         p
@@ -1009,7 +1027,7 @@ fn pack_at_type(
             let mut field_at = |kb: &mut KnowledgeBase, field: Option<&(Symbol, Value)>, a: &Rc<NodeOccurrence>| {
                 let packed = field
                     .and_then(|(_, fty)| field_type_at(kb, sort, fty, expected, &type_args))
-                    .and_then(|ty| pack_at_type(kb, a, &ty, instance_sym));
+                    .and_then(|ty| pack_at_type(kb, a, &ty, instance_sym, known));
                 match packed {
                     Some(p) => {
                         changed = true;
