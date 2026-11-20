@@ -392,3 +392,49 @@ fn a_dictionary_built_in_a_body_is_refused_until_stage_7() {
     );
     assert!(!msg.contains("operation_map"), "no binding answers a dictionary: {msg}");
 }
+
+#[test]
+fn a_dictionary_held_by_a_const_is_refused_until_stage_7() {
+    // WI-20261113-24ZZ0 (proposal 074 stage 2) — a const may hold a dictionary, built at load;
+    // cpp-gen emits none until stage 7 (§1.4: "a dictionary parameter, `Dictionary.instance`
+    // and `x.T` read as a value stay loud refusals"). The const's type is refused first, as a
+    // dictionary parameter's is; with that type mapped, its value is refused as the body
+    // building a dictionary is (the row above). Passes before this stage too: it holds the
+    // generator to §1.4 for the new position.
+    let calc = |mapping: &str| {
+        format!(
+            r#"
+        namespace test.p074k
+          import anthill.prelude.{{Int64, Additive}}
+          import anthill.prelude.Option.{{some, none}}
+          import anthill.realization.TypeMapping
+          import anthill.realization.runtime.Dictionary
+          sort Calc
+            const ints: Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()
+            operation two() -> Int64 = 2
+          end
+          {mapping}
+        end
+    "#
+        )
+    };
+    let mut kb = load_kb_with(&calc(""));
+    let msg = emit_traits_struct(&mut kb, "test.p074k.Calc")
+        .expect_err("a const holding a dictionary must be refused")
+        .to_string();
+    assert!(
+        msg.contains("no C++ mapping for parameterized sort 'anthill.prelude.Additive'"),
+        "the const's type is refused: {msg}"
+    );
+    let mut kb = load_kb_with(&calc(
+        r#"fact TypeMapping(anthill_type: "anthill.prelude.Additive", host_type: "Add<$T>",
+                           lift: none, lower: none, lang: some("cpp"), key: none)"#,
+    ));
+    let msg = emit_traits_struct(&mut kb, "test.p074k.Calc")
+        .expect_err("a const holding a dictionary must be refused with its type mapped")
+        .to_string();
+    assert!(
+        msg.contains("builds a dictionary") && msg.contains("stage 7"),
+        "the const's value is refused naming the stage: {msg}"
+    );
+}
