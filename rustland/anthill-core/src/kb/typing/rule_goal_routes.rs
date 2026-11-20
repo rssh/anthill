@@ -2070,7 +2070,7 @@ pub(super) fn construction_type_at_goal(kb: &mut KnowledgeBase, arg: &Rc<NodeOcc
 /// concrete; the parameters no field fixes left open. `None` for any other argument, and where a
 /// field's type is not concrete.
 fn entity_construction_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Value> {
-    let (Some(
+    let Some(
         Expr::Constructor {
             name: functor,
             pos_args,
@@ -2083,7 +2083,7 @@ fn entity_construction_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) ->
             named_args,
             ..
         },
-    )) = arg.as_expr()
+    ) = arg.as_expr()
     else {
         return None;
     };
