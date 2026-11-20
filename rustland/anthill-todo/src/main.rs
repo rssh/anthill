@@ -5359,12 +5359,23 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 return runner::EXIT_RUNTIME;
             }
         };
-        let Some(Value::Term { id: wis_ty, .. }) = wis.ty().cloned() else {
-            eprintln!("error: `open` answered no type for the store's state: {:?}", wis.ty());
+        let Some(wis_ty) = wis.ty().cloned() else {
+            eprintln!("error: `open` answered no type for the store's state");
             return runner::EXIT_RUNTIME;
         };
         let cell_ty = {
             let kb = interp.kb_mut();
+            // Read through the type's own carrier, a term or the occurrence a declared name
+            // rides (`TypeNode::Aliased`, under `ANTHILL_TEST_NODE_CARRIER`): a type has a term.
+            let wis_ty = match anthill_core::kb::node_occurrence::value_to_term(kb, &wis_ty) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!(
+                        "error: the type `open` answered for the store's state has no term: {e}"
+                    );
+                    return runner::EXIT_RUNTIME;
+                }
+            };
             let (Some(cell), Some(v)) = (
                 kb.try_resolve_symbol("anthill.prelude.Cell"),
                 kb.try_resolve_symbol("anthill.prelude.Cell.V"),
