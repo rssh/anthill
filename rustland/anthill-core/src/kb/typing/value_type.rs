@@ -1105,9 +1105,9 @@ pub(crate) fn guard_goals_typed_at(
 }
 
 /// The declared parameter type of each variable of the pattern `pattern` matched at `redex`,
-/// pushed onto `out`, with `sigma` binding the callee sorts' parameters where an argument that
-/// is no variable has a type: `put(?m, ?k2, ?v)` at `Map.put(m0, k, 7)` with `m0: Map[K =
-/// (a: Int64), …]` binds `K`, which `?k2`'s declared `K` then reads.
+/// pushed onto `out`, with `sigma` binding the callee sorts' parameters where an argument has a
+/// type: `put(?m, ?k2, ?v)` at `Map.put(m0, k, 7)` with `m0: Map[K = (a: Int64), …]` binds
+/// `K`, which `?k2`'s declared `K` then reads.
 fn lhs_declared_types(
     kb: &mut KnowledgeBase,
     pattern: TermId,
@@ -1135,14 +1135,15 @@ fn lhs_declared_types(
         let (Some(param), Some(arg)) = (params.get(i), args.get(i)) else {
             continue;
         };
+        // Each argument with a type says the callee sort's parameters, as the call's own typing
+        // reads them: `nth(?xs, ?i)` at `nth(arr(n: 2), 5)` binds `C` to `Arr`, which `?xs`
+        // then reads.
+        if let Some(ty) = arg.inferred_type() {
+            unify_types(kb, sigma, param, &ty);
+        }
         match kb.get_term(*child) {
             Term::Var(Var::Global(v)) => out.push((*v, param.clone())),
-            Term::Fn { .. } => {
-                if let Some(ty) = arg.inferred_type() {
-                    unify_types(kb, sigma, param, &ty);
-                }
-                lhs_declared_types(kb, *child, arg, sigma, out);
-            }
+            Term::Fn { .. } => lhs_declared_types(kb, *child, arg, sigma, out),
             _ => {}
         }
     }

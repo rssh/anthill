@@ -26,12 +26,11 @@ sort anthill.prelude.IndexedSeq
   -- the guard is proved at the redex and decides. They qualify because the right-hand
   -- side is a constant, so orienting them terminates trivially. `nth_oob_lo`'s
   -- `lt(?i, 0)` is an ordinary builtin over the index and discharges on any concrete
-  -- one; it is driven to a value in `wi_8rjk8_guarded_equation_fires_test`.
-  -- `nth_oob_hi` needs `length(?xs)` to RUN, which on a bare spec-op term needs the
-  -- carrier's dictionary — WI-567's wall — and MEASURED, it does not discharge there
-  -- (`nth(nil, 0)` is left standing, asserted in that same test). It is tagged anyway
-  -- because the two are one statement of the same contract and an undischargeable guard
-  -- DECLINES rather than misfiring; no context that discharges it has been driven.
+  -- one. `nth_oob_hi` needs `length(?xs)` to RUN: its guard is typed at the redex, so
+  -- `?xs` is the carrier the call's argument says and `length` is that carrier's member
+  -- (WI-20261105-CBRD2). Both are driven to a value from rule bodies in
+  -- `wi_8rjk8_guarded_equation_fires_test`, over a carrier whose own `nth` answers
+  -- otherwise; a guard that cannot be decided DECLINES rather than misfiring.
   rule {
     nth_oob_lo: nth(?_, ?i)   = none :- lt(?i, 0)   @[simp]
     nth_oob_hi: nth(?xs, ?i)  = none :- gte(?i, length(?xs))   @[simp]

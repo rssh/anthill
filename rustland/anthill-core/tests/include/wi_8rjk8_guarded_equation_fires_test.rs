@@ -368,63 +368,75 @@ end
 
 // ── 4. a STDLIB guarded law, driven to a value ──────────────────────────
 
-/// `indexed_seq.anthill`'s `nth_oob_lo: nth(?_, ?i) = none :- lt(?i, 0)` — one of the
-/// fifteen guarded equations that were dead in the stdlib — tagged `@[simp]` by this
-/// ticket and driven END TO END: the spec-op term `IndexedSeq.nth(nil(), -1)`
-/// rewrites to `none`.
+/// `indexed_seq.anthill`'s two guarded laws, `nth_oob_lo: nth(?_, ?i) = none :- lt(?i, 0)` and
+/// `nth_oob_hi: nth(?xs, ?i) = none :- gte(?i, length(?xs))` — two of the fifteen guarded
+/// equations that were dead in the stdlib — tagged `@[simp]` by this ticket and driven END TO
+/// END from a rule body, over a carrier whose own `nth` answers otherwise: `Arr.nth` is always
+/// `some(99)`, so a `none` is the law's. `nth(arr(n: 2), -1)` and `nth(arr(n: 2), 5)` are each
+/// `none`, and `nth(arr(n: 2), 1)`, in range, is `Arr.nth`'s `some(99)`: neither guard holds.
 ///
-/// "It loads" is not the evidence and neither is "the tag is present": this asserts
-/// the VALUE the law computes. The guard `lt(-1, 0)` is discharged by the ordinary
-/// `PartialOrd` builtin, which is why THIS law is the one driven. `nth_oob_hi`'s
-/// `gte(?i, length(?xs))` needed `IndexedSeq.length` to run on a bare spec-op term —
-/// WI-567's wall, asserted here as UNDISCHARGED until WI-20260926-K4JGC: a body-less spec
-/// op at a ground carrier now dispatches wherever it is written (proposal 068 §1), so
-/// `length(nil)` is `0` and `nth(nil, 0)` is out of bounds — `none`. FAILS with K4JGC
-/// backed out: `nth(nil, 0)` stays unrewritten.
+/// "It loads" is not the evidence and neither is "the tag is present": this asserts the VALUE
+/// the law computes. `nth_oob_hi`'s guard runs `IndexedSeq.length` at the redex's carrier —
+/// WI-567's wall until WI-20260926-K4JGC, a body-less spec op at a ground carrier dispatching
+/// wherever it is written (proposal 068 §1). K4JGC's back-out was measured on the row's earlier
+/// spelling, `nth(nil, 0)` left unrewritten; on this fixture it is not measured again.
+///
+/// Typed where it is written, nothing is dispatched from a value, at the load or at a query
+/// (WI-20261105-CBRD2, `resolve::value_dispatches_by_this_thread`). The law fires where the
+/// typer types the rule body (`simp_rewrite::try_fire`), and its guard is typed at the redex
+/// (`typing::guard_goals_typed_at`): `?xs` is an `Arr`, which `nth(arr(n: 2), 5)`'s argument says
+/// of `IndexedSeq`'s `C`, so `length(?xs)` is `Arr.length`'s call. FAILS with that reading backed
+/// out (the sort's parameters read off an argument the pattern spells, not off one a variable
+/// matched): the load, 2 dispatches — `?xs` at an open `C`, its `length` found from the value.
+/// The three values and each query's count pass either way: they measure the law, not where
+/// its guard's `length` is decided.
+/// The row drove the law through `KnowledgeBase::simplify` on a term built by hand,
+/// `IndexedSeq.nth(nil, 0)`, which no typer saw, and the guard's `length(nil)` was dispatched to
+/// `List.length` from the value; the table's rows above that name this row were measured on that
+/// spelling.
 ///
 /// `IndexedSeq` declares no `requires`, so `equation_is_requires_guarded` is false for
 /// it and the resolver fires without needing a carrier that provides the spec — unlike
 /// `Map`'s law, whose sort-level `requires Eq[T = K]` keeps it to real providers.
 #[test]
 fn stdlib_indexed_seq_out_of_bounds_law_fires_to_a_value() {
-    let mut kb = crate::common::load_stdlib_kb();
-    let nil = call(&mut kb, "anthill.prelude.List.nil", &[]);
-
-    let neg = int(&mut kb, -1);
-    let oob = call(&mut kb, "anthill.prelude.IndexedSeq.nth", &[nil, neg]);
-    let out = kb.simplify(oob);
+    let src = r#"
+namespace test.wi8rjk8.isq
+  import anthill.prelude.{Int64, Option, IndexedSeq}
+  import anthill.prelude.Option.{some}
+  sort Arr
+    entity arr(n: Int64)
+    provides IndexedSeq[C = Arr, T = Int64]
+    operation length(xs: Arr) -> Int64 = match xs case arr(n) -> n
+    operation nth(xs: Arr, i: Int64) -> Option[T = Int64] = some(99)
+  end
+  rule below(?o) :- ?o <=> IndexedSeq.nth(arr(n: 2), -1)
+  rule past(?o)  :- ?o <=> IndexedSeq.nth(arr(n: 2), 5)
+  rule inside(?o) :- ?o <=> IndexedSeq.nth(arr(n: 2), 1)
+end
+"#;
+    drop(crate::common::load_stdlib_kb());
+    let before = anthill_core::kb::resolve::value_dispatches_by_this_thread();
+    let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
-        head_name(&kb, out),
-        "anthill.prelude.Option.none",
-        "the stdlib `nth_oob_lo` law must fire at a NEGATIVE index: \
-         IndexedSeq.nth(nil, -1) → none; got {:?}",
-        kb.get_term(out),
+        anthill_core::kb::resolve::value_dispatches_by_this_thread() - before,
+        0,
+        "the load: a member found from the value"
     );
-
-    // `nth_oob_hi`, DISCHARGED: `gte(0, length(nil))` holds once `length(nil)` runs.
-    let zero = int(&mut kb, 0);
-    let past_end = call(&mut kb, "anthill.prelude.IndexedSeq.nth", &[nil, zero]);
-    let out = kb.simplify(past_end);
-    assert_eq!(
-        head_name(&kb, out),
-        "anthill.prelude.Option.none",
-        "`nth(nil, 0)` is past the end: `nth_oob_hi`'s guard `gte(0, length(nil))` is \
-         decided now that `length(nil)` runs; got {:?}",
-        kb.get_term(out),
-    );
-
-    // The guard direction, on both laws: index 0 of a ONE-element list refutes
-    // `lt(0, 0)` and `gte(0, length(cons(1, nil)))` alike, so nothing fires.
-    let one = int(&mut kb, 1);
-    let nil2 = call(&mut kb, "anthill.prelude.List.nil", &[]);
-    let single = call(&mut kb, "anthill.prelude.List.cons", &[one, nil2]);
-    let zero2 = int(&mut kb, 0);
-    let in_range = call(&mut kb, "anthill.prelude.IndexedSeq.nth", &[single, zero2]);
-    assert_eq!(
-        kb.simplify(in_range),
-        in_range,
-        "`nth(cons(1, nil), 0)` is in range: neither out-of-bounds law may fire",
-    );
+    for (rule, want) in [("below", "none"), ("past", "none"), ("inside", "some[value = 99]")] {
+        let before = anthill_core::kb::resolve::value_dispatches_by_this_thread();
+        let rows = crate::common::query_unary(&mut kb, &format!("test.wi8rjk8.isq.{rule}"));
+        let shown: Vec<(String, bool)> = rows
+            .iter()
+            .map(|(v, definite)| (anthill_core::kb::typing::type_display_name_value(&kb, v), *definite))
+            .collect();
+        assert_eq!(shown, vec![(want.to_string(), true)], "{rule}");
+        assert_eq!(
+            anthill_core::kb::resolve::value_dispatches_by_this_thread() - before,
+            0,
+            "{rule}: a member found from the value"
+        );
+    }
 }
 
 /// `map.anthill`'s `get(put(?m, ?k2, ?v), ?k) = get(?m, ?k) :- neq(?k, ?k2)` is the law
