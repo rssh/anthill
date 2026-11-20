@@ -3254,10 +3254,7 @@ rules (WI-20261117-8J8NG), and a law's goal is passed the instances the law hold
 clause's goal is passed the clause's: with `rule nz[A](?b: A) :- PartialEq[T = A], Additive[T
 = A], neq(?b, zero)` and the law's guard written `PartialEq[T = A], nz(?b)` beside its other
 two, `risky(x, 2)` is proved in one load as in two, and `risky(x, 0)` in neither. Before, such
-a goal was passed nothing, and the proof was undecided in every load. A callee whose call
-needs a requirement it does not declare — `nz` without its `PartialEq` — reads that
-dictionary from the value when it runs, which a proof does not, and stays undecided in every
-load.
+a goal was passed nothing, and the proof was undecided in every load.
 
 **Every firing site answers alike** — the resolver's rewriter, the typer's operation-body pass and the typer's dot-rule pass all share one guard evaluator — so a tagged rule means the same thing at a resolution goal, in the operation body that spells the same call, and at a method call. At the typer the redex is compile-time syntax, so most guards are simply under-determined and decline; the ones that fire are the ones already decidable from the program text (`nth(xs, -1)` under `nth(?_, ?i) = none :- lt(?i, 0)`), which is constant folding.
 
