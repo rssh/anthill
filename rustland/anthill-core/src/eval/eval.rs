@@ -2970,7 +2970,7 @@ impl Interpreter {
     /// that sort whose argument the call made at another type (`Iterable.iterator(c: C)` reaching
     /// `Stream.iterator(s: Self)`): the call's dictionary is the instance they are. `None` where
     /// nothing is paired.
-    fn positions_to_pair(&mut self, spec_op: Symbol, target: Symbol) -> Option<SmallVec<[usize; 2]>> {
+    pub(super) fn positions_to_pair(&mut self, spec_op: Symbol, target: Symbol) -> Option<SmallVec<[usize; 2]>> {
         if let Some(cached) = self.pair_positions.get(&(spec_op, target)) {
             return cached.clone();
         }

@@ -2551,6 +2551,8 @@ mod wi_cbrd2_unnamed_requirement_tie_test;
 mod wi_cbrd2_constraint_typed_variable_test;
 #[path = "include/wi_cbrd2_guard_instance_at_call_test.rs"]
 mod wi_cbrd2_guard_instance_at_call_test;
+#[path = "include/wi_cbrd2_stream_pairing_test.rs"]
+mod wi_cbrd2_stream_pairing_test;
 #[path = "include/wi_cbrd2_contract_member_goal_test.rs"]
 mod wi_cbrd2_contract_member_goal_test;
 #[path = "include/wi_cbrd2_bridge_slot_test.rs"]

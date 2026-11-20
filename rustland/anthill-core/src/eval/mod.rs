@@ -1450,6 +1450,24 @@ impl Interpreter {
                     }
                 }
             }
+            // Proposal 073 §2 — a default body of a sort with abstract values the dictionary
+            // sends the call to reads the receiver the call made at another type as the
+            // instance the dictionary is (`Iterable.isEmpty(c: C)` at `List` reaching
+            // `Stream.isEmpty(s: Self)`), as a body's call through the dictionary pairs it
+            // (`positions_to_pair`): the value's own sort is not asked. A receiver paired
+            // where the call was typed (a rule body's, at the member's `Self`) is the instance
+            // it was made.
+            let mut paired: Vec<Value> = Vec::new();
+            if let Some(positions) = self.positions_to_pair(dispatched_from, sym) {
+                paired = args.to_vec();
+                for i in positions {
+                    if let Some(slot) = paired.get_mut(i).filter(|v| self.open_instance(v).is_none()) {
+                        let raw = std::mem::replace(slot, Value::Unit);
+                        *slot = self.pair_with(dict.clone(), raw)?;
+                    }
+                }
+            }
+            let args = if paired.is_empty() { args } else { &paired[..] };
             return self.invoke_op_with_requirements(sym, args, requirements);
         }
         // WI-20260925-P7VP4 — the calling clause's conditions stand in for their slots

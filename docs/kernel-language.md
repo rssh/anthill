@@ -2754,7 +2754,11 @@ has no condition: `rule cmpInt(?c) :- WeakOrd.compare(1, 5, ?c)` is `Int64`'s ow
 a requirement of an operation's own `requires` that the call's types fix — its arguments,
 a typed head, the parameter's default — as in an operation body: over `d[T = Int64]()
 requires Desc[T = T]`, `rule v(?n) :- d(?n)` takes the provider at `Int64`, and is refused
-where none provides it. An
+where none provides it. A call of an operation of a sort with abstract values, at a receiver
+the clause types at a concrete carrier whose own member answers it, is that member's call, and
+its result is of the member's type: over `vs: List[T = Int64]`, `Stream.splitFirst(vs) <=>
+some(pair(fst: ?x, snd: ?r))` makes `?r` a `List[T = Int64]`. At a receiver the clause types at
+the abstract sort, the result is the spec's: an instance. An
 equality (`=`) and a comparison (`<`) are their carrier's members, read as any call is where the clause types it or declares its spec, and refused at a type the clause leaves open and declares nothing for: `rule same(?a, ?b) :- eq(?a, ?b)` is refused, and `rule same[A](?a: A, ?b: A) :- PartialEq[A], eq(?a, ?b)` loads. A call
 in a `|` or `&` branch, a negation, a quantifier's body or a discharge's consequent has its
 condition there, read beside the goal it is in, which a citation reaches as it reaches one

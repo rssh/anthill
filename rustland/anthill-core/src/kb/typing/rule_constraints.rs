@@ -178,6 +178,15 @@ enum LatePosition {
         call: Rc<NodeOccurrence>,
         var: u32,
     },
+    /// A construction on one side of an equality whose other side calls an operation of a
+    /// sort with abstract values at a receiver the clause types at a concrete carrier
+    /// (`Stream.splitFirst(vs) <=> some(pair(fst: ?x, snd: ?r))` at `vs: List[T = Bit]`): the
+    /// pattern's variables take the carrier member's result where the clause types them at the
+    /// abstract sort alone ([`narrow_pattern_at`]). Read once every other position is.
+    CalledPattern {
+        call: Rc<NodeOccurrence>,
+        pattern: Rc<NodeOccurrence>,
+    },
     /// A bounded quantifier's binder (`(forall ?e in ?xs: …)`): an element of the collection,
     /// once the clause types it.
     Element {
@@ -1008,6 +1017,12 @@ pub(super) fn collect_occurrence_type_constraints(
                         st.late.push(LatePosition::CalledValue {
                             call: Rc::clone(call),
                             var,
+                        });
+                    }
+                    if is_operation_call(kb, call) && constructs_a_value(kb, other) {
+                        st.late.push(LatePosition::CalledPattern {
+                            call: Rc::clone(call),
+                            pattern: Rc::clone(other),
                         });
                     }
                 }
@@ -1934,7 +1949,9 @@ pub(super) fn settle_late_positions(
         .late
         .iter()
         .filter_map(|late| match late {
-            LatePosition::CalledValue { call, .. } => Some(Rc::clone(call)),
+            LatePosition::CalledValue { call, .. } | LatePosition::CalledPattern { call, .. } => {
+                Some(Rc::clone(call))
+            }
             _ => None,
         })
         .collect();
@@ -1995,7 +2012,9 @@ pub(super) fn settle_late_positions(
                 | LatePosition::LambdaValue { .. }
                 | LatePosition::Element { .. } => true,
                 LatePosition::RuleGoal { .. } => false,
-                LatePosition::ConstructedValue { .. } | LatePosition::CalledValue { .. } => {
+                LatePosition::ConstructedValue { .. }
+                | LatePosition::CalledValue { .. }
+                | LatePosition::CalledPattern { .. } => {
                     constructed.push(late);
                     continue;
                 }
@@ -2017,12 +2036,34 @@ pub(super) fn settle_late_positions(
             break;
         }
     }
+    // Proposal 073 §1 — the patterns and variables a call at a carrier the clause knows is
+    // matched against ([`carriers_member_result`]): a `<=>`'s other side, and the
+    // constructions a variable that took such a result is matched against (`?o <=>
+    // Stream.splitFirst(vs), ?o <=> some(pair(fst: ?, snd: ?r))`). Not the goal form's result
+    // column (`Stream.splitFirst(vs, ?o)`): the call's check types the column, and what it is
+    // matched against, at the operation's declared return.
+    enum AtCarrier {
+        Pattern(Rc<NodeOccurrence>),
+        Var(u32),
+    }
+    let call_result_of = |call: &Rc<NodeOccurrence>| {
+        call_results
+            .iter()
+            .find(|(c, ..)| Rc::ptr_eq(c, call))
+            .map(|(_, result, at)| (result.clone(), *at))
+    };
+    let mut at_carrier: Vec<(CallResult, crate::span::SourceSpan, AtCarrier)> = Vec::new();
+    let mut matched: Vec<(Rc<NodeOccurrence>, u32)> = Vec::new();
     for late in constructed {
         match late {
             LatePosition::ConstructedValue { construction, var } => {
+                matched.push((Rc::clone(&construction), var));
                 narrow_to_construction(kb, st, &construction, var)
             }
             LatePosition::CalledValue { call, var } => {
+                if let Some((result, at)) = call_result_of(&call) {
+                    at_carrier.push((result, at, AtCarrier::Var(var)));
+                }
                 let Some(existing) = st.var_types.get(&var).cloned() else { continue };
                 let Some((_, result, at)) = call_results.iter().find(|(c, ..)| Rc::ptr_eq(c, &call))
                 else {
@@ -2037,7 +2078,40 @@ pub(super) fn settle_late_positions(
                     }
                 }
             }
+            LatePosition::CalledPattern { call, pattern } => {
+                if let Some((result, at)) = call_result_of(&call) {
+                    at_carrier.push((result, at, AtCarrier::Pattern(pattern)));
+                }
+            }
             _ => {}
+        }
+    }
+    // Read until nothing more is narrowed: a step's receiver is the last step's result, in
+    // whatever order the clause writes the steps. A round narrows a variable from the abstract
+    // sort to a carrier, or gives a variable the member's result, each once, so the rounds end.
+    let mut members: HashMap<u32, Value> = HashMap::new();
+    loop {
+        let mut narrowed = false;
+        for (result, at, site) in &at_carrier {
+            let Some(member) = carriers_member_result(kb, st, result) else { continue };
+            let Some(ty) = computed_result_type(kb, rid, st, &member, *at) else { continue };
+            let ty = walk_type_deep_value(kb, &st.subst, &ty);
+            narrowed |= match site {
+                AtCarrier::Pattern(pattern) => narrow_pattern_at(kb, st, pattern, &ty),
+                AtCarrier::Var(var) => {
+                    let first = !members.contains_key(var);
+                    members.entry(*var).or_insert_with(|| ty.clone());
+                    narrow_var_at(kb, st, *var, &ty) | first
+                }
+            };
+        }
+        for (construction, var) in &matched {
+            if let Some(ty) = members.get(var).cloned() {
+                narrowed |= narrow_pattern_at(kb, st, construction, &ty);
+            }
+        }
+        if !narrowed {
+            break;
         }
     }
     demands_on_some_type(kb, rid, st);
@@ -2184,7 +2258,9 @@ fn settle_typed_position(
             (SlotOf::Arg(binder), ty, context, binder.span)
         }
         LatePosition::RuleGoal { .. } => unreachable!("a rule goal is read by its columns"),
-        LatePosition::ConstructedValue { .. } | LatePosition::CalledValue { .. } => {
+        LatePosition::ConstructedValue { .. }
+        | LatePosition::CalledValue { .. }
+        | LatePosition::CalledPattern { .. } => {
             unreachable!("a variable's value is read after every other position")
         }
     };
@@ -2444,6 +2520,130 @@ fn computed_result_type(
         flags = next;
     }
     None
+}
+
+/// Proposal 073 §1 — the variables of `pattern`, a construction a call's result is matched
+/// against, at the type `ty` the carrier's member gives that result ([`carriers_member_result`]):
+/// a variable the clause types at a sort with abstract values alone — a parameter of the call
+/// that takes it next, `Stream.splitFirst(?r1)`'s `s: Self` — is of the carrier's type there,
+/// which provides the sort, as [`narrow_to_construction`] narrows a variable to what it is built
+/// as. A field the constructor's sort does not type by its parameters, or a variable typed
+/// otherwise, is left as the clause typed it. Whether a variable was narrowed.
+fn narrow_pattern_at(
+    kb: &mut KnowledgeBase,
+    st: &mut ClauseConstraints,
+    pattern: &Rc<NodeOccurrence>,
+    ty: &Value,
+) -> bool {
+    if let Some(var) = pattern.var_key(kb) {
+        return narrow_var_at(kb, st, var, ty);
+    }
+    let Some(Expr::Apply { functor, pos_args, named_args, .. }) = pattern.as_expr() else {
+        return false;
+    };
+    let (Some(sort), Some(fields)) =
+        (kb.sort_of_constructor(*functor), kb.entity_field_types(*functor).map(<[_]>::to_vec))
+    else {
+        return false;
+    };
+    let Some((_, args)) = parametric_view_parts(kb, ty) else { return false };
+    let positional = pos_args.iter().zip(fields.iter().map(|(_, fty)| fty));
+    let labelled = named_args.iter().filter_map(|(label, arg)| {
+        let (_, fty) = fields.iter().find(|(f, _)| same_label(kb, *f, *label))?;
+        Some((arg, fty))
+    });
+    let at: Vec<(Rc<NodeOccurrence>, Value)> = positional
+        .chain(labelled)
+        .filter_map(|(arg, fty)| Some((Rc::clone(arg), field_type_at(kb, sort, fty, ty, &args)?)))
+        .collect();
+    let mut narrowed = false;
+    for (arg, field_ty) in at {
+        narrowed |= narrow_pattern_at(kb, st, &arg, &field_ty);
+    }
+    narrowed
+}
+
+/// [`narrow_pattern_at`] for one variable: of `ty`, a carrier's type, where the clause types it
+/// at a sort with abstract values `ty` provides. Whether it was.
+fn narrow_var_at(kb: &mut KnowledgeBase, st: &mut ClauseConstraints, var: u32, ty: &Value) -> bool {
+    let Some(existing) = st.var_types.get(&var).cloned() else { return false };
+    let existing = walk_type_deep_value(kb, &st.subst, &existing);
+    if abstract_carrier_of(kb, &existing).is_none() || abstract_carrier_of(kb, ty).is_some() {
+        return false;
+    }
+    if !provides_the_slot(kb, &st.subst, ty, &existing) {
+        return false;
+    }
+    st.param_backed.remove(&var);
+    st.var_types.insert(var, ty.clone());
+    true
+}
+
+/// Proposal 073 §1, kernel-language §5.3 (WI-20261105-CBRD2; the user, 2026-11-20) — `result`,
+/// a call of an operation of a sort with abstract values, read as the member its receiver's
+/// carrier answers it with, where the clause types the receiver at a concrete carrier whose own
+/// member that is: a call at a type the program knows is decided by that type, and its result
+/// is of the member's type. `Stream.splitFirst(vs)` at `vs:
+/// List[T = Bit]` is `List.splitFirst`'s, whose tail is a `List[T = Bit]`, not the `Stream`
+/// the spec writes, so the next `Stream.splitFirst(?r1)` is paired at load as the first is. The
+/// parameters are renamed to the member's, which its projections (`xs.T`) name.
+///
+/// `None` where the spec's result stands: a receiver at the abstract sort itself or at a type
+/// the clause leaves open (its carrier is whatever built the value, which holds an instance), a
+/// sort's parameter, or a carrier the sort's default body answers for (that body's result is
+/// the spec's).
+fn carriers_member_result(
+    kb: &mut KnowledgeBase,
+    st: &ClauseConstraints,
+    result: &CallResult,
+) -> Option<CallResult> {
+    let spec_sort = impl_parent_sort_of_op(kb, result.op)?;
+    if !is_abstract_carrier_sort(kb, spec_sort) {
+        return None;
+    }
+    let spec = crate::kb::op_info::lookup_operation_info(kb, result.op)?;
+    let spec_params: Vec<Symbol> = spec.params.iter().map(|(p, _)| *p).collect();
+    let receiver = spec_params[self_receiver_param_index(kb, &spec.params, spec_sort)?];
+    let receiver_ty = match &result.params.iter().find(|(p, _)| *p == receiver)?.1 {
+        ArgType::Var(d) => st.var_types.get(d)?.clone(),
+        ArgType::Of(ty) => ty.clone(),
+    };
+    let receiver_ty = walk_type_deep_value(kb, &st.subst, &receiver_ty);
+    if abstract_carrier_of(kb, &receiver_ty).is_some() {
+        return None;
+    }
+    let head = sort_functor_of_view(kb, &receiver_ty)?;
+    if is_sort_param_symbol(kb, head) {
+        return None;
+    }
+    let carrier = kb.canonical_sort_sym(kb.type_arg_owner(head).unwrap_or(head));
+    let member = resolve_op_target_checked(kb, carrier, result.op).ok()?;
+    if member == result.op
+        || impl_parent_sort_of_op(kb, member).is_some_and(|s| is_abstract_carrier_sort(kb, s))
+    {
+        return None;
+    }
+    let own = lookup_operation_info_full(kb, member)?;
+    // A member that takes another number of parameters is refused where the provision is
+    // checked (`IncompatibleMemberSignature`); it gives no result to read here.
+    if own.params.len() != spec_params.len() {
+        return None;
+    }
+    let own_params: Vec<Symbol> = own.params.iter().map(|(p, _)| *p).collect();
+    let own_return = own.return_type.clone();
+    let params = result
+        .params
+        .iter()
+        .map(|(p, arg)| {
+            let at = spec_params.iter().position(|q| q == p).expect("a parameter of the call's operation");
+            (own_params[at], arg.clone())
+        })
+        .collect();
+    Some(CallResult {
+        op: member,
+        ty: instantiate_declared_type(kb, &own_return, &mut ParamInstantiation::new()).0,
+        params,
+    })
 }
 
 /// The head's written bounds, each opened per collection — a variable the bound writes is
