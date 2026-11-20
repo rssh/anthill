@@ -3,9 +3,9 @@
 - id: WI-20261105-CBRD2-proposal-073-stage-4-no-typed
 - created: 2026-11-05T22:18:18Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-13T23:33:23Z
+- status_at: 2026-11-20T18:53:33Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
