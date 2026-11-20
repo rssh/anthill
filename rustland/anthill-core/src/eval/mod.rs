@@ -1397,6 +1397,12 @@ impl Interpreter {
             )));
         }
         use crate::kb::typing::BridgeRequirements;
+        // Proposal 073 §1 (WI-20261105-CBRD2) — a call nothing in the knowledge base can run
+        // ends where its dispatch would, unreduced (`Set.insert(Set.empty(), 1)`), before a
+        // dictionary is derived from its argument values for a member that does not exist.
+        if dispatched_through.is_none() && crate::kb::typing::no_call_of_it_runs(&self.kb, sym) {
+            return Err(self.unrunnable_target_error(sym));
+        }
         // WI-20260909-NAR1X — THE CALLER'S DICTIONARY, WHERE THE CALLER HAS ONE.
         //
         // The resolution below pins the callee's chain FROM THE ARGUMENT TYPES, and

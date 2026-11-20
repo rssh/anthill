@@ -672,6 +672,18 @@ pub(super) fn runs_nothing_of_its_own(kb: &KnowledgeBase, op: Symbol) -> bool {
         && !kb.is_reify_operation(kb.canonical_sym(op))
 }
 
+/// Proposal 073 §1 (WI-20261105-CBRD2) — no call of `op` can run in this knowledge base: it
+/// runs nothing of its own ([`runs_nothing_of_its_own`]), and nothing provides the sort it is
+/// a member of, so no dispatch finds a member at any carrier. Its run ends where the dispatch
+/// does, `OperationBodyMissing` (`Interpreter::unrunnable_target_error`), which the resolver
+/// reads as unreduced (kernel-language §8.3): `Set.insert(Set.empty(), 1)`, which nothing
+/// implements. The resolver's bridge answers such a call so before it would derive, from the
+/// argument values, the dictionaries nothing would be entered with (`call_op_bridged`).
+pub(crate) fn no_call_of_it_runs(kb: &KnowledgeBase, op: Symbol) -> bool {
+    runs_nothing_of_its_own(kb, op)
+        && impl_parent_sort_of_op(kb, op).is_none_or(|sort| provides_rows_of_spec(kb, sort).next().is_none())
+}
+
 /// WI-20260909-M8QWJ — the first member of `spec_canon`, or of a sort it provides, that
 /// `op`'s BODY reaches through calls of such members, at any depth, and that runs nothing
 /// at the sort itself. A provided sort's member is reached as a sibling is: a body of a sort
