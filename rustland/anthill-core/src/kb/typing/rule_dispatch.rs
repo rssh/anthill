@@ -2193,7 +2193,7 @@ pub(super) fn finish_clause_typing(
     // late position never sets it.
     let contradiction = st.subst.is_contradiction();
     let mut disagreements = Vec::new();
-    let rigids = settle_late_positions(kb, rid, head, &mut st, &mut disagreements);
+    let rigids = settle_late_positions(kb, ClauseSite::Rule { rid, head }, &mut st, &mut disagreements);
     judge_construction_instances(kb, &mut st);
     // What the walk and the late positions found at a place of their own, once each.
     disagreements.extend(std::mem::take(&mut st.found));

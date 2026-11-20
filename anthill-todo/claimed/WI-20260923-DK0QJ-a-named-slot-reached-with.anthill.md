@@ -3,9 +3,9 @@
 - id: WI-20260923-DK0QJ-a-named-slot-reached-with
 - created: 2026-09-23T18:41:30Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-23T18:41:30Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-11-20T19:14:30Z
 
 - acceptance: cargo-test
 
@@ -44,4 +44,8 @@ Decided with the user 2026-11-05: not fixed by ranking. Proposal 073 (docs/propo
 ### 2026-11-13T23:42:26Z — feedback — claude
 
 Half (a) — the nested slot reached on the host route — moved with 073 §6.1 to 074's stage 10 (WI-20261113-S4D63), decided with the user 2026-11-13; this ticket now depends on it as well. Half (b) through the SLD bridge stays with WI-20261105-CBRD2.
+
+### 2026-11-20T19:45:58Z — feedback — user
+
+Picked up 2026-11-20 (the user: 'Yes', fix both routes). MEASURED first on main with a probe over ATFGH's fixture (a set {pair("a", "z")} built at the generic Flat beside the more specific PairNe and the stdlib Pair; asked for its own element, only PairNe says false): the typed host call and a rule body answered true on both shapes (direct O = Flat, nested O = ByInner[OI = Flat]); a WRITTEN QUERY Driver.flat(0, ?s), MySet.contains(?s, x, ?r) answered false definite with nothing derived; a goal built at run time and typed by no load answered false definite, one dictionary derived from the value. Three changes. (1) A query's late positions are settled as a clause's: query_goal_var_types collected its goals' constraints and never read flat's result column (a LatePosition::ResultColumn), so ?s was at MySet[T = ..., O = ?] and contains' O was inferred by the ladder. settle_late_positions takes a ClauseSite (a stored rule, or a query: no head, no bound, the global scope); a query skips RuleGoal positions, read by its own stamped_column_type (settling them too refused two wi_cbrd2_typed_query_variable rows, held's column read as Option[T = Int64] where the stamp leaves T open). (2) Half (b): the bridge's derivation (kernel-language 5.2, a call no typer reads) answers a named slot of either owner Unranked, not only a type-carried one: MySet's own O went to PairNe at Withhold. (3) Half (a), the nested slot: below an Unranked goal a chosen provider's named slot is Unranked too (resolve_inner's sub_rung); an anonymous one keeps its rung, its provider being no choice of the value's. Rows: wi_dk0qj_generic_witness_rival_test (5): the written query true on both shapes and on the <=> spelling, 0 derived; the run-time goal undecided on both shapes (one delayed answer per literal, neither definite); controls: a sole provider (Int64, and ByInner over Boxed[E = Int64]) answers the run-time goal definitely, and the host call and both rule spellings answer true. Back-outs measured with temporary switches, each alone: query settling off fails the query row (false definite; the <=> spelling alone answers nothing at true); the bridge at Withhold fails both run-time rows; the sub-slot at its own rung fails the nested row only; the controls pass under all three. Pinned to one load by name (PairNe provides the stdlib's WeakOrd at the stdlib's Pair), in wi_rah0z's PINNED. /code-review high: 8 findings, 2 fixed (the query's dropped disagreements comment overclaimed a refusal; the <=> query form undriven), 2 no change (an anonymous intermediate's provider is not the value's choice; the DeBruijn unreachable in a query site, loud by design, no gate row reaches it), 4 skipped (a dot in a query settles at no variable types, as before nothing settled it; the query's domain is the global scope, as every caller reads one; the supplied-dictionary check's resolution under a sticky Unranked, which can only keep the supplied dictionary; two overlapping rung conditions). Gate 12405 / 0 / 17; families green on both carriers, no verdict moved; scaland not run (no Scala change).
 

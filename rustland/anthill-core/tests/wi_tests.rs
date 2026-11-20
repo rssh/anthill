@@ -29,6 +29,9 @@ mod wi_s4d63_host_boundary_test;
 #[path = "include/wi_s4d63_rule_variable_type_test.rs"]
 mod wi_s4d63_rule_variable_type_test;
 
+#[path = "include/wi_dk0qj_generic_witness_rival_test.rs"]
+mod wi_dk0qj_generic_witness_rival_test;
+
 #[path = "include/wi_s4d63_bridge_routing_test.rs"]
 mod wi_s4d63_bridge_routing_test;
 

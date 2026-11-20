@@ -1917,6 +1917,57 @@ pub(crate) fn is_structural_type_form(kb: &KnowledgeBase, functor: Symbol) -> bo
         .is_some_and(|s| kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor")
 }
 
+/// What [`settle_late_positions`] settles: a stored clause, or the goals of a query, which
+/// is typed where it is read as a rule body is (proposal 073 §6.2) — a clause with no head,
+/// so no bound and no relation of its own, its variables the query's (global), read in the
+/// scope `domain`.
+///
+/// WI-20260923-DK0QJ — a query's late positions went unread: `Driver.flat(0, ?s),
+/// MySet.contains(?s, x, ?r)` left `?s` at what `contains`' parameter says, `MySet[T = …, O =
+/// ?]`, because `flat`'s result column is a [`LatePosition::ResultColumn`]; so the call's `O`
+/// was inferred by the ladder (058 §3.4) and the most specific rival of the `Flat` the set was
+/// built with answered, where the same goals in a rule body answer by `Flat`.
+#[derive(Clone, Copy)]
+pub(super) enum ClauseSite<'a> {
+    Rule { rid: RuleId, head: TermId },
+    Query { domain: Symbol, goals: &'a [Rc<NodeOccurrence>] },
+}
+
+impl ClauseSite<'_> {
+    /// The scope the clause's types are read in.
+    fn domain(self, kb: &KnowledgeBase) -> Symbol {
+        match self {
+            Self::Rule { rid, .. } => kb.rule_domain(rid),
+            Self::Query { domain, .. } => domain,
+        }
+    }
+
+    /// The relation the clause defines, whose own goals read no columns
+    /// ([`rule_goal_columns_at`]): none for a query.
+    fn own(self, kb: &KnowledgeBase) -> Option<Symbol> {
+        match self {
+            Self::Rule { head, .. } => kb.head_functor(head),
+            Self::Query { .. } => None,
+        }
+    }
+
+    /// The name a disagreement in the clause's body is reported under.
+    fn name(self, kb: &mut KnowledgeBase) -> Symbol {
+        match self {
+            Self::Rule { rid, .. } => kb.head_functor(kb.rule_head(rid)).unwrap_or_else(|| kb.intern("clause")),
+            Self::Query { .. } => kb.intern("query"),
+        }
+    }
+
+    /// The clause's body goals.
+    fn body(self, kb: &KnowledgeBase) -> Vec<Rc<NodeOccurrence>> {
+        match self {
+            Self::Rule { rid, .. } => kb.rule_body_nodes(rid).to_vec(),
+            Self::Query { goals, .. } => goals.to_vec(),
+        }
+    }
+}
+
 /// Read the positions of a clause the walk left for after it ([`LatePosition`]): the head's
 /// written bounds first, then the rest in the order they were written, and a dot last, once
 /// what types its receiver has been read. Each on a trial copy, kept where it fits and
@@ -1927,17 +1978,23 @@ pub(crate) fn is_structural_type_form(kb: &KnowledgeBase, functor: Symbol) -> bo
 /// THE ENCLOSING SORT'S PARAMETER A BOUND NAMES IS RIGID HERE, as it is in an operation
 /// body: the clause holds at every instance, so its body may not fix the parameter. Read as
 /// an ordinary variable, `rule pr(?x: Self) :- ?x <=> b3(v: 5)` in `sort Box3[T]` bound `T`
-/// to `Int64`, and every type that names `T` in the clause read `Int64` with it.
+/// to `Int64`, and every type that names `T` in the clause read `Int64` with it. A query
+/// has no head, so no bound and no rigid.
 pub(super) fn settle_late_positions(
     kb: &mut KnowledgeBase,
-    rid: RuleId,
-    head: TermId,
+    site: ClauseSite<'_>,
     st: &mut ClauseConstraints,
     disagreements: &mut Vec<ClauseDisagreement>,
 ) -> Vec<(VarId, VarId)> {
-    let span = kb.rule_head_span(rid);
-    let own = kb.head_functor(head);
-    let rigids = settle_head_bounds(kb, rid, own, st, disagreements, span);
+    let own = site.own(kb);
+    let domain = site.domain(kb);
+    let rigids = match site {
+        ClauseSite::Rule { rid, .. } => {
+            let span = kb.rule_head_span(rid);
+            settle_head_bounds(kb, rid, own, st, disagreements, span)
+        }
+        ClauseSite::Query { .. } => Vec::new(),
+    };
     // What can be read only once something else is: a dot, whose receiver must be typed,
     // and a result whose type is computed from its operands (`field_access`'s `FieldOf`,
     // the field's type once the receiver's is known).
@@ -1964,6 +2021,14 @@ pub(super) fn settle_late_positions(
                 }
             }
             if let LatePosition::RuleGoal { functor, goal } = &late {
+                // A query reads a relation's columns as the load stamped them
+                // (`stamped_column_type`, rule_goal_routes), and that reader is the one its
+                // typed variables are held to; this one would be a second reader of the same
+                // column, and the two differ — `held`'s column, `rule held(?o) :- ?o <=>
+                // some(3)`, is `Option[T = Int64]` here and leaves `T` open as stamped
+                // (wi_cbrd2_typed_query_variable_test, measured when this was settled for a
+                // query too).
+                let ClauseSite::Rule { .. } = site else { continue };
                 let Some(columns) = rule_goal_columns_at(kb, own, *functor) else {
                     note_unread_goal(kb, st, goal);
                     continue;
@@ -2019,7 +2084,7 @@ pub(super) fn settle_late_positions(
                     continue;
                 }
             };
-            if computed || !settle_typed_position(kb, rid, st, &late, &rigids, disagreements) {
+            if computed || !settle_typed_position(kb, site, st, &late, &rigids, disagreements) {
                 waiting.push(late);
             }
         }
@@ -2028,7 +2093,7 @@ pub(super) fn settle_late_positions(
     loop {
         let before = waiting.len();
         for late in std::mem::take(&mut waiting) {
-            if !settle_typed_position(kb, rid, st, &late, &rigids, disagreements) {
+            if !settle_typed_position(kb, site, st, &late, &rigids, disagreements) {
                 waiting.push(late);
             }
         }
@@ -2069,7 +2134,7 @@ pub(super) fn settle_late_positions(
                 else {
                     continue;
                 };
-                let Some(ty) = computed_result_type(kb, rid, st, result, *at) else { continue };
+                let Some(ty) = computed_result_type(kb, domain, st, result, *at) else { continue };
                 let ty = walk_type_deep_value(kb, &st.subst, &ty);
                 let existing = walk_type_deep_value(kb, &st.subst, &existing);
                 if unify_types(kb, &mut st.subst.clone(), &existing, &ty) {
@@ -2094,7 +2159,7 @@ pub(super) fn settle_late_positions(
         let mut narrowed = false;
         for (result, at, site) in &at_carrier {
             let Some(member) = carriers_member_result(kb, st, result) else { continue };
-            let Some(ty) = computed_result_type(kb, rid, st, &member, *at) else { continue };
+            let Some(ty) = computed_result_type(kb, domain, st, &member, *at) else { continue };
             let ty = walk_type_deep_value(kb, &st.subst, &ty);
             narrowed |= match site {
                 AtCarrier::Pattern(pattern) => narrow_pattern_at(kb, st, pattern, &ty),
@@ -2114,7 +2179,7 @@ pub(super) fn settle_late_positions(
             break;
         }
     }
-    demands_on_some_type(kb, rid, st);
+    demands_on_some_type(kb, site, st);
     rigids
 }
 
@@ -2187,7 +2252,7 @@ pub(super) fn provides_the_slot(
 /// type cannot be read yet ([`settle_late_positions`]).
 fn settle_typed_position(
     kb: &mut KnowledgeBase,
-    rid: RuleId,
+    site: ClauseSite<'_>,
     st: &mut ClauseConstraints,
     late: &LatePosition,
     rigids: &[(VarId, VarId)],
@@ -2201,9 +2266,9 @@ fn settle_typed_position(
             call,
         } => {
             let ty = if holds_a_lambda(call) {
-                dot_value_type(kb, rid, st, call)
+                dot_value_type(kb, site.domain(kb), st, call)
             } else {
-                computed_result_type(kb, rid, st, result, *at)
+                computed_result_type(kb, site.domain(kb), st, result, *at)
             };
             let Some(ty) = ty else {
                 return false;
@@ -2215,7 +2280,7 @@ fn settle_typed_position(
             (SlotOf::Type(position), ty, context, *at)
         }
         LatePosition::ResultColumn { arg, result } => {
-            let Some(ty) = computed_result_type(kb, rid, st, result, arg.span) else {
+            let Some(ty) = computed_result_type(kb, site.domain(kb), st, result, arg.span) else {
                 return false;
             };
             let context = TypeErrorContext::OperationReturn {
@@ -2225,17 +2290,17 @@ fn settle_typed_position(
             (SlotOf::Arg(arg), ty, context, arg.span)
         }
         LatePosition::LambdaValue { lambda, other } => {
-            let Some(ty) = dot_value_type(kb, rid, st, lambda) else {
+            let Some(ty) = dot_value_type(kb, site.domain(kb), st, lambda) else {
                 return false;
             };
             let context = TypeErrorContext::Rule {
-                name: kb.head_functor(kb.rule_head(rid)).unwrap_or_else(|| kb.intern("clause")),
+                name: site.name(kb),
                 field: RuleField::Body,
             };
             (SlotOf::Arg(other), ty, context, lambda.span)
         }
         LatePosition::DotResult { dot, position } => {
-            let Some(ty) = dot_value_type(kb, rid, st, dot) else {
+            let Some(ty) = dot_value_type(kb, site.domain(kb), st, dot) else {
                 return false;
             };
             let Some(Expr::DotApply { name, .. }) = dot.as_expr() else {
@@ -2252,7 +2317,7 @@ fn settle_typed_position(
                 return false;
             };
             let context = TypeErrorContext::Rule {
-                name: kb.head_functor(kb.rule_head(rid)).unwrap_or_else(|| kb.intern("clause")),
+                name: site.name(kb),
                 field: RuleField::Body,
             };
             (SlotOf::Arg(binder), ty, context, binder.span)
@@ -2444,9 +2509,12 @@ fn clause_var_name(kb: &KnowledgeBase, rid: RuleId, d: u32) -> Symbol {
 
 /// The source name of the variable `arg` is: a clause's, by its frame, or one a binder in the
 /// body names.
-fn occurrence_var_name(kb: &KnowledgeBase, rid: RuleId, arg: &Rc<NodeOccurrence>) -> Symbol {
+fn occurrence_var_name(kb: &KnowledgeBase, site: ClauseSite<'_>, arg: &Rc<NodeOccurrence>) -> Symbol {
     match arg.as_expr() {
-        Some(Expr::Var(Var::DeBruijn(d))) => clause_var_name(kb, rid, *d),
+        Some(Expr::Var(Var::DeBruijn(d))) => match site {
+            ClauseSite::Rule { rid, .. } => clause_var_name(kb, rid, *d),
+            ClauseSite::Query { .. } => unreachable!("a query's variables are its own, never a clause's frame"),
+        },
         Some(Expr::Var(Var::Global(v))) => v.name(),
         _ => unreachable!("a demand is read off a variable"),
     }
@@ -2464,13 +2532,13 @@ enum SlotOf<'a> {
 /// is not known yet, or where the reduction refuses — the dispatch walk reports that.
 fn computed_result_type(
     kb: &mut KnowledgeBase,
-    rid: RuleId,
+    domain: Symbol,
     st: &ClauseConstraints,
     result: &CallResult,
     at: crate::span::SourceSpan,
 ) -> Option<Value> {
     let ctx = TypeErrorContext::Rule {
-        name: kb.rule_domain(rid),
+        name: domain,
         field: RuleField::Body,
     };
     // A PROJECTION ON A PARAMETER (`s.T`) is read off the type the argument there has, as
@@ -2502,7 +2570,7 @@ fn computed_result_type(
     let site = CtorReduceSite {
         sp: at,
         span: Some(at.span),
-        scope: kb.symbols.scope_id(kb.rule_domain(rid)),
+        scope: kb.symbols.scope_id(domain),
     };
     for _ in 0..TYPE_CTORS.len() * 4 {
         for (cfg, wrote) in TYPE_CTORS.iter().zip(flags.iter()) {
@@ -2942,7 +3010,7 @@ fn meet_some_type(st: &mut ClauseConstraints, arg: &Rc<NodeOccurrence>, column: 
 /// types is refused at the demand ([`Misfit::SomeType`]), and one nothing types is the
 /// column's — a dot on it is refused too. A variable a test or any other position types is
 /// read at that type.
-fn demands_on_some_type(kb: &KnowledgeBase, rid: RuleId, st: &mut ClauseConstraints) {
+fn demands_on_some_type(kb: &KnowledgeBase, site: ClauseSite<'_>, st: &mut ClauseConstraints) {
     for SomeTypeArg { arg, column } in std::mem::take(&mut st.some_args) {
         let Some(d) = arg.var_key(kb) else { continue };
         if let Some(demand) = st.demand_only.get(&d) {
@@ -2951,7 +3019,7 @@ fn demands_on_some_type(kb: &KnowledgeBase, rid: RuleId, st: &mut ClauseConstrai
                 context: demand.context.clone(),
                 misfit: Misfit::SomeType {
                     expected: Some(demand.expected.clone()),
-                    var: occurrence_var_name(kb, rid, &arg),
+                    var: occurrence_var_name(kb, site, &arg),
                     column,
                 },
             });
@@ -2962,7 +3030,7 @@ fn demands_on_some_type(kb: &KnowledgeBase, rid: RuleId, st: &mut ClauseConstrai
     if st.some_typed.is_empty() {
         return;
     }
-    fn walk(kb: &KnowledgeBase, rid: RuleId, occ: &Rc<NodeOccurrence>, st: &mut ClauseConstraints) {
+    fn walk(kb: &KnowledgeBase, site: ClauseSite<'_>, occ: &Rc<NodeOccurrence>, st: &mut ClauseConstraints) {
         let Some(expr) = occ.as_expr() else { return };
         if let Expr::DotApply { receiver, name, .. } = expr {
             if let Some(d) = receiver.var_key(kb) {
@@ -2973,7 +3041,7 @@ fn demands_on_some_type(kb: &KnowledgeBase, rid: RuleId, st: &mut ClauseConstrai
                             context: TypeErrorContext::DotProjection { member: *name },
                             misfit: Misfit::SomeType {
                                 expected: None,
-                                var: occurrence_var_name(kb, rid, receiver),
+                                var: occurrence_var_name(kb, site, receiver),
                                 column,
                             },
                         });
@@ -2981,10 +3049,10 @@ fn demands_on_some_type(kb: &KnowledgeBase, rid: RuleId, st: &mut ClauseConstrai
                 }
             }
         }
-        for_each_child(expr, |c| walk(kb, rid, c, st));
+        for_each_child(expr, |c| walk(kb, site, c, st));
     }
-    for node in kb.rule_body_nodes(rid).to_vec() {
-        walk(kb, rid, &node, st);
+    for node in site.body(kb) {
+        walk(kb, site, &node, st);
     }
 }
 
@@ -3008,7 +3076,7 @@ fn rule_goal_columns_at(
 /// clause has not typed yet, or a refused one, which the dispatch walk reports.
 fn dot_value_type(
     kb: &mut KnowledgeBase,
-    rid: RuleId,
+    domain: Symbol,
     st: &ClauseConstraints,
     dot: &Rc<NodeOccurrence>,
 ) -> Option<Value> {
@@ -3018,7 +3086,7 @@ fn dot_value_type(
     }
     let mut env = TypingEnv::empty();
     env.set_debruijn_types(Rc::new(types));
-    env.set_rule_scope(kb.rule_domain(rid));
+    env.set_rule_scope(domain);
     env.mark_rule_body_dispatch();
     // A dot is a call, typed as the dispatch walk types one.
     let env = env.as_fragment().unwrap_or(env);

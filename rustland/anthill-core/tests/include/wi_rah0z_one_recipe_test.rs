@@ -299,6 +299,13 @@ const PINNED: &[(&str, usize, &str)] = &[
         "registers a host function before the load, raising under a row written `Error[T = ?]` and one at a type parameter",
     ),
     (
+        "include/wi_dk0qj_generic_witness_rival_test.rs",
+        1,
+        "its fixture provides the stdlib's `WeakOrd` at the stdlib's own `Pair`, more \
+         specifically than the stdlib does, so it belongs in the stdlib's load \
+         (WI-20261010-9BKZ4), as the ATFGH row's fixture it copies",
+    ),
+    (
         "include/wi_ee0ep_param_dictionary_test.rs",
         1,
         "one row's fixture provides the stdlib's `WeakOrd` at the stdlib's own types, more \

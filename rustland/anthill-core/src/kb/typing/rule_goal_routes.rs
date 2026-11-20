@@ -600,6 +600,16 @@ fn query_goal_var_types(kb: &mut KnowledgeBase, query: &[Rc<NodeOccurrence>]) ->
     if st.subst.is_contradiction() {
         return HashMap::new();
     }
+    // What the walk leaves for after it — a call's result column (`Driver.flat(0, ?s)`), a
+    // `<=>`'s call — read as a clause's body reads it, so a variable a call's result binds is at
+    // that result's type, with the named slots it writes (WI-20260923-DK0QJ, [`ClauseSite`]). A
+    // position that does not fit is kept out, as in a clause, and its disagreement is NOT
+    // reported: this map gives the query's variables their types and has no refusal channel. A
+    // call that owes an instance or takes dictionaries is refused at its misfit where the
+    // query's calls are typed ([`typed_spec_op_calls`]); any other misfit a query's late
+    // position finds was reported by nothing before this either, as no late position was read.
+    let domain = kb.global_scope().owner();
+    settle_late_positions(kb, ClauseSite::Query { domain, goals: query }, &mut st, &mut Vec::new());
     let subst = std::mem::take(&mut st.subst);
     st.var_types
         .into_iter()

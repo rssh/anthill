@@ -482,9 +482,17 @@ fn derive_bridge_requirements(
         // construction had to choose a provider of this goal, and there is one — and a
         // tie is the genuine "not carried" case, handled at the arms below. Not merely
         // `Withhold`: specificity is a ranking too ([`DefaultRung::Unranked`]).
+        //
+        // WI-20260923-DK0QJ — AND A NAMED SLOT OF EITHER OWNER, the carrier's own (`MySet`'s
+        // `O` at `MySet.contains`) as much as the parameter's. This route holds values only
+        // (kernel-language §5.2, a call no typer reads), and the value chose the slot's
+        // provider and does not carry it, so a slot `rung_for_dep` withholds the default from
+        // is answered only by a sole provider. Withheld only, a set built at the generic
+        // `Flat` was handed the more specific `PairNe`'s dictionary and answered by it. An
+        // anonymous slot keeps 058 §3.2's rung: it fixes nothing about the type.
         let type_carried = entry.supply.witness_in_argument_type();
         let ranked = rung_for_dep(kb, if op_half { op } else { parent }, goal.spec_sort);
-        let rung = if type_carried.is_some() {
+        let rung = if type_carried.is_some() || ranked == DefaultRung::Withhold {
             DefaultRung::Unranked
         } else {
             ranked

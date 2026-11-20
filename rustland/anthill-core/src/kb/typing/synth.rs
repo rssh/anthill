@@ -521,8 +521,9 @@ pub enum DefaultRung {
     /// witness (`O = Rev`, `Rev provides WeakOrd[T = X]`) would be handed the more
     /// specific `String` ordering (found by /code-review). Only a goal whose candidates
     /// are ONE provider answers: the value's construction had to choose a provider of
-    /// this goal, and there is one. Applies to the goal it is passed for; a sub-goal
-    /// derives its own rung.
+    /// this goal, and there is one. Applies to the goal it is passed for and to every
+    /// NAMED slot of the providers chosen below it, which the value chose with them
+    /// (WI-20260923-DK0QJ); an anonymous sub-goal derives its own rung.
     Unranked,
 }
 
@@ -2231,7 +2232,17 @@ pub(super) fn resolve_inner<'a>(
         // `[OA = …]`), so the default is withheld there for the reason [`DefaultRung`]
         // gives. Derived from `chosen_impl_sort`, which is why the rung rides per goal
         // rather than on the scope.
-        let sub_rung = rung_for_dep(kb, chosen_impl_sort, sg.spec_sort);
+        //
+        // WI-20260923-DK0QJ — BELOW AN UNRANKED GOAL A NAMED SLOT IS UNRANKED TOO. The value
+        // that chose this provider chose its named slots with it (`O = ByInner[OI = Flat]`)
+        // and carries them no more than it carries the provider, so the reason
+        // [`DefaultRung::Unranked`] gives holds one level down. Withheld only, `OI` went to
+        // the most specific of its rivals (`PairNe` over `Flat`) and the set answered by an
+        // ordering it was not built with. An anonymous slot keeps its own rung.
+        let sub_rung = match rung_for_dep(kb, chosen_impl_sort, sg.spec_sort) {
+            DefaultRung::Withhold if rung == DefaultRung::Unranked => DefaultRung::Unranked,
+            derived => derived,
+        };
         match resolve_inner(
             kb,
             sg,
