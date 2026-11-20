@@ -847,7 +847,7 @@ fn two_dictionaries_of_one_spec_mismatch_plainly() {
 /// goal naming the constant are refused as a computed body; a query naming it, bare or dotted,
 /// as an argument or as the value of `<=>`, is refused naming the const, where it panicked the
 /// bridge (`add2`'s `x` handed the name) and answered `?r <=> ints` with the name. FAILS with
-/// the query's refusal backed out (`load::query_data_slot_const`): the conversions succeed.
+/// the query's refusal backed out (`load::query_slot_const`): the conversions succeed.
 /// The controls pass either way: a literal const in a query is its value, and a query reaches
 /// the dictionary through an operation that returns it.
 #[test]
@@ -946,7 +946,7 @@ fn a_compound_form_reads_a_constant_dictionary_as_an_operation_body_does() {
 //
 // | part backed out | rows that fail |
 // |---|---|
-// | a query refusing a constant dictionary (`load::query_data_slot_const`) | `a_constant_dictionary_has_no_value_in_a_data_slot` |
+// | a query refusing a constant dictionary (`load::query_slot_const`) | `a_constant_dictionary_has_no_value_in_a_data_slot` |
 // | a dictionary excluded from the provider note (`callable::provider_at_a_spec_type_error`) | `two_dictionaries_of_one_spec_mismatch_plainly` |
 // | stage 1's stamp on a `Dictionary.instance` call skipped where a const's value is typed (the mechanism the T12 rows drive, not changed by this stage) | 5: `t12_a_constant_holds_a_dictionary`, `a_constant_dictionary_is_read_as_any_value_is`, `a_constant_names_its_provider_and_is_used_only_where_passed`, `a_compound_form_reads_a_constant_dictionary_as_an_operation_body_does` (each `OperationBodyMissing("Dictionary.instance")` or undecided), and `a_constant_dictionary_has_no_value_in_a_data_slot`'s control through `held()` |
 //

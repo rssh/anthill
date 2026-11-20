@@ -4769,9 +4769,13 @@ A constructor application (`= Point(x: 0, y: 0)`) is a computed body under this 
 
 A **query pattern** is the exception to the table, because it converts against a LOADED
 program: a const with no load-time value is evaluated there, as an operation body would
-evaluate it. That matters because a fact can hold such a value without naming the const,
-for example when it was asserted at run time or reloaded from a store. A const that holds
-a dictionary is no exception: a query naming it is refused, as above.
+evaluate it, and the slot holds its value — a literal, or a value built of constructors,
+lists and tuples, at the const's declared type. So over `const origin: P = pt(x: 4)`,
+`at(p: origin)` finds `fact at(p: pt(x: 4))` and `getX(origin)` is 4. That matters because
+a fact can hold such a value without naming the const, for example when it was asserted at
+run time or reloaded from a store. A const whose value no slot can hold is refused there,
+naming it: one that holds a dictionary, as above or inside its value, one whose value is a
+function, and one this runtime cannot evaluate (a host-supplied const with no interpreter binding).
 
 A goal is not a data slot, but a `Bool` const named as one is folded by the same table,
 to the search its value is (§5.3). A const of another type there, or one the table

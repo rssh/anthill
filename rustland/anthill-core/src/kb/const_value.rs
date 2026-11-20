@@ -26,7 +26,8 @@
 //!
 //! A QUERY pattern is the one walk that may do better: it converts against a loaded
 //! program, so a const with no load-time value is asked of the evaluator there
-//! ([`KnowledgeBase::evaluated_const_literal`]).
+//! ([`KnowledgeBase::evaluated_const_value`]), and the slot holds its value, a literal or the
+//! term of one with a term form (`load::query_slot_const`).
 //!
 //! Operation bodies are not touched. They keep the symbol and fold lazily at eval, which
 //! is also what keeps a program whose binding layer is not the interpreter's (cpp-gen)
@@ -179,15 +180,18 @@ impl KnowledgeBase {
             .is_some_and(|s| self.sort_sym_is_bool(s))
     }
 
-    /// `sym`'s value from the EVALUATOR (`force_const`), as a literal, or `None` when it
-    /// cannot be computed or is not a literal. Only for a QUERY pattern, which converts
-    /// against a loaded program. A clause converting mid-load must not call it: the KB it
-    /// would lend to the interpreter is half-built.
-    pub(crate) fn evaluated_const_literal(&mut self, sym: Symbol) -> Option<Literal> {
-        use crate::kb::term_view::TermView;
-        let value = self
-            .run_in_bridge_interp(|interp| interp.force_const(sym))?
-            .ok()?;
-        value.as_literal(self)
+    /// `sym`'s value from the EVALUATOR (`force_const`), or why it has none: the evaluator's
+    /// error, or a bridge with its re-entry budget spent. Only for a QUERY pattern, which
+    /// converts against a loaded program. A clause converting mid-load must not call it: the
+    /// KB it would lend to the interpreter is half-built.
+    pub(crate) fn evaluated_const_value(
+        &mut self,
+        sym: Symbol,
+    ) -> Result<crate::eval::Value, String> {
+        match self.run_in_bridge_interp(|interp| interp.force_const(sym)) {
+            Some(Ok(value)) => Ok(value),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Err("the evaluator's re-entry budget is spent".into()),
+        }
     }
 }

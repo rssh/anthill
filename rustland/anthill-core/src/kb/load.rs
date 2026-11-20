@@ -3054,15 +3054,16 @@ pub enum LoadError {
         reason: String,
         span: Span,
     },
-    /// Proposal 074 §2 (WI-20261113-24ZZ0) — a QUERY's data slot names a `const` that holds
-    /// a dictionary, which has no value in a data slot. A rule body naming one is refused
-    /// as a computed body ([`Self::ConstValueUnavailableInDataSlot`]); a query, which could
-    /// evaluate it, is refused alike rather than keeping the symbol (MEASURED before:
-    /// `?r <=> add2(ints, 2, 3)` panicked in the bridge, `add2`'s `x` handed the name, and
-    /// `?r <=> ints` answered the symbol `ints`). `ty` is the const's declared type.
-    DictionaryConstInQuery {
+    /// A QUERY's data slot names a `const` it can give no value there. A query evaluates a
+    /// const with no load-time value (kernel-language §5.9) and holds what it computes; this
+    /// is the const it cannot: one that holds a dictionary, which has no value in a data slot
+    /// (proposal 074 §2, WI-20261113-24ZZ0), one whose value has no term form (a function,
+    /// WI-20261120-FTP2S), and one the evaluator could not compute. Refused, not kept as the
+    /// name: kept, `at(p: origin)` answered NO beside the fact holding `origin`'s value, and
+    /// `?r <=> add2(ints, 2, 3)` panicked in the bridge. `why` completes "the const `name`".
+    QueryConstHasNoValue {
         name: String,
-        ty: String,
+        why: String,
         span: Span,
     },
     /// A clause DATA SLOT names a type member through a type alias (`CQ.L` over `sort CQ =
@@ -3465,7 +3466,7 @@ impl LoadError {
             | LoadError::ForbiddenInternalAccess { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::ConstValueUnavailableInDataSlot { span, .. }
-            | LoadError::DictionaryConstInQuery { span, .. }
+            | LoadError::QueryConstHasNoValue { span, .. }
             | LoadError::TypeMemberOpen { span, .. }
             | LoadError::AnnotationNamesNoType { span, .. }
             | LoadError::BindingInContract { span, .. }
@@ -4973,12 +4974,8 @@ impl LoadError {
                     const_unavailable_message(name, reason),
                 )
             }
-            LoadError::DictionaryConstInQuery { name, ty, span } => {
-                format!(
-                    "{}: {}",
-                    loc.format_start(*span),
-                    dictionary_const_in_query_message(name, ty),
-                )
+            LoadError::QueryConstHasNoValue { name, why, span } => {
+                format!("{}: the const `{name}` {why}", loc.format_start(*span))
             }
             LoadError::TypeMemberOpen { name, why, span } => {
                 format!("{}: `{name}` names no type here: {why}", loc.format_start(*span))
@@ -6655,14 +6652,8 @@ impl std::fmt::Display for LoadError {
                     span.end,
                 )
             }
-            LoadError::DictionaryConstInQuery { name, ty, span } => {
-                write!(
-                    f,
-                    "{} at {}..{}",
-                    dictionary_const_in_query_message(name, ty),
-                    span.start,
-                    span.end,
-                )
+            LoadError::QueryConstHasNoValue { name, why, span } => {
+                write!(f, "the const `{name}` {why} at {}..{}", span.start, span.end)
             }
             LoadError::TypeMemberOpen { name, why, span } => {
                 write!(f, "`{name}` names no type here: {why} at {}..{}", span.start, span.end)
@@ -10159,15 +10150,6 @@ fn const_unavailable_message(name: &str, reason: &str) -> String {
          that value is not known when the clause loads: {reason}. Write the value itself, \
          or move the computation into an operation body, where a const is folded when it \
          is evaluated"
-    )
-}
-
-/// Proposal 074 §2 — the sentence for [`LoadError::DictionaryConstInQuery`], one owner for
-/// its two rendering paths.
-fn dictionary_const_in_query_message(name: &str, ty: &str) -> String {
-    format!(
-        "the const `{name}` holds a dictionary, `{ty}`, and a dictionary has no value in a \
-         data slot: hand it to its call in an operation body, and call that operation here"
     )
 }
 
@@ -26599,7 +26581,7 @@ fn convert_query_term_unrouted(
 fn query_goal_citation(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Rc<NodeOccurrence> {
     let sym = resolve_query_name(kb, name, scope);
     let expr = if kb.symbols.is_resolved(sym) {
-        match query_slot_const(kb, sym, ConstFold::Goal) {
+        match query_goal_const(kb, sym) {
             Some(lit) => Expr::Const(lit),
             None => Expr::Ref(sym),
         }
@@ -26675,72 +26657,146 @@ fn expand_bare_entity_query_name(
     })
 }
 
-/// WI-20261001-KDMQS — the query twin of `Loader::data_slot_const_value` and
-/// `Loader::goal_const_value`: `sym`'s value when `sym` is a const and the pattern walk is
-/// in a data slot, or at a goal and the value is a `Bool`.
-///
-/// A QUERY CAN EVALUATE, which a clause conversion cannot: it converts against a LOADED
-/// program. So a const with no load-time value (a computed body) is asked of the
-/// evaluator, 039's own value source. It must be, because a fact can hold such a const's
-/// value without any clause naming it: one asserted at run time by an operation body
-/// (which folds the const), or one reloaded from a store (which wrote the value). Keeping
-/// the symbol would answer `f(v: LIMIT)` with nothing while `f(v: 3.0)` is stored.
-///
-/// What the evaluator cannot produce either (no value source in this runtime, a body that
-/// raises, a value that is not a literal) keeps the symbol, because a query pattern has no
-/// error channel. Its empty answer is then true: no stored clause holds that value. At a
-/// goal, a const that is not a `Bool` keeps the symbol too and matches nothing, which is
-/// what a query does with `not(42)`: it has no refusal to make.
-fn query_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -> Option<Literal> {
-    if !matches!(fold, ConstFold::Data | ConstFold::Goal) || !kb.has_kind(sym, SymbolKind::Const) {
-        return None;
-    }
-    // At a goal only a `Bool` const has a reading, so another is not evaluated to be dropped.
-    if fold == ConstFold::Goal && !kb.const_type_is_bool(sym) {
+/// WI-20261001-KDMQS — the query twin of `Loader::goal_const_value`: a `Bool` const at a goal
+/// is the literal it holds, the search its value is (§5.3). A const of another type keeps
+/// its name there and matches nothing, which is what a query does with `not(42)`; so does
+/// a `Bool` const the evaluator cannot compute.
+fn query_goal_const(kb: &mut KnowledgeBase, sym: Symbol) -> Option<Literal> {
+    if !kb.has_kind(sym, SymbolKind::Const) || !kb.const_type_is_bool(sym) {
         return None;
     }
     let lit = match kb.const_slot_value(sym) {
         Ok(lit) => lit,
-        Err(_) => kb.evaluated_const_literal(sym)?,
+        Err(_) => kb.evaluated_const_value(sym).ok()?.as_literal(kb)?,
     };
-    (fold == ConstFold::Data || matches!(lit, Literal::Bool(_))).then_some(lit)
+    matches!(lit, Literal::Bool(_)).then_some(lit)
 }
 
-/// [`query_slot_const`] at a name `convert_query_node` converts, which refuses, into
-/// `errors`, a const holding a dictionary in a data slot (proposal 074 §2): a const whose
-/// declared type is a sort with a dictionary ([`super::typing::SortClass::Dictionary`]). Its
-/// value is no literal, so the fold kept its name, which a call handed on as its dictionary
-/// (the bridge panicked) and `?r <=> ints` answered as itself. A query is read after the
-/// load, so the class is the declaration's, as a rule body's typer reads it; a rule body,
-/// converted mid-load, refuses the same const as a computed body
-/// ([`LoadError::ConstValueUnavailableInDataSlot`]).
-fn query_data_slot_const(
+/// WI-20261001-KDMQS, WI-20261120-FTP2S — the query twin of `Loader::data_slot_const_value`:
+/// the node a const `convert_query_node` meets in a data slot is, its value, and at a goal a
+/// `Bool` const's ([`query_goal_const`]). `None` for a name that is no const, or a const at
+/// a position that keeps the name.
+///
+/// A QUERY CAN EVALUATE, which a clause conversion cannot: it converts against a LOADED
+/// program. So a const with no load-time value (a computed body) is asked of the evaluator,
+/// 039's own value source, and the slot holds what it computes: a literal, or the term of a
+/// value with one (`node_occurrence::value_to_term`: an entity, a list, a tuple, an
+/// option), typed at the const's declared type as a reference to it is (§5.9: a slot the
+/// declared type leaves out stays open). It must be, because a fact can hold such a const's
+/// value without any clause naming it: one asserted at run time by an operation body (which
+/// folds the const), or one reloaded from a store (which wrote the value). MEASURED before
+/// FTP2S, which kept the name of a value that is no literal: `at(p: origin)` over `const
+/// origin: P = pt(x: 4)` answered NO beside `fact at(p: pt(x: 4))`, `?r <=> origin` answered
+/// `origin`, and `len(xs)` was undecided.
+///
+/// What the slot cannot hold is refused into `errors`, naming the const
+/// ([`LoadError::QueryConstHasNoValue`]): a const holding a dictionary (proposal 074 §2, read
+/// off its declared type, a sort with a dictionary, so before anything is evaluated — its
+/// value is an entity with a term form, and a fact holds no dictionary: kept, a call handed
+/// the name on as its dictionary and the bridge panicked); a value with no term form (a
+/// function); and a const the evaluator could not compute. A query is read after the load,
+/// so the class is the declaration's; a rule body, converted mid-load, refuses every computed
+/// const as one ([`LoadError::ConstValueUnavailableInDataSlot`]).
+fn query_slot_const(
     kb: &mut KnowledgeBase,
     sym: Symbol,
     fold: ConstFold,
     parsed: &ParsedFile,
     parse_id: ParseTermId,
     errors: &mut Vec<LoadError>,
-) -> Option<Literal> {
-    if fold == ConstFold::Data && kb.has_kind(sym, SymbolKind::Const) {
-        let dictionary = kb.const_type(sym).and_then(|ty| {
-            let sort = super::typing::sort_functor_of_view(kb, ty)?;
-            (super::typing::sort_class(kb, sort) == super::typing::SortClass::Dictionary)
-                .then(|| super::typing::type_display_name_value(kb, ty))
-        });
-        if let Some(ty) = dictionary {
-            errors.push(
-                LoadError::DictionaryConstInQuery {
-                    name: kb.qualified_name_of(sym).to_string(),
-                    ty,
-                    span: parsed.terms.span(parse_id),
-                }
-                .located_in(parsed),
-            );
-            return None;
+) -> Option<Rc<NodeOccurrence>> {
+    if fold == ConstFold::Goal {
+        return query_goal_const(kb, sym).map(|lit| expr_node(Expr::Const(lit)));
+    }
+    if fold != ConstFold::Data || !kb.has_kind(sym, SymbolKind::Const) {
+        return None;
+    }
+    let mut refuse = |kb: &KnowledgeBase, why: String| {
+        errors.push(
+            LoadError::QueryConstHasNoValue {
+                name: kb.qualified_name_of(sym).to_string(),
+                why,
+                span: parsed.terms.span(parse_id),
+            }
+            .located_in(parsed),
+        );
+        None
+    };
+    const REPAIR: &str = "hand it to its call in an operation body, and call that operation here";
+    let dictionary = kb.const_type(sym).and_then(|ty| {
+        let sort = super::typing::sort_functor_of_view(kb, ty)?;
+        (super::typing::sort_class(kb, sort) == super::typing::SortClass::Dictionary)
+            .then(|| super::typing::type_display_name_value(kb, ty))
+    });
+    if let Some(ty) = dictionary {
+        return refuse(
+            kb,
+            format!(
+                "holds a dictionary, `{ty}`, and a dictionary has no value in a data slot: \
+                 {REPAIR}"
+            ),
+        );
+    }
+    if let Ok(lit) = kb.const_slot_value(sym) {
+        return Some(expr_node(Expr::Const(lit)));
+    }
+    let value = match kb.evaluated_const_value(sym) {
+        Ok(value) => value,
+        Err(why) => {
+            return refuse(
+                kb,
+                format!("is evaluated where a query names it, and could not be: {why}"),
+            )
+        }
+    };
+    if let Some(lit) = value.as_literal(kb) {
+        return Some(expr_node(Expr::Const(lit)));
+    }
+    match crate::kb::node_occurrence::value_to_term(kb, &value) {
+        // A dictionary inside the value (`Option[T = Additive[T = Int64]]`) has no value in a
+        // data slot either, as one the declared type names at its head has not (found by
+        // /code-review: spliced, `?r <=> od` answered `some(value: Dictionary(impl: Int64))`).
+        Ok(term) if term_holds_a_dictionary(kb, term) => refuse(
+            kb,
+            format!(
+                "holds a dictionary inside its value, and a dictionary has no value in a data \
+                 slot: {REPAIR}"
+            ),
+        ),
+        Ok(term) => {
+            let occ = expr_node(Expr::Spliced(Value::term(term)));
+            if let Some(ty) = kb.const_type(sym) {
+                occ.set_inferred_type(ty.clone());
+            }
+            Some(occ)
+        }
+        Err(_) => {
+            let what = match &value {
+                Value::Closure(_) | Value::OpRef { .. } => "a function".to_string(),
+                other => format!("a {} value", other.type_name()),
+            };
+            refuse(kb, format!("holds {what}, which has no term a data slot can hold: {REPAIR}"))
         }
     }
-    query_slot_const(kb, sym, fold)
+}
+
+/// Does `term` hold a dictionary, at its root or below — a `Dictionary(…)` application, read
+/// by its constructor ([`crate::kb::term_view::dictionary_view_syms`])?
+fn term_holds_a_dictionary(kb: &KnowledgeBase, term: TermId) -> bool {
+    let Some((ctor, _)) = crate::kb::term_view::dictionary_view_syms(kb) else {
+        return false;
+    };
+    let mut stack = vec![term];
+    while let Some(t) = stack.pop() {
+        if let Term::Fn { functor, pos_args, named_args } = kb.get_term(t) {
+            if *functor == ctor {
+                return true;
+            }
+            stack.extend(pos_args.iter().copied());
+            stack.extend(named_args.iter().map(|(_, a)| *a));
+        }
+    }
+    false
 }
 
 /// The query twin of `Loader::data_slot_alias_type`: in a data slot, a type alias is the
@@ -27700,8 +27756,8 @@ fn convert_query_node(
             if let Some(c) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
                 .and_then(|name| const_named(kb, &name, scope))
             {
-                if let Some(lit) = query_data_slot_const(kb, c, fold, parsed, parse_id, errors) {
-                    return expr_node(Expr::Const(lit));
+                if let Some(occ) = query_slot_const(kb, c, fold, parsed, parse_id, errors) {
+                    return occ;
                 }
             }
             if fold == ConstFold::Data {
@@ -28125,10 +28181,10 @@ fn convert_query_node(
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);
             match resolve_name_in_kb(kb, name, scope) {
-                ResolveResult::Found(resolved) => match query_data_slot_const(
+                ResolveResult::Found(resolved) => match query_slot_const(
                     kb, resolved, fold, parsed, parse_id, errors,
                 ) {
-                    Some(lit) => Expr::Const(lit),
+                    Some(occ) => return occ,
                     None => match query_data_slot_alias(kb, resolved, fold) {
                         Some(occ) => return occ,
                         None => return query_resolved_name(kb, resolved, fold),
@@ -28142,8 +28198,8 @@ fn convert_query_node(
         Term::Ref(sym) => {
             let name = parse_symbols.local_name(sym);
             let resolved = resolve_query_name(kb, name, scope);
-            match query_data_slot_const(kb, resolved, fold, parsed, parse_id, errors) {
-                Some(lit) => Expr::Const(lit),
+            match query_slot_const(kb, resolved, fold, parsed, parse_id, errors) {
+                Some(occ) => return occ,
                 None => match query_data_slot_alias(kb, resolved, fold) {
                     Some(occ) => return occ,
                     None => return query_resolved_name(kb, resolved, fold),
