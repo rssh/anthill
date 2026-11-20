@@ -1286,10 +1286,18 @@ pub(super) fn check_operation_bodies(
                 // before.
                 // Proposal 050.1: a write charged to a pool — state outside the process no
                 // row can name — cannot be declared, so it is refused here, once per name.
+                //
+                // WI-20260903-2VPHT: both are reported AT THE BODY, which is what performs
+                // the effect, as an effect a parameter's default incurs is reported at the
+                // default (above). `op.span` is the functor's span, the first TERM the
+                // loader built with the operation's functor: an operation no clause writes
+                // as a term has none, so the mismatch of `div` in `sort Money` and in `sort
+                // Cash` carried no location, and nothing told the two apart.
+                let body_span = Some(body_node.span.span);
                 let mut pool_writes = result.env.take_pool_writes();
                 pool_writes.dedup_by(|a, b| a.name == b.name && a.pool == b.pool);
                 for write in &pool_writes {
-                    errors.push(pool_write_refusal(kb, op.op_sym, op.span, write));
+                    errors.push(pool_write_refusal(kb, op.op_sym, body_span, write));
                 }
                 for (expected, actual) in undeclared_effects(
                     kb,
@@ -1299,7 +1307,7 @@ pub(super) fn check_operation_bodies(
                 ) {
                     errors.push(TypeError::Other {
                         site: TypeError::here(),
-                        span: op.span,
+                        span: body_span,
                         context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
                         expected,
                         actual,

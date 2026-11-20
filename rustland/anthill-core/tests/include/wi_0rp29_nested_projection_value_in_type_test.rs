@@ -3975,7 +3975,7 @@ end
     // Unbracketed, the row is the union and the pure `go` is refused at its own effects.
     assert_refused_naming(
         &load_errors(&src.replace("two[EffP = {}](inc, g)", "two(inc, g)")),
-        &["type mismatch in go.effects (op-effects)", "undeclared effect: Error[T = Foo]"],
+        &["type mismatch in wi0rp29.cbv_let.go.effects (op-effects)", "undeclared effect: Error[T = Foo]"],
         "a raising callback held in a let, the row unbracketed",
     );
 }
@@ -4457,7 +4457,7 @@ end
     // Unbracketed, the row is `{Q}`, refused at the pure `use`'s own effects as the mirror is.
     assert_refused_naming(
         &load_errors(&src.replace("two[EffP = {}](pure1, g)", "two(pure1, g)")),
-        &["type mismatch in use.effects (op-effects)", "undeclared effect: ?Q"],
+        &["type mismatch in wi0rp29.cbv_tail.use.effects (op-effects)", "undeclared effect: ?Q"],
         "a callback raising the caller's own row, the row unbracketed",
     );
 }

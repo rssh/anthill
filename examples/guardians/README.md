@@ -46,7 +46,7 @@ checker holds a value it can neither read, nor render into its diagnostics, nor
 return. Being steered requires reading the answer, and nothing can.
 
 ```
-rejected/minting_checker.anthill: check.effects (op-effects):
+rejected/minting_checker.anthill:29:7: guardians.agent.MintingChecker.check.effects (op-effects):
     got denied effect: Permission[T = Llm] — the row DECLARES `-Permission[T = Llm]`
 ```
 The mirror attack. This one is handed nothing and holds nothing — it **mints** its
@@ -60,8 +60,8 @@ it and this fixture is still refused, as `undeclared effect` rather than `denied
 effect`. `docs/design/measured.md` D1 records exactly what each half buys.
 
 ```
-rejected/outbox.anthill: run.effects (op-effects): expected declared:
-    [External, Llm.E, Error], got undeclared effect: Permission[T = Outbox]
+rejected/outbox.anthill:33:7: guardians.agent.OutboxTriage.run.effects (op-effects):
+    expected declared: [External, Llm.E, Error], got undeclared effect: Permission[T = Outbox]
 ```
 The article's policy has two halves — *"forbid data flow from `fetch_email`'s
 result to the `body` parameter of `send_email` **with an external email address as

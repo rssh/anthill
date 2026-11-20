@@ -382,7 +382,8 @@ end
     expect_load_errors(
         try_load_kb_with(src),
         &[
-            "type mismatch in underDeclared.effects (op-effects): expected declared: [Error, \
+            "type mismatch in test.wi733guard.underDeclared.effects (op-effects): expected \
+           declared: [Error, \
            -Error[T = EmptyStream]], got denied effect: Error[T = EmptyStream]",
         ],
     );
@@ -431,7 +432,8 @@ end
     expect_load_errors(
         try_load_kb_with(src),
         &[
-            "type mismatch in underDeclared.effects (op-effects): expected declared: [Error, \
+            "type mismatch in test.wi733gguard.underDeclared.effects (op-effects): expected \
+           declared: [Error, \
            -Error[T = EmptyStream]], got denied effect: Error[T = EmptyStream]",
         ],
     );

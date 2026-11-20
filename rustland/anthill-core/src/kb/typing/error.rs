@@ -1724,8 +1724,16 @@ impl TypeErrorContext {
                 kb.local_name_of(*surface),
                 kb.local_name_of(*op_name),
             ),
+            // WI-20260903-2VPHT: an effect row is named by its operation's QUALIFIED name.
+            // With the local one, two sorts each declaring an `operation div` whose body
+            // raises an undeclared effect were one sentence, `type mismatch in div.effects
+            // (op-effects): …`, and the reader could not tell which sort it was about or
+            // whether there were two findings; the provider errors beside them named their
+            // carrier and were two. The rest of this match keeps the local name, as it did.
+            TypeErrorContext::OperationEffects { op_name } => {
+                kb.qualified_name_of(*op_name).to_string()
+            }
             TypeErrorContext::OperationReturn { op_name, .. }
-            | TypeErrorContext::OperationEffects { op_name }
             | TypeErrorContext::OperationMatch { op_name } => {
                 kb.local_name_of(*op_name).to_string()
             }

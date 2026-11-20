@@ -20378,6 +20378,26 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
         .collect()
 }
 
+/// A refusal raised inside a derived `eq` member (`load_derived_eq_members`) beside one
+/// raised elsewhere is that one again: the member reads the composite's field types, and
+/// what is wrong with a field type is refused where the program writes it. Alone, it is the
+/// derivation's own defect, and it is kept.
+fn drop_derived_member_cascades(
+    errors: Vec<LoadError>,
+    derived_source: Option<&std::sync::Arc<str>>,
+) -> Vec<LoadError> {
+    let Some(derived) = derived_source else {
+        return errors;
+    };
+    let in_member = |e: &LoadError| {
+        matches!(e, LoadError::Located { source, .. } if std::sync::Arc::ptr_eq(source, derived))
+    };
+    if errors.iter().all(in_member) {
+        return errors;
+    }
+    errors.into_iter().filter(|e| !in_member(e)).collect()
+}
+
 /// WI-20260903-W9D4Z — A DIAGNOSTIC THE READER CANNOT TELL APART FROM ONE ALREADY
 /// REPORTED IS REPORTED ONCE. The load phase's whole error batch, keyed on what the
 /// reader ACTUALLY SEES: the file it came from plus its rendering
@@ -20416,25 +20436,35 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
 /// many copies of it there are, and that exemption is the whole difference between
 /// "these render alike" and "these are the same finding". A located error is pinned by
 /// its file and position; an UNLOCATED one has only its sentence, and a sentence that
-/// does not name its subject is not an identity.
+/// does not name its subject is not an identity — which this channel cannot check.
 ///
 /// MEASURED, and it is why this exemption exists (`/code-review` on WI-20260903-2M5XR,
 /// against the first cut of this function, which keyed unlocated errors by their
 /// rendering alone): two sorts in ONE file, each with an `operation div` whose body
-/// raises an undeclared effect. The typer renders that mismatch as `type mismatch in
+/// raises an undeclared effect. The typer rendered that mismatch as `type mismatch in
 /// div.effects (op-effects): …` — naming the operation by its SHORT name, so `Money.div`
-/// and `Cash.div` produce byte-identical sentences with no span to separate them. The
+/// and `Cash.div` produced byte-identical sentences with no span to separate them. The
 /// batch went from **14 errors to 8**, and `Cash`'s two findings were gone: the author
 /// saw one `div.effects` line, could not tell which sort it was about, and had no way to
 /// know a second existed. That is §8.5's "a diagnostic list is never silently truncated"
 /// (WI-20260830-JM7A8) failing on this function's own population. The neighbouring
 /// provider errors in that same batch survived correctly — because THEY name their
 /// carrier (`'zzprobe.Money' provides …`), which is the property the effects message
-/// lacks.
+/// lacked.
 ///
-/// The real repair is for that message to identify its subject; until it does, this
-/// keeps both. Reporting one true duplicate twice is a smaller harm than dropping a
-/// finding, and only the drop is silent. WI-20260903-2VPHT owns the message.
+/// THAT MESSAGE NO LONGER RELIES ON THE EXEMPTION (WI-20260903-2VPHT): it names its
+/// operation by its qualified name and is reported at the body that performs the effect,
+/// so it is deduped here as every located error is — one body incurring one undeclared
+/// label at two calls is one line, and `Money.div` and `Cash.div` are two. The exemption
+/// STAYS, and not for that message: it is a claim about every unlocated error any
+/// producer raises, and keying those on their sentence would trust each producer's
+/// wording to name its subject. One still does not, MEASURED (2026-11-20) by keying them
+/// on it: a let annotation's mismatch names the variable and not its operation, so two
+/// operations each refused at a `let r` read `type mismatch in r.annotation
+/// (let-binding): …` alike, and `wi_0rp29_nested_projection_value_in_type_test::
+/// a_call_site_bracket_reaches_the_fallback_contradicted` lost one of its two. Reporting
+/// one true duplicate twice is a smaller harm than dropping a finding, and only the drop
+/// is silent.
 ///
 /// FILE IDENTITY IS THE SOURCE'S ADDRESS, for the reason [`LoadError::render_all`] keys
 /// its line-index cache the same way: every error stamped from one file shares that
@@ -20454,26 +20484,6 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
 /// than through a load phase. Left alone deliberately, and not because it is out of
 /// reach: it is ONE pass over ONE file, so it has no two producers to pair — the shape
 /// this exists for cannot arise there, and no duplicate from it appears in the census.
-/// A refusal raised inside a derived `eq` member (`load_derived_eq_members`) beside one
-/// raised elsewhere is that one again: the member reads the composite's field types, and
-/// what is wrong with a field type is refused where the program writes it. Alone, it is the
-/// derivation's own defect, and it is kept.
-fn drop_derived_member_cascades(
-    errors: Vec<LoadError>,
-    derived_source: Option<&std::sync::Arc<str>>,
-) -> Vec<LoadError> {
-    let Some(derived) = derived_source else {
-        return errors;
-    };
-    let in_member = |e: &LoadError| {
-        matches!(e, LoadError::Located { source, .. } if std::sync::Arc::ptr_eq(source, derived))
-    };
-    if errors.iter().all(in_member) {
-        return errors;
-    }
-    errors.into_iter().filter(|e| !in_member(e)).collect()
-}
-
 fn dedup_rendered_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
     // Rendered in a borrowing pass of its own — `LineIndex` holds a `&str` into the
     // error's own `Arc`, so the cache cannot outlive the borrow the `into_iter` below
@@ -20515,6 +20525,66 @@ fn dedup_rendered_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
         .zip(keep)
         .filter_map(|(e, first)| first.then_some(e))
         .collect()
+}
+
+#[cfg(test)]
+mod unlocated_exemption_tests {
+    //! The channel's exemption for an UNLOCATED error, driven on [`dedup_rendered_load_errors`]
+    //! itself, so that it does not rest on which producers happen to raise one. Its row
+    //! through a load was `wi_w9d4z_one_mistake_one_diagnosis_test`'s, over the op-effects
+    //! mismatch, which is located since WI-20260903-2VPHT.
+    //!
+    //! RED when the `_ => true` arm keys an unlocated error on its rendering:
+    //! [`two_unlocated_errors_rendering_alike_are_both_kept`], and through a load
+    //! `wi_0rp29_nested_projection_value_in_type_test::
+    //! a_call_site_bracket_reaches_the_fallback_contradicted` (MEASURED, 2026-11-20). RED
+    //! when the function returns its input: [`two_located_errors_rendering_alike_are_one`],
+    //! the control that the first row is not passing over a dedup that collapses nothing.
+    use super::*;
+
+    fn in_file(source: &Arc<str>, inner: LoadError) -> LoadError {
+        LoadError::Located {
+            path: None,
+            source: Arc::clone(source),
+            inner: Box::new(inner),
+        }
+    }
+
+    fn spanless() -> LoadError {
+        LoadError::IncompatibleEqNonEq {
+            carrier: "zz.Money".to_string(),
+        }
+    }
+
+    #[test]
+    fn two_unlocated_errors_rendering_alike_are_both_kept() {
+        let source: Arc<str> = Arc::from("namespace zz\nend\n");
+        assert!(spanless().user_span().is_none(), "the fixture must be unlocated");
+        let stamped = dedup_rendered_load_errors(vec![
+            in_file(&source, spanless()),
+            in_file(&source, spanless()),
+        ]);
+        assert_eq!(stamped.len(), 2, "stamped with a file, no span: {stamped:#?}");
+        let bare = dedup_rendered_load_errors(vec![spanless(), spanless()]);
+        assert_eq!(bare.len(), 2, "unstamped: {bare:#?}");
+    }
+
+    #[test]
+    fn two_located_errors_rendering_alike_are_one() {
+        let source: Arc<str> = Arc::from("namespace zz\n  import zz.nope\nend\n");
+        let located = || {
+            in_file(
+                &source,
+                LoadError::UnresolvedImport {
+                    path: "zz.nope".to_string(),
+                    span: Span::new(22, 29),
+                },
+            )
+        };
+        assert!(located().user_span().is_some(), "the control must be located");
+        let kept = dedup_rendered_load_errors(vec![located(), located()]);
+        assert_eq!(kept.len(), 1, "{kept:#?}");
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════
