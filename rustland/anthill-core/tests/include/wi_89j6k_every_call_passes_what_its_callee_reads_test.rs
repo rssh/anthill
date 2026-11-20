@@ -12,7 +12,10 @@
 //! * A host's call of a builtin given its op-scoped slots (`Interpreter::call_op_sym`):
 //!   [`a_host_call_of_a_raising_builtin_is_passed_its_type_value`].
 //! * `type_value_of` composing the value's `TypeValue` at its entry:
-//!   [`a_handler_reads_a_values_type_value_off_its_type`].
+//!   [`a_handler_reads_a_values_type_value_off_its_type`]. Since WI-20261105-CBRD2 it is the
+//!   typed host call `Dictionary.instance[TypeValue[T = …]]()` at the type the bare value reads
+//!   as, and derives nothing from the value: with the bridge's derivation back in its place,
+//!   the same row fails on the count.
 //! * A spec body entered through a provider's dictionary given the provision's slots
 //!   (`push_spec_body_slots`, `kb::typing::spec_body_supply`):
 //!   [`a_provision_passes_the_requirement_of_a_spec_body_it_takes`].
@@ -198,15 +201,32 @@ fn a_host_call_of_a_raising_builtin_is_passed_its_type_value() {
 }
 
 /// A handler's own value is given the `TypeValue` its type has, as a host's call of
-/// `Error.raise` reads it ([`anthill_core::eval::Interpreter::type_value_of`]).
+/// `Error.raise` reads it ([`anthill_core::eval::Interpreter::type_value_of`]): the typed host
+/// call `Dictionary.instance[TypeValue[T = …]]()` at the type the value reads as, nothing derived
+/// from the value. A bare `nil` pins no element, and is refused.
 #[test]
 fn a_handler_reads_a_values_type_value_off_its_type() {
     let mut interp = interp_for("namespace test.j6k.tv end\n");
-    let tv = interp
-        .type_value_of(&Value::Str("x".into()))
-        .unwrap_or_else(|e| panic!("a `String` has its `TypeValue`; got {e:?}"));
-    let provider = interp.kb().qualified_name_of(tv.impl_sort()).to_string();
-    assert!(provider.contains("String"), "the `TypeValue` of `String`; got {provider}");
+    for (value, sort) in [(Value::Str("x".into()), "String"), (Value::Int(3), "Int64")] {
+        let before = anthill_core::kb::resolve::bridge_derivations_by_this_thread();
+        let tv = interp
+            .type_value_of(&value)
+            .unwrap_or_else(|e| panic!("a `{sort}` has its `TypeValue`; got {e:?}"));
+        assert_eq!(
+            anthill_core::kb::resolve::bridge_derivations_by_this_thread() - before,
+            0,
+            "the `TypeValue` of a `{sort}` derived from the value"
+        );
+        let provider = interp.kb().qualified_name_of(tv.impl_sort()).to_string();
+        assert!(provider.contains(sort), "the `TypeValue` of `{sort}`; got {provider}");
+    }
+    let nil = interp.kb().try_resolve_symbol("anthill.prelude.List.nil").expect("`nil` is loaded");
+    match interp.type_value_of(&Value::SymbolRef(nil)) {
+        Err(EvalError::RaiseTypeUnread { detail }) => {
+            assert!(detail.contains("does not pin its type"), "{detail}")
+        }
+        other => panic!("a bare `nil` pins no element; got {other:?}"),
+    }
 }
 
 // ── (4) A requirement a call fixes only in part ────────────────────────────────────────────

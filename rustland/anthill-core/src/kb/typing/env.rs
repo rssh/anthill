@@ -182,7 +182,7 @@ pub struct TypingEnv {
     /// in it must resolve or the dispatch has no target — and four routes into an
     /// operation filled no op slot, so forwarding one turned WI-828's LOAD-time
     /// `UnsatisfiableRequirement` into an eval-time unbound `var_ref`. All four now
-    /// fill: a host `interp.call` (WI-1091 `seed_entry_op_requirements`), an eta'd
+    /// fill: a host `interp.call`, typed as a body's call (proposal 074 §1.4), an eta'd
     /// `OpRef` (`push_captured_op_scoped_slots`), value-directed dispatch (which reads
     /// the composed chain), and the DEFERRED route — the call's own stamp, and for a body
     /// written in a spec the provision's slots (`push_spec_body_slots`). Nothing fills a

@@ -4458,13 +4458,8 @@ impl Interpreter {
             // WI-855 — a TIE is the one unresolvable cause that does NOT enter
             // unsupplied: see the doc comment's last paragraph.
             // WI-1091: BOTH halves raise here — this function supplies both, so a tie
-            // in either is its verdict. (The op-half-only consumer filters; see
-            // `BridgeRequirements::Ambiguous::slot`.)
-            BridgeRequirements::Ambiguous {
-                requirement,
-                candidates,
-                slot: _,
-            } => Err(EvalError::AmbiguousRequirement {
+            // in either is its verdict.
+            BridgeRequirements::Ambiguous { requirement, candidates } => Err(EvalError::AmbiguousRequirement {
                 op: self.kb.qualified_name_of(impl_target).to_string(),
                 requirement,
                 candidates,

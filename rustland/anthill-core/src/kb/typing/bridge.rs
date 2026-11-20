@@ -103,16 +103,6 @@ pub(crate) enum BridgeRequirements {
     Ambiguous {
         requirement: String,
         candidates: Vec<String>,
-        /// WI-1091 — the frame requirement-param name of the slot that tied.
-        ///
-        /// A CONSUMER THAT SUPPLIES ONLY ONE HALF NEEDS IT, and without it there was no
-        /// way to ask: `Interpreter::seed_entry_op_requirements` takes the OP half out of
-        /// this resolution and leaves the sort half's stand-ins alone, so a tie in the
-        /// SORT half is not its verdict to raise — it is a slot the host entry never
-        /// asked about, and raising on it would fail an entry that used to run.
-        /// `requirements_for_value_directed_impl` supplies BOTH halves and raises on
-        /// either, which is unchanged.
-        slot: Symbol,
     },
 }
 
@@ -124,14 +114,6 @@ pub(crate) enum BridgeRequirements {
 pub(crate) enum NamedSlotTies {
     /// Value-directed dispatch: record the slot absent and enter; a read is refused.
     RecordAbsent,
-    /// The host entry: a SORT-half named tie is reported as under [`Self::Raise`] (the
-    /// host serves that half with WI-868's stand-ins and discards what the resolution
-    /// says of it), while a TYPE-CARRIED op slot's tie is recorded absent as under
-    /// [`Self::RecordAbsent`] — WI-20260922-ATFGH: the host has a spelling for that slot
-    /// (the argument passed with its type, `Interpreter::call`), the marker names it,
-    /// and a body that never
-    /// reads the slot must still run.
-    HostEntry,
     /// The SLD bridge: report the tie as before (WI-855) — the bridge delays on it,
     /// which a marker's read would turn into a fault.
     Raise,
@@ -574,10 +556,9 @@ fn derive_bridge_requirements(
                 // this through the SLD bridge, and the corpus's 79 sort-half attempts
                 // (counted, of 272 calls that reach a non-empty chain in the whole
                 // `wi_tests` binary) moved nothing. Driving it needs a value-directed
-                // dispatch whose sort half is entirely under-determined; the host-entry
-                // route is not it, because `seed_entry_op_requirements` takes the OP
-                // half out of this resolution and leaves the sort half's stand-ins
-                // alone.
+                // dispatch whose sort half is entirely under-determined; the host entry
+                // is not it, typed as a body's call (proposal 074 §1.4) and reaching no
+                // derivation.
                 //
                 // NOT THE `other =>` ARM ONE MATCH DOWN, deliberately: that one says
                 // "these types do not pin a dictionary HERE" about a goal that was
@@ -627,7 +608,7 @@ fn derive_bridge_requirements(
         if let (ResolutionResult::Ambiguous { forwarded: false, .. }, Some((param, binder))) =
             (&result, type_carried)
         {
-            if named_slot_ties != NamedSlotTies::Raise {
+            if named_slot_ties == NamedSlotTies::RecordAbsent {
                 trees.push((*name, param_slot_marker(goal.spec_sort, param, binder)));
                 continue;
             }
@@ -720,7 +701,6 @@ fn derive_bridge_requirements(
                         .iter()
                         .map(|s| kb.qualified_name_of(*s).to_string())
                         .collect(),
-                    slot: *name,
                 };
             }
             // AN OP-HALF GOAL THE ARGUMENTS PINNED, AND NO PROVIDER ANSWERS IT. Skipped,

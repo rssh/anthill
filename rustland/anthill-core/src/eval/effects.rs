@@ -662,31 +662,49 @@ impl Interpreter {
         }
     }
 
-    /// The `TypeValue` dictionary of `value`'s type, read off the value as a host's own
-    /// `interp.call("anthill.prelude.Error.raise", [value])` reads it: the type value a handler
-    /// throws a value of its own at ([`HandlerAction::Throw`]).
+    /// The `TypeValue` dictionary of `value`'s type: the value at the type a bare value the host
+    /// passes reads as (`Interpreter::host_arg_type`, proposal 074 §1.4), and the dictionary of
+    /// `TypeValue` at it the typer builds for the host's call `Dictionary.instance[TypeValue[T =
+    /// …]]()` (074 §2) — the type value a handler throws a value of its own at
+    /// ([`HandlerAction::Throw`]). Typed as every host call is, not derived from the value by the
+    /// bridge's resolution (WI-20261105-CBRD2).
     pub fn type_value_of(&mut self, value: &Value) -> Result<Dictionary, EvalError> {
-        let raise =
-            crate::eval::builtins::require_symbol(self, "anthill.prelude.Error.raise", "raise")?;
-        let mut requirements = smallvec::SmallVec::new();
-        self.seed_entry_op_requirements(raise, std::slice::from_ref(value), &mut requirements)?;
-        match self.raise_type_of(raise, requirements) {
-            Ok(Some(RaisedType::Evidence(evidence))) => Ok(evidence),
-            Ok(_) => Err(EvalError::Internal(
-                "type_value_of: `Error.raise` states its payload's type by `requires \
-                 TypeValue[T = T]`, and answered none"
-                    .into(),
-            )),
-            // The reading's own words are about a raise and a call; nothing raised here.
-            Err(EvalError::RaiseTypeUnread { .. } | EvalError::UnpinnedRequirement { .. }) => Err(EvalError::RaiseTypeUnread {
-                detail: format!(
-                    "no type value can be read off {}: the value does not pin its type. A \
-                     handler re-raising passes the type value it was handed",
-                    self.print_value(value)
-                ),
-            }),
-            Err(e) => Err(e),
-        }
+        let unread = |interp: &Self, why: &str| EvalError::RaiseTypeUnread {
+            detail: format!(
+                "no type value can be read off {}: the value does not pin its type ({why}). A \
+                 handler re-raising passes the type value it was handed",
+                interp.print_value(value)
+            ),
+        };
+        let ty = self.host_arg_type(value, None).map_err(|why| unread(self, &why))?;
+        let ty = crate::kb::node_occurrence::value_to_term(&mut self.kb, &ty)
+            .map_err(|e| unread(self, &e.to_string()))?;
+        let (Some(type_value), Some(t)) = (
+            self.kb.try_resolve_symbol("anthill.reflect.TypeValue"),
+            self.kb.try_resolve_symbol("anthill.reflect.TypeValue.T"),
+        ) else {
+            return Err(EvalError::Internal(
+                "type_value_of: `anthill.reflect.TypeValue` is not loaded".into(),
+            ));
+        };
+        let base = self.kb.make_sort_ref(type_value);
+        let spec = Value::term(self.kb.make_parameterized_type(base, &[(t, ty)]));
+        let dict = match self.call_bracketed(
+            "anthill.realization.runtime.Dictionary.instance",
+            &[(None, spec)],
+            &[],
+        ) {
+            Ok(dict) => dict.value,
+            // The application leaves a parameter unwritten, or nothing provides it there.
+            Err(EvalError::HostCallRefused { detail, .. }) => return Err(unread(self, &detail)),
+            Err(e) => return Err(e),
+        };
+        Dictionary::from_view(&self.kb, &dict).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "type_value_of: `Dictionary.instance[TypeValue[…]]()` answered no dictionary: {}",
+                self.print_value(&dict)
+            ))
+        })
     }
 
     /// What the running host function's raise point admits: the `TypeValue` dictionary its

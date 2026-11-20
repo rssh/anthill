@@ -6321,8 +6321,8 @@ fn check_apply_call(
                     // operation filled none.
                     //
                     // THREE OF THE FOUR HAVE SINCE CLOSED, and the fourth closes with
-                    // this change: a HOST entry seeds the op half from the argument
-                    // values (WI-1091 `seed_entry_op_requirements`), an eta'd `OpRef`
+                    // this change: a HOST entry is typed as a body's call (proposal 074
+                    // §1.4), an eta'd `OpRef`
                     // carries its slots captured (`push_captured_op_scoped_slots`),
                     // value-directed dispatch already resolves the COMPOSED chain, and
                     // the DEFERRED route passes the call's own stamp (an entry fill from
