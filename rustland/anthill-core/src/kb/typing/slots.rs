@@ -580,33 +580,20 @@ fn seed_bracket_bindings(
         // a type argument (`target.param()` is its binder), which is what lets a value
         // naming an enclosing slot forward; an ANONYMOUS one binds no parameter and may
         // not.
-        let provider = if let CallTypeArgTarget::OwnBodyDispatch(_) = target {
-            // A requirement's name, or the key names nothing — the verdict it had.
-            match enclosing_requirement_named(kb, env, value, spec_sort) {
-                Some(binder) => SelectedProvider::Enclosing(binder),
-                None => {
-                    return Err(TypeError::NoSuchTypeParam {
-                        span,
-                        op: fn_sym,
-                        name: key.expect("a spec's short name is a written key"),
-                    })
-                }
-            }
-        } else {
-            let Some(provider) = validate_written_selection(
-                kb,
-                env,
-                fn_sym,
-                spec_sort,
-                value,
-                target.param().is_some(),
-                &mut concrete,
-                span,
-            )?
-            else {
-                continue;
-            };
-            provider
+        // A spec's default takes the selection as a body-less operation does
+        // ([`CallTypeArgTarget::OwnBodyDispatch`]).
+        let Some(provider) = validate_written_selection(
+            kb,
+            env,
+            fn_sym,
+            spec_sort,
+            value,
+            target.param().is_some(),
+            &mut concrete,
+            span,
+        )?
+        else {
+            continue;
         };
         // WI-870: and what the value's OWN bracket bound on that witness (§3.3). A
         // requirement of the enclosing declaration is a name and takes no bracket.
@@ -3985,12 +3972,13 @@ enum CallTypeArgTarget {
     /// the selection's key ([`CalleeSlot::key`]) beside the spec.
     AnonSlot(SelectedSlot, Symbol),
     /// WI-20261013-50ZMN — the short name of the callee's OWN spec, on a member that
-    /// has a body there (a spec's default). Nothing is searched for such a call — the
-    /// body is the callee — so a WITNESS has no reading at this key and is refused as
-    /// a key that names nothing, as it was. What the call may say is which REQUIREMENT
-    /// of the enclosing declaration it is read through
-    /// ([`SelectedProvider::Enclosing`]): `Mon.twice[Mon = Plus](a)`, which is what
-    /// `Plus.twice(a)` writes. Carries the spec.
+    /// has a body there (a spec's default). The call may say which REQUIREMENT of the
+    /// enclosing declaration it is read through ([`SelectedProvider::Enclosing`]):
+    /// `Mon.twice[Mon = Plus](a)`, which is what `Plus.twice(a)` writes; and, since
+    /// WI-20261003-FFY4R, which WITNESS's instance it runs: `Mon.twice[Mon = Sum](a)` runs
+    /// `Sum`'s member for `twice`, or the body at `Sum`'s instance, whose own calls read it.
+    /// A witness was refused here as a key that names nothing until a default body took
+    /// its call's instance (proposal 073 §3). Carries the spec.
     OwnBodyDispatch(Symbol),
 }
 
@@ -4127,7 +4115,7 @@ fn resolve_call_type_arg_targets(
         match matched.len() {
             0 => {
                 // The callee's own spec, on a member with a body: no slot of it, and a
-                // target all the same for a requirement's name
+                // target all the same, for a requirement's name or a witness
                 // ([`CallTypeArgTarget::OwnBodyDispatch`]).
                 let own_spec = (!written.contains('.'))
                     .then(|| defaulted_spec_op_parent(kb, fn_sym))

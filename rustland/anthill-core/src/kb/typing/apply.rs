@@ -2936,6 +2936,18 @@ fn check_apply_call(
         // complete, and BEFORE the validation below, so a type-carried pin is judged
         // by exactly the check a written one is.
         let selections = selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
+        // A spec operation's call that names its witness and leaves the spec's carrier open is at
+        // the carrier that witness's provision writes ([`bind_carrier_the_witness_says`]).
+        if let Some(spec) = (!selections.is_empty())
+            .then(|| lookup_spec_op_dispatch(kb, fn_sym).or_else(|| defaulted_spec_op_parent(kb, fn_sym)))
+            .flatten()
+        {
+            if let Some(witness) = pinned_witness_for(kb, &selections, spec) {
+                if bind_carrier_the_witness_says(kb, &mut subst, spec, witness) {
+                    resolved_ret = result_type(kb, &subst, &proj_return_type);
+                }
+            }
+        }
 
         // WI-20260921-3G1YT — the slot source of the held route, for every
         // classification block below: the spec instances this clause's guards declare
@@ -3105,6 +3117,108 @@ fn check_apply_call(
                 pos_results,
                 named_results,
             );
+            // A CALL THAT NAMES ITS WITNESS (`Mk.viaRecv[Mk = W2](a(n: 9))`, WI-20261003-FFY4R)
+            // runs that witness's instance: its member where it writes one, this body where it
+            // does not, entered with the instance, whose dictionary the body's own calls read
+            // (proposal 073 §3). Nothing the carrier finds decides it — neither the carrier's own
+            // member nor another witness's, nor the provision at the carrier — and a witness with
+            // no instance at the call's types is refused here. MEASURED before: the bracket was
+            // refused, "unknown type-param"; read only where the carrier is known, a call at a
+            // carrier writing its own member ran that member, and one at a rigid was refused as
+            // missing the requirement its sort declares.
+            if pinned_witness_for(kb, &selections, spec_sort).is_some() {
+                let op_qn = kb.qualified_name_of(fn_sym).to_string();
+                let op_short_sym = kb.intern(short_name_of(&op_qn));
+                let goal = sort_goal_from_subst(
+                    kb,
+                    &subst,
+                    spec_sort,
+                    statically_pinned_carrier(kb, &recv_carrier, None, Some(spec_sort)),
+                );
+                let sigma = SigmaCtx {
+                    subst: &subst,
+                    param_rigids: env.param_rigids(),
+                };
+                let (outcome, tree) = resolve_at_goal(
+                    kb,
+                    &goal,
+                    op_short_sym,
+                    env.enclosing_requires(),
+                    Some(&sigma),
+                    pinned_selection_for(kb, &selections, spec_sort),
+                    env.sub_goal_requires(),
+                );
+                let (target, tree) = match (outcome, tree) {
+                    (DispatchOutcome::Unique(target), Some(tree)) => (target, tree),
+                    (DispatchOutcome::NoMatch { unmet }, _) => {
+                        return Err(TypeError::DispatchNoMatch {
+                            span,
+                            op: fn_sym,
+                            unmet,
+                        })
+                    }
+                    (DispatchOutcome::Ambiguous(tie), _) => {
+                        return Err(TypeError::DispatchAmbiguous {
+                            span,
+                            op: fn_sym,
+                            tie,
+                            in_rule_own_term: env.in_rule_own_term(),
+                        })
+                    }
+                    (DispatchOutcome::Unsupplied(refusal), _) => {
+                        return Err(refusal.type_error(fn_sym, span, None))
+                    }
+                    (other, _) => unreachable!(
+                        "a goal the call names its witness for is resolved at that witness or \
+                         refused (`resolve_at_goal`), not {other:?}"
+                    ),
+                };
+                // Where the witness's own member reads requirements of its own sort, which a
+                // dictionary of the spec carries no slot for, the member is entered as a
+                // supplier the carrier finds is, with its own sort's dictionary.
+                let (target, with_instance) =
+                    defaulted_call_target(kb, spec_sort, fn_sym, &tree, span)?.unwrap_or((target, false));
+                if target != fn_sym {
+                    effects = effects_of_pinned_call(
+                        kb,
+                        flow,
+                        target,
+                        None,
+                        &op,
+                        &call_view,
+                        &subst,
+                        span,
+                        RowAtPin {
+                            arg_effects: &arg_effects,
+                            spec_row: &mut *spec_row,
+                            before: effects,
+                        },
+                    )?;
+                }
+                classify_pin_or_apply_within(
+                    kb,
+                    occ,
+                    fn_sym,
+                    target,
+                    env.enclosing_sort(),
+                    with_instance.then_some(tree),
+                    Some(&OpSupplyCtx {
+                        subst: &subst,
+                        caller_requires: env.enclosing_frame_chain(),
+                        param_rigids: env.param_rigids(),
+                        selected: &selections,
+                        enclosing_op: env.enclosing_op(),
+                        param_arg_types: &projection_receivers,
+                        held: &held_views,
+                    }),
+                )?;
+                return Ok(TypeResult {
+                    ty: resolved_ret,
+                    env: env.clone(),
+                    effects,
+                    node: Rc::clone(occ),
+                });
+            }
             // Proposal 073 §2 — a defaulted operation called on a value of an abstract type runs
             // the receiver instance's operation, its member or this body, as the call runs.
             if matches!(recv_carrier, ReceiverCarrier::Abstract | ReceiverCarrier::NotApplicable)
@@ -3304,9 +3418,9 @@ fn check_apply_call(
                 // shared helper, not here.
                 //
                 // WI-1027 built the BODY-LESS half's guard out of the same construction
-                // ([`supplier_tie_error`]), which is where the `NameableWitness` repair this
-                // arm can never reach becomes reachable — a body-less op HAS the dispatch
-                // slot a bracket binds.
+                // ([`supplier_tie_error`]); the repair offers the bracket on either half where
+                // a rival is a witness, written on this call where it takes one
+                // (WI-20261003-FFY4R: a defaulted operation's bracket names an instance too).
                 // WI-861: and it SELECTS — a tie the 058 §3.2 rung 2a default breaks
                 // yields that supplier here, so `Some` now means "one supplier, or the
                 // one silence takes" rather than "exactly one".
@@ -3316,6 +3430,7 @@ fn check_apply_call(
                     fn_sym,
                     carrier_sym,
                     &cands,
+                    SelectionSite::of_call(!env.in_rule_own_term()),
                     span,
                 )?;
                 // A supplier: pin it. NO supplier is the gap a default exists to
@@ -4730,38 +4845,8 @@ fn check_apply_call(
                     env.sub_goal_requires(),
                 )
             };
-            let (outcome, resolved_tree) =
+            let (mut outcome, mut resolved_tree) =
                 dispatch(kb, &subst, spec_sort, op_short_sym, dispatch_carrier.clone());
-            // A CALL THAT NAMES ITS WITNESS REACHES IT where the receiver matches no provision
-            // as it stands — a slot no type decides (`box(v: none)` behind witnesses at `Box[V =
-            // Option[T = Int64]]` and `[… = String]`): the bracket says which covering witness
-            // the call reaches, the reading its return's projection takes
-            // ([`witnesses_lend_member`]), so the call is dispatched at THAT witness's instance.
-            // Left `NoCandidates`, it went to eval's value-directed dispatch, which reads no
-            // bracket, and died "ambiguous dispatch" at run time where its type had read the
-            // named witness (MEASURED: review 9's fix pass; on the tree before it wherever the
-            // result was generic).
-            let narrowed = match (&outcome, carrier_param_info.as_ref()) {
-                (
-                    DispatchOutcome::NoCandidates,
-                    Some((_, carrier, recv_ty, _, carrier_vid, ..)),
-                ) => narrowed_to_named_witness(
-                    kb,
-                    &subst,
-                    &selections,
-                    spec_sort,
-                    *carrier,
-                    recv_ty,
-                    *carrier_vid,
-                ),
-                _ => None,
-            };
-            let (mut outcome, mut resolved_tree) = match narrowed {
-                Some(narrowed) => {
-                    dispatch(kb, &narrowed, spec_sort, op_short_sym, dispatch_carrier.clone())
-                }
-                None => (outcome, resolved_tree),
-            };
             // THE REST OF A CHAIN OF PROVISIONS (proposal 073 §1, WI-20261105-C6GK8). The
             // provision a dispatch selects may be an intermediate spec's (`Mid provides Top[C =
             // Self]`), and it answers with that spec's own member, which receives on `Self`: a
@@ -5042,6 +5127,15 @@ fn check_apply_call(
             }
             match outcome {
                 DispatchOutcome::NoCandidates => {
+                    // A call that names its witness is never here: its goal is resolved at that
+                    // witness or refused by the resolution's step 0 (`resolve_at_goal`), so
+                    // `Store.peek[Store = CB](s)` at a `Buf[T = Int64, N = String]` beside `CB`
+                    // at `N = Bool` is refused there, naming `CB` (WI-20261003-FFY4R; it was
+                    // refused below, after a `NoCandidates`).
+                    debug_assert!(
+                        !pinned_spec,
+                        "a goal the call names its witness for is never `NoCandidates`"
+                    );
                     // WI-606: a CONCRETE receiver carrier that statically declares a
                     // runnable override of this self-receiver spec op, yet the dispatch
                     // found no candidate — because the spec op's provision `requires`
@@ -5172,12 +5266,11 @@ fn check_apply_call(
                     // A CARRIER THAT LEAVES A SLOT UNFIXED where only provisions at instances
                     // of it would answer (WI-20261005-SGXYH, §5.2): passed through, the run
                     // time's dispatch answered with the one such provision, or raised
-                    // `AmbiguousSpecOpDispatch` between two (MEASURED). A selected witness is
-                    // the author's choice of dictionary, and answers the slot as it stands
-                    // (WI-20260929-0RP29's `…dispatches_to_it_over_an_undecided_slot`); so is a
-                    // covering `requires` of the enclosing operation. In a rule body as in an
-                    // operation body (060.1 §1): no guard can be written at the instance.
-                    if !pinned_spec && !op_requires_covers_call(kb, env, &subst, spec_sort) {
+                    // `AmbiguousSpecOpDispatch` between two (MEASURED). A covering `requires` of
+                    // the enclosing operation answers the slot as it stands (a selected witness
+                    // does too, in the resolution). In a rule body as in an operation body
+                    // (060.1 §1): no guard can be written at the instance.
+                    if !op_requires_covers_call(kb, env, &subst, spec_sort) {
                         let sigma = SigmaCtx {
                             subst: &subst,
                             param_rigids: env.param_rigids(),
@@ -5193,50 +5286,6 @@ fn check_apply_call(
                             return Err(refusal);
                         }
                     }
-                    // … and a witness the call names that provides nothing at the receiver the
-                    // call passes: `Store.peek[Store = CB](s)` with `s: Buf[T = Int64, N =
-                    // String]` beside `CB provides Store[State = Buf[T = Int64, N = Bool]]`. The
-                    // run time ran `CB`'s member on it; with nothing at run time to find one, it
-                    // loaded and answered nothing. Only the carrier's binding is compared, the
-                    // spec's other parameters left open: one the call's result fixes at
-                    // another type than the witness's is the result's refusal (the witness's
-                    // member returning a `String` where an `Int64` is expected), and a witness
-                    // at the receiver but at other bindings `check_selection_bindings`'.
-                    if let Some(witness) = pinned_witness_for(kb, &selections, spec_sort)
-                        .filter(|_| judged_here)
-                        .filter(|_| !op_requires_covers_call(kb, env, &subst, spec_sort))
-                    {
-                        if let Some(carrier_param) = spec_carrier_param(kb, spec_sort) {
-                            let mut at_receiver = sort_goal_from_subst(kb, &subst, spec_sort, None);
-                            let carrier_name = kb.local_name_of(carrier_param).to_owned();
-                            at_receiver
-                                .bindings
-                                .retain(|(k, _)| kb.local_name_of(*k) == carrier_name);
-                            // A receiver with a slot no type decides (`box(v: none)`'s bare
-                            // `Option`) is the named witness's to fix.
-                            let bindings = at_receiver.bindings.clone();
-                            let fixed = bindings.iter().all(|(_, v)| {
-                                type_is_ground(kb, v)
-                                    && !holds_a_type_var(kb, v)
-                                    && !leaves_a_slot_open(kb, v)
-                            });
-                            if !at_receiver.bindings.is_empty() && fixed {
-                                open_unwritten_params(kb, spec_sort, &mut at_receiver.bindings);
-                                let answers = collect_provides_candidates(kb, &at_receiver, None)
-                                    .iter()
-                                    .any(|c| same_sort_canonical(kb, c.impl_sort, witness));
-                                if !answers {
-                                    return Err(TypeError::WitnessDoesNotProvide {
-                                        span,
-                                        op: fn_sym,
-                                        witness,
-                                        spec: spec_sort,
-                                        at_bindings: true,
-                                    });
-                                }
-                            }
-                        }
-                    }
                     // Proposal 073 §1 — NOTHING AT RUN TIME FINDS WHAT LOAD DID NOT: a call
                     // of a spec something provides, at a callee the host does not implement,
                     // is decided by the provision answering at the call's types, read with
@@ -5244,7 +5293,6 @@ fn check_apply_call(
                     // the spec op for the value to choose ("an instance by a route the goal
                     // did not match").
                     if judged_here
-                        && !pinned_spec
                         && !op_requires_covers_call(kb, env, &subst, spec_sort)
                         && spec_has_any_providers(kb, spec_sort)
                         && !host_implements(kb, fn_sym)
@@ -7772,34 +7820,6 @@ fn open_defaulted_call(
         abstract_params,
         site: RequiresSite::Clause,
     })
-}
-
-/// The call's σ with the spec's carrier parameter (`carrier_vid`) read as the instance the
-/// witness its bracket names provides the spec at, instantiated at the receiver (`[Holder =
-/// OptIntBoxH]` over `box(v: none)`, a `Box[V = Option]`: `C = Box[V = Option[T = Int64]]`) —
-/// `None` where the call names no witness of `spec` or that witness does not cover the receiver
-/// ([`covering_witnesses_named`]). The receiver's own type cannot be narrowed in place: a slot it
-/// leaves out holds no variable to bind.
-fn narrowed_to_named_witness(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    selections: &[InstanceSelection],
-    spec: Symbol,
-    carrier: Symbol,
-    recv_ty: &Value,
-    carrier_vid: VarId,
-) -> Option<Substitution> {
-    pinned_witness_for(kb, selections, spec)?;
-    let recv = resolve_type_deep_value(kb, subst, recv_ty);
-    let (row, at) = covering_witnesses_named(kb, &recv, carrier, spec, selections)
-        .into_iter()
-        .next()?;
-    let (view, _) = witness_dispatch_carrier_value(kb, spec, row.provider, &row.spec_view)?;
-    let instance = resolve_type_deep_value(kb, &at, &view);
-    let mut narrowed = subst.clone();
-    narrowed.bindings.remove(&carrier_vid);
-    narrowed.bind_value(kb, carrier_vid, instance);
-    Some(narrowed)
 }
 
 /// A projection-free return re-keyed to the caller in ONE substitution per position: an arrow's

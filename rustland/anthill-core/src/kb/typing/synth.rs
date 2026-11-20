@@ -1705,6 +1705,41 @@ pub(super) fn resolve_inner<'a>(
     // since WI-20260925-4ZZKZ, matches no STRUCTURED head (WI-824's rule, on both paths).
     let mut candidates = collect_provides_candidates(kb, goal, scope.sigma);
 
+    // A GOAL WHOSE CALL NAMES ITS WITNESS where the receiver, as it stands, matches no
+    // provision — a slot no type decides, `Holder.size2[Holder = OptIntBoxH](box(v: none))`
+    // behind witnesses at `Box[V = Option[T = Int64]]` and `[… = String]` — is the goal at the
+    // instance the witness provides there ([`goal_at_named_witness`]): the bracket says which
+    // covering witness the call reaches. Read here, every route a call is resolved through
+    // reads it: the body-less operation's dispatch and a defaulted one's instance. MEASURED
+    // before (WI-20261003-FFY4R): the body-less route alone re-dispatched at the witness, after
+    // its own `NoCandidates`, and a defaulted operation's bracket was refused. A witness that
+    // covers no receiver of the goal leaves it as it is, and the filter below refuses it.
+    let at_witness: SortGoal;
+    let goal = match pinned.filter(|_| candidates.is_empty()) {
+        Some(witness) => match goal_at_named_witness(kb, goal, witness) {
+            Some(narrowed) => {
+                // The goal it is read as stands on the stack in its place, held to the same
+                // cycle check against the goals beneath it.
+                stack.pop();
+                if stack.iter().any(|g| goals_equal(kb, g, &narrowed)) {
+                    let mut path: Vec<String> = stack.iter().map(|g| format_goal(kb, g)).collect();
+                    path.push(format_goal(kb, &narrowed));
+                    return ResolutionResult::Cyclic {
+                        path,
+                        spec: goal.spec_sort,
+                        forwarded: false,
+                    };
+                }
+                at_witness = narrowed;
+                candidates = collect_provides_candidates(kb, &at_witness, scope.sigma);
+                stack.push(at_witness.clone());
+                &at_witness
+            }
+            None => goal,
+        },
+        None => goal,
+    };
+
     // WI-841 STEP 0, second half: restrict the goal's OWN candidate set to the pinned
     // witness. Filtering rather than short-circuiting is what makes a CONDITIONAL
     // witness work unchanged — its `:-` subgoals are still walked below, and still

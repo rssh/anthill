@@ -268,7 +268,9 @@ end
 /// N = String]` beside `CB provides Store[State = Buf[T = Int64, N = Bool]]`. On the tree
 /// before, the run time ran `CB`'s member on it (51); with the run time's route gone and this
 /// refusal backed out, it loads and answers nothing (both measured, the second with the
-/// refusal deleted). The twin at `N = Bool` answers 51.
+/// refusal deleted). The twin at `N = Bool` answers 51. Refused by the resolution's step 0
+/// since WI-20261003-FFY4R (a goal the call names its witness for is no `NoCandidates`), by the
+/// dispatch's own `NoCandidates` arm before, "provides …, but not at the bindings".
 #[test]
 fn a_named_witness_that_answers_nothing_at_the_call_is_refused() {
     const PROGRAM: &str = r#"
@@ -294,7 +296,10 @@ end
 "#;
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&PROGRAM.replace("AT", "String")),
-        &["p0qgf.pin.CB provides p0qgf.pin.Store, but not at the bindings"],
+        &[
+            "unresolved: p0qgf.pin.Store[State = p0qgf.pin.Buf[T = anthill.prelude.Int64, N = anthill.prelude.String]]",
+            "the call selected `p0qgf.pin.CB` for p0qgf.pin.Store, which provides no instance at these bindings",
+        ],
         "a witness at another binding",
     );
     assert_eq!(int(&mut interp_for(&PROGRAM.replace("AT", "Bool")), "p0qgf.pin.go"), 51);

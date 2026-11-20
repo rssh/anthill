@@ -3211,22 +3211,57 @@ fn lent_member(kb: &KnowledgeBase, written: &Value, at_receiver: Value) -> Optio
 }
 
 /// [`witnesses_covering`] narrowed to the witness the call NAMES for `spec` in a bracket, where it
-/// names one ([`pinned_witness_for`]): which of the covering witnesses the call reaches is said
-/// there — by the call's dispatch ([`narrowed_to_named_witness`]) and by the projections its
+/// names one (`named`, [`pinned_witness_for`]): which of the covering witnesses the call reaches
+/// is said there — by the call's dispatch ([`goal_at_named_witness`]) and by the projections its
 /// return reads ([`witnesses_lend_member`]) alike.
 pub(super) fn covering_witnesses_named(
     kb: &mut KnowledgeBase,
     recv_ty: &Value,
     recv_sort: Symbol,
     spec: Symbol,
-    selections: &[InstanceSelection],
+    named: Option<Symbol>,
 ) -> Vec<(ProvidesRow, Substitution)> {
     let mut covering = witnesses_covering(kb, recv_ty, recv_sort, spec);
-    if let Some(named) = pinned_witness_for(kb, selections, spec) {
+    if let Some(named) = named {
         let named = kb.canonical_sort_sym(named);
         covering.retain(|(row, _)| kb.canonical_sort_sym(row.provider) == named);
     }
     covering
+}
+
+/// A goal that a call naming its witness (`Holder.size[Holder = OptIntBoxH](box(v: none))`) states
+/// at a receiver no provision matches as it stands — a slot no type decides, `Box[V = Option]`
+/// behind witnesses at `Box[V = Option[T = Int64]]` and `[… = String]` — read at the instance
+/// `witness` provides the spec at: its carrier parameter's binding replaced by that witness's
+/// carrier view instantiated at the receiver ([`covering_witnesses_named`]). The bracket says
+/// which covering witness the call reaches, the reading its return's projection takes
+/// ([`witnesses_lend_member`]).
+///
+/// `None` where the spec has no carrier parameter, the goal does not bind it, its binding has no
+/// sort, or `witness` does not cover the receiver at exactly one provision: the call's selection
+/// then names no instance at these bindings, which step 0 of the resolution refuses. (A witness
+/// providing one spec twice is refused at load on its own account, "ambiguous instance".)
+pub(super) fn goal_at_named_witness(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    witness: Symbol,
+) -> Option<SortGoal> {
+    let param = spec_carrier_param(kb, goal.spec_sort)?;
+    let short = short_name_of(kb.local_name_of(param)).to_owned();
+    let at = goal
+        .bindings
+        .iter()
+        .position(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)?;
+    let recv = goal.bindings[at].1.clone();
+    let recv_sort = sort_functor_of_view(kb, &recv)?;
+    let [(row, inst)] = &covering_witnesses_named(kb, &recv, recv_sort, goal.spec_sort, Some(witness))[..]
+    else {
+        return None;
+    };
+    let (view, _) = witness_dispatch_carrier_value(kb, goal.spec_sort, row.provider, &row.spec_view)?;
+    let mut narrowed = goal.clone();
+    narrowed.bindings[at].1 = resolve_type_deep_value(kb, inst, &view);
+    Some(narrowed)
 }
 
 /// A WITNESS provision of `spec` whose carrier view covers a receiver: the witness, and the
@@ -3284,7 +3319,8 @@ fn witnesses_lend_member(
     // reaches IS said there. Asked of every one, `Holder.get[Holder = BoxHolderA](…)` was refused
     // as "not this projection's to say" when a second witness bound the member otherwise
     // (MEASURED: review 9).
-    let covering = covering_witnesses_named(kb, recv_ty, recv_sort, spec, selections);
+    let named = pinned_witness_for(kb, selections, spec);
+    let covering = covering_witnesses_named(kb, recv_ty, recv_sort, spec, named);
     let mut lent: Option<(Symbol, Option<ProjResult>)> = None;
     for (row, at) in covering {
         let this = member_binding(kb, &row.bindings(kb), member).and_then(|written| {

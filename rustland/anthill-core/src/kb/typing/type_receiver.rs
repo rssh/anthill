@@ -368,19 +368,40 @@ fn written_sort_dot(
             if let Some(refusal) = hidden(kb, op) {
                 return refusal;
             }
-            if let Some(carrier) = witness_route_only(kb, head, op) {
-                let (op_qn, carrier) = (
-                    kb.qualified_name_of(op).to_string(),
-                    kb.qualified_name_of(carrier).to_string(),
-                );
-                return refused(
-                    TypeError::here(),
-                    format!("an operation of `{denoted}`, or one it inherits at its own instance"),
-                    format!(
-                        "`{short}` is `{op_qn}`, which `{denoted}` provides as a witness at `{carrier}`; a call does not choose a witness's instance for a body its spec writes"
-                    ),
-                );
-            }
+            // THROUGH A WITNESS'S NAME the call takes the witness's instance: `W2.viaDefault()`
+            // over `sort W2 provides Mk[C = A]` is `Mk.viaDefault[Mk = W2]()`, the bracket that
+            // names the instance a spec's default runs at (WI-20261003-FFY4R). A call at `A`
+            // alone runs `A`'s, so the name is what says which. It was refused here until a
+            // defaulted operation took that bracket (MEASURED: "a call does not choose a
+            // witness's instance for a body its spec writes").
+            //
+            // IN AN OPERATION BODY ONLY. A rule body's call is evaluated by the resolver's
+            // bridge, which reads no call-site bracket — a written one is refused there — and
+            // dispatches a default by its receiver's value: lowered in a rule body,
+            // `W2.viaRecv(a(n: 1))` beside `A`'s own `viaRecv` answered `A`'s 7 (MEASURED).
+            let witness_pin = match witness_route_only(kb, head, op) {
+                None => None,
+                Some(carrier) => {
+                    let spec = spec_op_parent_sort(kb, op)
+                        .expect("a witness route is found through the operation's spec");
+                    let spec_short = short_name_of(kb.qualified_name_of(spec)).to_owned();
+                    if !env.in_evaluated_body() {
+                        let (op_qn, carrier) = (
+                            kb.qualified_name_of(op).to_string(),
+                            kb.qualified_name_of(carrier).to_string(),
+                        );
+                        return refused(
+                            TypeError::here(),
+                            format!("an operation of `{denoted}`, or one it inherits at its own instance"),
+                            format!(
+                                "`{short}` is `{op_qn}`, which `{denoted}` provides as a witness at `{carrier}`; the call names that instance with the bracket `[{spec_short} = {denoted}]`, which an operation body reads and this one does not: write the call in an operation body"
+                            ),
+                        );
+                    }
+                    let key = kb.intern(&spec_short);
+                    Some((Some(key), Value::term(kb.make_sort_ref(head))))
+                }
+            };
             if let Some(e) = effectful_rewrite_call(kb, occ, op) {
                 return DenotedDot::Refused(e);
             }
@@ -396,7 +417,7 @@ fn written_sort_dot(
                     functor: op,
                     pos_args: pos_args.to_vec(),
                     named_args: named_args.to_vec(),
-                    type_args: type_args.to_vec(),
+                    type_args: type_args.iter().cloned().chain(witness_pin).collect(),
                 },
                 Rc::clone(occ),
                 pass,
@@ -429,8 +450,7 @@ fn written_sort_dot(
 /// The carrier of `provider`'s provisions that lead to `op`'s spec, where every one of them
 /// is a witness's — a provision `provider` writes at another sort (`sort W provides Mk[C =
 /// A]`), whose instance is `provider`'s own members at `A`. A call at `A` would run `A`'s
-/// instance, so the operation reached through `W`'s name has no instance the call can take.
-/// `None` where a provision leads there at `provider` itself, or names no other carrier sort
+/// instance, so the operation reached through `W`'s name names `W`'s in its bracket. `None` where a provision leads there at `provider` itself, or names no other carrier sort
 /// (a spec a sort is its own carrier of, a spec over the provider's own parameter).
 fn witness_route_only(kb: &mut KnowledgeBase, provider: Symbol, op: Symbol) -> Option<Symbol> {
     let spec = spec_op_parent_sort(kb, op)?;

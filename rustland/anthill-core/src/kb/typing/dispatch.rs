@@ -615,17 +615,16 @@ pub(super) fn tie_repair_advice(spec: &str, repair: &TieRepair) -> String {
 /// dispatch_names_both_candidates`, which is the only tie shape the corpus drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupplierTieRepair {
-    /// Nothing here can be named at any site, so deleting a text is the whole repair.
-    /// Either the op carries a DEFAULT body — then it has no `Dispatch` requirement
-    /// slot ([`callee_requirement_slots`] pushes one only for a body-less spec op), so
-    /// no bracket binds anything at any call — or every rival is the carrier's OWN
-    /// member or an INSTANCE FACT, and neither has a name (058 §4.3).
+    /// Nothing here can be named at any site, so deleting a text is the whole repair:
+    /// every rival is the carrier's OWN member or an INSTANCE FACT, and neither has a name
+    /// (058 §4.3). Until WI-20261003-FFY4R a DEFAULTED operation was this case whatever
+    /// its rivals, its bracket naming no witness.
     KeepOne,
-    /// A body-less spec op with a WITNESS SORT among the rivals. That witness is a
-    /// nameable provider distinct from the carrier, and `op[Spec = W](…)` selects it
-    /// through the `Dispatch` slot — just not HERE, since a value-directed read is
-    /// bracket-less by construction. So routing the call through a site that can write
-    /// the bracket is a real second repair, and dropping it (as one shared sentence
+    /// A spec op with a WITNESS SORT among the rivals. That witness is a nameable provider
+    /// distinct from the carrier, and `op[Spec = W](…)` selects it — the body-less op's
+    /// `Dispatch` slot, a defaulted op's instance — just not HERE, since a value-directed
+    /// read is bracket-less by construction. So routing the call through a site that can
+    /// write the bracket is a real second repair, and dropping it (as one shared sentence
     /// did) is the mistake [`crate::kb::load::LoadError::CallTypeArgsNotSupportedHere`]
     /// carries a `position` field to avoid, mirror-imaged.
     NameableWitness,
@@ -644,8 +643,7 @@ pub enum SupplierTieRepair {
 /// Where the call a supplier tie refuses can write the bracket that selects a witness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SelectionSite {
-    /// Not on the call: a call written as a rule's own term, or a defaulted operation's,
-    /// which has no dispatch slot a bracket binds.
+    /// Not on the call: a call written as a rule's own term.
     Elsewhere,
     /// In the call's bracket list.
     TheCall,
@@ -682,14 +680,16 @@ impl SupplierTieRepair {
 
 /// WI-1012 — classify a tie for [`ambiguous_spec_op_dispatch_message`]. Asked of the
 /// candidates rather than of the call site, so the three construction sites cannot
-/// each reason it out and drift: the typer's WI-444 arm is body-less-gated shut and so
-/// always answers [`SupplierTieRepair::KeepOne`], but it asks anyway.
+/// each reason it out and drift.
 pub(crate) fn supplier_tie_repair(
     kb: &KnowledgeBase,
     spec_op: Symbol,
     candidates: &[SpecOpSupplier],
 ) -> SupplierTieRepair {
-    let bracket_dispatchable = lookup_spec_op_dispatch(kb, spec_op).is_some();
+    // A defaulted operation's bracket names a witness as a body-less one's does
+    // (WI-20261003-FFY4R): the call is then answered by that witness's instance.
+    let bracket_dispatchable = lookup_spec_op_dispatch(kb, spec_op).is_some()
+        || defaulted_spec_op_parent(kb, spec_op).is_some();
     let has_witness = candidates
         .iter()
         .any(|c| matches!(c.route, SupplyRoute::Witness(_)));
@@ -1102,10 +1102,11 @@ pub(crate) fn default_among_suppliers(
 /// WHY IT IS A BARE COUNT while the body-less sibling carries two narrowing clauses —
 /// stated here, once, because the symmetry is tempting and copying them over would be
 /// WRONG. NOTHING ARBITRATES ON THIS PATH. Neither caller runs `dispatch_spec_op_cached`,
-/// so there is no `resolve_at_goal` and no tier-2 specificity to defer to; and
-/// `callee_requirement_slots` pushes no dispatch slot for a defaulted op, so no tier-1
-/// bracket can bind one either, written applicatively or on a dot. Two suppliers
-/// therefore genuinely ARE a tie. The clauses over there exist because something does.
+/// so there is no `resolve_at_goal` and no tier-2 specificity to defer to; and a call
+/// whose bracket names a witness never reaches the count — it is answered by that
+/// witness's instance (WI-20261003-FFY4R: `names_its_witness` in `check_apply_iter`, a
+/// selecting bracket on a dot making it that call). Two suppliers therefore genuinely ARE a
+/// tie, and `site` says where the call could write the bracket that names one of them.
 ///
 /// WI-861 — IT ALSO SELECTS NOW, and the two jobs are one function because they are one
 /// decision. 058 §3.2's rung 2a says an unselected dispatch takes the DEFAULT among the
@@ -1122,6 +1123,7 @@ pub(super) fn arbitrate_defaulted_supplier_tie<'a>(
     spec_op: Symbol,
     carrier: Symbol,
     cands: &'a [SpecOpSupplier],
+    site: SelectionSite,
     span: Option<Span>,
 ) -> Result<Option<&'a SpecOpSupplier>, TypeError> {
     match cands {
@@ -1129,8 +1131,7 @@ pub(super) fn arbitrate_defaulted_supplier_tie<'a>(
         [only] => Ok(Some(only)),
         many => match default_among_suppliers(kb, spec_sort, carrier, many) {
             Some(i) => Ok(Some(&many[i])),
-            // A defaulted operation has no dispatch slot a bracket selects, at any call.
-            None => Err(supplier_tie_error(kb, spec_op, carrier, cands, SelectionSite::Elsewhere, span)),
+            None => Err(supplier_tie_error(kb, spec_op, carrier, cands, site, span)),
         },
     }
 }
@@ -1371,17 +1372,17 @@ pub(super) fn dot_member_dispatch_decision(
     // "defaulted".
     // The hot reader is `call_dispatch_shape` (~745 calls/load), which pays it once; the
     // `check_apply_iter` frame went from five reaches to four, enumerated at that site.
+    // A tie's selection is written on the dot, unless its own member takes the spec's label
+    // for a key of its own call — then that bracket binds the member.
+    let site = match SelectionSite::of_call(call_takes_bracket) {
+        SelectionSite::TheCall if own_call_takes_spec_label(kb, own_member, spec_sort) => {
+            SelectionSite::TheApplicativeCall
+        }
+        site => site,
+    };
     if defaulted_spec_op_parent(kb, spec_op).is_none() {
         // BODY-LESS — a different question with a different condition; see
-        // [`arbitrate_unarbitrated_supplier_tie`]. A tie's selection is written on the dot,
-        // unless its own member takes the spec's label for a key of its own call — then
-        // that bracket binds the member.
-        let site = match SelectionSite::of_call(call_takes_bracket) {
-            SelectionSite::TheCall if own_call_takes_spec_label(kb, own_member, spec_sort) => {
-                SelectionSite::TheApplicativeCall
-            }
-            site => site,
-        };
+        // [`arbitrate_unarbitrated_supplier_tie`].
         let broke_a_tie = arbitrate_unarbitrated_supplier_tie(
             kb,
             spec_sort,
@@ -1395,7 +1396,8 @@ pub(super) fn dot_member_dispatch_decision(
     }
     // DEFAULTED.
     let cands = carrier_override_suppliers(kb, spec_sort, carrier, spec_op, op_short_sym);
-    let chosen = arbitrate_defaulted_supplier_tie(kb, spec_sort, spec_op, carrier, &cands, span)?;
+    let chosen =
+        arbitrate_defaulted_supplier_tie(kb, spec_sort, spec_op, carrier, &cands, site, span)?;
     // ONLY A TIE, and the `len() >= 2` is the whole of that claim: `chosen` is also `Some`
     // for a SOLE supplier, and rerouting there would change what an ordinary one-supplier
     // dot calls whenever `carrier_override_suppliers`' interpretability filter has dropped
@@ -1553,9 +1555,8 @@ pub(super) fn supplier_tie_error(
 ///
 /// THE REPAIR VARIES AND IS THEREFORE PASSED, not inferred from the strings: the
 /// first cut of this function asserted "no bracket at this site can choose between
-/// them" unconditionally, which is true of a DEFAULTED op (no `Dispatch` slot to bind)
-/// and FALSE of a body-less one whose rival is a witness sort — the one tie shape the
-/// corpus actually drives (WI-842). See [`SupplierTieRepair`].
+/// them" unconditionally, which is FALSE wherever a rival is a witness sort — the one tie
+/// shape the corpus actually drives (WI-842). See [`SupplierTieRepair`].
 pub(crate) fn ambiguous_spec_op_dispatch_message(
     op: &str,
     carrier: &str,
@@ -1577,8 +1578,7 @@ pub(crate) fn ambiguous_spec_op_dispatch_message(
     match repair {
         SupplierTieRepair::KeepOne => format!(
             "{head} — keep exactly one and delete the rest. No bracket names any of \
-             them: a `[Spec = Witness]` bracket binds a body-less spec op's dispatch \
-             slot to a PROVIDER, and here there is no such slot or no rival with a \
+             them: a `[Spec = Witness]` bracket names a PROVIDER, and no rival here has a \
              name (a carrier's own member and an instance fact have none)"
         ),
         SupplierTieRepair::NameableWitness => format!(

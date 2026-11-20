@@ -915,8 +915,10 @@ fn a_name_reaches_what_its_requirements_dictionary_holds_further_down() {
 /// `Plus.twice(a)` runs the member `Plus`'s provider has for `twice` — `3 + 3` by `Sum`,
 /// `3 × 3` by `Product` — in either spelling. A call of it that names neither is refused
 /// naming both, where it loaded and ended `AmbiguousSpecOpDispatch` when it ran; and a
-/// WITNESS at that key is a key that names nothing, as it was before a name could stand
-/// there (the control — it passes with the name's reading backed out).
+/// WITNESS at that key names the instance the call takes (WI-20261003-FFY4R), which at
+/// `Semi2`'s own `T` `Sum2`'s at `Int64` is not, so the call is refused naming it. Until then
+/// the witness was a key that names nothing, "unknown type-param" (the control — it passed
+/// with the name's reading backed out, measured with that refusal).
 #[test]
 fn a_spec_operation_with_a_body_is_read_through_a_name() {
     let decl = "
@@ -978,7 +980,11 @@ fn a_spec_operation_with_a_body_is_read_through_a_name() {
     let ns = "wi50zmn.ownbody.witness";
     assert_refused_naming(
         &load_errors_of(&src(ns, "Mon2.twice[Mon2 = Sum2](a)", sp)),
-        &["unknown type-param 'Mon2'"],
+        &[
+            "wi50zmn.ownbody.witness.Mon2.twice.dispatch",
+            "the call selected `wi50zmn.ownbody.witness.Sum2` for wi50zmn.ownbody.witness.Mon2, \
+             which provides no instance at these bindings",
+        ],
         "a witness at the key of an operation with a body of its own",
     );
 }

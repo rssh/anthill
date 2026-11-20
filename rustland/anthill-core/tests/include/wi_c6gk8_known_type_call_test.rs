@@ -840,9 +840,15 @@ end
         &unprovided,
         "the bare call",
     );
+    // Refused by the resolution's step 0 since WI-20261003-FFY4R, a goal the call names its
+    // witness for being no `NoCandidates`; by the requirement's refusal above before.
     crate::common::assert_refused_naming(
         &load_errors_of(&PROGRAM.replace("CALL", "Desc.d[Desc = W](bk(k: 0))")),
-        &unprovided,
+        &[
+            "unresolved: c6gk8.desc.Desc[T = c6gk8.desc.Bk]",
+            "the call selected `c6gk8.desc.W` for c6gk8.desc.Desc, which provides no instance at \
+             these bindings",
+        ],
         "the witness selected",
     );
     crate::common::assert_refused_naming(
@@ -858,7 +864,11 @@ end
         .replace("import anthill.prelude.{Int64}", "import anthill.prelude.{Int64, String}");
     crate::common::assert_refused_naming(
         &load_errors_of(&at_string),
-        &["`anthill.prelude.Int64` provides no `c6gk8.desc.Desc`"],
+        &[
+            "unresolved: c6gk8.desc.Desc[T = anthill.prelude.Int64]",
+            "the call selected `c6gk8.desc.W` for c6gk8.desc.Desc, which provides no instance at \
+             these bindings",
+        ],
         "a witness at a type no provision answers",
     );
     // The twin: a provision at the argument's own type answers it.

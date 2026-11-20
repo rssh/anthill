@@ -5051,7 +5051,8 @@ pub(super) fn resolve_at_goal(
         sub_goal_requires,
     };
 
-    // No matching candidate ⇒ NoCandidates (permissive fall-through).
+    // No matching candidate ⇒ NoCandidates (permissive fall-through), where the call names no
+    // witness for the goal (below).
     // An unrelated `SortProvidesInfo` record for the same spec — e.g.
     // `Eq[T = Type]` when the goal is `Eq[T = Int]` — must not gate
     // dispatch: those are distinct specifications about distinct
@@ -5062,9 +5063,15 @@ pub(super) fn resolve_at_goal(
     // dispatch resolution is σ-consistent — a σ-disagreeing frame entry does not
     // coarse-cover an empty-candidate goal, and the compound sole-cover gate the
     // caller applied is not re-widened here.
-    let candidates = collect_provides_candidates(kb, &goal, disambig);
+    let candidates = collect_provides_candidates(kb, goal, disambig);
+    // A CALL THAT NAMES ITS WITNESS is never `NoCandidates`, the fall-through that left a pinned
+    // call to the run time, whose dispatch reads no bracket: where the receiver, as it stands,
+    // matches no provision, the resolution reads the goal at the instance the witness provides
+    // ([`resolve_inner`]'s step 0, [`goal_at_named_witness`]) or refuses the selection there. Nor
+    // is it `Deferred`: a pinned goal consults no scope entry.
+    let pinned_witness = pin.and_then(InstanceSelection::witness);
     // A tuple's instance has no provision row: the resolver builds it.
-    if candidates.is_empty() && tuple_instance_goal(kb, goal).is_none() {
+    if candidates.is_empty() && pinned_witness.is_none() && tuple_instance_goal(kb, goal).is_none() {
         for ar in scope.available_requires {
             if ar.required_sort == goal.spec_sort
                 && requires_entry_covers_goal(kb, ar, &goal, disambig)

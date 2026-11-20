@@ -144,7 +144,8 @@
 //!     [`a_pattern_binder_over_an_alias_typed_scrutinee_is_checked`] and the member-rule file's
 //!     `an_aliass_written_row_is_expanded` (part 105 binds the binder's `T` the other way, so the
 //!     two `+` operands are an abstract type there).
-//! 120. A PINNED CALL DISPATCHED AT THE NAMED WITNESS'S INSTANCE (`narrowed_to_named_witness`) —
+//! 120. A PINNED CALL DISPATCHED AT THE NAMED WITNESS'S INSTANCE (`narrowed_to_named_witness`;
+//!     since WI-20261003-FFY4R `goal_at_named_witness`, read at step 0 of the resolution) —
 //!     left to the run time. 1 FAILS:
 //!     [`a_bracket_naming_a_witness_dispatches_to_it_over_an_undecided_slot`].
 //! 121. AN ALIAS LABEL READ AS ITS LABEL IN THE DECLARED-EFFECTS CHECK (op_bodies.rs) — as
@@ -1116,6 +1117,10 @@ end
 /// CONTROL: naming the OTHER witness reads ITS member, a `String`, where `go` promises an
 /// `Int64`. Refused under every part, and FAILS under ledger part 118 by what it names: without
 /// the narrowing the projection reads both witnesses and refuses their disagreement instead.
+/// Refused AT THE CALL since WI-20261003-FFY4R, the resolution reading the pin: the named
+/// witness's instance is at `T = String`, the call at the `Int64` `go` promises. It was refused
+/// at `go`'s return before ("expected Int64, got String"); part 118 backed out still gives the
+/// disagreement (MEASURED on the FFY4R tree with the debug CLI).
 #[test]
 fn a_bracket_naming_a_witness_dispatches_to_it_over_an_undecided_slot_control() {
     let src = r#"
@@ -1144,7 +1149,12 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["go.return (op-return): expected Int64, got String"],
+        &[
+            "Holder.get.dispatch",
+            "T = anthill.prelude.Int64]",
+            "the call selected `wi0rp29r9.witness_undecided_other.OptStrBoxH` for \
+             wi0rp29r9.witness_undecided_other.Holder, which provides no instance at these bindings",
+        ],
         "the other witness's member",
     );
 }

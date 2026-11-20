@@ -465,6 +465,52 @@ pub(super) fn bind_params_the_provisions_say(
     !said.is_empty()
 }
 
+/// Bind the carrier parameter of `spec` a call's `subst` leaves open to the carrier the witness
+/// the call names provides it at (WI-20261003-FFY4R): `Mk.viaDefault[Mk = W2]()`, whose arguments
+/// and expected type say nothing of `C`, is at `W2`'s `provides Mk[C = A]`, so its instance, its
+/// result and the dispatch of its body's calls are read at `A`. Left open, the goal the call
+/// states names no carrier, no provision answers it, and the defaulted call loaded and ran its
+/// body without an instance ("operation has no body", MEASURED), the body-less one refused as
+/// ambiguous with the bracket written. Only a carrier the witness's one provision of `spec` writes
+/// ground; a parameter already bound is the call's, held to the selection by its checks. `false`
+/// where nothing was bound.
+pub(super) fn bind_carrier_the_witness_says(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec: Symbol,
+    witness: Symbol,
+) -> bool {
+    let Some(param) = spec_carrier_param(kb, spec) else {
+        return false;
+    };
+    let Some((_, vid)) = spec_param_vars(kb, spec).into_iter().find(|(p, _)| *p == param) else {
+        return false;
+    };
+    let open = match spec_param_binding(kb, subst, vid) {
+        None => vid,
+        Some(bound) => match kb.value_global_var(&bound) {
+            Some(var) => var,
+            None => return false,
+        },
+    };
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let rows: Vec<ProvidesRow> = provides_rows_of_provider(kb, witness)
+        .filter(|row| kb.canonical_sort_sym(row.spec_base) == spec_canon)
+        .collect();
+    let [row] = &rows[..] else {
+        return false;
+    };
+    let Some((carrier, _)) = witness_dispatch_carrier_value(kb, spec, row.provider, &row.spec_view)
+    else {
+        return false;
+    };
+    if !type_is_ground(kb, &carrier) {
+        return false;
+    }
+    subst.bind_value(kb, open, carrier);
+    true
+}
+
 /// Bind each parameter of `requirement`'s spec a call's `subst` leaves open to the type the
 /// requirement that answers the call writes for it, read at the body's rigids where it names
 /// a parameter in scope: under `requires Pc[C = C, Element = Bit]`, `Pc.both()` is at

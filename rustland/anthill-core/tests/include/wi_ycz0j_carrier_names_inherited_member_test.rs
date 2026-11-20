@@ -18,7 +18,9 @@
 //! Stream`) each argument the spec types by itself is held to the sort
 //! (`pin_provider_receiver_arguments`). A witness's provision (`sort W2 provides Mk[C = A]`)
 //! has its own members at `A`, and a call at `A` would run `A`'s: the default reached through
-//! `W2`'s name is refused, naming the witness.
+//! `W2`'s name was refused, naming the witness, until WI-20261003-FFY4R let a defaulted
+//! operation's bracket name the instance its body runs at — `W2.viaDefault()` is
+//! `Mk.viaDefault[Mk = W2]()` now, and answers by `W2`'s `e`.
 //!
 //! Found beside it: a receiver naming a sort that is not the callee's own bound nothing, so
 //! `Numeric[T = String].add(1, 2)` loaded and answered 3. The receiver reads the provision now.
@@ -51,7 +53,10 @@
 //!    [`a_bracket_on_the_receiver_names_the_instance`], whose `List[T = String]` is refused
 //!    by the hold.
 //! 4. THE WITNESS REFUSAL (`witness_route_only`). 1 FAILS:
-//!    [`a_default_through_a_witness_is_refused_naming_the_witness`].
+//!    `a_default_through_a_witness_is_refused_naming_the_witness`. Since WI-20261003-FFY4R the
+//!    witness's name is lowered to the bracket instead, and the row is
+//!    [`a_default_through_a_witness_runs_at_the_witness_instance`]; its back-out is in
+//!    `wi_ffy4r_witness_pin_every_route_test`'s ledger.
 //! 5. A CARRIER THAT IS A PARAMETER OF THE PROVIDER IS NO WITNESS (`witness_route_only`'s
 //!    `type_param_global_var` test). 1 FAILS: [`a_conversions_receiver_binds_the_spec_it_converts_to`],
 //!    `let t = Numeric` then `t.add(1, 2)` refused as a witness at `Numeric.T`.
@@ -327,16 +332,18 @@ const W2: &str = "
 
 /// [refused, unknown functor] A witness's provision has its members at `A`; a call at `A`
 /// runs `A`'s instance (`Mk[C = A].viaDefault()` answers 1 beside `W2`), so the default
-/// reached through `W2`'s name is refused rather than run at the wrong instance.
+/// reached through `W2`'s name is the call that names `W2`'s instance in its bracket,
+/// `Mk.viaDefault[Mk = W2]()`, and its `e()` is `W2`'s (WI-20261003-FFY4R). It was refused
+/// here, "a call does not choose a witness's instance for a body its spec writes", while a
+/// defaulted operation's bracket named nothing.
 #[test]
-fn a_default_through_a_witness_is_refused_naming_the_witness() {
-    assert_refused_naming(
-        &errors("t.ycz0j.w", W2, &n_of("W2.viaDefault()")),
-        &["`viaDefault` is `t.ycz0j.w.Mk.viaDefault`", "provides as a witness at `t.ycz0j.w.A`"],
-        "a witness's instance is not the carrier's",
-    );
+fn a_default_through_a_witness_runs_at_the_witness_instance() {
+    assert_eq!(runs("t.ycz0j.w", W2, &n_of("W2.viaDefault()")), Ok(3));
+    assert_eq!(runs("t.ycz0j.wb", W2, &n_of("Mk.viaDefault[Mk = W2]()")), Ok(3));
     assert_eq!(runs("t.ycz0j.wc", W2, &n_of("Mk[C = A].viaDefault()")), Ok(1));
     assert_eq!(runs("t.ycz0j.we", W2, &n_of("W2.e()")), Ok(3));
+    // A default taking the carrier runs at `W2`'s instance, its body where `W2` writes none.
+    assert_eq!(runs("t.ycz0j.wr", W2, "    W2.viaRecv(a(n: 9))"), Ok(5));
 }
 
 /// A name no provision lends keeps its refusal.
