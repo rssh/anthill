@@ -50,7 +50,8 @@ pub struct TypingEnv {
     /// `y → [s, provider]` — populated only for a STABLE receiver path (a value reference
     /// / field-access chain; immutable `let` ⟹ the aliased names denote one runtime
     /// value, the §3 soundness note). A projection `y.M` formed at the env-bearing let
-    /// site is canonicalized through this map (`canonicalize_projection_receivers`) so it
+    /// site is read through this map (`project_expr_carried`, at any depth of the annotation,
+    /// WI-20261103-FV92R) so it
     /// carries the SAME receiver as `z.M` / `s.provider.M` and the ζ arm equates them
     /// (`let y = z ⟹ y.M ≡ z.M`, the Scala divergence). Heads are stored already
     /// de-aliased (transitive `let y = z; let w = y` ⟹ `w → [z]`).

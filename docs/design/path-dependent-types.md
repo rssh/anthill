@@ -343,11 +343,14 @@ The receiver-alias map (substrate change 2 above) landed, completing the WI-400 
 immutable `let` ⟹ one runtime value) records the bound name's **canonical receiver path**
 on the typing env (`TypingEnv.receiver_aliases`, populated at `LetAfterValue` via
 `stable_receiver_path`; heads stored already de-aliased, so transitive `let w = y` resolves
-to `y`'s target). At the env-bearing **let-annotation** site a projection is canonicalized
-through that map *before* elimination (`canonicalize_projection_receivers` →
-`build_projection_from_segs`), so `y.M` carries the **same** receiver as `z.M` and the ζ
-arm equates them. `unify_types` stays env-free (the WI-399 invariant): canonicalization
-runs entirely at the site. An **unstable** value (`let y = pick(p)`) records no alias — `y`
+to `y`'s target). Where a body's annotation is read (`read_written_annotation`) a projection's
+receiver is read through that map by the elimination walk, at the receiver and before its type
+(`project_expr_carried` → `build_projection_from_segs`), at any depth of the annotation, so `y.M`
+carries the **same** receiver as `z.M` and the ζ arm equates them. *(Delivered as a step before
+elimination, `canonicalize_projection_receivers`, which rewrote a TOP-LEVEL projection only, so
+`(k: y.M, n: Int64)` and `Option[T = y.M]` kept a `y`-keyed neutral; WI-20261103-FV92R moved the
+read into the walk and removed the step.)* `unify_types` stays env-free (the WI-399
+invariant): canonicalization runs entirely at the site. An **unstable** value (`let y = pick(p)`) records no alias — `y`
 stays its own neutral receiver (the §4.1 stability rule).
 
 **No alias is not the same as no equality (WI-1082).** The stability rule decides only whether

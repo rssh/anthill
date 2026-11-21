@@ -243,8 +243,8 @@ fn assert_alias_rows(ns: &str, runs: &[(&str, &str)], refused: &[(&str, &str, &s
 /// Before SG16K the two were refused at `check(st, k)`, "expected st.provider.K, got
 /// t.provider.K". `check(u, k)` for another `State` is refused. The `let` spelling is
 /// `wi_0rp29_review9_regressions_test`'s `a_let_annotation_through_an_alias_names_its_target`.
-/// NOT HERE: the projection nested in a type (`p: (k: t.provider.K, n: Int64)`) stays keyed to `t`
-/// and is refused there, in a `let` as well, the alias step's own boundary (WI-20261103-FV92R).
+/// The projection nested in a type (`p: (k: t.provider.K, n: Int64)`) is read through the alias
+/// too, in a `let` as well: `wi_fv92r_nested_alias_projection_test` (WI-20261103-FV92R).
 #[test]
 fn a_compound_receiver_through_an_alias_is_the_path_it_names() {
     assert_alias_rows(

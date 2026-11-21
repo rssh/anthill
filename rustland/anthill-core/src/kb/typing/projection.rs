@@ -1086,41 +1086,6 @@ fn occ_place_head_sym(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
 }
 
 
-/// WI-400 increment C (eager let-alias): rewrite a projection type's receiver to its
-/// CANONICAL path BEFORE elimination, when its head is a let-aliased variable — so `y.M`
-/// (`let y = z`) carries the same receiver as `z.M` and the ζ arm equates them
-/// (`let y = z ⟹ y.M ≡ z.M`, the Scala divergence). A no-op when `aliases` is empty (the
-/// common case) or the receiver head is not aliased. Handles the TOP-LEVEL projection
-/// (the let-annotation shape `let k: y.M`); a projection NESTED inside a parameterized /
-/// denoted type is left unchanged, so `let k: Option[T = y.M]` keeps a `y`-keyed neutral
-/// that the ζ arm will not equate with `z.M` (a loud over-rejection, never a wrong accept).
-/// That boundary is this function's own now: [`eliminate_type_projections`] rebuilds a
-/// nested projection on either carrier since WI-20260929-0RP29.
-pub(super) fn canonicalize_projection_receivers(
-    kb: &mut KnowledgeBase,
-    aliases: &HashMap<Symbol, Vec<Symbol>>,
-    ty: &Value,
-    span: crate::span::SourceSpan,
-) -> Value {
-    if aliases.is_empty() {
-        return ty.clone();
-    }
-    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) else {
-        return ty.clone();
-    };
-    let Some(segs) = receiver_path_segs(kb, &value) else {
-        return ty.clone();
-    };
-    let (head, fields) = segs.split_first().expect("receiver path is non-empty");
-    let Some(canon_head) = aliases.get(head) else {
-        return ty.clone();
-    };
-    // Canonical receiver path = the head's alias path, then the trailing field segments.
-    let mut canon_segs = canon_head.clone();
-    canon_segs.extend_from_slice(fields);
-    build_projection_from_segs(kb, &canon_segs, member, span)
-}
-
 /// WI-400 increment C: build a projection type [`Value`] from a receiver path's segments
 /// plus the projected `member`, mirroring the loader's two carriers
 /// (`try_expr_carried_projection`): a single-segment receiver rides the ground
@@ -1401,11 +1366,12 @@ pub(super) fn read_denoted_projections(
 
 /// `ty`, an annotation written in a body, with each projection read where it is written: off a
 /// name that denotes a sort as that sort's member ([`read_denoted_projections`], in the scope
-/// `at`'s text is written in — [`written_scope`]), a let-aliased receiver as the path it names
-/// ([`canonicalize_projection_receivers`]), and every other one off its receiver's type in
-/// scope. A projection that does not read is the refusal, reported at `at`. `at` is the
-/// expression that writes the annotation where there is one — a `let`, a lambda: a pattern's
-/// annotation carries no rewrite's origin of its own ([`NodeOccurrence::rewritten_by`]).
+/// `at`'s text is written in — [`written_scope`]), a let-aliased receiver as the path it names,
+/// at any depth of the annotation ([`project_expr_carried`], WI-20261103-FV92R), and every
+/// other one off its receiver's type in scope. A projection that does not read is the refusal,
+/// reported at `at`. `at` is the expression that writes the annotation where there is one — a
+/// `let`, a lambda: a pattern's annotation carries no rewrite's origin of its own
+/// ([`NodeOccurrence::rewritten_by`]).
 ///
 /// THE BODY'S ONE READING of a written annotation: a `let`'s, a lambda's parameter and a pattern
 /// binder's go through it, so the type a lambda threads into its parameter's pattern is the type
@@ -1423,7 +1389,6 @@ pub(super) fn read_written_annotation(
     let span = Some(at.span.span);
     let scope = written_scope(kb, env, at);
     let ty = read_denoted_projections(kb, env, scope, ty, ctx, span)?;
-    let ty = canonicalize_projection_receivers(kb, env.receiver_aliases(), &ty, at.span);
     Discharge::new(&env.var_bindings, Receivers::Own(Some(env)), ctx, span).eliminate(kb, &ty)
 }
 
@@ -2513,7 +2478,62 @@ pub(super) fn required_instance_member(
 /// alone until a `let`'s annotation came to ride its pattern term, and refusing the term
 /// spelling then made the answer depend on WHICH CARRIER the annotation happened to have (the
 /// carrier-dependent verdict WI-425 exists to prevent).
+///
+/// IN A BODY ([`Receivers::Own`]) A RECEIVER A `let` ALIASES IS THE PATH IT NAMES, read before
+/// its type is (WI-400 increment C): `t.provider.K` under `let t = st` is `st.provider.K`, and
+/// `pr.K` under `let pr = st.provider` is too — only that path finds the `requires` of `State`
+/// that declares `K` on an abstract `provider`. The projection comes back on the path, neutral or
+/// not, so the ζ arm equates it with the one the aliased value carries. ONE HOP: an alias is
+/// stored with its head already read through the map ([`TypingEnv::bind_receiver_alias`]).
+///
+/// AT ANY DEPTH OF THE TYPE, as the walk that reaches it is (WI-20261103-FV92R). The alias was
+/// read by a step before this walk that rewrote a TOP-LEVEL projection only, so `let p: (k:
+/// t.provider.K, n: Int64) = (k: j, n: 1)` kept a `t`-keyed neutral and was refused "expected (k:
+/// t.provider.K, n: Int64), got (k: st.provider.K, n: Int64)" (MEASURED), as were `Option[T =
+/// t.provider.K]` and a lambda binder so written.
 fn project_expr_carried(
+    kb: &mut KnowledgeBase,
+    value: &Value,
+    member: Symbol,
+    cx: &Discharge,
+) -> Result<Option<Value>, TypeError> {
+    let Some(on_path) = aliased_receiver_projection(kb, value, member, cx) else {
+        return project_off_receiver(kb, value, member, cx);
+    };
+    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, &on_path) else {
+        panic!("build_projection_from_segs builds an expression-carried projection")
+    };
+    Ok(Some(
+        project_off_receiver(kb, &value, member, cx)?.unwrap_or(on_path),
+    ))
+}
+
+/// `value.member` built off the path a body's `let` alias names for `value`'s head, or `None`
+/// where the discharge is no body's, the receiver is no value-reference path, or its head is no
+/// alias. See [`project_expr_carried`].
+fn aliased_receiver_projection(
+    kb: &mut KnowledgeBase,
+    value: &Value,
+    member: Symbol,
+    cx: &Discharge,
+) -> Option<Value> {
+    let Receivers::Own(Some(env)) = cx.receivers else {
+        return None;
+    };
+    let aliases = env.receiver_aliases();
+    if aliases.is_empty() {
+        return None;
+    }
+    let segs = receiver_path_segs(kb, value)?;
+    if !aliases.contains_key(&segs[0]) {
+        return None;
+    }
+    let path = canonical_receiver_path(aliases, segs);
+    Some(build_projection_from_segs(kb, &path, member, site_of(value).0))
+}
+
+/// [`project_expr_carried`] off the receiver as it is.
+fn project_off_receiver(
     kb: &mut KnowledgeBase,
     value: &Value,
     member: Symbol,
