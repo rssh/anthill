@@ -3,9 +3,9 @@
 - id: WI-20261115-JY1XE-a-negated-bounded-quantifier
 - created: 2026-11-15T15:29:07Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-15T15:29:07Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-21T12:19:33Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -28,4 +28,10 @@ THE CAUSE. `step_naf`'s groundness gate (kb/resolve.rs, `if open_world_param || 
 PROPOSED: the gate reads a bounded quantifier's binder as bound inside the quantifier. A negand is ground when it is ground apart from the binders of the `forall_in` / `some_in` goals it contains (scoped to their bodies). A free variable of the body other than the binder still delays, so `!(forall ?p in [1, 2]: ?p > ?y)` with `?y` unbound stays conditional. A collection that is not yet ground still delays, as now. Decide with the hereditary-Harrop `(forall(?x), A -: C)` whether its skolemised binder is read the same way.
 
 ACCEPTANCE: rows 1, 2 and 4 answer true, unconditionally. Row 3 answers false. Row 5 is unchanged. `!(forall ?p in [1, 2]: ?p > ?y)` with `?y` unbound stays conditional, and so does `!(forall ?p in ?xs: …)` with `?xs` unbound. Back-out: with the gate as before, rows 1-4 are conditional again.
+
+## Changes
+
+### 2026-11-21T12:19:31Z — feedback — user
+
+Delivered in f3615615d. Decided with the user 2026-11-21: a reused binder is REFUSED at load (not captured, not shadowed), and the hereditary-Harrop discharge's binders read as bound too. The gate (SearchStream::negand_is_ground) instantiates each quantifier's scope as the quantifier does and asks value_is_ground of the instance, so a free body variable and an open collection still delay. Rows: wi_jy1xe_negated_quantifier_test (19); back-outs fail the 7 decided rows (gate), the 7 refusal rows (refusal), and the proof-step row (its reset); 3 controls pass either way. NOT DONE: scaland resolves no bounded quantifier (no gate to change), and its parser does not refuse a reused binder, so rustland refuses a program scaland loads. Follow-up question filed with the user: WI-20261121-9WMZ1 (shadowing).
 
