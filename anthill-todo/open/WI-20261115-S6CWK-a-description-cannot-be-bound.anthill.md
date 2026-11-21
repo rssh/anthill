@@ -57,3 +57,7 @@ ACCEPTANCE, added: row 7 loads and stores DescriptionInfo(target: product_has_po
 
 TARGET DECIDED with the user 2026-11-21: the label that WI-20261121-MVQP8 generates for every unlabeled clause, fact and constraint, from its head (with its body, or a hash of it, where heads collide). The predicate-level case above takes option (a): a predicate's description is its clauses' descriptions together.
 
+### 2026-11-21T20:06:37Z — feedback — claude
+
+ROWS 1-3 DELIVERED by WI-20261121-MVQP8 (12eada27b): a description block before an unlabeled bodied rule, a fact or an unlabeled constraint describes the label each is given, its head's name and a hash of its content (pos-K3M9Q2XA), an ordinary name that describe also reaches. Rows 4 (a goal in a rule body) and 5 (a quantifier binder) remain here.
+
