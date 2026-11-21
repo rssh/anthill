@@ -812,6 +812,14 @@ pub(crate) struct SortOpsTable {
     /// the law at an instance a dictionary names ([`KnowledgeBase::dictionary_is_lawful`]).
     /// Rebuilt with [`Self::eq_members`].
     eq_carriers: HashMap<Symbol, crate::kb::load::CarrierEq>,
+    /// WI-20261020-NNQ1S / WI-20260930-FB53M — `(carrier, spec operation)`, both canonical,
+    /// where the carrier's own member of the operation's short name does NOT supply it: the
+    /// operation has an implementation of its own (a body, a builtin) and the member does not
+    /// fit it at that carrier, so it is another operation of the same name. Every reader of a
+    /// carrier's own member goes through `typing::carrier_own_op`, which passes such a member
+    /// over. Filled by `typing::record_members_that_supply_nothing` after each build of the
+    /// table above.
+    supplies_nothing: HashSet<(Symbol, Symbol)>,
 }
 
 /// Where the law `eq_refl` decides a call of a carrier's `eq` member on identical operands
@@ -8833,6 +8841,34 @@ impl KnowledgeBase {
             .get(&Decl::of(key))
             .map(|m| m.values().copied().collect())
             .unwrap_or_default()
+    }
+
+    /// Every `(impl sort, short name, target)` row of the table, the impl sort as it is keyed
+    /// (canonical, plain). For `typing::record_members_that_supply_nothing`, which reads the
+    /// whole of it once per build.
+    pub(crate) fn sort_ops_rows(&self) -> Vec<(Symbol, Symbol, Symbol)> {
+        self.sort_ops
+            .by_impl
+            .iter()
+            .flat_map(|(decl, m)| m.iter().map(move |(&short, &op)| (decl.sym(), short, op)))
+            .collect()
+    }
+
+    /// WI-20261020-NNQ1S — does `carrier`'s own member of `spec_op`'s short name supply
+    /// NOTHING to `spec_op` ([`SortOpsTable::supplies_nothing`])? Read by
+    /// `typing::carrier_own_op` alone.
+    pub(crate) fn own_member_supplies_nothing(&self, carrier: Symbol, spec_op: Symbol) -> bool {
+        !self.sort_ops.supplies_nothing.is_empty()
+            && self.sort_ops.supplies_nothing.contains(&(
+                self.canonical_sort_sym(carrier),
+                self.canonical_sym(spec_op),
+            ))
+    }
+
+    /// WI-20261020-NNQ1S — replace [`SortOpsTable::supplies_nothing`]. Called only by
+    /// `typing::record_members_that_supply_nothing`.
+    pub(crate) fn set_members_that_supply_nothing(&mut self, pairs: HashSet<(Symbol, Symbol)>) {
+        self.sort_ops.supplies_nothing = pairs;
     }
 
     /// WI-240 — record a `(impl_sort, op_short) → target` entry. Called

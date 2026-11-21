@@ -19027,6 +19027,11 @@ fn load_phase_inner(
     // `kb.sort_ops_lookup` instead of the string-concat fallback.
     build_sort_ops_table(kb);
     mark!("build_sort_ops_table");
+    // WI-20261020-NNQ1S — which of the table's own members supply nothing to a same-named
+    // spec operation, before any reader of a carrier's own member runs (the eq-dispatch
+    // index below is the first).
+    super::typing::record_members_that_supply_nothing(kb);
+    mark!("record_members_that_supply_nothing");
     // WI-876 — the set of operations a binding block gave a HOST implementation.
     // After `build_sort_ops_table` because it is read alongside it (the
     // carrier-override resolution asks "can the interpreter run this member?", and
@@ -19198,6 +19203,9 @@ fn load_phase_inner(
     // Its OWN bucket: this is a full sort-ops pass, and folding it into the derivation's
     // mark would attribute the table build to the classification.
     mark!("build_sort_ops_table (derived-provision delta)");
+    // Again, over the derived rows: a derived provision is a binding a member is compared at.
+    super::typing::record_members_that_supply_nothing(kb);
+    mark!("record_members_that_supply_nothing (derived-provision delta)");
     // The derived `eq` members (`load_derived_eq_members`) are their carriers' own `eq`s,
     // in the table since the delta above: the index the classification read was built
     // before they were loaded. A derived member is the `eq` of a carrier that had none and

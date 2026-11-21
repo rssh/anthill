@@ -802,7 +802,17 @@ pub(super) fn type_member_as_value(
             && !value_contains_projection(kb, ty)
             && !value_contains_rigid(kb, ty)
     };
-    match project_type_member(kb, receiver_ty, member_short, None, None, &[], &ctx, span)? {
+    match project_type_member(
+        kb,
+        receiver_ty,
+        member_short,
+        None,
+        None,
+        &[],
+        RowReading::Ground,
+        &ctx,
+        span,
+    )? {
         ProjResult::Grounded(ty) if known(kb, &ty) => Ok(type_value_of(kb, &ty, occ)),
         _ => Err(refused(
             format!("a type member of `{denoted}` the receiver's type determines"),

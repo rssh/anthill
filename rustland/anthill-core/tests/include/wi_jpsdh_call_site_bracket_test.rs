@@ -48,7 +48,7 @@
 //!    [`an_unwritten_bracket_is_refused_naming_the_spec_operations_parameter`] (its advised
 //!    repair); step 5 backed out alone fails none here, the bracket seeding first.
 //! 2. ONE RELATION PER POSITION (`DeclarationsRelated`) — one unification over every
-//!    position. 3 FAIL: [`a_bracket_an_argument_contradicts_through_the_override_is_refused`],
+//!    position. 3 FAIL: [`a_bracket_an_argument_contradicts_through_the_override_is_refused_by_name`],
 //!    [`a_bracket_beside_an_argument_decides_what_the_override_answers_at`] and
 //!    [`a_bracket_an_argument_contradicts_is_refused_where_the_override_charges_an_effect`]
 //!    (refused, but as the join's "no common type").
@@ -61,7 +61,7 @@
 //!    [`an_unwritten_bracket_is_refused_naming_the_spec_operations_parameter`].
 //!
 //! PASS EITHER WAY, BY DESIGN — the controls that a part above refuses or names nothing it
-//! should not: [`a_bracket_agreeing_with_its_arguments_through_the_override_runs`],
+//! should not: [`a_bracket_agreeing_with_its_arguments_runs_the_override_by_name`],
 //! [`a_bracket_agreeing_with_its_arguments_charges_what_it_says`],
 //! [`an_unwritten_bracket_on_the_other_two_routes_is_refused_alike`],
 //! [`an_unwritten_parameter_the_expected_type_fixes_loads`],
@@ -72,9 +72,17 @@
 //!
 //! NOT REACHED, and not this ticket's: beside a spec DEFAULT body a member that declares no
 //! effect is not read at the call at all, so `Sp.op[U = String](x, 5)` over a pure
-//! `Car.op[W](c, k: W) -> Option[T = W] = some(k)` loads and fails at run time, with or without
-//! the bracket's type coming from an annotation instead — WI-20260930-FB53M's question (is a
-//! member that does not fit the spec operation its supplier).
+//! `Car.op[W](c, k: W) -> Option[T = W] = some(k)` loaded and failed at run time, with or
+//! without the bracket's type coming from an annotation instead — WI-20260930-FB53M's question
+//! (is a member that does not fit the spec operation its supplier).
+//!
+//! DECIDED SINCE (WI-20260930-FB53M with WI-20261020-NNQ1S, with the user 2026-11-21): it is
+//! not. A member beside a default that does not fit the spec operation is another operation of
+//! the same name, so the SPEC spelling of a call over one — every row below over
+//! [`default_spec`] and [`DEFAULTED_OP`] — is the spec's call and runs the default, and only the
+//! CARRIER spelling, which names the member, keeps the verdict this file records for it. Those
+//! rows say so at their sites. The ledger above was measured before, over both spellings; what
+//! it says of those rows holds of their carrier spelling.
 
 use crate::common::{assert_refused_naming, load_errors_of as load_errors, run_int64 as run_src};
 
@@ -412,8 +420,9 @@ fn an_argument_alone_binds_the_overrides_parameter() {
 // ── a bracket an argument contradicts ─────────────────────────────────────────
 
 /// `pick2[W](x: T, s: Self, k: {spec_k}) … = none` — a DEFAULT body, so the member beside it
-/// is not compared with it where it is declared (WI-20260930-FB53M) and the call is its only
-/// judge — and `Car.pick2[W, U, R](…, k: W)`, answering `some(pair(s, k))`.
+/// is not compared with it where it is declared (WI-20260930-FB53M), and, not fitting it, supplies
+/// nothing to it: the call naming the member is its only judge — and `Car.pick2[W, U, R](…, k:
+/// W)`, answering `some(pair(s, k))`.
 fn default_spec(spec_k: &str) -> String {
     format!(
         "operation pick2[W](x: T, s: Self, k: {spec_k}) -> Option[T = Pair[A = s.T, B = W]] \
@@ -432,33 +441,50 @@ fn k_body(q: &str, call: &str, arm: &str) -> String {
     )
 }
 
-/// A BRACKET AN ARGUMENT CONTRADICTS ONLY THROUGH THE OVERRIDE IS REFUSED ON BOTH SPELLINGS,
-/// in the same words. The spec takes `k: Int64` whatever `W` is, so its own argument check
-/// passes `Sp.pick2[W = String](a, b, 5)`; the override takes `k: W`. The spec spelling
-/// LOADED, the bracket reaching nothing and the override answering at the argument's `Int64`.
-/// Likewise `[W = dog]` beside a `cat`, the spec taking any `Animal`.
+/// A BRACKET AN ARGUMENT CONTRADICTS ONLY THROUGH THE OVERRIDE is refused where the call names
+/// the member, and is the spec's call where it names the spec. The spec takes `k: Int64`
+/// whatever `W` is, and the override `k: W`: `Car.pick2[W = String](a, b, 5)` is refused at the
+/// `5`, and `[W = dog]` beside a `cat` likewise. Through the spec it was refused in the same
+/// words, and before that LOADED, the bracket reaching nothing and the override answering at the
+/// argument's `Int64`. Since WI-20260930-FB53M (decided with the user 2026-11-21) the override
+/// is no supplier of `Sp.pick2` — it returns its own `k`'s type where the spec promises the
+/// bracket's — so `Sp.pick2[W = String](a, b, 5)` runs the spec's default and answers its `none`
+/// (7). RED with the member-fit rule backed out: the spec spelling is refused again.
 #[test]
-fn a_bracket_an_argument_contradicts_through_the_override_is_refused() {
-    for q in ["Sp", "Car"] {
-        assert_refused_naming(
-            &refusals(
-                &format!("wijpsdh.contra_{q}"),
-                &default_spec("Int64"),
+fn a_bracket_an_argument_contradicts_through_the_override_is_refused_by_name() {
+    assert_refused_naming(
+        &refusals(
+            "wijpsdh.contra_Car",
+            &default_spec("Int64"),
+            CAR_PICK_K,
+            &k_body("Car", "[W = String](a, b, 5)", "1"),
+        ),
+        &["pick2.k (op-arg): expected String, got Int64"],
+        "Car",
+    );
+    assert_refused_naming(
+        &refusals(
+            "wijpsdh.contra_sub_Car",
+            &default_spec("Animal"),
+            CAR_PICK_K,
+            &k_body("Car", "[W = dog](a, b, c1)", "1"),
+        ),
+        &["pick2.k (op-arg): expected dog, got cat"],
+        "Car",
+    );
+    for (tag, spec_k, call) in [
+        ("contra_Sp", "Int64", "[W = String](a, b, 5)"),
+        ("contra_sub_Sp", "Animal", "[W = dog](a, b, c1)"),
+    ] {
+        assert_eq!(
+            run(
+                &format!("wijpsdh.{tag}"),
+                &default_spec(spec_k),
                 CAR_PICK_K,
-                &k_body(q, "[W = String](a, b, 5)", "1"),
+                &k_body("Sp", call, "1"),
             ),
-            &["pick2.k (op-arg): expected String, got Int64"],
-            q,
-        );
-        assert_refused_naming(
-            &refusals(
-                &format!("wijpsdh.contra_sub_{q}"),
-                &default_spec("Animal"),
-                CAR_PICK_K,
-                &k_body(q, "[W = dog](a, b, c1)", "1"),
-            ),
-            &["pick2.k (op-arg): expected dog, got cat"],
-            q,
+            Ok(7),
+            "{tag}: the spec's default answers"
         );
     }
 }
@@ -482,25 +508,36 @@ fn a_bracket_beside_an_argument_decides_what_the_override_answers_at() {
     }
 }
 
-/// … AND THE CONTROLS: a bracket its argument agrees with runs the override on both spellings
-/// — at the argument's own type (`5 + 1`), at a wider one, and with no bracket at all. Passes
-/// with every part of the ledger backed out.
+/// … AND THE CONTROLS: a bracket its argument agrees with runs the override where the call
+/// names it — at the argument's own type (`5 + 1`), at a wider one, and with no bracket at all —
+/// and the spec's default where the call names the spec, whose `none` answers 7. The spec
+/// spelling ran the override too, until a member beside a default had to fit the spec to supply
+/// it (WI-20260930-FB53M, decided with the user 2026-11-21). With no bracket the spec's call is
+/// refused: its `W` is bound by nothing the call writes — the override's `k: W` bound it — and
+/// the refusal says to write it. The carrier spelling passes with every part of the ledger
+/// backed out; the spec spelling is RED with the member-fit rule backed out (6, 6, 1, 1).
 #[test]
-fn a_bracket_agreeing_with_its_arguments_through_the_override_runs() {
+fn a_bracket_agreeing_with_its_arguments_runs_the_override_by_name() {
     for q in ["Sp", "Car"] {
-        for (tag, spec_k, call, arm, want) in [
+        for (tag, spec_k, call, arm, by_name) in [
             ("same", "Int64", "[W = Int64](a, b, 5)", "w + 1", 6),
             ("none", "Int64", "(a, b, 5)", "w + 1", 6),
             ("wider", "Animal", "[W = Animal](a, b, c1)", "1", 1),
             ("exact", "Animal", "[W = cat](a, b, c1)", "1", 1),
         ] {
+            let ns = format!("wijpsdh.agree_{tag}_{q}");
+            let body = k_body(q, call, arm);
+            if q == "Sp" && tag == "none" {
+                assert_refused_naming(
+                    &refusals(&ns, &default_spec(spec_k), CAR_PICK_K, &body),
+                    &["pick2.type_arg", "expected a type for 'W', got unconstrained"],
+                    "the spec's call binds no `W`",
+                );
+                continue;
+            }
+            let want = if q == "Car" { by_name } else { 7 };
             assert_eq!(
-                run(
-                    &format!("wijpsdh.agree_{tag}_{q}"),
-                    &default_spec(spec_k),
-                    CAR_PICK_K,
-                    &k_body(q, call, arm),
-                ),
+                run(&ns, &default_spec(spec_k), CAR_PICK_K, &body),
                 Ok(want),
                 "{tag} {q}"
             );
@@ -550,59 +587,72 @@ const DEFAULTED_OP: &str =
 const CAR_OP_KU: &str = "operation op[W](c: Self, k: W, u: W) -> Int64 effects {Error[W]} \
                          requires TypeValue[T = W] = Error.raise(k)";
 
-/// A BRACKET AN ARGUMENT CONTRADICTS IS REFUSED WHERE THE OVERRIDE CHARGES AN EFFECT, in the
-/// carrier spelling's words: `Sp.op[U = String](x, 5, "s")` over `Car.op[W](c, k: W, u: W)
-/// effects {Error[W]} = Error.raise(k)` beside a default. The spec takes `k: Int64`, so only
-/// the override's `k: W` contradicts. With the bracket reaching `W` and nothing judging the
-/// arguments against it, `via` declaring `Error[String]` LOADED and raised the `5`; with the
-/// bracket reaching nothing it was refused, as the join's "no common type for `W`".
+/// A BRACKET AN ARGUMENT CONTRADICTS IS REFUSED WHERE THE OVERRIDE CHARGES AN EFFECT:
+/// `Car.op[W = String](x, 5, "s")` over `Car.op[W](c, k: W, u: W) effects {Error[W]} =
+/// Error.raise(k)` beside a default. The spec takes `k: Int64`, so only the override's `k: W`
+/// contradicts. With the bracket reaching `W` and nothing judging the arguments against it,
+/// `via` declaring `Error[String]` LOADED and raised the `5`; with the bracket reaching nothing
+/// it was refused, as the join's "no common type for `W`". The spec spelling, `Sp.op[U =
+/// String](x, 5, "s")`, was refused in the same words; since WI-20260930-FB53M (decided with the
+/// user 2026-11-21) the member, which ties `k` to `u` where the spec does not, is no supplier of
+/// `Sp.op`, and that call is the spec's, whose default raises nothing: it LOADS. RED with the
+/// member-fit rule backed out: the spec spellings are refused again.
 #[test]
 fn a_bracket_an_argument_contradicts_is_refused_where_the_override_charges_an_effect() {
-    for (q, call) in [
-        ("sp", "Sp.op[U = String](x, 5, \"s\")"),
-        ("car", "Car.op[W = String](x, 5, \"s\")"),
-    ] {
-        let src = effects_program(
-            &format!("wijpsdh.eff_contra_{q}"),
-            DEFAULTED_OP,
-            CAR_OP_KU,
-            "String",
-            call,
-        );
-        assert_refused_naming(
-            &load_errors(&src),
-            &["op.k (op-arg): expected String, got Int64"],
-            q,
-        );
-    }
+    let src = effects_program(
+        "wijpsdh.eff_contra_car",
+        DEFAULTED_OP,
+        CAR_OP_KU,
+        "String",
+        "Car.op[W = String](x, 5, \"s\")",
+    );
+    assert_refused_naming(
+        &load_errors(&src),
+        &["op.k (op-arg): expected String, got Int64"],
+        "car",
+    );
+    let src = effects_program(
+        "wijpsdh.eff_contra_sp",
+        DEFAULTED_OP,
+        CAR_OP_KU,
+        "String",
+        "Sp.op[U = String](x, 5, \"s\")",
+    );
+    assert_eq!(crate::common::try_load_kb_with(&src).err(), None, "sp: the spec's call");
     // … and where the override writes that parameter with a projection of its own (`c.V`),
     // eliminated against the arguments before the argument is judged.
     let spec_op = "operation op[U](s: Self, k: Pair[A = Int64, B = Int64], u: U) -> Int64 \
                    requires TypeValue[T = U] = 0";
     let member = "operation op[W](c: Self, k: Pair[A = c.V, B = W], u: W) -> Int64 effects \
                   {Error[W]} requires TypeValue[T = W] = Error.raise(u)";
-    for (q, call) in [
-        ("sp", "Sp.op[U = String](x, pair(1, 5), \"s\")"),
-        ("car", "Car.op[W = String](x, pair(1, 5), \"s\")"),
-    ] {
-        let src = effects_program(
-            &format!("wijpsdh.eff_contra_proj_{q}"),
-            spec_op,
-            member,
-            "String",
-            call,
-        );
-        assert_refused_naming(
-            &load_errors(&src),
-            &["op.k (op-arg): expected Pair[A = Int64, B = String], got Pair[A = Int64, B = Int64]"],
-            q,
-        );
-    }
+    let src = effects_program(
+        "wijpsdh.eff_contra_proj_car",
+        spec_op,
+        member,
+        "String",
+        "Car.op[W = String](x, pair(1, 5), \"s\")",
+    );
+    assert_refused_naming(
+        &load_errors(&src),
+        &["op.k (op-arg): expected Pair[A = Int64, B = String], got Pair[A = Int64, B = Int64]"],
+        "car",
+    );
+    let src = effects_program(
+        "wijpsdh.eff_contra_proj_sp",
+        spec_op,
+        member,
+        "String",
+        "Sp.op[U = String](x, pair(1, 5), \"s\")",
+    );
+    assert_eq!(crate::common::try_load_kb_with(&src).err(), None, "sp: the spec's call");
 }
 
 /// … AND ITS CONTROLS: a bracket the arguments agree with loads, and so does the call with no
 /// bracket; arguments that disagree with each other and no bracket are refused as the join
-/// refuses them. Passes with every part of the ledger backed out.
+/// refuses them where the call names the member, whose `k` and `u` share its `W`. Passes with
+/// every part of the ledger backed out. The spec spelling of that last call was refused alike;
+/// since WI-20260930-FB53M (decided with the user 2026-11-21) it is the spec's call, whose `k`
+/// and `u` share nothing, and loads — RED with the member-fit rule backed out.
 #[test]
 fn a_bracket_agreeing_with_its_arguments_charges_what_it_says() {
     for (tag, call) in [("same", "Sp.op[U = Int64](x, 5, 6)"), ("none", "Sp.op(x, 5, 6)")] {
@@ -620,13 +670,21 @@ fn a_bracket_agreeing_with_its_arguments_charges_what_it_says() {
         DEFAULTED_OP,
         CAR_OP_KU,
         "String",
-        "Sp.op(x, 5, \"s\")",
+        "Car.op(x, 5, \"s\")",
     );
     assert_refused_naming(
         &load_errors(&src),
         &["no common type for type parameter `W` of `op`: Int64 (k), String (u)"],
         "no bracket, two arguments",
     );
+    let src = effects_program(
+        "wijpsdh.eff_nojoin_sp",
+        DEFAULTED_OP,
+        CAR_OP_KU,
+        "String",
+        "Sp.op(x, 5, \"s\")",
+    );
+    assert_eq!(crate::common::try_load_kb_with(&src).err(), None, "the spec's call");
 }
 
 /// A BRACKET WIDER THAN ITS ARGUMENTS IS WHAT THE OVERRIDE CHARGES, a fitting member and no
@@ -852,27 +910,25 @@ fn an_unwritten_parameter_the_expected_type_fixes_loads() {
 }
 
 /// … NOR FOR AN OVERRIDE PARAMETER THAT STANDS AT NO PARAMETER OF THE SPEC'S: `Car.pick`'s
-/// `X` stands where the spec writes `s.T`, so no bracket of `Sp.pick` could bind it and the
-/// call keeps the refusal it had. Passes with every part of the ledger backed out.
+/// `X` stands where the spec writes `s.T`, so no bracket of `Sp.pick` could bind it, and no
+/// bracket is advised. The call kept the refusal it had, the spec's own "has no member 'E'"
+/// (the spec's `s.E` read at `Car[…, EC = R]`, `R` the caller's row). Since WI-20260930-FB53M
+/// (decided with the user 2026-11-21) the member — returning an `X` nothing binds where the
+/// spec promises `s.T` — is no supplier beside the default, and since WI-20261020-NNQ1S the
+/// spec's `s.E` reads there as `{R}`: the call is the spec's and answers its `none` (7). RED
+/// with that reading backed out (MEASURED); the member-fit rule backed out alone, the override is
+/// threaded, declines, and the same reading answers 7.
 #[test]
 fn an_override_parameter_standing_at_no_spec_parameter_still_declines() {
     let spec_op = "operation pick(x: T, s: Self) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E \
                    = s.E]]] effects s.E = none";
     let member = "operation pick[W, R, X](x: Car[V = W, EC = R], s: Self) -> Option[T = Pair[A \
                   = X, B = Car[V = V, EC = EC]]] effects {EC} = none";
-    let errs = refusals(
-        "wijpsdh.own",
-        spec_op,
-        member,
-        &format!("    match Sp.pick(a, b)\n{ARMS}"),
-    );
-    assert_refused_naming(
-        &errs,
-        &["pick.return", "has no member 'E'"],
-        "the spec's own refusal",
-    );
+    let body = format!("    match Sp.pick(a, b)\n{ARMS}");
+    let errs = refusals("wijpsdh.own", spec_op, member, &body);
     assert!(
         !errs.iter().any(|e| e.contains("unconstrained")),
         "no bracket is advised: {errs:#?}"
     );
+    assert_eq!(run("wijpsdh.own", spec_op, member, &body), Ok(7), "the spec's default");
 }

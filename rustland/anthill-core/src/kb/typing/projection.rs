@@ -1481,6 +1481,8 @@ pub(super) struct Discharge<'a> {
     /// of a function value reads its own parameters only ([`ApplicationPlaces::read_at_arguments`]);
     /// a projection off a name of the caller's is the caller's.
     pub(super) others_kept: bool,
+    /// How a provision's effect-row binding reads at a receiver ([`RowReading`]).
+    pub(super) rows: RowReading,
     pub(super) ctx: &'a TypeErrorContext,
     pub(super) span: Option<Span>,
 }
@@ -1522,6 +1524,7 @@ impl<'a> Discharge<'a> {
             denotations: None,
             bound: None,
             others_kept: false,
+            rows: RowReading::Ground,
             ctx,
             span,
         }
@@ -2557,6 +2560,7 @@ fn project_off_receiver(
             recv_decl_sort,
             owner,
             cx.selections,
+            cx.rows,
             cx.ctx,
             cx.span,
         )? {
@@ -2677,6 +2681,7 @@ pub(super) fn project_type_member(
     recv_decl_sort: Option<Symbol>,
     owner: Option<Symbol>,
     selections: &[InstanceSelection],
+    rows: RowReading,
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<ProjResult, TypeError> {
@@ -2736,7 +2741,7 @@ pub(super) fn project_type_member(
         // signature written in the spec's vocabulary (`c.Element`) grounds on a concrete
         // carrier (`List[T = Int64].Element = Int64`) and stays neutral on a bare one.
         if let Some(r) =
-            project_via_provided_spec(kb, arg_ty, s, member, owner, selections, ctx, span)
+            project_via_provided_spec(kb, arg_ty, s, member, owner, selections, rows, ctx, span)
         {
             return r;
         }
@@ -2935,6 +2940,7 @@ fn project_via_provided_spec(
     member: &str,
     owner: Option<Symbol>,
     selections: &[InstanceSelection],
+    rows: RowReading,
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Option<Result<ProjResult, TypeError>> {
@@ -2967,9 +2973,11 @@ fn project_via_provided_spec(
                 }
                 None => return None,
             };
-            return provision_lends_binding(kb, recv_ty, recv_sort, &written).map(Ok);
+            return provision_lends_binding(kb, recv_ty, recv_sort, &written, rows).map(Ok);
         }
-        match witnesses_lend_member(kb, recv_ty, recv_sort, spec, member, selections, ctx, span) {
+        match witnesses_lend_member(
+            kb, recv_ty, recv_sort, spec, member, selections, rows, ctx, span,
+        ) {
             Ok(Some(lent)) => return lent.map(Ok),
             Ok(None) => {}
             Err(e) => return Some(Err(e)),
@@ -2977,7 +2985,7 @@ fn project_via_provided_spec(
     }
     let mut lent: Option<(Symbol, ProjResult)> = None;
     for (spec, written) in unowned_member_bindings(kb, recv_sort, member) {
-        let Some(this) = provision_lends_binding(kb, recv_ty, recv_sort, &written) else {
+        let Some(this) = provision_lends_binding(kb, recv_ty, recv_sort, &written, rows) else {
             continue;
         };
         let agree = match &lent {
@@ -3160,6 +3168,7 @@ fn provision_lends_binding(
     recv_ty: &Value,
     recv_sort: Symbol,
     written: &Value,
+    rows: RowReading,
 ) -> Option<ProjResult> {
     // Ground the carrier-side type (`List`'s `T`) against the receiver's type-args, so
     // a concrete `List[T = Int64]` grounds `Element` to `Int64`; a bare `List` leaves
@@ -3171,7 +3180,7 @@ fn provision_lends_binding(
     if let Some(opened) = provision_variables_opened(kb, recv_sort, written, &grounded) {
         return Some(ProjResult::Grounded(opened));
     }
-    lent_member(kb, written, grounded)
+    lent_member(kb, written, grounded, rows)
 }
 
 /// WI-20261001-80ZV8 — `at_receiver`, the provision's binding `written` read at a receiver,
@@ -3204,6 +3213,31 @@ fn provision_variables_opened(
     ProvisionOpening::instance_where_nothing_else_is_open(kb, carrier, written, at_receiver)
 }
 
+/// WI-20261020-NNQ1S — how a provision's binding of an EFFECT-ROW member reads at a receiver
+/// ([`lent_member`]); a [`Discharge`] carries it to every projection it reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum RowReading {
+    /// A row lends itself where it is ground, and an unwritten one lends nothing (WI-484 vs
+    /// WI-396). Every reading but the one below.
+    Ground,
+    /// A row resting on a RIGID lends itself as well: `Car provides Sp[E = {EC}]` at a receiver
+    /// `Car[V = Int64, EC = R]`, `R` the enclosing operation's own row parameter, lends `s.E`
+    /// as `{R}` — the row the receiver's type writes, which a rigid fixes as a ground row does
+    /// ([`type_is_determined`]) and which nothing downstream can bind. Read as [`Self::Ground`]
+    /// it lends nothing, and `Sp.get(a)` beside no member was refused "type 'Car' has no member
+    /// 'E'", where the same call at `EC = {}` ran (MEASURED, 2026-11-21, on main as well). A
+    /// row resting on a FLEXIBLE variable is still unwritten, and lends nothing.
+    ///
+    /// THE RETRY OF A SPEC CALL WHOSE RECEIVER'S OVERRIDE THREADS NOTHING, and nothing else
+    /// (`check_apply_iter`). Where the spec's projections do not read at a concrete receiver, a
+    /// call is typed by its override's own signature (WI-606, [`concrete_override_threaded`]),
+    /// which says more than the spec's — the override returns its carrier where the spec
+    /// returns `Sp` — and what that reading gives its callers is what it was. A member that
+    /// does not fit the spec is no override of it (WI-20260930-FB53M), so its call is typed by
+    /// the spec's signature, which had no reading there.
+    RigidsFixed,
+}
+
 /// A provision's binding of a member (`written`), as it reads at a receiver (`at_receiver`).
 ///
 /// WI-484 (vs WI-396): an EFFECT-row member projects via `provides` ONLY when the provision
@@ -3217,11 +3251,19 @@ fn provision_variables_opened(
 /// = Pair[A, B]` on a bare receiver) stays NEUTRAL, never a Grounded type that would absorb
 /// demand downstream. A row that names a cell of the receiver's own (`{Modify[k]}`) is
 /// concrete: it is what the member is there, and nothing a later pass could decide.
-fn lent_member(kb: &KnowledgeBase, written: &Value, at_receiver: Value) -> Option<ProjResult> {
+///
+/// An effect row resting on a rigid lends itself under [`RowReading::RigidsFixed`] alone.
+fn lent_member(
+    kb: &KnowledgeBase,
+    written: &Value,
+    at_receiver: Value,
+    rows: RowReading,
+) -> Option<ProjResult> {
     let is_effect_member = matches!(type_head(kb, written), TypeHead::EffectsRows);
     let is_ground = type_is_ground(kb, &at_receiver);
     if is_effect_member && !is_ground {
-        return None;
+        let fixed = rows == RowReading::RigidsFixed && type_is_determined(kb, &at_receiver);
+        return fixed.then_some(ProjResult::Grounded(at_receiver));
     }
     Some(if is_ground {
         ProjResult::Grounded(at_receiver)
@@ -3332,6 +3374,7 @@ fn witnesses_lend_member(
     spec: Symbol,
     member: &str,
     selections: &[InstanceSelection],
+    rows: RowReading,
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Option<Option<ProjResult>>, TypeError> {
@@ -3345,7 +3388,7 @@ fn witnesses_lend_member(
     for (row, at) in covering {
         let this = member_binding(kb, &row.bindings(kb), member).and_then(|written| {
             let at_receiver = resolve_type_deep_value(kb, &at, &written);
-            lent_member(kb, &written, at_receiver)
+            lent_member(kb, &written, at_receiver, rows)
         });
         let agree = match &lent {
             None => {
@@ -3813,7 +3856,17 @@ pub(super) fn resolve_rigid_projection(
     if let SubjectKey::Sym(subject_sym) = key {
         if same_sort_canonical(kb, subject_sym, decl_sort) {
             let recv = Value::term(kb.make_sort_ref(subject_sym));
-            return match project_type_member(kb, &recv, &member_str, None, None, &[], ctx, span)? {
+            return match project_type_member(
+                kb,
+                &recv,
+                &member_str,
+                None,
+                None,
+                &[],
+                RowReading::Ground,
+                ctx,
+                span,
+            )? {
                 // WI-391: a ground member projects to the canonical `Ref(s)` shape (the
                 // producer no longer emits a nullary `Fn{s}` binding here).
                 ProjResult::Grounded(v) => Ok(ProjResult::Grounded(v)),

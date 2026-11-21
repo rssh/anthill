@@ -1133,8 +1133,10 @@ const UNBOUND_PICK: &str = "operation pick[W, R, X](x: Car[V = W, EC = R], s: Se
 
 /// AN OVERRIDE TYPE PARAMETER NO ARGUMENT BINDS IS NOT THREADED: `A = X` would reach `v + 1` as
 /// `?X` and unify with anything, where `Car.pick(a, b)` is refused for it ("expected a type
-/// for 'X', got unconstrained"). The fallback declines, and the call keeps the spec's own
-/// refusal. It LOADED, threading `?X`.
+/// for 'X', got unconstrained"). The fallback declines, and the call is typed by the spec's own
+/// signature. It LOADED, threading `?X`. That signature was refused at `s.E` ("Car has no member
+/// 'E'"); since WI-20261020-NNQ1S it reads `s.E` at `{R}`, and the spec's `s.T` is any `Car`
+/// (`T = Car[V = ?, EC = ?]`), so `v.v + 1` is refused: the spec says nothing of `V`.
 #[test]
 fn an_override_type_parameter_no_argument_binds_is_not_threaded() {
     let errs = load_errors(&car_program(
@@ -1145,7 +1147,15 @@ fn an_override_type_parameter_no_argument_binds_is_not_threaded() {
         ("Int64", "41"),
         ("Int64", "99"),
     ));
-    assert_refused_naming(&errs, &["pick.return"], "the spec's own refusal of `s.E`");
+    assert_refused_naming(
+        &errs,
+        &["add.b (op-arg): expected ?V, got Int64"],
+        "the spec's own signature, at `v.v + 1`",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("?X")),
+        "nothing threaded from the override: {errs:#?}"
+    );
 }
 
 /// A CONFLICT THROUGH THE FALLBACK IS REFUSED AS THE QUALIFIED CALL REFUSES IT. With a DEFAULTED
@@ -1160,27 +1170,43 @@ fn an_override_type_parameter_no_argument_binds_is_not_threaded() {
 /// sort's shared type parameter (first bound to Int64)". Written `Self` — the bare name being
 /// any instance since proposal 070 — the two parameters are one written type, and the second instance is an ordinary
 /// mismatch at its argument. What the row pins is unchanged: the two calls are refused alike.
+///
+/// THROUGH THE SPEC IT IS NO CONFLICT SINCE WI-20260930-FB53M (decided with the user 2026-11-21, WI-20260930-FB53M / WI-20261020-NNQ1S): the tied member does not fit
+/// `Sp.pick` beside its default, so it supplies nothing there and `Sp.pick(a, b)` is the spec's
+/// call, whose `x: T` is any `Car`. What is refused is `v.v + 1`, the spec's `s.T` being any
+/// `Car`. RED with the member-fit rule backed out: the spec spelling is the conflict again.
 #[test]
 fn a_conflict_through_the_fallback_is_refused_as_the_qualified_call_refuses_it() {
-    let conflict = "pick.s (op-arg): expected Car[V = Int64";
-    for call in ["Sp.pick(a, b)", "Car.pick(a, b)"] {
-        let errs = load_errors(&car_program(
-            "wi0rp29.undecided",
-            " = none",
-            TIED_PICK,
-            call,
-            ("Int64", "41"),
-            ("String", "\"str\""),
-        ));
-        assert_refused_naming(&errs, &[conflict, "got Car[V = String"], call);
-        assert!(
-            !errs.iter().any(|e| e.contains("pick.return")),
-            "{call}: the conflict, not the spec's `s.E`: {errs:#?}"
-        );
-    }
+    let errs = load_errors(&car_program(
+        "wi0rp29.undecided",
+        " = none",
+        TIED_PICK,
+        "Car.pick(a, b)",
+        ("Int64", "41"),
+        ("String", "\"str\""),
+    ));
+    assert_refused_naming(
+        &errs,
+        &["pick.s (op-arg): expected Car[V = Int64", "got Car[V = String"],
+        "Car.pick(a, b)",
+    );
+    let errs = load_errors(&car_program(
+        "wi0rp29.undecided_sp",
+        " = none",
+        TIED_PICK,
+        "Sp.pick(a, b)",
+        ("Int64", "41"),
+        ("String", "\"str\""),
+    ));
+    assert_refused_naming(&errs, &["add.b (op-arg): expected ?V, got Int64"], "Sp.pick(a, b)");
+    assert!(
+        !errs.iter().any(|e| e.contains("pick.s (op-arg)")),
+        "the spec's call has no conflict: {errs:#?}"
+    );
 }
 
-/// … AND ITS CONTROL: both at `Int64`, σ decides, and the member's return is threaded.
+/// … AND ITS CONTROL: both at `Int64`, σ decides, and the member's return is what the call that
+/// names it answers. Through the spec the call is the spec's, refused at `v.v + 1` as above.
 #[test]
 fn a_conflict_through_the_fallback_is_refused_as_the_qualified_call_refuses_it_control() {
     let ns = "wi0rp29.decided";
@@ -1190,13 +1216,25 @@ fn a_conflict_through_the_fallback_is_refused_as_the_qualified_call_refuses_it_c
                 ns,
                 " = none",
                 TIED_PICK,
-                "Sp.pick(a, b)",
+                "Car.pick(a, b)",
                 ("Int64", "41"),
                 ("Int64", "99")
             ),
             &format!("{ns}.go")
         ),
         Ok(42)
+    );
+    assert_refused_naming(
+        &load_errors(&car_program(
+            "wi0rp29.decided_sp",
+            " = none",
+            TIED_PICK,
+            "Sp.pick(a, b)",
+            ("Int64", "41"),
+            ("Int64", "99"),
+        )),
+        &["add.b (op-arg): expected ?V, got Int64"],
+        "Sp.pick(a, b): the spec's call",
     );
 }
 
@@ -1756,7 +1794,10 @@ fn a_projection_written_as_a_row_atom_is_spliced_control() {
 /// A MEMBER OF ANOTHER ARITY IS NOT THREADED: beside a DEFAULTED spec operation the member-fit
 /// check does not compare `Car.peek(s: Car, k: String)` with `Sp.peek(s: Sp)`, and the fallback
 /// paired them by position, silently dropping `k` — threading a return (`A = String`) of a
-/// member the call cannot run. It declines, and the call keeps the spec's own refusal.
+/// member the call cannot run. It declines, and the call is typed by the spec's own signature.
+/// That was refused at `s.E` ("Car has no member 'E'"); since WI-20261020-NNQ1S `s.E` reads
+/// there as `{R}`, and what refuses the call is the row's annotation, against the spec's return
+/// at `T = Int64` — no `A = String` in it.
 #[test]
 fn a_member_of_another_arity_is_not_threaded() {
     let src = r#"
@@ -1785,7 +1826,14 @@ namespace wi0rp29.arity
 end
 "#;
     let errs = load_errors(src);
-    assert_refused_naming(&errs, &["peek.return"], "the spec's own refusal of `s.E`");
+    assert_refused_naming(
+        &errs,
+        &[
+            "r.annotation (let-binding): expected Int64",
+            "got Option[T = Pair[A = Int64, B = Sp[T = Int64, E = {?R}]]]",
+        ],
+        "the spec's own signature",
+    );
     assert!(
         !errs.iter().any(|e| e.contains("A = String")),
         "nothing threaded from the two-parameter member: {errs:#?}"
@@ -2468,6 +2516,12 @@ end
 /// a pair of lists of any two element types. Expanded at the top only, the fallback refused
 /// `Sp.pick(a, b, pair(ints, strs))` naming "the sort's shared type parameter" — `List`'s `T`,
 /// misnamed. Runs to 41 + 1.
+///
+/// THE OVERRIDE RETURNS THE FIRST CAR NOW, `A = Car[V = W, EC = R]`, as the spec's `A = s.T`
+/// (any `Car`) does. It returned `A = W`, the car's `V`, which is no `Car`: since
+/// WI-20260930-FB53M (decided with the user 2026-11-21, WI-20260930-FB53M / WI-20261020-NNQ1S) such a member supplies nothing beside the default, and the call is the
+/// spec's — `v + 1` on the spec's `Car` refused, as [`nested_bare_foreign_sorts_beside_a_member_that_does_not_fit`]
+/// pins. Fitting, it is threaded as before.
 #[test]
 fn nested_bare_foreign_sorts_through_the_fallback_are_two() {
     let ns = "wi0rp29.fbnested";
@@ -2487,13 +2541,13 @@ namespace {ns}
     effects EC = ?
     entity car(v: V)
     provides Sp[T = Car[V = ?, EC = ?], E = {{EC}}]
-    operation pick[W, R](x: Car[V = W, EC = R], s: Self, p: Pair[A = List, B = List]) -> Option[T = Pair[A = W, B = Car[V = V, EC = EC]]] effects {{EC}} = some(pair(x.v, s))
+    operation pick[W, R](x: Car[V = W, EC = R], s: Self, p: Pair[A = List, B = List]) -> Option[T = Pair[A = Car[V = W, EC = R], B = Car[V = V, EC = EC]]] effects {{EC}} = some(pair(x, s))
   end
   operation use[R](a: Car[V = Int64, EC = R], b: Car[V = Int64, EC = R]) -> Int64 effects {{R}} =
     let xs: List[T = Int64] = [1]
     let ys: List[T = String] = ["s"]
     match Sp.pick(a, b, pair(xs, ys))
-      case some(pair(v, _)) -> v + 1
+      case some(pair(v, _)) -> v.v + 1
       case none() -> 0
   operation go() -> Int64 =
     let a: Car[V = Int64, EC = {{}}] = car(v: 41)
@@ -2503,6 +2557,54 @@ end
 "#
     );
     assert_eq!(run_src(&src, &format!("{ns}.go")), Ok(42));
+}
+
+/// … AND THE MEMBER THAT DOES NOT FIT, returning `A = W` where the spec returns any `Car`: the
+/// call naming it runs it (41 + 1), and the call naming the spec is the spec's (decided with the user 2026-11-21, WI-20260930-FB53M / WI-20261020-NNQ1S), refused at
+/// `v + 1` on the spec's `Car`. Through the fallback it ran to 42. RED with the member-fit rule
+/// backed out (the spec spelling runs to 42 again).
+#[test]
+fn nested_bare_foreign_sorts_beside_a_member_that_does_not_fit() {
+    let program = |ns: &str, q: &str| {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, Bool, Option, Pair, String, List}}
+  import anthill.prelude.Option.{{some, none}}
+  import anthill.prelude.Pair.{{pair}}
+  sort Sp
+    sort T = ?
+    effects E = ?
+    operation pick(x: T, s: Self, p: Pair[A = List, B = List]) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E = none
+  end
+  sort Car
+    sort V = ?
+    effects EC = ?
+    entity car(v: V)
+    provides Sp[T = Car[V = ?, EC = ?], E = {{EC}}]
+    operation pick[W, R](x: Car[V = W, EC = R], s: Self, p: Pair[A = List, B = List]) -> Option[T = Pair[A = W, B = Car[V = V, EC = EC]]] effects {{EC}} = some(pair(x.v, s))
+  end
+  operation use[R](a: Car[V = Int64, EC = R], b: Car[V = Int64, EC = R]) -> Int64 effects {{R}} =
+    let xs: List[T = Int64] = [1]
+    let ys: List[T = String] = ["s"]
+    match {q}.pick(a, b, pair(xs, ys))
+      case some(pair(v, _)) -> v + 1
+      case none() -> 0
+  operation go() -> Int64 =
+    let a: Car[V = Int64, EC = {{}}] = car(v: 41)
+    let b: Car[V = Int64, EC = {{}}] = car(v: 99)
+    use(a, b)
+end
+"#
+        )
+    };
+    let ns = "wi0rp29.fbnested_car";
+    assert_eq!(run_src(&program(ns, "Car"), &format!("{ns}.go")), Ok(42));
+    assert_refused_naming(
+        &load_errors(&program("wi0rp29.fbnested_sp", "Sp")),
+        &["add.b (op-arg): expected Car[V = ?V, EC = ?EC], got Int64"],
+        "the spec's call",
+    );
 }
 
 /// `pick2[W](x: T, s: Sp) -> Option[T = Pair[A = s.T, B = W]] effects s.E` and its override
@@ -2620,9 +2722,14 @@ end
 /// The fallback's two other verdicts: `Sp.put(x, y, k)` / `Sp.each(x, y, f)` thread the
 /// override (`s.E` does not ground over `R`) at a projection over ANOTHER argument (`k: o.T`,
 /// `f: (x: o.T) -> …`). The spec operation has a DEFAULT body, so the declaration rule does not
-/// compare the member (it compares only a sole backing — WI-20260930-FB53M) and the call is its
+/// compare the member (it compares only a sole backing — WI-20260930-FB53M) and the call was its
 /// only judge; a member that is the sole backing is refused where it is declared, since `o`
 /// is any provider and its `T` any type (the member-rule file's projection rows).
+///
+/// THE CALL THROUGH THE SPEC IS THE SPEC'S SINCE (decided with the user 2026-11-21, WI-20260930-FB53M / WI-20261020-NNQ1S): each member takes less than the spec's
+/// parameter, so it supplies nothing beside the default, and the verdicts below are the calls
+/// that NAME it (`Car.put`, `Car.each`); the spec's call runs the default. `go` runs `use` over
+/// one pure `Car`.
 fn fallback_verdict_program(ns: &str, spec_op: &str, member: &str, use_body: &str) -> String {
     format!(
         r#"
@@ -2643,50 +2750,80 @@ namespace {ns}
   end
   operation use[R](x: Car[V = Int64, EC = R], y: Car[V = Int64, EC = {{}}], h: Cell[V = Int64]) -> Int64 effects {{R}} =
     {use_body}
+  operation go() -> Int64 =
+    let x: Car[V = Int64, EC = {{}}] = car(v: 1)
+    let h: Cell[V = Int64] = Cell.new(0)
+    use(x, x, h)
 end
 "#
     )
 }
 
-/// THE FALLBACK REFUSES AN ARGUMENT THE OVERRIDE TAKES AS AN OPTION: `Car.put(…, k: Option[T =
+/// THE FALLBACK REFUSED AN ARGUMENT THE OVERRIDE TAKES AS AN OPTION: `Car.put(…, k: Option[T =
 /// Int64])` behind `put(s, o: Sp, k: o.T)`. The qualified call wraps the `5` in `some(…)`; a call
 /// through the spec was elaborated against the spec's parameter and wraps nothing. The fallback
 /// counted the `WrapSome` verdict as a pass, and the override matched a bare `5` (MEASURED, the
-/// match failed at run time).
+/// match failed at run time); it then refused the call, "nothing wraps the argument".
+///
+/// Since (decided with the user 2026-11-21, WI-20260930-FB53M / WI-20261020-NNQ1S) the member, whose `k` is an `Option` where the spec's is `o.T`, is no supplier of
+/// `Sp.put`: `Sp.put(x, y, 5)` is the spec's call and its default answers 0, the `5` never
+/// reaching the member. The call naming the member wraps the `5` and answers `5 + 10`. RED with
+/// the member-fit rule backed out: the spec's call is refused as before.
 #[test]
 fn the_fallback_refuses_an_argument_the_override_takes_as_an_option() {
-    let src = fallback_verdict_program(
-        "wi0rp29.fbws",
-        "operation put(s: Self, o: Sp[T = ?, E = ?], k: o.T) -> Int64 effects s.E = 0",
-        "operation put(c: Self, o: Sp, k: Option[T = Int64]) -> Int64 effects {EC} =\n      match k\n        case some(v) -> v + 10\n        case none() -> 3",
-        "Sp.put(x, y, 5)",
+    let program = |ns: &str, call: &str| {
+        fallback_verdict_program(
+            ns,
+            "operation put(s: Self, o: Sp[T = ?, E = ?], k: o.T) -> Int64 effects s.E = 0",
+            "operation put(c: Self, o: Sp, k: Option[T = Int64]) -> Int64 effects {EC} =\n      match k\n        case some(v) -> v + 10\n        case none() -> 3",
+            call,
+        )
+    };
+    assert_eq!(
+        run_src(&program("wi0rp29.fbws", "Sp.put(x, y, 5)"), "wi0rp29.fbws.go"),
+        Ok(0),
+        "the spec's call runs the default"
     );
-    assert_refused_naming(
-        &load_errors(&src),
-        &["put.k (op-arg)", "nothing wraps the argument in `some(…)`"],
-        "the override's option, unwrapped",
+    assert_eq!(
+        run_src(&program("wi0rp29.fbws_car", "Car.put(x, y, 5)"), "wi0rp29.fbws_car.go"),
+        Ok(15),
+        "the call naming the member wraps the `5`"
     );
 }
 
-/// THE FALLBACK JUDGES A CALLBACK'S ROW: `Car.each(…, f: (x: Int64) -> Int64)` takes a pure
+/// THE FALLBACK JUDGED A CALLBACK'S ROW: `Car.each(…, f: (x: Int64) -> Int64)` takes a pure
 /// callback, and the lambda writes `h`. The qualified call refuses it ("the closed row does not
 /// admit `Modify[h]`"); the fallback ran only the subtype check, and an operation declared pure
-/// wrote a cell (MEASURED: the run answered the written value).
+/// wrote a cell (MEASURED: the run answered the written value). It then refused it in the
+/// qualified call's words.
+///
+/// Since (decided with the user 2026-11-21, WI-20260930-FB53M / WI-20261020-NNQ1S) the member, taking a pure callback where the spec admits `@ {EP}`, is no supplier
+/// of `Sp.each`: the call through the spec is the spec's, which takes the writing callback and
+/// charges what its bracket says, `Modify[h]` — which `use`, declaring only `R`, does not declare.
+/// Refused either way, and no operation declared pure writes a cell. RED with the member-fit rule
+/// backed out: the spec's call is refused at the callback again.
 #[test]
 fn the_fallback_judges_a_callback_row() {
-    let src = fallback_verdict_program(
-        "wi0rp29.fbcb",
-        "operation each[EP](s: Self, o: Sp[T = ?, E = ?], f: (x: o.T) -> Int64 @ {EP}) -> Int64 effects {s.E, EP} = 0",
-        "operation each(c: Self, o: Sp, f: (x: Int64) -> Int64) -> Int64 effects {EC} = f(1)",
-        "Sp.each[EP = {Modify[h]}](x, y, lambda (z: Int64) -> let _ = Cell.set(h, z + 40)\n      z)",
-    );
+    let program = |ns: &str, q: &str, bracket: &str| {
+        fallback_verdict_program(
+            ns,
+            "operation each[EP](s: Self, o: Sp[T = ?, E = ?], f: (x: o.T) -> Int64 @ {EP}) -> Int64 effects {s.E, EP} = 0",
+            "operation each(c: Self, o: Sp, f: (x: Int64) -> Int64) -> Int64 effects {EC} = f(1)",
+            &format!("{q}.each{bracket}(x, y, lambda (z: Int64) -> let _ = Cell.set(h, z + 40)\n      z)"),
+        )
+    };
     assert_refused_naming(
-        &load_errors(&src),
+        &load_errors(&program("wi0rp29.fbcb", "Car", "")),
         &[
             "each.f (op-arg)",
             "`Modify[T = h]`, which the closed row does not admit",
         ],
-        "the override's closed callback row",
+        "the member's closed callback row",
+    );
+    assert_refused_naming(
+        &load_errors(&program("wi0rp29.fbcb_sp", "Sp", "[EP = {Modify[h]}]")),
+        &["use.effects (op-effects)", "undeclared effect: Modify[T = h]"],
+        "the spec's call charges the write",
     );
 }
 
@@ -3092,11 +3229,16 @@ end
     assert_eq!(run_src(src, "wi0rp29.bracket_se.go"), Ok(7));
 }
 
-/// THE FALLBACK VALIDATES AGAINST THE PARAMETER AS WRITTEN: a list of `String -> Bool` callables
+/// THE FALLBACK VALIDATED AGAINST THE PARAMETER AS WRITTEN: a list of `String -> Bool` callables
 /// passed where the override takes `List[T = Function[A = Int64, B = Int64]]` is refused. Against
 /// the deep-expanded parameter, its fresh slot made the pair non-ground, the groundness gate let it
 /// through, and `f(1)` ran a `String` callable (MEASURED). The spec operation has a default body,
-/// so the fallback is this member's only judge.
+/// so the fallback was this member's only judge.
+///
+/// Since (decided with the user 2026-11-21, WI-20260930-FB53M / WI-20261020-NNQ1S) the member, taking less than the spec's `k: o.T`, is no supplier of `Sp.put`, whose
+/// call is the spec's and loads — the list never reaches the member, whose `f(1)` it would break.
+/// The call naming the member is refused as the fallback refused it. RED with the member-fit rule
+/// backed out: the spec's call is refused again.
 #[test]
 fn the_fallback_validates_against_the_parameter_as_written() {
     let src = r#"
@@ -3123,10 +3265,12 @@ namespace wi0rp29.fb_written
     Sp.put(x, y, ks)
 end
 "#;
+    let errs = load_errors(src);
+    assert!(errs.is_empty(), "the spec's call: {errs:#?}");
     assert_refused_naming(
-        &load_errors(src),
+        &load_errors(&src.replace("Sp.put(x, y, ks)", "Car.put(x, y, ks)").replace("wi0rp29.fb_written", "wi0rp29.fb_written_car")),
         &["put.k (op-arg): expected List[T = Function[A = Int64, B = Int64, E = {}]]"],
-        "a wrong nested callable",
+        "a wrong nested callable, to the member",
     );
 }
 
@@ -3290,8 +3434,14 @@ fn a_field_callback_beside_a_lacked_row_is_refused_control() {
 /// `Option` — and the override's `k: Option[T = String]` is handed a `some(5)`. The declared
 /// option stood in for what the override receives, so it passed, the call LOADED, and the
 /// override's `String.length` ran on an `Int64` (MEASURED; the sixth review's tree refused it).
-/// The spec operation has a default body, so the fallback is this member's only judge
+/// The spec operation has a default body, so the fallback was this member's only judge
 /// (WI-20260930-FB53M). FAILS under ledger part 54.
+///
+/// Since (decided with the user 2026-11-21, WI-20260930-FB53M / WI-20261020-NNQ1S) the member, whose `k` is an `Option[T = String]` where the spec's is a bare
+/// `Option`, is no supplier of `Sp.put`: the call through the spec is the spec's, and its default
+/// answers 0 — `String.length` never sees the `5`. The call naming the member is refused at its
+/// `k`, which nothing wraps: only the spec's bare `Option` asked for the `some(…)`. RED with the
+/// member-fit rule backed out: the spec's call is refused again.
 #[test]
 fn the_fallback_validates_the_option_of_the_argument() {
     let src = r#"
@@ -3315,12 +3465,16 @@ namespace wi0rp29.fb_bare_option
   end
   operation use[R](x: Car[V = Int64, EC = R], y: Car[V = Int64, EC = {}]) -> Int64 effects {R} =
     Sp.put(x, y, 5)
+  operation go() -> Int64 =
+    let x: Car[V = Int64, EC = {}] = car(v: 1)
+    use(x, x)
 end
 "#;
+    assert_eq!(run_src(src, "wi0rp29.fb_bare_option.go"), Ok(0), "the spec's default");
     assert_refused_naming(
-        &load_errors(src),
-        &["put.k (op-arg): expected Option[T = String], got Option[T = Int64]"],
-        "a `5` wrapped for an override taking an option of strings",
+        &load_errors(&src.replace("Sp.put(x, y, 5)", "Car.put(x, y, 5)").replace("wi0rp29.fb_bare_option", "wi0rp29.fb_bare_option_car")),
+        &["put.k (op-arg): expected Option[T = String], got Int64"],
+        "a `5` for the member taking an option of strings",
     );
 }
 

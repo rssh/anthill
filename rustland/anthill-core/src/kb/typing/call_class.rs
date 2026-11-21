@@ -1217,9 +1217,17 @@ pub(crate) fn resolve_op_target_at(
     };
     // What the provider's table holds under the short name other than `spec_op` itself: its
     // own member, or one it inherits from another sort it provides.
+    //
+    // Not the provider's own member where that supplies nothing to `spec_op`
+    // ([`carrier_own_op`]'s rule, WI-20261020-NNQ1S): `PartialEq.eq` is a builtin with no
+    // body, so it reaches this read, and a `P.eq(a: Int64, b: Int64)` is no `eq` of `P`'s.
     let inherited = || {
         kb.sort_ops_lookup(impl_sym, op_short_sym)
             .filter(|&op| op != spec_op)
+            .filter(|&op| {
+                !(impl_parent_of_op(kb, op).is_some_and(|p| same_sort_canonical(kb, p, impl_sym))
+                    && kb.own_member_supplies_nothing(impl_sym, spec_op))
+            })
             .unwrap_or(spec_op)
     };
     // The body read first: it is one map probe, and it is false for every body-less
@@ -1485,6 +1493,12 @@ pub(crate) fn carrier_own_op(
         .filter(|&o| {
             impl_parent_of_op(kb, o).map(|p| kb.canonical_sort_sym(p)) == Some(carrier_canon)
         })
+        // WI-20261020-NNQ1S / WI-20260930-FB53M — and a member that SUPPLIES `spec_op`: where
+        // the operation has an implementation of its own, a member that does not fit it at
+        // this carrier is another operation of the same name, and the implementation runs.
+        // Decided once per load ([`record_members_that_supply_nothing`]); every reader of a
+        // carrier's own member is behind this function, so none of them takes it.
+        .filter(|_| !kb.own_member_supplies_nothing(carrier, spec_op))
 }
 
 /// WI-444 — the carrier sort's OWN member backing a (possibly defaulted) spec

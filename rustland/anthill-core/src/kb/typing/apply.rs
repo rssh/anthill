@@ -1387,7 +1387,7 @@ fn check_apply_call(
                     op_name: fn_sym,
                     surface,
                 };
-                let eff = Discharge {
+                let cx = Discharge {
                     arg_syms,
                     denoted_syms,
                     arg_paths: Some(&arg_paths),
@@ -1395,8 +1395,21 @@ fn check_apply_call(
                     selections: &selections,
                     reading: Some(&this_instance),
                     ..Discharge::new(&projection_receivers, call_receivers, &ctx, span)
-                }
-                .eliminate(kb, param_type)?;
+                };
+                // A parameter is read off the spec's own signature whatever the call runs, so
+                // an effect row resting on a rigid is read as the row it is where the plain
+                // reading has none (WI-20261020-NNQ1S, [`RowReading::RigidsFixed`]); a
+                // `f: … @ {s.E}` over `a: Car[V = Int64, EC = R]` was refused "type 'Car' has
+                // no member 'E'". The refusal is the first reading's.
+                let eff = match cx.eliminate(kb, param_type) {
+                    Ok(eff) => eff,
+                    Err(e) => Discharge {
+                        rows: RowReading::RigidsFixed,
+                        ..cx
+                    }
+                    .eliminate(kb, param_type)
+                    .map_err(|_| e)?,
+                };
                 let eff = ground_param_projections(kb, &subst, &eff);
                 if let Some(why) = UnreadProjection::find(kb, &subst, &eff)
                     .and_then(|unread| unread.why_unread(kb))
@@ -1886,7 +1899,27 @@ fn check_apply_call(
                         impl_to_spec = threaded.impl_to_spec;
                         (threaded.ret, threaded.effects)
                     }
-                    None => return Err(e),
+                    // No override to read: the spec's own signature, an effect row resting on
+                    // a rigid read as the row it is ([`RowReading::RigidsFixed`],
+                    // WI-20261020-NNQ1S). Its refusal is the first reading's.
+                    None => {
+                        let fixed = Discharge {
+                            rows: RowReading::RigidsFixed,
+                            ..cx
+                        };
+                        let eliminated = fixed.eliminate(kb, &op.return_type).and_then(|rt| {
+                            let effs = op
+                                .effects
+                                .iter()
+                                .map(|e| fixed.eliminate(kb, e))
+                                .collect::<Result<Vec<Value>, TypeError>>()?;
+                            Ok((rt, effs))
+                        });
+                        match eliminated {
+                            Ok(eliminated) => eliminated,
+                            Err(_) => return Err(e),
+                        }
+                    }
                 },
             }
         } else {

@@ -119,7 +119,6 @@ pub(super) fn check_member_signature(
     provision: &ProvisionMembers,
     errors: &mut Vec<crate::kb::load::LoadError>,
 ) -> MemberSignature {
-    use crate::kb::load::LoadError;
     // THE GATE (see the doc above), asked with [`op_backed`]'s OWN spec-op predicate
     // and not with the general [`op_is_executable`].
     //
@@ -133,7 +132,11 @@ pub(super) fn check_member_signature(
     // member really is the only backing: `op_backed` would refuse to count the host
     // mapping for the carrier, and this pass would have skipped the member on the
     // strength of it.
-    if kb.is_builtin(spec_op) || op_has_runnable_body(kb, spec_op) {
+    //
+    // Beside such an implementation a member that does not fit is a DISTINCT operation, and
+    // the implementation backs the provision: no refusal here, and dispatch passes the
+    // member over ([`record_members_that_supply_nothing`], WI-20260930-FB53M).
+    if spec_op_has_its_own_implementation(kb, spec_op) {
         return MemberSignature::Alignable;
     }
     // A member the derivation wrote (a composite's `hash`, as its `eq`) is the loader's, for
@@ -142,6 +145,37 @@ pub(super) fn check_member_signature(
     if kb.is_derived_member(impl_info.op_sym) {
         return MemberSignature::Alignable;
     }
+    compare_member_signature(
+        kb, carrier, spec, spec_op, op_short, spec_info, impl_info, sigma, provision, errors,
+    )
+}
+
+/// Does `spec_op` have an implementation that backs a carrier with no member of its own — a
+/// runnable body, or a resolver builtin? [`check_member_signature`]'s gate: where it does not,
+/// a carrier's member is the only backing and is refused unless it fits; where it does, a
+/// member that does not fit is another operation, which dispatch passes over.
+pub(super) fn spec_op_has_its_own_implementation(kb: &KnowledgeBase, spec_op: Symbol) -> bool {
+    kb.is_builtin(spec_op) || op_has_runnable_body(kb, spec_op)
+}
+
+/// [`check_member_signature`] past its gate: the member compared with the spec operation at
+/// this provision's bindings, a refusal pushed for each way it does not fit. FITS exactly
+/// where it pushes none, which is how [`record_members_that_supply_nothing`] asks it of a
+/// member the gate passes.
+#[allow(clippy::too_many_arguments)]
+fn compare_member_signature(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+    spec_op: Symbol,
+    op_short: &str,
+    spec_info: &crate::kb::op_info::OpInfoRecord,
+    impl_info: &crate::kb::op_info::OpInfoRecord,
+    sigma: &[(Symbol, Value)],
+    provision: &ProvisionMembers,
+    errors: &mut Vec<crate::kb::load::LoadError>,
+) -> MemberSignature {
+    use crate::kb::load::LoadError;
     // The carrier / spec names are read ONLY on a refusal. This function runs for every
     // (spec op, member) pair of every provision on every load — the stdlib alone carries
     // ~146 provisions — and the overwhelmingly common outcome is that the signatures fit,
@@ -2998,6 +3032,180 @@ fn static_override_refused(
     }
 }
 
+/// WI-20261020-NNQ1S / WI-20260930-FB53M — WHICH OF A CARRIER'S MEMBERS SUPPLY NOTHING: the
+/// `(carrier, spec operation)` pairs where the carrier's own member of the operation's short
+/// name does not fit an operation that has an implementation of its own (a body, a builtin),
+/// filed on the sort-operations table for [`carrier_own_op`] to pass over (decided with the
+/// user 2026-11-21, kernel-language.md *Backing conformance*).
+///
+/// Such a member is not compared at the provision ([`check_member_signature`]'s gate): beside
+/// the spec's implementation it is another operation of the same name, and loads. Dispatch
+/// took it all the same, by its short name: `P.neq(a: Int64, b: Int64)` answered `neq` of two
+/// `P`s, `true`, where the derived `neq` answers `false`; a one-parameter `Q.neq` died at the
+/// call, "expected 1 args, got 2"; `Car.peek(s: Car)` behind `Sp.peek(s: Sp, k: Int64) = 0`
+/// died the same way, and a member taking `k: String` answered for an `Int64` (MEASURED,
+/// 2026-11-21). The comparison is the provision's ([`compare_member_signature`]), at each
+/// provision of the spec that dispatches to the carrier — its own, and a witness's that names it —
+/// and it fits where it fits at one of them. Where none does it is compared at the carrier itself,
+/// as a call that names no provision asks it (equality is asked of any type).
+///
+/// Every `(carrier, operation)` pair whose names collide is judged, whether or not a call ever
+/// asks it. The spec operations are those of a sort some provision names as its spec. Run after
+/// each build of the table, since a derived provision can add a row.
+///
+/// A PAIR A SEAL HOLDS KEEPS ITS VERDICT: the carrier, its member and the spec operation each a
+/// sealed load's, and no provision of a later load dispatching to the carrier — what the verdict
+/// is read off cannot have changed, and the table as the sealed load left it says it. Judged
+/// again at every later load it was 17 ms of each (two passes of 8.5 ms over the standard
+/// library's pairs, MEASURED in a release build, 2026-11-21), where a later load is about 65.
+pub(crate) fn record_members_that_supply_nothing(kb: &mut KnowledgeBase) {
+    let mut spec_bases: HashSet<Symbol> = HashSet::new();
+    // The carriers a provision asserted since the seal dispatches to, its provider and its
+    // witness's carrier both.
+    let mut reached_later: HashSet<Symbol> = HashSet::new();
+    for row in provides_rows(kb) {
+        spec_bases.insert(kb.canonical_sort_sym(row.spec_base));
+        if !kb.sealed.holds_rule_slot(row.rid.index()) {
+            reached_later.insert(kb.canonical_sort_sym(row.provider));
+            if let Some(d) = witness_dispatch_carrier(kb, row.spec_base, row.provider, &row.spec_view)
+            {
+                reached_later.insert(kb.canonical_sort_sym(d));
+            }
+        }
+    }
+    // The spec operations with an implementation of their own, by short name.
+    let mut by_short: HashMap<Symbol, Vec<(Symbol, Symbol)>> = HashMap::new();
+    let ops: Vec<Symbol> = crate::kb::op_info::all_operation_symbols(kb);
+    for op in ops {
+        let Some(spec) = impl_parent_of_op(kb, op) else {
+            continue;
+        };
+        if !spec_bases.contains(&kb.canonical_sort_sym(spec))
+            || !spec_op_has_its_own_implementation(kb, op)
+            || answered_by_its_dictionary(kb, op)
+        {
+            continue;
+        }
+        // Keyed as the table is (`load::intern_op_short`): the INTERNED short name. Looked up
+        // by `lookup_symbol` it was another symbol for `eq` in a load that holds the standard
+        // library and a program at once, and no carrier's `eq` was judged there (MEASURED, the
+        // fresh-load recipe).
+        let short = kb.intern(&short_name_of(kb.qualified_name_of(op)).to_string());
+        let entry = by_short.entry(short).or_default();
+        if !entry.iter().any(|&(o, _)| kb.canonical_sym(o) == kb.canonical_sym(op)) {
+            entry.push((op, spec));
+        }
+    }
+    let mut unfit: HashSet<(Symbol, Symbol)> = HashSet::new();
+    for (carrier, short, member) in kb.sort_ops_rows() {
+        let Some(spec_ops) = by_short.get(&short) else {
+            continue;
+        };
+        if !impl_parent_of_op(kb, member).is_some_and(|p| same_sort_canonical(kb, p, carrier))
+            || kb.is_derived_member(member)
+        {
+            continue;
+        }
+        for &(spec_op, spec) in spec_ops {
+            if kb.canonical_sym(member) == kb.canonical_sym(spec_op)
+                || same_sort_canonical(kb, spec, carrier)
+            {
+                continue;
+            }
+            let key = (kb.canonical_sort_sym(carrier), kb.canonical_sym(spec_op));
+            if kb.sealed.holds_sort(key.0)
+                && kb.sealed.holds_operation(member)
+                && kb.sealed.holds_operation(spec_op)
+                && !reached_later.contains(&key.0)
+            {
+                if kb.own_member_supplies_nothing(carrier, spec_op) {
+                    unfit.insert(key);
+                }
+                continue;
+            }
+            if !member_fits_spec_op(kb, carrier, spec, spec_op, member) {
+                unfit.insert(key);
+            }
+        }
+    }
+    kb.set_members_that_supply_nothing(unfit);
+}
+
+/// Does `member`, `carrier`'s own operation, fit `spec_op` of `spec` at one of the provisions of
+/// `spec` that dispatch to `carrier`, or at the carrier itself where none does
+/// ([`record_members_that_supply_nothing`])? The provision's own comparison, its refusals
+/// discarded.
+fn member_fits_spec_op(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+    spec_op: Symbol,
+    member: Symbol,
+) -> bool {
+    let (Some(spec_info), Some(impl_info)) = (
+        crate::kb::op_info::lookup_operation_info(kb, spec_op),
+        crate::kb::op_info::lookup_operation_info(kb, member),
+    ) else {
+        // No signature to compare on one side: nothing says it is not the spec's.
+        return true;
+    };
+    // The provisions the member answers: the carrier's own (where it may itself be a witness,
+    // receiving another sort's values), and a witness's that names the carrier and writes no
+    // member of its own (`W3 provides Conv[A = Leaf2, B = Int64]` beside `Leaf2.conv`,
+    // WI-20260930-Y6ZCD), which binds the carrier to the declaring sort itself.
+    let mut provisions: Vec<(Vec<(Symbol, Value)>, Option<Symbol>)> = Vec::new();
+    let rows: Vec<(Symbol, SmallVec<[(Symbol, Value); 2]>, Value)> = provides_rows_of_spec(kb, spec)
+        .map(|row| (row.provider, view_named_children(kb, &row.spec_view), row.spec_view.clone()))
+        .collect();
+    for (provider, named, view) in rows {
+        let dispatch = witness_dispatch_carrier(kb, spec, provider, &view);
+        let witness = if same_sort_canonical(kb, provider, carrier) {
+            dispatch
+        } else if dispatch.is_some_and(|d| same_sort_canonical(kb, d, carrier)) {
+            None
+        } else {
+            continue;
+        };
+        provisions.push((spec_param_sigma(kb, spec, &named), witness));
+    }
+    // NONE: compared at the carrier itself, its spec parameter bound to the carrier at its own
+    // parameters. Equality is asked of any type: a sort's own `eq` is its equality with no
+    // provision written (WI-616, the eq-dispatch index's domain), and the load passes before the
+    // derivation read it so — MEASURED, read as supplying nothing here, six rows fail
+    // (`wi1125`'s, `wi885`'s, `wi1098`'s, `algebra_spec`'s, `wi1102`'s, `wi_szkv7`'s refusals and
+    // answers). A composite's derived provision is compared at its row once it is asserted.
+    if provisions.is_empty() {
+        let mut sigma = Vec::new();
+        if let Some(param) = spec_carrier_param_or_sole(kb, spec) {
+            let own = own_application(kb, carrier);
+            sigma.push((param, Value::term(own)));
+        }
+        provisions.push((sigma, None));
+    }
+    let op_short = short_name_of(kb.qualified_name_of(spec_op)).to_string();
+    for (mut sigma, witness) in provisions {
+        write_left_out_params(kb, spec, &mut sigma);
+        let provision = ProvisionMembers::new(spec, carrier, &sigma, witness);
+        let mut refusals = Vec::new();
+        let shape = compare_member_signature(
+            kb,
+            carrier,
+            spec,
+            spec_op,
+            &op_short,
+            &spec_info,
+            &impl_info,
+            &sigma,
+            &provision,
+            &mut refusals,
+        );
+        if shape == MemberSignature::Alignable && refusals.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
 /// WI-347 — operation-override refinement check. A carrier's own operation
 /// that implements/overrides a spec operation (own-op-beats-inherited, §8.7)
 /// must REFINE the spec op: effects no wider, precondition no stronger,
@@ -3059,6 +3267,10 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
     }
 
     let mut errors = Vec::new();
+    // WI-20261020-NNQ1S — `PartialEq.eq`, the one spec operation whose member the loader derives
+    // where a carrier writes none, by its name (`eq_derive::written_without_member`).
+    let eq_spec_op = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq");
+    let mut unfit_eq_refused: HashSet<Symbol> = HashSet::new();
     for p in &provs {
         let (Some(spec_ops), Some(carrier_ops)) = (own.get(&p.spec), own.get(&p.carrier)) else {
             continue;
@@ -3114,6 +3326,34 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                         },
                     ),
                 });
+            }
+
+            // WI-20261020-NNQ1S — AN `eq` THAT DOES NOT FIT `PartialEq.eq` IS REFUSED, where any
+            // other member that does not fit beside the spec's implementation is another
+            // operation and loads. It supplies nothing ([`record_members_that_supply_nothing`]),
+            // and it holds the name the carrier's derived member is declared under, so the
+            // provision has no member: `sort P2 { provides PartialEq[T = Self]  operation eq(a:
+            // Int64, b: Int64) -> Bool }` loaded and `eq(p2(x: 1), p2(x: 1))` died at the call,
+            // "EqualityWithNoMember" (MEASURED, 2026-11-21); before the rule the member was
+            // handed two `P2`s. Refused in the comparison's words, once per carrier.
+            if eq_spec_op.is_some_and(|e| kb.canonical_sym(e) == kb.canonical_sym(spec_op))
+                && kb.own_member_supplies_nothing(p.carrier, spec_op)
+            {
+                if unfit_eq_refused.insert(kb.canonical_sort_sym(p.carrier)) {
+                    compare_member_signature(
+                        kb,
+                        p.carrier,
+                        p.spec,
+                        spec_op,
+                        &sn,
+                        &spec_info,
+                        &impl_info,
+                        &p.sigma,
+                        &provision,
+                        &mut errors,
+                    );
+                }
+                continue;
             }
 
             // A STATIC OPERATION WITH A BODY IS THE SPEC'S OWN: nothing at a call names the

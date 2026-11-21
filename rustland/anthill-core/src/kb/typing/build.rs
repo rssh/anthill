@@ -2692,10 +2692,12 @@ pub(crate) struct OpSupplyCtx<'a> {
 ///     carrier. The two reasons above stand on their own; only the "inert" one is gone.
 ///
 /// WI-20260929-0RP29 — AND THE MEMBER TAKES THE SPEC OP'S ARITY. Its parameters align with the
-/// call's by position; a member of another arity (reachable beside a DEFAULTED spec op, which
-/// the member-fit check does not compare, WI-20260930-FB53M) is not this call's override, and
-/// positional pairing would truncate silently. Here rather than in one caller, so the two
-/// sites cannot disagree about it either.
+/// call's by position; a member of another arity is not this call's override, and positional
+/// pairing would truncate silently. Here rather than in one caller, so the two sites cannot
+/// disagree about it either. Such a member was reachable beside a DEFAULTED spec op, which the
+/// member-fit check does not compare; since WI-20260930-FB53M (decided with the user
+/// 2026-11-21) it supplies nothing there, and [`carrier_override_op`] does not return it — the
+/// test stands as this function's own statement of what it threads.
 pub(super) fn concrete_self_receiver_override(
     kb: &mut KnowledgeBase,
     carrier_sym: Symbol,
@@ -2780,8 +2782,9 @@ pub(super) fn concrete_self_receiver_override(
 ///   The declaration checks judge a projection over THIS instance (`k: s.T` against `k: c.V`)
 ///   and leave one over another argument to the call — this one: `Sp.put(x, ks)` over `Car.put(c:
 ///   Car, k: c.V)` with `ks` a list loaded and died adding 1 to it; a pure override's callback
-///   wrote a cell. A variable two arguments bind two ways — the carrier's own parameter beside a spec DEFAULT body
-///   (WI-20260930-FB53M), or the override's own type parameter — is refused the same way
+///   wrote a cell. A variable two arguments bind two ways — the override's own type parameter
+///   (the carrier's own parameter beside a spec DEFAULT body was the other, until a member there
+///   had to fit the spec to be threaded, WI-20260930-FB53M) — is refused the same way
 ///   ([`conflicting_bindings_error`]). Each is the CALL's error: the spec's own elimination
 ///   failure beside them names an unrelated cause.
 /// * WHAT σ CANNOT DECIDE, IT DECLINES (`Ok(None)`): an override type parameter the return

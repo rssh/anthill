@@ -254,6 +254,19 @@ pub fn all_operation_contract_clauses(kb: &KnowledgeBase) -> Vec<OperationContra
 /// [`all_operation_params`] / [`all_operation_effects`]. ONE entry PER FACT (a spec op
 /// and its impl are separate facts, each with its own signature); each `&Value` head
 /// borrows `kb`. A fact whose head carries no resolvable `name` ref is skipped.
+/// Every operation an `OperationInfo` fact declares, once each — the population of a pass that
+/// must see every declared operation, which the records cache (`KnowledgeBase::op_records`) is
+/// not until its signatures are built: in a load that holds the standard library and a program at
+/// once it lacked `PartialEq.eq` when `typing::record_members_that_supply_nothing` ran
+/// (WI-20261020-NNQ1S, MEASURED under the fresh-load recipe).
+pub(crate) fn all_operation_symbols(kb: &KnowledgeBase) -> Vec<Symbol> {
+    let mut seen = std::collections::HashSet::new();
+    operation_info_fact_heads(kb)
+        .into_iter()
+        .filter_map(|(op, _)| seen.insert(op).then_some(op))
+        .collect()
+}
+
 fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
     operation_info_fact_rows(kb)
         .into_iter()
