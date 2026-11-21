@@ -29,6 +29,29 @@ use super::error::ParseError;
 use super::ir::*;
 use super::pratt;
 
+/// WI-20261121-MVQP8 — a piece of a clause's canonical form: a node's tokens, or a token
+/// the clause's reading puts between two nodes (the `:-` of `head :- body`, a fact's
+/// `true`, the kind a form starts with).
+enum ClausePart<'t> {
+    Node(Node<'t>),
+    Token(&'static str),
+}
+
+/// The width of a generated label's content hash, in base-32 characters (40 bits).
+const LABEL_HASH_CHARS: u32 = 8;
+
+/// The goal a constraint's generated label is named after: a denial's first invariant
+/// goal, a quantified form's innermost consequent's first goal; `None` for an
+/// aggregation, which names its kind.
+fn constraint_head_goal(body: &ConstraintBody) -> Option<ParseTermId> {
+    match body {
+        ConstraintBody::Denial { head, .. } => head.first().copied(),
+        ConstraintBody::Patterns(goals) => goals.first().copied(),
+        ConstraintBody::Quantified { body, .. } => constraint_head_goal(body),
+        ConstraintBody::Aggregation { .. } => None,
+    }
+}
+
 /// The `why` clause [`Converter::check_label_unique`] reports for a repeated TUPLE
 /// component name (WI-805). Kept apart from [`ENTITY_FIELDS_DISTINCT`] because the two
 /// rules bite for DIFFERENT reasons, and a reader who hit one should not be handed the
@@ -830,36 +853,128 @@ impl<'a> Converter<'a> {
             .collect()
     }
 
-    /// WI-1072: refuse a description on a declaration with no stable name/citation
-    /// target. One diagnostic per declaration, even if several blocks were written.
+    // ── Generated labels (WI-20261121-MVQP8) ────────────────────
+
+    /// The LABEL of a rule, fact or constraint written without one (§4.1): the name of
+    /// what its head states, `-`, and a hash of its content — `pos-K3M9Q2XA`. It is an
+    /// ordinary name (an identifier may hold `-`), and nothing after the converter tells it
+    /// from a written label: it is defined, described, cited and reported as one.
     ///
-    /// WHAT REACHES HERE is what the SURFACE ALONE decides — a `fact`, an unlabeled
-    /// `constraint`, an unlabeled BODIED rule — and that is why the refusal is in
-    /// conversion: every `ParsedFile` consumer sees it, including generators that
-    /// never load a KB.
-    ///
-    /// A BODY-LESS rule does NOT reach here (WI-20260830-VFAKK), and the exclusion is
-    /// a statement about which pass can answer, not a relaxation: whether such a rule
-    /// DECLARES a predicate (a target) or heads a `<=>` equation (none) is
-    /// `kb::load::rule_reading`'s question, and asking a second copy of it here is
-    /// how a block would come to be admitted at one site and dropped at the other.
-    /// `load_rule` refuses that half with this same sentence
-    /// ([`crate::parse::error::description_without_target`]).
-    ///
-    /// WHAT THAT COSTS, stated because the paragraph above is the reason this function
-    /// exists at all: a KB-LESS consumer no longer sees the refusal for that one shape.
-    /// MEASURED (found by /code-review) — `anthill codegen rust` over
-    /// `{< … >} rule twice(?x) <=> ?x` reports `1 file(s), 0 error(s)` where it used to
-    /// report a parse error, with the bodied control still refused. It is a lost
-    /// DIAGNOSTIC and not a lost fact: the generators read no `Rule::descriptions`, and
-    /// `load` / `run` / `check` all still refuse it, located. Buying it back means
-    /// giving the generator a load pass, which is a bigger change than the diagnostic
-    /// is worth.
-    fn reject_description_without_target(&mut self, node: Node, kind: &str) {
-        let Some(at) = self.fields_by_name(node, "description").into_iter().next() else {
+    /// The hash is of the clause's CANONICAL form ([`Self::clause_canonical`]), so the
+    /// label is a function of the clause ALONE: no other clause of its scope moves it,
+    /// renaming a variable or reformatting leaves it, and changing what the clause says
+    /// changes it. One clause written twice is one label.
+    fn generated_label(&mut self, name: String, parts: &[ClausePart], span: Span) -> Name {
+        let canonical = self.clause_canonical(parts);
+        let hash = crate::eval::builtins::digest_base32(&canonical, LABEL_HASH_CHARS);
+        let sym = self.intern(&format!("{name}-{hash}"));
+        Name::simple(sym, span)
+    }
+
+    /// The name a generated label starts with: the predicate `head` names — an operator's
+    /// or an equation's left operand's, for a node the parse minted — or `kind` when it
+    /// names none (a variable, a literal, `⊥`). The last segment of a dotted name.
+    fn head_label_name(&self, head: Option<ParseTermId>, kind: &str) -> String {
+        let mut at = head;
+        if let Some(t) = at.filter(|&t| self.terms.is_minted(t)) {
+            at = match self.terms.get(t) {
+                Term::Fn { pos_args, .. } => pos_args.first().copied(),
+                _ => None,
+            };
+        }
+        let named = at.filter(|&t| !self.terms.is_minted(t)).and_then(|t| match self.terms.get(t) {
+            Term::Fn { functor, .. } | Term::Ident(functor) | Term::Ref(functor) => Some(*functor),
+            _ => None,
+        });
+        named
+            .and_then(|sym| {
+                self.symbols
+                    .local_name(sym)
+                    .rsplit('.')
+                    .find(|segment| !segment.is_empty())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| kind.to_owned())
+    }
+
+    /// The canonical form of the clause made of `parts`, in order: every token one space
+    /// apart — comments and description blocks left out, a described variable read as
+    /// its variable — and each named variable renamed by its first occurrence across all
+    /// of them (`?1`, `?2`, …). An anonymous `?` stays `?`, each one distinct already.
+    fn clause_canonical(&self, parts: &[ClausePart]) -> String {
+        let mut tokens: Vec<(&str, bool)> = Vec::new();
+        for part in parts {
+            match part {
+                ClausePart::Node(n) => self.clause_tokens(*n, &mut tokens),
+                ClausePart::Token(t) => tokens.push((t, false)),
+            }
+        }
+        let mut renamed: HashMap<&str, usize> = HashMap::new();
+        let mut out = String::new();
+        for (i, &(text, var)) in tokens.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            if var && text != "?" {
+                let next = renamed.len() + 1;
+                let n = *renamed.entry(text).or_insert(next);
+                out.push('?');
+                out.push_str(&n.to_string());
+            } else {
+                out.push_str(text);
+            }
+        }
+        out
+    }
+
+    /// The tokens `node` is written with, each with whether it is a variable.
+    fn clause_tokens(&self, node: Node, out: &mut Vec<(&'a str, bool)>) {
+        match node.kind() {
+            "line_comment" | "block_comment" | "description_block" => return,
+            "variable_term" => {
+                if let Some(var) = self.child_by_kind(node, "variable") {
+                    out.push((self.text(var), true));
+                }
+                return;
+            }
+            _ => {}
+        }
+        if node.child_count() == 0 {
+            // Zero-width: a token tree-sitter's recovery inserted (`MISSING`).
+            if node.start_byte() < node.end_byte() {
+                out.push((self.text(node), node.kind() == "variable"));
+            }
             return;
-        };
-        self.err(super::error::description_without_target(kind), at);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.clause_tokens(child, out);
+        }
+    }
+
+    /// A rule's label when it is written with none and stores a clause — a 061
+    /// declaration stores none, and a label is refused on one (`kb::load::rule_reading`,
+    /// the one decider). `node` is the rule's own node, whose `heads` and `body` it reads
+    /// whichever way round they are written.
+    fn label_of_rule(&mut self, rule: &Rule, node: Node) -> Option<Name> {
+        if rule.label.is_some()
+            || crate::kb::load::rule_reading(rule, &self.symbols, &self.terms)
+                != crate::kb::load::RuleReading::Clause
+        {
+            return rule.label.clone();
+        }
+        let head = rule.heads.iter().find_map(|h| match h {
+            RuleHead::Term(t) => Some(*t),
+            RuleHead::Bottom => None,
+        });
+        let name = self.head_label_name(head, "rule");
+        let mut parts = vec![ClausePart::Token("rule")];
+        parts.extend(self.field(node, "heads").map(ClausePart::Node));
+        if let Some(b) = self.field(node, "body") {
+            parts.push(ClausePart::Token(":-"));
+            parts.push(ClausePart::Node(b));
+        }
+        Some(self.generated_label(name, &parts, rule.span))
     }
 
     // ── Root ────────────────────────────────────────────────────
@@ -4795,30 +4910,10 @@ impl<'a> Converter<'a> {
 
         let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
 
-        // WI-20260830-VFAKK — WHICH RULES HAVE A DESCRIPTION TARGET, and the split is
-        // NOT "labeled or not". A rule has one when it is LABELED (the citation
-        // handle) or when it DECLARES: proposal 061's body-less form brings a
-        // PREDICATE SYMBOL into existence in scan pass 1, which is a
-        // `DescriptionInfo.target` of exactly the kind a sort, an entity or an
-        // operation gets. Only an unlabeled rule that stores a CLAUSE has neither.
-        //
-        // THE DECIDER IS `kb::load::rule_reading`, NOT THIS TEST, and the two cannot
-        // disagree because this asks only `rule_reading`'s FIRST LINE — a body ⇒
-        // `Clause`, full stop. Everything body-less rides to the loader, which holds
-        // the decider and leaves no third outcome: `Declaration` emits the fact on
-        // the declared symbol, `Clause` (a body-less `<=>` equation head, whose
-        // clauses index under the CONNECTIVE so its subject declares nothing)
-        // refuses with this same sentence at `load_rule`, and `DeclaresNothing` is
-        // already refused. A SECOND COPY of the declaration test here is what that
-        // arrangement exists to avoid: the moment the two spellings parted, a block
-        // the loader never emits would be admitted here and vanish in silence —
-        // WI-1072's original defect, re-entered from the other side.
-        let descriptions = if label.is_some() || body.is_none() {
-            self.declaration_descriptions(node)
-        } else {
-            self.reject_description_without_target(node, "unlabeled rule");
-            Vec::new()
-        };
+        // EVERY RULE HAS A DESCRIPTION TARGET: its label — written, or generated below
+        // for a rule that stores a clause (WI-20261121-MVQP8) — or, for a body-less 061
+        // declaration, the predicate it declares (WI-20260830-VFAKK).
+        let descriptions = self.declaration_descriptions(node);
 
         let meta = self.convert_clause_meta_block(node, "a rule");
 
@@ -4828,8 +4923,7 @@ impl<'a> Converter<'a> {
         // hardcoded "no capture" that would let a marker through unread.
         let head_captures = self.claim_rule_head_captures(&heads, &meta);
 
-        self.snapshot_rule_var_scope(&label);
-        Some(Rule {
+        let mut rule = Rule {
             label,
             descriptions,
             heads,
@@ -4837,7 +4931,10 @@ impl<'a> Converter<'a> {
             body,
             meta,
             span,
-        })
+        };
+        rule.label = self.label_of_rule(&rule, node);
+        self.snapshot_rule_var_scope(&rule.label);
+        Some(rule)
     }
 
     /// WI-1129 (proposal 056 §2.3) — decide, per head, where this rule's VARIADIC
@@ -5485,7 +5582,7 @@ impl<'a> Converter<'a> {
 
     fn convert_fact(&mut self, node: Node) -> Option<Fact> {
         let span = self.span(node);
-        self.reject_description_without_target(node, "fact");
+        let descriptions = self.declaration_descriptions(node);
         let term_node = self.field(node, "term")?;
         // A fact IS a rule with an empty body, so its term is a conclusion.
         if self.reject_literal_conclusion(term_node, "fact") {
@@ -5493,19 +5590,34 @@ impl<'a> Converter<'a> {
         }
         let term = self.convert_term(term_node);
         let meta = self.convert_clause_meta_block(node, "a fact");
-        Some(Fact { term, meta, span })
+        // WI-20261121-MVQP8 — a fact is written with no label, so it takes the generated
+        // one. Its canonical form is `rule term :- true`'s (§6.1): the two spellings are
+        // one clause, with one label.
+        let name = self.head_label_name(Some(term), "fact");
+        let label = self.generated_label(
+            name,
+            &[
+                ClausePart::Token("rule"),
+                ClausePart::Node(term_node),
+                ClausePart::Token(":-"),
+                ClausePart::Token("true"),
+            ],
+            span,
+        );
+        Some(Fact {
+            label,
+            descriptions,
+            term,
+            meta,
+            span,
+        })
     }
 
     fn convert_constraint(&mut self, node: Node) -> Option<Constraint> {
         self.reset_var_scope();
         let span = self.span(node);
-        let label = self.field(node, "label").map(|n| self.convert_name(n));
-        let descriptions = if label.is_some() {
-            self.declaration_descriptions(node)
-        } else {
-            self.reject_description_without_target(node, "unlabeled constraint");
-            Vec::new()
-        };
+        let written_label = self.field(node, "label").map(|n| self.convert_name(n));
+        let descriptions = self.declaration_descriptions(node);
         // `head` resolves the `_constraint_body` choice: a `quantified_constraint`
         // / `aggregation_constraint` node, or a `rule_body` for the plain denial
         // form (whose `:- guard` is hoisted to this `constraint_declaration` node).
@@ -5530,15 +5642,22 @@ impl<'a> Converter<'a> {
             }
         };
         let meta = self.convert_clause_meta_block(node, "a constraint");
-        // WI-20260914-DV7DP (§7): a declaration's block is keyed by the name it declares,
-        // and an unlabeled constraint declares none — refused here for the reason its
-        // description block is, rather than loaded and dropped.
-        if label.is_none() && meta.is_some() {
-            let at = self
-                .child_by_kind(node, "meta_block")
-                .expect("a converted meta block has its node");
-            self.err(super::error::meta_block_without_target("unlabeled constraint"), at);
-        }
+        // WI-20261121-MVQP8 — a constraint written without a label takes the generated
+        // one, as a rule does: the predicate its invariant states (for a quantified form,
+        // its innermost consequent's), and a hash of its content. Its `@[…]` block is then
+        // keyed by that name, as a written label's is (§7).
+        let label = match written_label {
+            Some(label) => label,
+            None => {
+                let name = self.head_label_name(constraint_head_goal(&body), "constraint");
+                let mut parts = vec![ClausePart::Token("constraint"), ClausePart::Node(head_node)];
+                if let Some(g) = self.field(node, "guard") {
+                    parts.push(ClausePart::Token(":-"));
+                    parts.push(ClausePart::Node(g));
+                }
+                self.generated_label(name, &parts, span)
+            }
+        };
         Some(Constraint {
             label,
             descriptions,
@@ -5688,8 +5807,7 @@ impl<'a> Converter<'a> {
         let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
         let meta = self.convert_clause_meta_block(node, "a rule entry");
         let head_captures = self.claim_rule_head_captures(&heads, &meta);
-        self.snapshot_rule_var_scope(&label);
-        Some(Rule {
+        let mut rule = Rule {
             label,
             descriptions: Vec::new(),
             heads,
@@ -5697,7 +5815,10 @@ impl<'a> Converter<'a> {
             body,
             meta,
             span,
-        })
+        };
+        rule.label = self.label_of_rule(&rule, node);
+        self.snapshot_rule_var_scope(&rule.label);
+        Some(rule)
     }
 
     // ── Describe ────────────────────────────────────────────────

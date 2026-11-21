@@ -981,16 +981,14 @@ impl Copier {
             query,
             kind,
             trigger_sorts,
-            label,
-            site,
+            source,
         } = guard;
         Guard {
             id: plain(id),
             query: self.value(query),
             kind: plain(kind),
             trigger_sorts: plain(trigger_sorts),
-            label: plain(label),
-            site: plain(site),
+            source: plain(source),
         }
     }
 

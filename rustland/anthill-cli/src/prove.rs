@@ -1999,7 +1999,9 @@ fn law_names(kb: &KnowledgeBase, laws: &[SpecLaw]) -> String {
         },
         _ => None,
     };
-    let mut named: Vec<(Symbol, usize)> = Vec::new();
+    // Each label with where its first clause is written: a label names no line, and a
+    // generated one (`gt-PMMH12JG`, WI-20261121-MVQP8) does not even say which clause.
+    let mut named: Vec<(Symbol, usize, Option<anthill_core::span::SourceSpan>)> = Vec::new();
     let (mut equations, mut constraints, mut others) = (0usize, 0usize, 0usize);
     for law in laws {
         let name = match law.label {
@@ -2021,9 +2023,9 @@ fn law_names(kb: &KnowledgeBase, laws: &[SpecLaw]) -> String {
             }
         };
         if let Some(name) = name {
-            match named.iter_mut().find(|(seen, _)| *seen == name) {
-                Some((_, clauses)) => *clauses += 1,
-                None => named.push((name, 1)),
+            match named.iter_mut().find(|(seen, _, _)| *seen == name) {
+                Some((_, clauses, _)) => *clauses += 1,
+                None => named.push((name, 1, law.site)),
             }
         }
     }
@@ -2034,12 +2036,13 @@ fn law_names(kb: &KnowledgeBase, laws: &[SpecLaw]) -> String {
     };
     named
         .into_iter()
-        .map(|(name, clauses)| {
+        .map(|(name, clauses, site)| {
             let qn = kb.qualified_name_of(name);
+            let at = site.map(|site| format!(" at {}", kb.render_site(site))).unwrap_or_default();
             if clauses == 1 {
-                qn.to_owned()
+                format!("{qn}{at}")
             } else {
-                format!("{qn} ({clauses} clauses)")
+                format!("{qn} ({clauses} clauses){at}")
             }
         })
         .chain(counted(equations, "unlabelled equation", "unlabelled equations"))
@@ -3098,10 +3101,26 @@ mod s8cyd_implicit_cite_tests {
         let spec = kb.try_resolve_symbol("t.bvg8m.kinds.Measured").expect("the spec");
         let laws = kb.spec_laws(spec);
         assert_eq!(laws.len(), 7);
+        // Each label is followed by where its clause is written (WI-20261121-MVQP8), in a
+        // file the fixture writes under a temporary directory: the row reads its name and
+        // its line.
+        let named = law_names(&kb, &laws)
+            .split(", ")
+            .map(|part| match part.split_once(" at ") {
+                Some((name, site)) => format!("{name} at {}", site.rsplit('/').next().unwrap()),
+                None => part.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         assert_eq!(
-            law_names(&kb, &laws),
-            "t.bvg8m.kinds.Measured.weight_nonneg, t.bvg8m.kinds.Measured.two_heads (2 clauses), \
-             t.bvg8m.kinds.Measured.positive, 2 unlabelled equations, 1 constraint"
+            named,
+            // The rule and the two equations written without a label are cited by the one
+            // generated for each (WI-20261121-MVQP8): its head's name and a content hash.
+            "t.bvg8m.kinds.Measured.weight_nonneg at src.anthill:11:33, \
+             t.bvg8m.kinds.Measured.two_heads (2 clauses) at src.anthill:12:29, \
+             t.bvg8m.kinds.Measured.positive-R745DSH5 at src.anthill:13:18, \
+             t.bvg8m.kinds.Measured.weight-HM62G7DD at src.anthill:14:18, \
+             t.bvg8m.kinds.Measured.gte-W89J5Z1P at src.anthill:15:18, 1 constraint"
         );
     }
 }

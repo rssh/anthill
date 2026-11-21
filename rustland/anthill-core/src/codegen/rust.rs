@@ -2789,14 +2789,12 @@ impl<'a> RustCodegen<'a> {
     // ── Constraint → check function ──────────────────────────────
 
     fn emit_constraint(&mut self, constraint: &Constraint) {
-        if let Some(label) = &constraint.label {
-            let label_name = to_snake_case(&self.resolve(label));
-            self.line(&format!("fn check_{label_name}() -> bool {{"));
-            self.indent();
-            self.line(&format!("todo!(\"invariant: {label_name}\")"));
-            self.dedent();
-            self.line("}");
-        }
+        let label_name = to_snake_case(&self.resolve(&constraint.label));
+        self.line(&format!("fn check_{label_name}() -> bool {{"));
+        self.indent();
+        self.line(&format!("todo!(\"invariant: {label_name}\")"));
+        self.dedent();
+        self.line("}");
     }
 
     // ── Rules → test module ──────────────────────────────────────
@@ -2818,6 +2816,10 @@ impl<'a> RustCodegen<'a> {
             let label = rule.label.as_ref().unwrap();
             let label_name = to_snake_case(&self.resolve(label));
             self.line("#[test]");
+            // A stub, not a test: ignored, so a generated crate's suite stays green with
+            // one reminder per labeled rule — and every rule that stores a clause has a
+            // label, the converter's when none is written (WI-20261121-MVQP8).
+            self.line("#[ignore = \"a property stub: write its check\"]");
             self.line(&format!("fn prop_{label_name}() {{"));
             self.indent();
             self.line(&format!("todo!(\"property: {label_name}\")"));

@@ -244,7 +244,7 @@ fn a_constraint_guard_reads_the_goal_as_its_twin() {
         assert!(
             matches!(
                 errs.iter().map(|e| e.peel()).collect::<Vec<_>>().as_slice(),
-                [LoadError::ConstraintViolated { label: Some(l) }] if l == "allOk"
+                [LoadError::ConstraintViolated { constraint: Some(anthill_core::kb::load::ReportedConstraint { label: l, .. }), .. }] if l == "allOk"
             ),
             "{form}: violated by leaf(v: 3) and refused for nothing else; got {errs:#?}"
         );

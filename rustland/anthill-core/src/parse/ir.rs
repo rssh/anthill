@@ -460,8 +460,10 @@ pub struct ParsedFile {
     /// WI-745: the on-disk path this file was read from, so a load error can
     /// name the FILE (`path:line:col: message`). The parser does not know the
     /// path, so it is `None` after [`crate::parse::parse`]; the caller that read
-    /// the file stamps it via [`ParsedFile::with_path`]. `None` for embedded /
-    /// synthetic sources (stdlib, bundle) — those render `line:col` with no path.
+    /// the file stamps it via [`ParsedFile::with_path`]. An embedded set (the stdlib,
+    /// a bundle) stamps each entry's label (`anthill/prelude/eq.anthill`,
+    /// `anthill_stl::stdlib::parse_embedded_sources`); `None` for a synthetic source,
+    /// which renders `line:col` with no path.
     pub path: Option<Arc<Path>>,
 }
 
@@ -839,10 +841,15 @@ pub struct FieldDecl {
 
 #[derive(Debug)]
 pub struct Rule {
+    /// The rule's citation label: the one written, or — for a rule that stores a clause
+    /// and is written without one — the label the converter GENERATES for it, its head's
+    /// name and a hash of its content (`pos-K3M9Q2XA`, WI-20261121-MVQP8, §4.1). Nothing
+    /// after the converter tells the two apart. `None` only for a body-less rule that
+    /// stores no clause — a 061 declaration, which a label is refused on, or one that
+    /// declares nothing (`kb::load::rule_reading`).
     pub label: Option<Name>,
-    /// WI-1072: declaration descriptions target the rule's citation label. The
-    /// converter refuses a non-empty list when `label` is `None`, so an anonymous
-    /// rule never reaches later consumers carrying text they cannot name.
+    /// WI-1072: declaration descriptions target the rule's citation label, or the
+    /// predicate a body-less declaration declares.
     pub descriptions: Vec<String>,
     /// One or more positive head terms, or a single `RuleHead::Bottom`
     /// for denial. Mixing `Bottom` with positive heads is rejected at
@@ -1015,9 +1022,11 @@ pub struct Entity {
 
 #[derive(Debug)]
 pub struct Fact {
-    /// A fact has no declaration name or citation handle, so it deliberately has no
-    /// description field. WI-1072 makes the converter refuse a leading block instead
-    /// of constructing an IR value that must silently lose it later.
+    /// WI-20261121-MVQP8 — the fact's label. A fact is written with none, so it is always
+    /// the generated one, its head's name and a hash of its content (`n-K3M9Q2XA`, §4.1):
+    /// a `Fact` symbol in its scope, the target of its descriptions.
+    pub label: Name,
+    pub descriptions: Vec<String>,
     pub term: ParseTermId,
     pub meta: Option<MetaBlock>,
     pub span: Span,
@@ -1025,9 +1034,10 @@ pub struct Fact {
 
 #[derive(Debug)]
 pub struct Constraint {
-    pub label: Option<Name>,
-    /// WI-1072: declaration descriptions target the constraint label. As for rules,
-    /// the converter refuses descriptions on an unlabeled constraint.
+    /// The constraint's label: the one written, or the one the converter generates for a
+    /// constraint written without one, as for a rule (`big-K3M9Q2XA`, WI-20261121-MVQP8).
+    pub label: Name,
+    /// WI-1072: declaration descriptions target the constraint label.
     pub descriptions: Vec<String>,
     pub body: ConstraintBody,
     pub meta: Option<MetaBlock>,

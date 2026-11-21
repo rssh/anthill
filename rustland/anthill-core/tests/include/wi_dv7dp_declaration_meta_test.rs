@@ -392,14 +392,37 @@ fn rules_keep_clause_metadata() {
     assert!(meta_has_flag(&kb, kb.rule_meta(rid), "Marker"));
 }
 
+/// An unlabeled constraint takes a generated label (WI-20261121-MVQP8), and its block is
+/// recorded under it, as a written label's is. Until then the converter refused the
+/// block: "meta block on unlabeled constraint has no stable target".
 #[test]
-fn unlabeled_constraint_block_is_refused() {
-    let errs = crate::common::parse_errs(
+fn unlabeled_constraint_block_is_recorded_under_its_generated_label() {
+    let kb = crate::common::load_kb_with(
         "namespace test.dv7dp\n import anthill.prelude.{Int64}\n entity tagged(n: Int64)\n constraint tagged(n: ?n) :- ?n > 100 @[Marker]\nend\n",
     );
-    crate::common::assert_refused_naming(
-        &errs,
-        &["unlabeled constraint", "label"],
-        "constraint block",
-    );
+    let declaration_meta = kb.resolve_symbol("anthill.reflect.DeclarationMeta");
+    let blocks: Vec<TermId> = kb
+        .rules_by_functor(declaration_meta)
+        .into_iter()
+        .filter_map(|fid| {
+            let Term::Fn { named_args, .. } = kb.get_term(kb.fact_term(fid)) else {
+                return None;
+            };
+            let field = |f: &str| {
+                named_args
+                    .iter()
+                    .find(|(n, _)| kb.local_name_of(*n) == f)
+                    .map(|&(_, t)| t)
+            };
+            let Term::Ref(name) = kb.get_term(field("name")?) else {
+                return None;
+            };
+            kb.qualified_name_of(*name)
+                .starts_with("test.dv7dp.tagged-")
+                .then(|| field("meta"))
+                .flatten()
+        })
+        .collect();
+    assert_eq!(blocks.len(), 1, "one row, under the generated label");
+    assert!(meta_has_flag(&kb, Some(blocks[0]), "Marker"));
 }

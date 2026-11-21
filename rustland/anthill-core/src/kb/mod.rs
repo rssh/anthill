@@ -133,11 +133,48 @@ struct Guard {
     kind: GuardKind,
     #[allow(dead_code)]
     trigger_sorts: Vec<Symbol>,
-    /// Source `constraint` label, for violation diagnostics. `None` if unlabeled.
-    label: Option<String>,
-    /// Where the `constraint` is written, for the post-load check to leave it alone when
-    /// the load refused its text. `None` for a guard a host registered by hand.
-    site: Option<crate::span::SourceSpan>,
+    /// The `constraint` the guard was registered for, or the host that registered it: what
+    /// a violation is reported by, and where the post-load check reads whether the load
+    /// refused the constraint's text.
+    source: GuardSource,
+}
+
+/// WI-20261121-MVQP8 — where a registered guard comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GuardSource {
+    /// A `constraint` written in a source: its label (written or generated, §6.2), the
+    /// symbol the label is in its scope (the target of its descriptions), and where it is
+    /// written.
+    Written {
+        label: String,
+        symbol: Symbol,
+        site: crate::span::SourceSpan,
+    },
+    /// A guard a host registered at run time (`KB.add_guard`). It has no text, so no
+    /// name and no site.
+    Host,
+}
+
+/// A guard written as `constraint name: …`, at a site no test reads, for the guard
+/// engine's own rows to register and compare.
+#[cfg(test)]
+pub(crate) fn test_guard_source(kb: &mut KnowledgeBase, name: &str) -> GuardSource {
+    GuardSource::Written {
+        label: name.to_owned(),
+        symbol: kb.intern(name),
+        site: crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0),
+    }
+}
+
+impl GuardSource {
+    /// ` 'label'` after the word "constraint" in a message, or nothing for a host's
+    /// guard.
+    pub(crate) fn name_suffix(&self) -> String {
+        match self {
+            GuardSource::Written { label, .. } => format!(" '{label}'"),
+            GuardSource::Host => String::new(),
+        }
+    }
 }
 
 /// Outcome of evaluating one registered guard in the WI-023 post-load check.
@@ -145,26 +182,26 @@ struct Guard {
 pub enum GuardCheck {
     /// The constraint holds under the current facts.
     Holds,
-    /// The constraint is violated. Carries the source label, if any.
-    Violated(Option<String>),
+    /// The constraint is violated. Carries where the guard comes from.
+    Violated(GuardSource),
     /// The constraint uses a `LogicalQuery` form the shared lowerer cannot
     /// handle — an unknown constructor, or a non-goal-shaped leaf (WI-513).
-    /// Carries the source label (if any) and the lowering-error detail. The
+    /// Carries where the guard comes from and the lowering-error detail. The
     /// loader routes this to a load-BLOCKING error rather than silently loading
     /// with the invariant unenforced.
-    Unsupported(Option<String>, String),
+    Unsupported(GuardSource, String),
     /// WI-628 — the constraint's proof search TRUNCATED at the resolver depth
     /// limit, or a goal of it faulted, so it can be neither confirmed nor refuted;
     /// the reason says which. Distinct
     /// from `Unsupported` (a malformed form): the form is fine, the SEARCH was
     /// incomplete. The loader routes this to a load-BLOCKING error rather than
     /// silently passing — deciding a constraint from a truncated search is the
-    /// unsoundness WI-628 closes. Carries the source label (if any) and a reason.
-    Undecidable(Option<String>, String),
+    /// unsoundness WI-628 closes. Carries where the guard comes from and a reason.
+    Undecidable(GuardSource, String),
     /// The constraint's goals are refused where they are read, typed as a query's are
     /// (proposal 073 §6.2): a requirement at a type nothing fixes, or one nothing provides.
-    /// Carries the source label (if any) and the typer's account.
-    Refused(Option<String>, String),
+    /// Carries where the guard comes from and the typer's account.
+    Refused(GuardSource, String),
 }
 
 /// WI-628 — the three-way verdict of evaluating an integrity guard, distinct
@@ -601,8 +638,13 @@ impl ProgramClause {
 /// One law of a spec, as [`KnowledgeBase::spec_laws`] reads it.
 #[derive(Clone, Debug)]
 pub struct SpecLaw {
-    /// The name the law is cited by, when it was written with one (`rule eq_refl: …`).
+    /// The name the law is cited by: written (`rule eq_refl: …`), or the one generated for
+    /// a clause written without (`gt-PMMH12JG`, WI-20261121-MVQP8). `None` for a
+    /// constraint's clause, whose label is the constraint's and not on it.
     pub label: Option<Symbol>,
+    /// Where the law is written, so a message that names it can say where to find it — a
+    /// generated label names no line. `None` for a clause the loader derived.
+    pub site: Option<crate::span::SourceSpan>,
     /// Whether its head is an equation — `lhs <=> rhs`, or a guarded `lhs = rhs :- g`.
     pub is_equation: bool,
     pub clause: ProgramClause,
@@ -4304,6 +4346,13 @@ impl KnowledgeBase {
     /// one. Unlike [`Self::term_span`] it is keyed by `RuleId`, so a head whose
     /// `TermId` is hash-cons-shared with another rule's head still resolves to
     /// THIS rule's source location. The head-error paths in typing.rs read this.
+    /// `site` as a message names it: `path:line:col`, or a source with no path by its
+    /// display name (WI-20261121-MVQP8 — a message that names a clause by its label says
+    /// where the clause is written).
+    pub fn render_site(&self, site: crate::span::SourceSpan) -> String {
+        load::render_decl_site(self, site)
+    }
+
     pub fn rule_head_span(&self, id: RuleId) -> Option<crate::span::SourceSpan> {
         self.rules[id.index()].head_span
     }
@@ -5519,26 +5568,15 @@ impl KnowledgeBase {
     ///
     /// [`TermView`]: term_view::TermView
     pub fn add_guard<V: term_view::TermView>(&mut self, guard: V) -> ConstraintId {
-        self.add_guard_labeled(guard, None)
+        self.add_guard_from(guard, GuardSource::Host)
     }
 
-    /// [`add_guard`](Self::add_guard) carrying the source constraint's label for
-    /// violation diagnostics.
-    pub fn add_guard_labeled<V: term_view::TermView>(
+    /// [`add_guard`](Self::add_guard) for a guard that comes from `source` — the loader's
+    /// door, for a `constraint` written in a file.
+    pub fn add_guard_from<V: term_view::TermView>(
         &mut self,
         guard: V,
-        label: Option<String>,
-    ) -> ConstraintId {
-        self.add_guard_at(guard, label, None)
-    }
-
-    /// [`add_guard_labeled`](Self::add_guard_labeled) for a guard written as a
-    /// `constraint` at `site`.
-    pub fn add_guard_at<V: term_view::TermView>(
-        &mut self,
-        guard: V,
-        label: Option<String>,
-        site: Option<crate::span::SourceSpan>,
+        source: GuardSource,
     ) -> ConstraintId {
         use crate::eval::value::Value;
         use crate::kb::persist_subst::BindValue;
@@ -5567,8 +5605,7 @@ impl KnowledgeBase {
             query,
             kind: GuardKind::General,
             trigger_sorts,
-            label,
-            site,
+            source,
         });
         id
     }
@@ -5700,7 +5737,10 @@ impl KnowledgeBase {
     pub fn guard_sites(&self) -> Vec<(ConstraintId, crate::span::SourceSpan)> {
         self.guards
             .iter()
-            .filter_map(|g| g.site.map(|site| (g.id, site)))
+            .filter_map(|g| match g.source {
+                GuardSource::Written { site, .. } => Some((g.id, site)),
+                GuardSource::Host => None,
+            })
             .collect()
     }
 
@@ -5766,12 +5806,12 @@ impl KnowledgeBase {
                 // `reason` silently would make an undecidable rejection read
                 // identically to a real `Violated` (the loud-over-silent rule).
                 Ok(GuardStatus::Undecidable(reason)) => {
-                    let label = self.guards[idx].label.clone();
+                    let name = self.guards[idx].source.name_suffix();
                     eprintln!(
                         "anthill: integrity constraint{} is not decided ({}) — fact \
                          rejected (an integrity guard must not admit a fact it cannot \
                          verify)",
-                        load::label_suffix(&label),
+                        name,
                         reason,
                     );
                     self.retract(rule_id);
@@ -5780,12 +5820,12 @@ impl KnowledgeBase {
                 // A guard whose goals the typer refuses at the fact's types cannot confirm
                 // the fact keeps the invariant: rejected, and said, as an undecided one is.
                 Err(execute::LowerError::QueryRefused(detail)) => {
-                    let label = self.guards[idx].label.clone();
+                    let name = self.guards[idx].source.name_suffix();
                     eprintln!(
                         "anthill: integrity constraint{} is refused where it is read ({}) — \
                          fact rejected (an integrity guard must not admit a fact it cannot \
                          verify)",
-                        load::label_suffix(&label),
+                        name,
                         detail,
                     );
                     self.retract(rule_id);
@@ -5799,12 +5839,12 @@ impl KnowledgeBase {
                 // programmer error, not user input). Retract and surface loudly.
                 Err(e) => {
                     self.retract(rule_id);
-                    let label = self.guards[idx].label.clone();
+                    let name = self.guards[idx].source.name_suffix();
                     panic!(
                         "assert_checked: integrity constraint{} uses an unsupported \
                          LogicalQuery form ({}) — should have been rejected as \
                          load-blocking by check_all_guards (WI-513)",
-                        load::label_suffix(&label),
+                        name,
                         e,
                     );
                 }
@@ -5830,7 +5870,7 @@ impl KnowledgeBase {
                 continue;
             }
             let query = self.guards[idx].query.clone();
-            let label = self.guards[idx].label.clone();
+            let label = self.guards[idx].source.clone();
             // WI-513: `evaluate_guard` lowers the constraint through the shared
             // carrier-neutral `lower_query`, which surfaces an unsupported
             // LogicalQuery form (unknown ctor / non-goal leaf) loudly as a
@@ -8392,6 +8432,7 @@ impl KnowledgeBase {
                 };
                 is_law.then(|| SpecLaw {
                     label: self.rule_label(rid),
+                    site: self.rule_head_span(rid),
                     is_equation,
                     clause: self.program_clause(rid),
                 })
@@ -17629,11 +17670,12 @@ mod wi518_occurrence_guard_resolution_tests {
 
         let leaf = edge_self_loop_occurrence(&mut kb);
         let query = no_q_guard(&mut kb, leaf);
-        kb.add_guard_labeled(query, Some("no_self_loop".to_string()));
+        let src = test_guard_source(&mut kb, "no_self_loop");
+        kb.add_guard_from(query, src);
 
         assert_eq!(
             kb.check_all_guards(),
-            vec![GuardCheck::Violated(Some("no_self_loop".to_string()))],
+            vec![GuardCheck::Violated(test_guard_source(&mut kb, "no_self_loop"))],
             "an occurrence self-loop leaf must RESOLVE and be violated by edge(n1, n1)",
         );
     }
@@ -17650,7 +17692,8 @@ mod wi518_occurrence_guard_resolution_tests {
 
         let leaf = edge_self_loop_occurrence(&mut kb);
         let query = no_q_guard(&mut kb, leaf);
-        kb.add_guard_labeled(query, Some("no_self_loop".to_string()));
+        let src = test_guard_source(&mut kb, "no_self_loop");
+        kb.add_guard_from(query, src);
 
         assert_eq!(
             kb.check_all_guards(),
@@ -17674,7 +17717,8 @@ mod wi518_occurrence_guard_resolution_tests {
 
         let leaf = edge_self_loop_occurrence(&mut kb);
         let query = no_q_guard(&mut kb, leaf);
-        let cid = kb.add_guard_labeled(query, Some("no_self_loop".to_string()));
+        let src = test_guard_source(&mut kb, "no_self_loop");
+        let cid = kb.add_guard_from(query, src);
         // The synthetic occurrence query carries no resolvable trigger sort, so wire
         // the guard to the asserted fact's sort by hand (the per-assert lookup keys
         // on `guards_by_sort`).
@@ -17711,7 +17755,8 @@ mod wi518_occurrence_guard_resolution_tests {
             named_args: SmallVec::new(),
         });
         let query = no_q_guard(&mut kb, Value::term(leaf_term));
-        kb.add_guard_labeled(query, Some("term_constraint".to_string()));
+        let src = test_guard_source(&mut kb, "term_constraint");
+        kb.add_guard_from(query, src);
 
         assert_eq!(
             kb.check_all_guards(),
@@ -17782,11 +17827,12 @@ mod wi518_occurrence_guard_resolution_tests {
             pos: Rc::from(Vec::<Value>::new()),
             named: Rc::from(vec![(condition, conj), (body, empty)]),
         };
-        kb.add_guard_labeled(query, Some("conj_constraint".to_string()));
+        let src = test_guard_source(&mut kb, "conj_constraint");
+        kb.add_guard_from(query, src);
 
         assert_eq!(
             kb.check_all_guards(),
-            vec![GuardCheck::Violated(Some("conj_constraint".to_string()))],
+            vec![GuardCheck::Violated(test_guard_source(&mut kb, "conj_constraint"))],
             "a conjunction mixing a term leaf and an occurrence leaf must resolve and be violated",
         );
     }
@@ -17897,7 +17943,7 @@ mod wi628_guard_truncation_tests {
     /// Assert `check_all_guards` yielded exactly one `Undecidable(label, reason)`.
     fn expect_undecidable(checks: &[GuardCheck], label: &str) {
         match checks {
-            [GuardCheck::Undecidable(Some(l), detail)] => {
+            [GuardCheck::Undecidable(GuardSource::Written { label: l, .. }, detail)] => {
                 assert_eq!(
                     l.as_str(),
                     label,
@@ -17924,7 +17970,8 @@ mod wi628_guard_truncation_tests {
         let (mut kb, _domain) = loop_kb();
         let leaf = unary_leaf(&mut kb, "loop", "a");
         let guard = negation_guard(&mut kb, leaf);
-        kb.add_guard_labeled(guard, Some("no_loop".to_string()));
+        let src = test_guard_source(&mut kb, "no_loop");
+        kb.add_guard_from(guard, src);
         expect_undecidable(&kb.check_all_guards(), "no_loop");
     }
 
@@ -17936,7 +17983,8 @@ mod wi628_guard_truncation_tests {
         let (mut kb, _domain) = loop_kb();
         let leaf = unary_leaf(&mut kb, "g", "a");
         let guard = negation_guard(&mut kb, leaf);
-        kb.add_guard_labeled(guard, Some("no_g".to_string()));
+        let src = test_guard_source(&mut kb, "no_g");
+        kb.add_guard_from(guard, src);
         assert_eq!(kb.check_all_guards(), vec![GuardCheck::Holds]);
     }
 
@@ -17947,7 +17995,8 @@ mod wi628_guard_truncation_tests {
         let (mut kb, _domain) = loop_kb();
         let leaf = unary_leaf(&mut kb, "loop", "a");
         let guard = no_q_guard(&mut kb, leaf);
-        kb.add_guard_labeled(guard, Some("no_loop_count".to_string()));
+        let src = test_guard_source(&mut kb, "no_loop_count");
+        kb.add_guard_from(guard, src);
         expect_undecidable(&kb.check_all_guards(), "no_loop_count");
     }
 
@@ -17956,7 +18005,8 @@ mod wi628_guard_truncation_tests {
         let (mut kb, _domain) = loop_kb();
         let leaf = unary_leaf(&mut kb, "loop", "a");
         let guard = forall_condition_guard(&mut kb, leaf);
-        kb.add_guard_labeled(guard, Some("forall_loop".to_string()));
+        let src = test_guard_source(&mut kb, "forall_loop");
+        kb.add_guard_from(guard, src);
         expect_undecidable(&kb.check_all_guards(), "forall_loop");
     }
 }

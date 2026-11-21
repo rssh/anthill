@@ -8,10 +8,12 @@
 //! converter refused the block ("no stable target", §4.1); labeled, 061 refused the
 //! LABEL ("nothing to cite"). Each refusal sent the author to the other one.
 //!
-//! WHAT THE SPLIT NOW IS. A rule has a description target when it is LABELED (the
-//! citation handle) or when it DECLARES (the predicate symbol). An unlabeled rule that
-//! stores a CLAUSE has neither, and both halves of that refusal share one sentence
-//! (`parse::error::description_without_target`).
+//! WHAT THE SPLIT WAS. A rule had a description target when it was LABELED (the
+//! citation handle) or when it DECLARED (the predicate symbol). An unlabeled rule that
+//! stored a CLAUSE had neither, and was refused. Since WI-20261121-MVQP8 it has the label
+//! the converter generates for it, its head's name and a content hash
+//! (`wi_mvqp8_generated_label_test`), so the refusal
+//! rows below now read that label back; the rows were refusals until then, measured.
 //!
 //! WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT — THREE AXES, each measured on its
 //! own (present-but-neutralized, not deleted). The distinction matters because the
@@ -30,32 +32,33 @@
 //!     `a_declaration_shares_its_target_with_standalone_describe`, each on its own
 //!     assertion (`[]` where a fact was expected). THIS is the axis that measures what
 //!     the ticket added; `guardians_test` loses exactly one row to it.
-//!   * the LOADER's §4.1 refusal (the `Clause` arm) — 1 red, 3918 green:
-//!     `a_bodyless_equation_head_is_refused_at_load` alone, and it fails by LOADING
-//!     CLEAN, i.e. with the block SILENTLY DROPPED. That is the hole admitting
-//!     body-less rules at the converter would otherwise have opened.
+//!   * the LOADER's §4.1 refusal (the `Clause` arm) — 1 red, 3918 green: the equation
+//!     row alone, by LOADING CLEAN with the block SILENTLY DROPPED. That arm now emits
+//!     the block on the equation's generated label (WI-20261121-MVQP8).
 //!
 //! (The first version of this note claimed the equation row failed on its LOCATION
 //! assertion under the converter back-out. It does not — it panics before reaching
 //! one. /code-review measured it.)
 //!
 //! WHICH ROWS PASS EITHER WAY BY DESIGN — the CONTROLS, each guarding a refusal this
-//! must NOT relax (the ticket names the first three):
+//! must NOT relax:
 //!   * `a_labeled_declaration_is_still_refused_by_061`
-//!   * `a_bodied_unlabeled_rules_block_is_still_refused_at_parse`
-//!   * `an_asserting_bodyless_rule_is_still_a_clause` (`:- true`, 061's assertion
-//!     spelling — body-less in intent, a CLAUSE to `rule_reading`, and the remedy 061's
-//!     own diagnostic offers)
 //!   * `a_bodyless_rule_that_declares_nothing_is_still_refused`
+//! Two more were controls until WI-20261121-MVQP8 and read its generated label now:
+//!   * `a_bodied_unlabeled_rules_block_names_its_generated_label`
+//!   * `an_asserting_bodyless_rule_is_still_a_clause` (`:- true`, 061's assertion
+//!     spelling — body-less in intent, a CLAUSE to `rule_reading`, so its block names its
+//!     clause's label and not a declared predicate)
 //!
 //! THE POPULATION IS `rule_reading`'s THREE ARMS, not the two the ticket named:
-//! `Declaration` (the three emission rows), `Clause` (the equation row), and
-//! `DeclaresNothing` (the last control). Every body-less rule the converter now
-//! carries a block for lands in exactly one of them, and none of the three drops it
-//! in silence.
+//! `Declaration` (the three emission rows), `Clause` (the equation row, on its generated
+//! label), and `DeclaresNothing` (the last control). Every body-less rule the converter
+//! carries a block for lands in exactly one of them, and none of the three drops it in
+//! silence.
 
-use crate::common::{load_kb_with, parse_errs, try_load_kb_with};
+use crate::common::{load_kb_with, try_load_kb_with};
 use crate::wi1070_operation_description_test::descriptions_of;
+use crate::wi_mvqp8_generated_label_test::{is_generated, target_of};
 
 /// The load errors of a source that must NOT load. Panics if it loads clean, since a
 /// fixture that no longer trips the rule is a test-authoring bug.
@@ -130,32 +133,27 @@ end
     );
 }
 
-/// THE OTHER HALF OF §4.1, and the row that says admitting body-less rules at the
-/// converter did not open a silent drop. A body-less `<=>` head is body-less to the eye
-/// and a CLAUSE to `rule_reading`: its clauses index under the CONNECTIVE, so its
-/// subject declares no predicate and there is no symbol to name. The refusal is the
-/// LOADER's, because only `rule_reading` can tell this shape from a declaration — which
-/// is why the assertion is on the loader's own construct wording, not merely on "it was
-/// refused" (that much was true before, from the other pass).
+/// A body-less EQUATION head stores a clause headed by the connective, so its subject
+/// declares no predicate and the declaration's target is not there. Until
+/// WI-20261121-MVQP8 the loader refused its block; it now names the label generated
+/// from the equation's text.
 #[test]
-fn a_bodyless_equation_head_is_refused_at_load() {
+fn a_bodyless_equation_head_names_its_generated_label() {
     const SRC: &str = r#"
 namespace vfakk.eqn
   import anthill.prelude.Int64
-  {< has no target >}
+  {< the equation's own intent >}
   rule twice(?x) <=> ?x
 end
 "#;
-    let errs = load_errs(SRC);
+    let kb = load_kb_with(SRC);
+    let target = target_of(&kb, "the equation's own intent");
+    assert!(is_generated(&target, "vfakk.eqn.twice"), "{target}");
     assert!(
-        errs.iter().any(|e| {
-            e.contains("description block on an unlabeled rule that stores a clause")
-                && e.contains("no stable target")
-        }),
-        "the loader must refuse it with §4.1's own sentence, naming the construct; \
-         got: {errs:#?}",
+        descriptions_of(&kb, "vfakk.eqn.twice").is_empty(),
+        "and not the subject, which the equation does not declare",
     );
-    // ... and the LABELED spelling of the same rule is the escape that sentence names.
+    // ... and the LABELED spelling of the same rule still names its label.
     const LABELED: &str = r#"
 namespace vfakk.eqn_labeled
   import anthill.prelude.Int64
@@ -167,7 +165,6 @@ end
     assert_eq!(
         descriptions_of(&kb, "vfakk.eqn_labeled.law"),
         vec![(0, "the equation's own intent".to_string())],
-        "a LABEL is the citation handle §4.1 sends the author to, and it must work",
     );
 }
 
@@ -193,46 +190,37 @@ end
     );
 }
 
-/// PASSES EITHER WAY BY DESIGN. The shape WI-1072 refuses at the BLOCK's own span, and
-/// the one the converter still decides alone: a body ⇒ a clause, which is
-/// `rule_reading`'s first line, so the two passes cannot part ways on it.
+/// The shape WI-1072 refused at the BLOCK's own span — a body ⇒ a clause — names its
+/// generated label since WI-20261121-MVQP8.
 #[test]
-fn a_bodied_unlabeled_rules_block_is_still_refused_at_parse() {
-    const SRC: &str = r#"namespace vfakk.bodied
-                           {< has no target >}
-                           rule adult(?x) :- person(?x)
-                         end"#;
-    let errs = parse_errs(SRC);
-    assert_eq!(errs.len(), 1, "one block, one refusal: {errs:?}");
-    assert!(
-        errs[0].contains("description block on unlabeled rule")
-            && errs[0].contains("no stable target"),
-        "the converter must still name the construct and the missing target; got {:?}",
-        errs[0],
+fn a_bodied_unlabeled_rules_block_names_its_generated_label() {
+    let kb = load_kb_with(
+        r#"namespace vfakk.bodied
+             fact person(1)
+             {< who is an adult >}
+             rule adult(?x) :- person(?x)
+           end"#,
     );
+    let target = target_of(&kb, "who is an adult");
+    assert!(is_generated(&target, "vfakk.bodied.adult"), "{target}");
 }
 
-/// PASSES EITHER WAY BY DESIGN, and it is the row that pins the split point. `:- true`
-/// is 061's spelling of a body-less ASSERTION — the desugaring `fact` takes, and the
-/// remedy 061's own diagnostic offers — so it reads as a CLAUSE, not a declaration, and
-/// its block has no target. It looks like the admitted shape and must not behave like
-/// one.
+/// The row that pins the split point. `:- true` is 061's spelling of a body-less
+/// ASSERTION — the desugaring `fact` takes — so it reads as a CLAUSE, not a declaration:
+/// its block names the clause's generated label, and the predicate `p` gets none.
 #[test]
 fn an_asserting_bodyless_rule_is_still_a_clause() {
-    const SRC: &str = r#"namespace vfakk.assert_true
-                           {< has no target >}
-                           rule p(1) :- true
-                         end"#;
-    let errs = parse_errs(SRC);
-    assert_eq!(
-        errs.len(),
-        1,
-        "`:- true` is an assertion, so its unlabeled block still has no target: {errs:?}",
+    let kb = load_kb_with(
+        r#"namespace vfakk.assert_true
+             {< one row >}
+             rule p(1) :- true
+           end"#,
     );
+    let target = target_of(&kb, "one row");
+    assert!(is_generated(&target, "vfakk.assert_true.p"), "{target}");
     assert!(
-        errs[0].contains("description block on unlabeled rule"),
-        "and it is refused as the CLAUSE it is, by the converter; got {:?}",
-        errs[0],
+        descriptions_of(&kb, "vfakk.assert_true.p").is_empty(),
+        "an assertion declares nothing, so its block is not the predicate's",
     );
 }
 

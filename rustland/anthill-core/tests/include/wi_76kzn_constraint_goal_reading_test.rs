@@ -136,7 +136,7 @@ fn the_controls_hold_under_forall_and_fail_under_no() {
         assert!(
             matches!(
                 errs.iter().map(|e| e.peel()).collect::<Vec<_>>().as_slice(),
-                [LoadError::ConstraintViolated { label: Some(l) }] if l == "c"
+                [LoadError::ConstraintViolated { constraint: Some(anthill_core::kb::load::ReportedConstraint { label: l, .. }), .. }] if l == "c"
             ),
             "`no … -: {goal}` is violated by `item(n: 1)` and refused for nothing else; got \
              {errs:#?}"
@@ -266,7 +266,7 @@ fn a_refused_constraint_is_not_checked_against_the_facts() {
             })
             .collect();
         assert!(
-            matches!(guards.as_slice(), [LoadError::ConstraintViolated { label: Some(l) }] if l == "d"),
+            matches!(guards.as_slice(), [LoadError::ConstraintViolated { constraint: Some(anthill_core::kb::load::ReportedConstraint { label: l, .. }), .. }] if l == "d"),
             "`{refused}`: only `d` is checked, and it is violated; got {errs:#?}"
         );
     }

@@ -1172,7 +1172,7 @@ impl KB for KbBridge {
         // WI-549: reify the generated `LogicalQuery` enum into a structured KB
         // guard Value (built from the `anthill.reflect.LogicalQuery.*` ctors) and
         // register it — DISTINCT from `query_to_goals`, which flattens to resolver
-        // goals. `add_guard_labeled` extracts the trigger sorts (via
+        // goals. `add_guard` extracts the trigger sorts (via
         // `collect_trigger_sorts`) so the guard fires on the right facts. The
         // enforceable forms are the quantifiers (`forall_q`/`some_q`/`one_q`/
         // `lone_q`/`no_q`) and `negation`; a bare pattern_query/conjunction is
@@ -1181,7 +1181,7 @@ impl KB for KbBridge {
         // `ConstraintId` is a generated unit struct, so the core id is discarded.
         let mut kb = self.kb.borrow_mut();
         let value = Self::reify_logical_query(&mut kb, &guard);
-        kb.add_guard_labeled(value, None);
+        kb.add_guard(value);
         ConstraintId
     }
 }

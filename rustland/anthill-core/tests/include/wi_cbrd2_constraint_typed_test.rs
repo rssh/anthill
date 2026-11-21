@@ -110,7 +110,7 @@ fn a_constraint_is_decided_at_its_member() {
         assert_eq!(reads, 0, "`{constraint}` over `{facts}`: read from the value");
         if violated {
             assert!(
-                matches!(errs.as_slice(), [LoadError::ConstraintViolated { label: Some(l) }] if l == "chk"),
+                matches!(errs.as_slice(), [LoadError::ConstraintViolated { constraint: Some(anthill_core::kb::load::ReportedConstraint { label: l, .. }), .. }] if l == "chk"),
                 "`{constraint}` over `{facts}`: {errs:#?}"
             );
         } else {
@@ -185,7 +185,7 @@ fn a_guard_added_at_run_time_is_typed() {
     kb.add_guard(guard);
     let (checks, reads) = counting(|| kb.check_all_guards());
     assert_eq!(reads, 0, "the check: read from the value");
-    assert_eq!(checks, vec![GuardCheck::Violated(None)]);
+    assert_eq!(checks, vec![GuardCheck::Violated(anthill_core::kb::GuardSource::Host)]);
 }
 
 /// Over `src` holding a `Leaf` and a `Twig`, `?y` is at no one type: the guard's goals are
@@ -198,7 +198,7 @@ fn a_guard_at_a_type_nothing_fixes_is_refused() {
     kb.add_guard(guard);
     let checks = kb.check_all_guards();
     assert!(
-        matches!(checks.as_slice(), [GuardCheck::Refused(None, detail)] if detail.contains("Pred")),
+        matches!(checks.as_slice(), [GuardCheck::Refused(anthill_core::kb::GuardSource::Host, detail)] if detail.contains("Pred")),
         "{checks:?}"
     );
 }
@@ -216,7 +216,7 @@ fn a_later_load_is_refused_for_a_guard_that_does_not_type() {
         .unwrap_or_default();
     let errs: Vec<&LoadError> = errs.iter().map(|e| e.peel()).collect();
     assert!(
-        matches!(errs.as_slice(), [LoadError::ConstraintRefused { label: None, detail }] if detail.contains("Pred")),
+        matches!(errs.as_slice(), [LoadError::ConstraintRefused { constraint: None, detail }] if detail.contains("Pred")),
         "{errs:#?}"
     );
 }

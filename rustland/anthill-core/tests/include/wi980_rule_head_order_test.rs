@@ -1061,7 +1061,8 @@ fn a_rule_in_a_secondary_entry_is_order_free() {
             "namespace wi980.sec3\n  sort Rec\n    entity rec(n: Int64)\n    rule p(?x)\n  \
              end\n  namespace Rec\n    rule p(2) :- true\n  end\nend\n",
         ),
-        &["`rule` is not allowed in a secondary entry of sort 'wi980.sec3.Rec'"],
+        // The rule is named by its label, generated since WI-20261121-MVQP8 (`'p-…'`).
+        &["is not allowed in a secondary entry of sort 'wi980.sec3.Rec'"],
     );
 }
 

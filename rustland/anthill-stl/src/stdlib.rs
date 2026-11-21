@@ -457,7 +457,8 @@ pub fn parse_embedded() -> (Vec<ParsedFile>, Vec<String>) {
 ///
 /// The label is a logical entry name, not a file on disk — but it names the source
 /// exactly, which is what WI-852's located rendering (`line:col`, not a byte offset)
-/// asks of it.
+/// asks of it, and each parsed file carries it as its path (`<label>.anthill`), so a
+/// diagnostic about the file's text names the file.
 pub fn parse_embedded_sources(
     sources: &[(&str, &str)],
     origin: &str,
@@ -467,7 +468,10 @@ pub fn parse_embedded_sources(
 
     for &(path, source) in sources {
         match parse::parse(source) {
-            Ok(parsed) => files.push(parsed),
+            // WI-20261121-MVQP8 — the entry names itself, so a diagnostic that names a
+            // clause of it (a law's generated label) says where the clause is written:
+            // `anthill/prelude/eq.anthill:81:17`, where it used to say `81:17` of no file.
+            Ok(parsed) => files.push(parsed.with_path(std::path::PathBuf::from(format!("{path}.anthill")))),
             Err(errs) => errors.extend(
                 ParseError::all_located(&errs, std::path::Path::new(path), source)
                     .into_iter()

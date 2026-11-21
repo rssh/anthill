@@ -390,7 +390,8 @@ fn a_law_is_asserted_of_a_carriers_own_sort_and_not_at_a_concrete_carrier() {
         said[0].starts_with(
             "warning: `test.zz7ph.int.Scope` requires `anthill.prelude.Eq[T = \
              anthill.prelude.Int64]`, and 1 of the 1 law it gives a proof is not lowered to \
-             SMT — a `by z3` proof under it runs without: anthill.prelude.Eq.eq_refl ("
+             SMT — a `by z3` proof under it runs without: anthill.prelude.Eq.eq_refl at \
+             anthill/prelude/eq.anthill:81:17 ("
         ) && said[0].contains("a law is asserted of a carrier's own sort"),
         "{}",
         said[0]
@@ -875,8 +876,9 @@ end
         said[0].starts_with(&format!(
             "warning: `test.zz7ph.odd.Scope` requires `test.zz7ph.odd.Odd[T = {t}]`, and 1 of \
              the 2 laws it gives a proof is not lowered to SMT — a `by z3` proof under it runs \
-             without: test.zz7ph.odd.Odd.tagged ("
-        )) && said[0].contains("no SMT sort"),
+             without: test.zz7ph.odd.Odd.tagged at "
+        )) && said[0].contains("/odd.anthill:13:18 (")
+            && said[0].contains("no SMT sort"),
         "{}",
         said[0]
     );
@@ -999,8 +1001,9 @@ end
     assert!(
         said[0].contains(
             ", and 2 of the 16 laws it gives a proof are not lowered to SMT — a `by z3` proof \
-             under it runs without: anthill.prelude.BoundedLattice.less_bottom, \
-             anthill.prelude.BoundedLattice.less_top ("
+             under it runs without: anthill.prelude.BoundedLattice.less_bottom at \
+             anthill/prelude/lattice.anthill:44:18, anthill.prelude.BoundedLattice.less_top at \
+             anthill/prelude/lattice.anthill:45:18 ("
         ) && said[0].contains("rule head shape not supported"),
         "{}",
         said[0]

@@ -543,17 +543,50 @@ fn a_body_less_multi_head_rule_in_a_secondary_entry_is_refused_once() {
     assert!(r3_refusals(errs.clone()).is_empty(), "{errs:#?}");
 }
 
+/// WI-20261121-MVQP8 — a rule written without a label gets the one it would have if one
+/// were written, and from there is that rule: an unlabeled multi-head rule, refused
+/// until then ("multi-head rule requires a label"), has the verdict of its spelling with
+/// a written label. Labels are masked in both (`'<label>'`), since the generated one is
+/// its first head's name and a content hash.
+fn assert_as_if_labeled(unlabeled: &[&str], labeled: &[&str]) {
+    // A generated label, `name-` and 8 base-32 characters, becomes `<label>`.
+    let mask = |e: &str| -> String {
+        let e = e.replace("lbl_ne0e4", "<label>");
+        let bytes = e.as_bytes();
+        let mut out = String::new();
+        let mut from = 0;
+        for (at, _) in e.match_indices('-') {
+            let hash = bytes.get(at + 1..at + 9);
+            if !hash.is_some_and(|h| h.iter().all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())) {
+                continue;
+            }
+            let name_start = e[..at]
+                .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .map_or(0, |i| i + 1)
+                .max(from);
+            out.push_str(&e[from..name_start]);
+            out.push_str("<label>");
+            from = at + 9;
+        }
+        out.push_str(&e[from..]);
+        out
+    };
+    let masked = |errs: Vec<String>| -> Vec<String> { errs.iter().map(|e| mask(e)).collect() };
+    let unlabeled = masked(crate::common::load_errors_of_files(unlabeled));
+    let labeled = masked(crate::common::load_errors_of_files(labeled));
+    assert!(
+        !unlabeled.iter().any(|e| e.contains("requires a label")),
+        "{unlabeled:#?}"
+    );
+    assert_eq!(unlabeled, labeled);
+}
+
 #[test]
-fn an_unlabeled_multi_head_rule_in_a_secondary_entry_is_refused_once() {
-    // The label refusal is the whole report: the rule stores nothing, so R3 has no head
-    // to judge and must not add "introduces no name at all" for heads that do introduce.
-    let errs = crate::common::load_errors_of(&r3_program(
-        "zzNE.r3j",
-        "rule p(1) :- true",
-        "rule f1(1), f2(2) :- true",
-    ));
-    assert!(errs.iter().any(|e| e.contains("multi-head rule requires a label")), "{errs:#?}");
-    assert!(r3_refusals(errs.clone()).is_empty(), "{errs:#?}");
+fn an_unlabeled_multi_head_rule_in_a_secondary_entry_is_judged_as_a_labeled_one() {
+    assert_as_if_labeled(
+        &[&r3_program("zzNE.r3j", "rule p(1) :- true", "rule f1(1), f2(2) :- true")],
+        &[&r3_program("zzNE.r3j", "rule p(1) :- true", "rule lbl_ne0e4: f1(1), f2(2) :- true")],
+    );
 }
 
 #[test]
@@ -615,11 +648,16 @@ fn assert_refused_and_mints_nothing(ns: &str, rule: &str, why: &str) {
 }
 
 #[test]
-fn an_unlabeled_multi_head_rule_is_refused_and_mints_nothing() {
-    assert_refused_and_mints_nothing(
-        "zzNE.ul",
-        "rule aa, bb :- true",
-        "multi-head rule requires a label",
+fn an_unlabeled_multi_head_rule_introduces_as_a_labeled_one() {
+    let program = |rule: &str| {
+        format!(
+            "namespace zzNE.ul\n  import anthill.prelude.{{Int64}}\n  {rule}\n  sort S\n    \
+             entity se(v: Int64)\n    rule aa :- true\n  end\nend\n"
+        )
+    };
+    assert_as_if_labeled(
+        &[&program("rule aa, bb :- true")],
+        &[&program("rule lbl_ne0e4: aa, bb :- true")],
     );
 }
 
@@ -634,17 +672,17 @@ fn an_unlabeled_empty_bodied_rule_with_a_connective_head_is_refused_for_the_conn
 }
 
 #[test]
-fn unlabeled_heads_in_two_files_draw_no_declare_it() {
-    // 061's "declare it" is about heads that store clauses. These store none.
-    let errs = crate::common::load_errors_of_files(&[
-        "namespace zzNE.u2\n  rule aa(1), bb :- true\nend\n",
-        "namespace zzNE.u2\n  rule aa(2) :- true\nend\n",
-    ]);
-    assert!(
-        errs.iter().any(|e| e.contains("multi-head rule requires a label")),
-        "{errs:#?}"
+fn unlabeled_heads_in_two_files_are_judged_as_labeled_ones() {
+    assert_as_if_labeled(
+        &[
+            "namespace zzNE.u2\n  rule aa(1), bb :- true\nend\n",
+            "namespace zzNE.u2\n  rule aa(2) :- true\nend\n",
+        ],
+        &[
+            "namespace zzNE.u2\n  rule lbl_ne0e4: aa(1), bb :- true\nend\n",
+            "namespace zzNE.u2\n  rule aa(2) :- true\nend\n",
+        ],
     );
-    assert!(!errs.iter().any(|e| e.contains("has rule heads in 2 files")), "{errs:#?}");
 }
 
 #[test]

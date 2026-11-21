@@ -213,8 +213,9 @@ fn two_requirements_of_one_scope_are_each_their_own() {
 
 /// THE WARNING IS OF THE LAWS THAT ARE NOT LOWERED, counted against what the requirement
 /// gives and named: `WeakOrd` at `Int64` gives ten — its nine and `Eq`'s — and at a
-/// concrete carrier none is lowered (a law is asserted of a carrier's own sort). Three of
-/// the ten are cited by a label; the rest are counted by what they are. At the scope's
+/// concrete carrier none is lowered (a law is asserted of a carrier's own sort). Nine of
+/// the ten are cited by a label — six of them generated (WI-20261121-MVQP8) — and the
+/// constraint is counted. At the scope's
 /// own parameter all ten lower, and nothing is said.
 #[test]
 fn the_warning_counts_the_laws_left_out_and_names_them() {
@@ -231,9 +232,16 @@ fn the_warning_counts_the_laws_left_out_and_names_them() {
     assert!(
         warning.contains(
             ", and 10 of the 10 laws it gives a proof are not lowered to SMT — a `by z3` proof \
-             under it runs without: anthill.prelude.WeakOrd.compare_antisym, \
-             anthill.prelude.WeakOrd.compare_refl, anthill.prelude.Eq.eq_refl, 6 unlabelled \
-             equations, 1 constraint ("
+             under it runs without: \
+             anthill.prelude.WeakOrd.gt-PMMH12JG at anthill/prelude/ordered.anthill:156:5, \
+             anthill.prelude.WeakOrd.lt-PGQEWY8K at anthill/prelude/ordered.anthill:157:5, \
+             anthill.prelude.WeakOrd.gte-PWXV3VWS at anthill/prelude/ordered.anthill:158:5, \
+             anthill.prelude.WeakOrd.lte-164GK66F at anthill/prelude/ordered.anthill:159:5, \
+             anthill.prelude.WeakOrd.max-RM08DFTZ at anthill/prelude/ordered.anthill:160:5, \
+             anthill.prelude.WeakOrd.min-NCX312X9 at anthill/prelude/ordered.anthill:161:5, \
+             anthill.prelude.WeakOrd.compare_antisym at anthill/prelude/ordered.anthill:167:22, \
+             anthill.prelude.WeakOrd.compare_refl at anthill/prelude/ordered.anthill:169:19, \
+             anthill.prelude.Eq.eq_refl at anthill/prelude/eq.anthill:81:17, 1 constraint ("
         ),
         "ten laws, all left out, three named: {warning}"
     );

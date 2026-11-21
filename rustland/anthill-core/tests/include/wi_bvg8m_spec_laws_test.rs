@@ -85,9 +85,9 @@ fn laws(kb: &KnowledgeBase, spec_qn: &str) -> Vec<String> {
     kb.spec_laws(spec)
         .iter()
         .map(|law| {
-            let label = law
-                .label
-                .map_or("-", |label| kb.qualified_name_of(label).rsplit('.').next().unwrap());
+            let label = law.label.map_or("-".to_owned(), |label| {
+                masked(kb.qualified_name_of(label).rsplit('.').next().unwrap())
+            });
             let kind = match law.clause.clause_kind {
                 ClauseKind::Rule => "rule",
                 ClauseKind::Fact => "fact",
@@ -98,6 +98,20 @@ fn laws(kb: &KnowledgeBase, spec_qn: &str) -> Vec<String> {
             format!("{label} {kind} {shape}")
         })
         .collect()
+}
+
+/// A label the converter generated for a clause written without one (WI-20261121-MVQP8),
+/// `gt-PMMH12JG`, with its content hash masked, `gt-#`: the row reads which clauses a
+/// spec counts and what each is named after, not the hash of each one's text.
+fn masked(label: &str) -> String {
+    match label.rsplit_once('-') {
+        Some((name, hash))
+            if hash.len() == 8 && hash.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase()) =>
+        {
+            format!("{name}-#")
+        }
+        _ => label.to_owned(),
+    }
 }
 
 /// How many laws the sort has, and the labels of those cited by one.
@@ -134,7 +148,9 @@ fn a_law_is_a_rule_or_a_constraint_written_in_the_spec() {
         rules,
         [
             "weight_nonneg rule equation",
-            "- rule equation",
+            // Its label is the one generated for it (WI-20261121-MVQP8), named after the
+            // subject `heavier`.
+            "heavier-# rule equation",
             "weight_bound rule clause",
             "weight_then rule clause",
             "two_heads rule clause",
@@ -143,7 +159,9 @@ fn a_law_is_a_rule_or_a_constraint_written_in_the_spec() {
     );
     of_measured.retain(|law| !law.contains(" rule "));
     of_measured.sort();
-    assert_eq!(of_measured, ["- constraint clause", "- fact equation"]);
+    // A fact is cited by its generated label, as the `rule` spelling of it is; a
+    // constraint's label is not on its clause, written or generated.
+    assert_eq!(of_measured, ["- constraint clause", "gte-# fact equation"]);
 
     // A sort that requires a spec has none of the spec's laws for its own.
     assert_eq!(laws(&kb, "test.bvg8m.laws.Scope"), Vec::<String>::new());
@@ -168,7 +186,9 @@ fn the_librarys_laws_are_not_its_default_bodies() {
     assert_eq!(count_and_labels(&kb, &prelude("PartialOrd")), (0, labels(&[])));
     assert_eq!(
         count_and_labels(&kb, &prelude("WeakOrd")),
-        (9, labels(&["compare_antisym", "compare_refl"]))
+        // Six of the equations are written without a label and are cited by the one
+        // generated for each (WI-20261121-MVQP8).
+        (9, labels(&["gt-#", "lt-#", "gte-#", "lte-#", "max-#", "min-#", "compare_antisym", "compare_refl"]))
     );
     assert_eq!(count_and_labels(&kb, &prelude("PartialEq")), (0, labels(&[])));
     assert_eq!(count_and_labels(&kb, &prelude("Eq")), (1, labels(&["eq_refl"])));

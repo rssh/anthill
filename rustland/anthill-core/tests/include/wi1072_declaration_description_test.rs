@@ -7,22 +7,23 @@
 //!
 //! * a named declaration (`entity`, labeled `rule`, labeled `constraint`, namespace)
 //!   emits `DescriptionInfo` whose `target` is that declaration's qualified name;
-//! * a description on an anonymous declaration (fact, unlabeled rule/constraint) is
-//!   refused during conversion because no stable citation/name target exists;
-//!   WI-20260830-VFAKK later narrowed the RULE half of that — a body-less rule is
-//!   proposal 061's DECLARATION and names a predicate, so it HAS a target and is
-//!   admitted (`wi_vfakk_declaration_description_test`). The row below keeps the
-//!   shape this suite actually refuses: an unlabeled rule with a BODY;
+//! * a description on an anonymous declaration (fact, unlabeled rule/constraint) was
+//!   refused during conversion because no stable citation/name target existed;
+//!   WI-20260830-VFAKK narrowed the RULE half of that — a body-less rule is proposal
+//!   061's DECLARATION and names a predicate — and WI-20261121-MVQP8 closed the rest:
+//!   each names the label the converter generates for it (`wi_mvqp8_generated_label_test`);
 //! * the four pre-existing stdlib entity blocks are recovered; and
 //! * sort/enum/operation/const are controls, unchanged by this extension.
 //!
 //! BACK-OUT MATRIX. Removing the WI-1072 implementation makes every positive named
-//! row return `[]`, the stdlib row lose all four descriptions, and every anonymous
-//! row parse clean (the old silent drop). The control row passes either way by design;
-//! it proves the extension did not move the four already-working declaration kinds.
+//! row return `[]` and the stdlib row lose all four descriptions; removing
+//! WI-20261121-MVQP8's makes the anonymous row a parse refusal again. The control row
+//! passes either way by design; it proves the extension did not move the four
+//! already-working declaration kinds.
 
-use crate::common::{load_kb_with, parse_errs};
+use crate::common::load_kb_with;
 use crate::wi1070_operation_description_test::descriptions_of;
+use crate::wi_mvqp8_generated_label_test::{is_generated, target_of};
 
 #[test]
 fn entity_descriptions_name_free_standing_and_nested_constructors() {
@@ -114,51 +115,44 @@ end
     );
 }
 
+/// The three shapes this suite refused as anonymous — a fact, an unlabeled rule that stores
+/// a clause, an unlabeled constraint — have a target since WI-20261121-MVQP8: the label
+/// the converter generates for each, its head's name and a hash of its content. Measured
+/// before it: each was refused at parse with "description block on … has no stable
+/// target".
 #[test]
-fn anonymous_declaration_descriptions_are_refused_not_dropped() {
+fn anonymous_declaration_descriptions_name_their_generated_label() {
     const CASES: [(&str, &str); 3] = [
         (
-            "fact",
+            "wi1072.anon_fact.p",
             r#"namespace wi1072.anon_fact
-                 {< has no target >}
+                 {< its own >}
                  fact p(1)
                end"#,
         ),
-        // A BODY is what makes this one anonymous, not the missing label
-        // (WI-20260830-VFAKK): `rule p(1)` with no body DECLARES `p` and takes a
-        // block. `:- true` is the explicit empty body — an ASSERTION under 061 — so
-        // it stores a clause and has no target, which is why it is the fixture here.
+        // `:- true` is the explicit empty body — an ASSERTION under 061 — so it stores a
+        // clause, and takes a label.
         (
-            "unlabeled rule",
+            "wi1072.anon_rule.p",
             r#"namespace wi1072.anon_rule
-                 {< has no target >}
+                 {< its own >}
                  rule p(1) :- true
                end"#,
         ),
         (
-            "unlabeled constraint",
+            "wi1072.anon_constraint.p",
             r#"namespace wi1072.anon_constraint
-                 {< has no target >}
+                 fact p(1)
+                 {< its own >}
                  constraint p(?x), p(?x)
                end"#,
         ),
     ];
-
-    for (kind, src) in CASES {
-        let errors = parse_errs(src);
-        assert_eq!(
-            errors.len(),
-            1,
-            "{kind}: one unsupported description must produce one precise refusal: {errors:?}",
-        );
-        assert!(
-            errors[0].contains("description block")
-                && errors[0].contains(kind)
-                && errors[0].contains("no stable target"),
-            "{kind}: refusal must name both the written construct and the missing \
-             target, got {:?}",
-            errors[0],
-        );
+    for (name, src) in CASES {
+        let kb = load_kb_with(src);
+        let target = target_of(&kb, "its own");
+        assert!(is_generated(&target, name), "{name}: the block names the generated label, got {target}");
+        assert_eq!(descriptions_of(&kb, &target), vec![(0, "its own".to_string())]);
     }
 }
 

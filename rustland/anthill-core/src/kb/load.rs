@@ -22,7 +22,7 @@ use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{TermIdView, TermView, ViewHead};
 use super::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
-use super::{const_value, ClauseKind, KnowledgeBase, SortKind};
+use super::{const_value, ClauseKind, GuardSource, KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::{
     absolute_path_target, positional_label, positional_label_index, Contested, ImportOrigin, ResolveResult,
@@ -2634,23 +2634,6 @@ pub enum LoadError {
         carrier: &'static str,
         span: Span,
     },
-    /// §4.1 (WI-20260830-VFAKK) — a `{< … >}` block on an unlabeled rule that STORES A
-    /// CLAUSE and declares no predicate: a body-less equality-family head, whose
-    /// clauses index under the CONNECTIVE (`<=>`, WI-898), so its subject owns none
-    /// and no symbol was declared to name in `DescriptionInfo.target`.
-    ///
-    /// §4.1's OTHER refusals for this rule are the converter's
-    /// (`parse::convert`'s `reject_description_without_target` — a `fact`, an unlabeled
-    /// `constraint`, an unlabeled BODIED rule), and they share this one's exact
-    /// sentence ([`crate::parse::error::description_without_target`]). This half is
-    /// HERE because the shape it excludes — proposal 061's body-less DECLARATION,
-    /// which does have a target — is [`rule_reading`]'s question and no other pass
-    /// can answer it.
-    DescriptionWithoutTarget {
-        /// The construct as the author wrote it, for the shared sentence.
-        kind: &'static str,
-        span: Span,
-    },
     Other {
         message: String,
     },
@@ -2822,14 +2805,20 @@ pub enum LoadError {
     /// evaluate aggregation — so the loader reports it loudly (load-blocking)
     /// rather than registering a vacuously-true guard that would never fire.
     AggregationConstraintUnsupported {
-        label: Option<String>,
+        label: String,
         span: Span,
     },
     /// WI-023: a registered integrity constraint is violated by the loaded facts
     /// (the post-load `check_all_guards` pass). Load-blocking — the KB does not
     /// satisfy its own stated invariant.
+    ///
+    /// WI-20261121-MVQP8: named by its label and located where it is written, with its
+    /// descriptions — the prose a specification wrote about the invariant it breaks.
     ConstraintViolated {
-        label: Option<String>,
+        /// `None` for a guard a host registered at run time, which has no text.
+        constraint: Option<ReportedConstraint>,
+        /// The constraint's `DescriptionInfo` contents, in index order.
+        descriptions: Vec<String>,
     },
     /// WI-513: a registered integrity constraint uses a `LogicalQuery` form the
     /// shared lowerer (`execute.rs::lower_query`) cannot handle — an unknown
@@ -2839,7 +2828,7 @@ pub enum LoadError {
     /// would silently run with an unchecked invariant — the silent-skip the
     /// loud-error principle forbids. Carries the source label and lowering detail.
     ConstraintLoweringFailed {
-        label: Option<String>,
+        constraint: Option<ReportedConstraint>,
         detail: String,
     },
     /// WI-628: a registered integrity constraint whose proof search did not decide it —
@@ -2850,14 +2839,14 @@ pub enum LoadError {
     /// `ConstraintLoweringFailed` (a malformed constraint FORM — here the form is
     /// fine, the SEARCH was cut short). Carries the source label and a reason.
     ConstraintUndecidable {
-        label: Option<String>,
+        constraint: Option<ReportedConstraint>,
         detail: String,
     },
     /// A registered integrity constraint whose goals the typer refuses where it reads them, as
     /// a query's are (proposal 073 §6.2): a requirement at a type nothing at the constraint
     /// fixes, or at a type nothing provides. Load-BLOCKING, as any constraint not decided is.
     ConstraintRefused {
-        label: Option<String>,
+        constraint: Option<ReportedConstraint>,
         detail: String,
     },
     /// Proposal 060.1 §5: the kernel's dictionary read, `find_dictionary`, written by a name
@@ -2873,7 +2862,7 @@ pub enum LoadError {
     /// Reported loudly (load-blocking) rather than registered as a guard that
     /// would silently mis-evaluate.
     UnsupportedConstraintForm {
-        label: Option<String>,
+        label: String,
         detail: String,
         span: Span,
     },
@@ -3525,7 +3514,6 @@ impl LoadError {
             | LoadError::EquationSubjectNamesAPredicate { span, .. }
             | LoadError::UnguardedNonEnclosingPredicateJoin { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
-            | LoadError::DescriptionWithoutTarget { span, .. }
             | LoadError::RewriteTagOffEquation { span, .. }
             | LoadError::GoalIsANamedTuple { span }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
@@ -4552,13 +4540,6 @@ impl LoadError {
                     carrier
                 )
             }
-            LoadError::DescriptionWithoutTarget { kind, span } => {
-                format!(
-                    "{}: {}",
-                    loc.format_start(*span),
-                    crate::parse::error::description_without_target(kind)
-                )
-            }
             LoadError::RewriteTagOffEquation { declaration, span } => format!(
                 "{}: {}",
                 loc.format_start(*span),
@@ -4653,41 +4634,38 @@ impl LoadError {
                 format!("{}: {}", loc.format_start(*span), PROOF_IN_CLAUSE_MSG)
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
-                format!("{}: aggregation constraint{} is not yet enforced (the guard engine cannot evaluate count/sum/min/max)", loc.format_start(*span), label_suffix(label))
+                format!("{}: aggregation constraint '{label}' is not yet enforced (the guard engine cannot evaluate count/sum/min/max)", loc.format_start(*span))
             }
-            LoadError::ConstraintViolated { label } => {
-                format!(
-                    "integrity constraint{} is violated by the loaded facts",
-                    label_suffix(label)
-                )
-            }
-            LoadError::ConstraintLoweringFailed { label, detail } => {
-                format!(
-                    "integrity constraint{} uses a LogicalQuery form the resolver cannot lower: {}",
-                    label_suffix(label),
-                    detail,
-                )
-            }
-            LoadError::ConstraintRefused { label, detail } => {
-                format!("integrity constraint{} is refused: {}", label_suffix(label), detail)
-            }
-            LoadError::ConstraintUndecidable { label, detail } => {
-                format!(
-                    "integrity constraint{} is not decided: {}",
-                    label_suffix(label),
-                    detail,
-                )
-            }
-            LoadError::UnsupportedConstraintForm {
-                label,
-                detail,
-                span,
+            LoadError::ConstraintViolated {
+                constraint,
+                descriptions,
             } => {
+                let (claim, prose) = constraint_violated_parts(constraint, descriptions);
+                format!("{}{prose}", ReportedConstraint::located(constraint, claim))
+            }
+            LoadError::ConstraintLoweringFailed { constraint, detail } => {
+                ReportedConstraint::located(
+                    constraint,
+                    format!(
+                        "{} uses a LogicalQuery form the resolver cannot lower: {detail}",
+                        ReportedConstraint::subject(constraint),
+                    ),
+                )
+            }
+            LoadError::ConstraintRefused { constraint, detail } => ReportedConstraint::located(
+                constraint,
+                format!("{} is refused: {detail}", ReportedConstraint::subject(constraint)),
+            ),
+            LoadError::ConstraintUndecidable { constraint, detail } => {
+                ReportedConstraint::located(
+                    constraint,
+                    format!("{} is not decided: {detail}", ReportedConstraint::subject(constraint)),
+                )
+            }
+            LoadError::UnsupportedConstraintForm { label, detail, span } => {
                 format!(
-                    "{}: constraint{} uses an unsupported form: {}",
+                    "{}: constraint '{label}' uses an unsupported form: {detail}",
                     loc.format_start(*span),
-                    label_suffix(label),
-                    detail
                 )
             }
             LoadError::WrittenFindDictionary { name, span } => {
@@ -5131,12 +5109,59 @@ fn is_compound_expression_marker(name: &str) -> bool {
         || name == "proof_stmt"
 }
 
-/// Render a constraint label as ` 'label'` for diagnostics, or `""` if unlabeled.
-pub(crate) fn label_suffix(label: &Option<String>) -> String {
-    match label {
-        Some(l) => format!(" '{l}'"),
-        None => String::new(),
+/// WI-20261121-MVQP8 — a `constraint` a post-load check reports: its label and where it
+/// is written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReportedConstraint {
+    pub label: String,
+    /// `path:line:col`, PRE-RENDERED ([`render_decl_site`]), as every post-load check over
+    /// several files' declarations renders its sites: the check runs over every guard at
+    /// once, so a bare span would name whichever file was rendering.
+    pub site: String,
+}
+
+impl ReportedConstraint {
+    /// The report's subject: `integrity constraint 'label'`, or a host's guard.
+    fn subject(constraint: &Option<ReportedConstraint>) -> String {
+        match constraint {
+            Some(c) => format!("integrity constraint '{}'", c.label),
+            None => "integrity constraint registered at run time".to_owned(),
+        }
     }
+
+    /// `message`, located as a `format_at` rendering is: `site: message`.
+    fn located(constraint: &Option<ReportedConstraint>, message: String) -> String {
+        match constraint {
+            Some(c) => format!("{}: {message}", c.site),
+            None => message,
+        }
+    }
+
+    /// `message`, located as a `Display` rendering is: `message at site`.
+    fn at(constraint: &Option<ReportedConstraint>, message: String) -> String {
+        match constraint {
+            Some(c) => format!("{message} at {}", c.site),
+            None => message,
+        }
+    }
+}
+
+/// WI-20261121-MVQP8 — a violation's claim, and the prose its constraint was described
+/// by (` — every p is big`, or nothing), which follows the location.
+fn constraint_violated_parts(
+    constraint: &Option<ReportedConstraint>,
+    descriptions: &[String],
+) -> (String, String) {
+    let claim = format!(
+        "{} is violated by the loaded facts",
+        ReportedConstraint::subject(constraint)
+    );
+    let prose = if descriptions.is_empty() {
+        String::new()
+    } else {
+        format!(" — {}", descriptions.join("; "))
+    };
+    (claim, prose)
 }
 
 /// WI-525 (proposal 049, Part A): walk a `not(...)` body occurrence and record,
@@ -6337,15 +6362,6 @@ impl std::fmt::Display for LoadError {
                     name, carrier, span.start, span.end
                 )
             }
-            LoadError::DescriptionWithoutTarget { kind, span } => {
-                write!(
-                    f,
-                    "{} (at {}..{})",
-                    crate::parse::error::description_without_target(kind),
-                    span.start,
-                    span.end
-                )
-            }
             LoadError::RewriteTagOffEquation { declaration, span } => write!(
                 f,
                 "{} (at {}..{})",
@@ -6456,50 +6472,49 @@ impl std::fmt::Display for LoadError {
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 write!(
                     f,
-                    "aggregation constraint{} is not yet enforced at {}..{}",
-                    label_suffix(label),
-                    span.start,
-                    span.end
+                    "aggregation constraint '{label}' is not yet enforced at {}..{}",
+                    span.start, span.end
                 )
             }
-            LoadError::ConstraintViolated { label } => {
-                write!(
-                    f,
-                    "integrity constraint{} is violated by the loaded facts",
-                    label_suffix(label)
-                )
-            }
-            LoadError::ConstraintLoweringFailed { label, detail } => {
-                write!(
-                    f,
-                    "integrity constraint{} uses a LogicalQuery form the resolver cannot lower: {}",
-                    label_suffix(label),
-                    detail
-                )
-            }
-            LoadError::ConstraintRefused { label, detail } => {
-                write!(f, "integrity constraint{} is refused: {}", label_suffix(label), detail)
-            }
-            LoadError::ConstraintUndecidable { label, detail } => {
-                write!(
-                    f,
-                    "integrity constraint{} is not decided: {}",
-                    label_suffix(label),
-                    detail
-                )
-            }
-            LoadError::UnsupportedConstraintForm {
-                label,
-                detail,
-                span,
+            LoadError::ConstraintViolated {
+                constraint,
+                descriptions,
             } => {
+                let (claim, prose) = constraint_violated_parts(constraint, descriptions);
+                write!(f, "{}{prose}", ReportedConstraint::at(constraint, claim))
+            }
+            LoadError::ConstraintLoweringFailed { constraint, detail } => write!(
+                f,
+                "{}",
+                ReportedConstraint::at(
+                    constraint,
+                    format!(
+                        "{} uses a LogicalQuery form the resolver cannot lower: {detail}",
+                        ReportedConstraint::subject(constraint),
+                    ),
+                )
+            ),
+            LoadError::ConstraintRefused { constraint, detail } => write!(
+                f,
+                "{}",
+                ReportedConstraint::at(
+                    constraint,
+                    format!("{} is refused: {detail}", ReportedConstraint::subject(constraint)),
+                )
+            ),
+            LoadError::ConstraintUndecidable { constraint, detail } => write!(
+                f,
+                "{}",
+                ReportedConstraint::at(
+                    constraint,
+                    format!("{} is not decided: {detail}", ReportedConstraint::subject(constraint)),
+                )
+            ),
+            LoadError::UnsupportedConstraintForm { label, detail, span } => {
                 write!(
                     f,
-                    "constraint{} uses an unsupported form ({}) at {}..{}",
-                    label_suffix(label),
-                    detail,
-                    span.start,
-                    span.end
+                    "constraint '{label}' uses an unsupported form ({detail}) at {}..{}",
+                    span.start, span.end
                 )
             }
             LoadError::WrittenFindDictionary { name, span } => {
@@ -7049,6 +7064,7 @@ pub fn scan_definitions_with_sources(
             file_idx,
             source_id: source_ids[file_idx],
             ledger: &mut ledger,
+            role,
         };
         walk_scopes(&mut pass, &file.items, global);
     }
@@ -8883,7 +8899,7 @@ const DECLARABLE_BY_A_RULE: &[SymbolKind] = &[
 /// pairs the name with `SimpleTermStore::is_minted` because `unify` is also an ordinary
 /// identifier a user may call (WI-948: *a name, not a verdict*).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RuleReading {
+pub(crate) enum RuleReading {
     /// A body-less plain head: it DECLARES its predicate and asserts nothing. The name
     /// is minted in pass 1 by [`scan_rule`], like every other declared name (WI-321),
     /// which is what makes a head's binding independent of the order the pass walks in.
@@ -8918,7 +8934,7 @@ enum RuleReading {
 /// [`RuleReading`] for one rule — the single decider, asked by pass 1's mint
 /// ([`scan_rule`]) and by `Loader::load_rule`. Both must give the same answer: pass 1
 /// mints exactly the names the load then declines to assert.
-fn rule_reading(
+pub(crate) fn rule_reading(
     r: &Rule,
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
@@ -11022,6 +11038,9 @@ struct DefinePass<'a> {
     /// the slice is still in hand.
     source_id: SourceId,
     ledger: &'a mut DeclLedger,
+    /// WI-20261121-MVQP8 — a QUERY's `fact <pattern>` is a goal, and its generated label
+    /// names nothing: nothing in a query declares ([`SourceRole`]).
+    role: SourceRole,
 }
 
 /// Proposal 070 §1.2 — `Self` is RESERVED: every declaration pass 1 logged under that
@@ -11627,15 +11646,20 @@ impl ScopePass for DefinePass<'_> {
                 }
             }
             Item::Constraint(c) => {
-                // WI-1072: a labeled constraint is a named citation target, just as
-                // a labeled rule is. Define it in pass 1 so inline descriptions and
+                // WI-1072: a constraint's label is a named citation target, just as a
+                // rule's is — the written one or, since WI-20261121-MVQP8, the one the
+                // converter generates. Define it in pass 1 so inline descriptions and
                 // every later reference resolve to the same qualified symbol.
-                if let Some(label) = &c.label {
-                    let name = join_segments(parse_sym, &label.segments);
-                    let qualified = make_qualified(prefix, &name);
-                    kb.symbols
-                        .define(&name, &qualified, SymbolKind::Constraint, scope);
-                }
+                let name = join_segments(parse_sym, &c.label.segments);
+                let qualified = make_qualified(prefix, &name);
+                kb.symbols
+                    .define(&name, &qualified, SymbolKind::Constraint, scope);
+            }
+            // WI-20261121-MVQP8 — a fact's label, which the converter generates (a fact is
+            // written with none): a `Fact` symbol in its scope, as a rule's label is a
+            // `Rule` symbol.
+            Item::Fact(f) if self.role == SourceRole::Program => {
+                define_fact_label(kb, parse_sym, f, scope, prefix);
             }
             // Stage 0 items, facts, requires — handled elsewhere or not names
             _ => {}
@@ -12083,7 +12107,7 @@ impl SecondaryEntryPass<'_> {
                 Item::Constraint(c) => self.refuse(
                     sort,
                     "constraint",
-                    c.label.as_ref().map(|l| self.written_name(l)),
+                    Some(self.written_name(&c.label)),
                     CONSTRAINT_REASON,
                     c.span,
                 ),
@@ -12274,7 +12298,7 @@ impl SecondaryEntryPass<'_> {
                     }
                 }
                 Item::Constraint(c) => {
-                    names.extend(c.label.as_ref().map(|l| self.written_short_name(l)))
+                    names.push(self.written_short_name(&c.label))
                 }
                 // Nameless, or naming something declared elsewhere: a fact is a term, a
                 // `requires`/`provides` names the SPEC it claims, and a `describe` /
@@ -14238,8 +14262,8 @@ fn host_block_target(
 }
 
 /// Sub-pass 2c — what pass 1 defines for a rule ([`scan_rule`]: its label, and the
-/// predicate a body-less one declares), for the rules of a host `provides … language …
-/// end` block, at the block's target sort: the scope its clauses load in, where
+/// predicate a body-less one declares) and for a fact (its label), for the clauses of a
+/// host `provides … language … end` block, at the block's target sort: the scope its clauses load in, where
 /// `load_rule` looks the label up and a clause's head finds the declaration. Pass 1
 /// cannot: the target is known only once imports and alias heads are (sub-pass 2b).
 /// Before this pass neither was defined there: a labeled rule in a block failed to load
@@ -14276,9 +14300,15 @@ impl ScopePass for HostBlockDefinePass<'_> {
             let rules = match inner {
                 ProvidesItem::Rule(r) => std::slice::from_ref(r),
                 ProvidesItem::RuleBlock(rb) => rb.entries.as_slice(),
-                // Nothing else in a block is a rule.
-                ProvidesItem::Fact(_)
-                | ProvidesItem::ProvidesClause(_)
+                // A fact's label, where `load_fact` looks it up (WI-20261121-MVQP8).
+                ProvidesItem::Fact(f) => {
+                    let name =
+                        define_fact_label(self.kb, self.parse_sym, f, spec_scope, &spec_prefix);
+                    self.defined.insert(name);
+                    continue;
+                }
+                // Nothing else in a block is a clause.
+                ProvidesItem::ProvidesClause(_)
                 | ProvidesItem::Proof(_)
                 | ProvidesItem::Artifact(_)
                 | ProvidesItem::Carrier(_)
@@ -14298,6 +14328,22 @@ impl ScopePass for HostBlockDefinePass<'_> {
             }
         }
     }
+}
+
+/// WI-20261121-MVQP8 — a fact's label, which the converter generates (a fact is written
+/// with none): a `Fact` symbol in the scope its clause loads in, as a rule's label is a
+/// `Rule` symbol there. Pass 1 defines a written fact's, sub-pass 2c a host block's.
+fn define_fact_label(
+    kb: &mut KnowledgeBase,
+    parse_sym: &crate::intern::SymbolTable,
+    f: &Fact,
+    scope: ScopeId,
+    prefix: &str,
+) -> String {
+    let name = join_segments(parse_sym, &f.label.segments);
+    let qualified = make_qualified(prefix, &name);
+    kb.symbols.define(&name, &qualified, SymbolKind::Fact, scope);
+    name
 }
 
 /// Get the base name of a TypeExpr (ignoring bindings).
@@ -18586,6 +18632,35 @@ fn const_expr_form_name(e: &Expr) -> &'static str {
 /// The guards the post-load check leaves alone: those of the constraints whose text holds
 /// a located error of `errors` (kernel-language §8.4). Their verdict would be about the
 /// facts, where the defect is the text, and the load is refused either way.
+/// WI-20261121-MVQP8 — a guard's constraint as a post-load check reports it: its label and
+/// its site, rendered; `None` for a host's guard, which has neither.
+fn reported_constraint(kb: &KnowledgeBase, source: &GuardSource) -> Option<ReportedConstraint> {
+    match source {
+        GuardSource::Written { label, site, .. } => Some(ReportedConstraint {
+            label: label.clone(),
+            site: render_decl_site(kb, *site),
+        }),
+        GuardSource::Host => None,
+    }
+}
+
+/// WI-20261121-MVQP8 — the contents of the `DescriptionInfo` facts whose target is
+/// `target`, in index order: an inline block's and a standalone `describe`'s alike, since
+/// both name one target term ([`KnowledgeBase::declaration_name_term`]). Empty where the
+/// reflect vocabulary is not loaded, which is also where no description can be stored.
+fn descriptions_of_symbol(kb: &mut KnowledgeBase, target: Symbol) -> Vec<String> {
+    let Ok(records) = super::reflect_reader::read_descriptions(kb, None) else {
+        return Vec::new();
+    };
+    let mut own: Vec<(i64, String)> = records
+        .into_iter()
+        .filter(|r| matches!(kb.get_term(r.target), Term::Ref(s) if *s == target))
+        .map(|r| (r.index, r.content))
+        .collect();
+    own.sort();
+    own.into_iter().map(|(_, content)| content).collect()
+}
+
 fn refused_constraint_guards(kb: &KnowledgeBase, errors: &[LoadError]) -> Vec<super::ConstraintId> {
     let located: Vec<(&Option<Arc<Path>>, &Arc<str>, Span)> = errors
         .iter()
@@ -19786,20 +19861,38 @@ fn load_phase_inner(
     for check in kb.check_guards_except(&refused) {
         match check {
             super::GuardCheck::Holds => {}
-            super::GuardCheck::Violated(label) => {
-                all_errors.push(LoadError::ConstraintViolated { label });
+            super::GuardCheck::Violated(source) => {
+                // WI-20261121-MVQP8 — the prose a specification wrote about the invariant
+                // is what says what the facts broke, so the report carries it.
+                let descriptions = match &source {
+                    GuardSource::Written { symbol, .. } => descriptions_of_symbol(kb, *symbol),
+                    GuardSource::Host => Vec::new(),
+                };
+                all_errors.push(LoadError::ConstraintViolated {
+                    constraint: reported_constraint(kb, &source),
+                    descriptions,
+                });
             }
-            super::GuardCheck::Unsupported(label, detail) => {
-                all_errors.push(LoadError::ConstraintLoweringFailed { label, detail });
+            super::GuardCheck::Unsupported(source, detail) => {
+                all_errors.push(LoadError::ConstraintLoweringFailed {
+                    constraint: reported_constraint(kb, &source),
+                    detail,
+                });
             }
             // WI-628: a constraint whose proof search truncated at the depth
             // limit is undecided — surface loudly (load-blocking), never a
             // silent pass.
-            super::GuardCheck::Undecidable(label, detail) => {
-                all_errors.push(LoadError::ConstraintUndecidable { label, detail });
+            super::GuardCheck::Undecidable(source, detail) => {
+                all_errors.push(LoadError::ConstraintUndecidable {
+                    constraint: reported_constraint(kb, &source),
+                    detail,
+                });
             }
-            super::GuardCheck::Refused(label, detail) => {
-                all_errors.push(LoadError::ConstraintRefused { label, detail });
+            super::GuardCheck::Refused(source, detail) => {
+                all_errors.push(LoadError::ConstraintRefused {
+                    constraint: reported_constraint(kb, &source),
+                    detail,
+                });
             }
         }
     }
@@ -47520,6 +47613,12 @@ impl<'a> Loader<'a> {
             self.current_owner = Some(self.resolve_owner_name(&name, span));
         }
 
+        // WI-20261121-MVQP8 — a fact's label, the one the converter generated for it (a
+        // fact is written with none): the target of its blocks, and below its clause's
+        // citation label, as a labeled rule's is.
+        let label = self.remap_name(&f.label);
+        self.emit_own_descriptions(label, &f.descriptions, domain);
+
         // WI-618: facts are rules with empty bodies — a keyword-less lambda
         // typo in a fact argument would otherwise assert inert arrow data.
         self.check_bare_arrow_typo(f.term, "a fact", &HashSet::new());
@@ -47598,6 +47697,12 @@ impl<'a> Loader<'a> {
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
         let rule_id = self.kb.assert_fact(term, fact_kind, domain, meta);
+        // A clause has one citation label. A fact that dedups onto a clause already
+        // labeled — the same fact written again, or its `rule … :- true` spelling with a
+        // label of its own — keeps that one; this fact's blocks are on its label above.
+        if self.kb.rule_label(rule_id).is_none() {
+            self.kb.set_rule_label(rule_id, label);
+        }
         // WI-20260903-FCZ3N — LAST WRITE WINS ON A DEDUP, DELIBERATELY. `assert_fact`
         // returns an EXISTING `RuleId` when `(term, clause_kind, domain)` all match, so
         // two byte-identical `fact tau() <=> 7 @[simp]` clauses in one domain become ONE
@@ -48316,34 +48421,10 @@ impl<'a> Loader<'a> {
         // spelling, so it introduces nothing and reads as `DeclaresNothing` — the
         // located WI-1075 refusal is the better message and must run first.
         match rule_reading(r, &self.parsed.symbols, &self.parsed.terms) {
-            RuleReading::Clause => {
-                // §4.1's OTHER HALF (WI-20260830-VFAKK). The converter carries a
-                // `{< … >}` block on ANY body-less rule, because telling a 061
-                // DECLARATION from a body-less EQUATION head is THIS decider's
-                // question, and a second copy of it there is how a block comes to be
-                // admitted at one pass and dropped at the next. This is the arm with
-                // no target: a `<=>` head's clauses index under the CONNECTIVE
-                // (WI-898), so its subject declares no predicate and nothing was
-                // minted to put in `DescriptionInfo.target`. A LABEL gives it one, so
-                // the labeled spelling is untouched and emits below.
-                //
-                // THE GUARD IS THE LABEL AND THE BLOCK, deliberately NOT `body` as
-                // well. A bodied rule cannot reach here carrying a block today — the
-                // converter refuses that at the BLOCK's own span, which is the better
-                // location and is where WI-1072 put it — but a `body.is_none()` guard
-                // would turn that fact into a SILENT DROP the day the converter
-                // stopped refusing it. This shape never drops one; what it gives up
-                // is the right to name the connective in the message, so the `kind`
-                // is §4.1's own phrase, true of every shape that can reach this arm
-                // rather than only of the one that does. WI-948's "a name, not a
-                // verdict", applied to a diagnostic.
-                if r.label.is_none() && !r.descriptions.is_empty() {
-                    self.errors.push(LoadError::DescriptionWithoutTarget {
-                        kind: "an unlabeled rule that stores a clause",
-                        span: r.span,
-                    });
-                }
-            }
+            // A rule that stores a clause always has a label: the converter generates one
+            // for a rule written without (WI-20261121-MVQP8), so its blocks are emitted on
+            // it below, as a written label's are.
+            RuleReading::Clause => {}
             RuleReading::Declaration => {
                 // A declaration stores no clause, so there is nothing for a citation
                 // handle or a `@[…]` tag to attach to. Refused rather than dropped: a
@@ -50409,17 +50490,12 @@ impl<'a> Loader<'a> {
     }
 
     fn load_constraint_inner(&mut self, c: &Constraint, domain: Symbol) {
-        // An unlabeled constraint names nothing to key a block by; the converter refuses
-        // a block on one (WI-20260914-DV7DP), as it refuses a description block.
-        let label_sym = c.label.as_ref().map(|n| self.remap_name(n));
-        if let Some(label) = label_sym {
-            self.emit_own_descriptions(label, &c.descriptions, domain);
-            self.record_declaration_block(label, MemberKind::Constraint, c.meta.as_ref(), domain);
-        }
-        let label = c
-            .label
-            .as_ref()
-            .map(|n| join_segments(&self.parsed.symbols, &n.segments));
+        // Every constraint has a label, written or generated (WI-20261121-MVQP8): the
+        // target of its blocks and the name it is reported by.
+        let label_sym = self.remap_name(&c.label);
+        self.emit_own_descriptions(label_sym, &c.descriptions, domain);
+        self.record_declaration_block(label_sym, MemberKind::Constraint, c.meta.as_ref(), domain);
+        let label = join_segments(&self.parsed.symbols, &c.label.segments);
 
         // WI-525 (proposal 049, Part B): a `constraint` body is a contract — it
         // TESTS, never binds. Reject any binding `<=>` / `let` (a `unify` goal)
@@ -50464,7 +50540,14 @@ impl<'a> Loader<'a> {
                 if let Some(lq) = self.build_logical_query(&c.body) {
                     let span = SourceSpan::from_span(self.source_id, c.span);
                     self.note_constraint_domain_goal_sorts(lq, span);
-                    self.kb.add_guard_at(lq, label, Some(span));
+                    self.kb.add_guard_from(
+                        lq,
+                        GuardSource::Written {
+                            label,
+                            symbol: label_sym,
+                            site: span,
+                        },
+                    );
                     self.store_logical_query_constraint_fact(lq, domain);
                 }
             }
@@ -50480,7 +50563,7 @@ impl<'a> Loader<'a> {
                 return;
             }
         }
-        self.assert_constraint_goal_clause(&constraint_goals, label_sym, domain);
+        self.assert_constraint_goal_clause(&constraint_goals, Some(label_sym), domain);
     }
 
     /// The goals a constraint proves, stored as a clause with the head `⊥`. A constraint

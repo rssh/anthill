@@ -2459,8 +2459,10 @@ fn string_digest_base32(i: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     Ok(Value::Str(digest_base32(s.as_ref(), chars as u32)))
 }
 
-/// The digest itself, split out so it is unit-testable without a `Value`.
-fn digest_base32(s: &str, chars: u32) -> String {
+/// The digest itself, split out so it is unit-testable without a `Value` — and shared:
+/// a generated clause label ends with it (`parse::convert`'s `generated_label`,
+/// WI-20261121-MVQP8), so a label's hash and a work item's id are one digest.
+pub(crate) fn digest_base32(s: &str, chars: u32) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64 offset basis
     for b in s.as_bytes() {
         h ^= *b as u64;
