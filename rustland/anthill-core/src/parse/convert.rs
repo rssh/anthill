@@ -318,6 +318,29 @@ pub(super) struct Converter<'a> {
     /// reads the DECIDED capture position off [`super::ir::Rule::head_captures`],
     /// so there is exactly one decider.
     pending_rest_args: Vec<(ParseTermId, Span)>,
+    /// WI-20261115-JY1XE — the binder of each quantifier of the item being converted, by
+    /// name, and where conversion stands in its scope. With [`Self::free_var_uses`] it is
+    /// what refuses a binder written in the clause outside its own quantifier
+    /// ([`Self::note_variable_occurrence`]); cleared with the variable scope and at every
+    /// item, so no state reaches a clause that did not write it.
+    quantifier_binders: HashMap<Symbol, BinderScope>,
+    /// Each named variable of the item written outside every quantifier that binds it,
+    /// with that occurrence's position (`line:col`) for the refusal that names it.
+    free_var_uses: HashMap<Symbol, String>,
+}
+
+/// Where conversion stands in a quantifier's scope, for its binder (WI-20261115-JY1XE).
+/// Each carries the quantifier's position (`line:col`), which a refusal names.
+#[derive(Clone)]
+enum BinderScope {
+    /// Between the binder and the body: a bounded quantifier's COLLECTION, which the binder
+    /// ranges over and does not scope.
+    Collection(String),
+    /// Inside the quantifier's body (a discharge's antecedents and consequent).
+    Body(String),
+    /// Past the quantifier. Another quantifier may bind the name again, over a body of its
+    /// own; any other occurrence is outside the binder's scope.
+    Closed(String),
 }
 
 impl<'a> Converter<'a> {
@@ -333,6 +356,8 @@ impl<'a> Converter<'a> {
             var_scope: HashMap::new(),
             rule_var_scopes: HashMap::new(),
             pending_rest_args: Vec::new(),
+            quantifier_binders: HashMap::new(),
+            free_var_uses: HashMap::new(),
         }
     }
 
@@ -442,6 +467,142 @@ impl<'a> Converter<'a> {
     /// Clear the variable scope (call at rule/constraint/operation boundaries).
     fn reset_var_scope(&mut self) {
         self.var_scope.clear();
+        self.reset_quantifier_scopes();
+    }
+
+    /// Forget the quantifier binders and free variables seen so far (WI-20261115-JY1XE).
+    /// Also asked at every item, not only where the variable scope is reset: a `fact`
+    /// keeps the scope of what came before it, and a binder of an earlier rule must not
+    /// refuse the fact's own `?x`.
+    fn reset_quantifier_scopes(&mut self) {
+        self.quantifier_binders.clear();
+        self.free_var_uses.clear();
+    }
+
+    /// `node`'s position as an error renders one (`line:col`, both one-based).
+    fn position_of(node: Node) -> String {
+        let p = node.start_position();
+        format!("{}:{}", p.row + 1, p.column + 1)
+    }
+
+    /// A named variable written at `node`, outside any binder slot (WI-20261115-JY1XE): a
+    /// free variable of the clause, unless a quantifier binding it is open around it.
+    ///
+    /// §5.3: a quantifier's binder is a FRESH name, used only inside its quantifier. It
+    /// used to CAPTURE a variable the clause wrote elsewhere, and the reading then turned
+    /// on the order of the goals: `rule c(?p) :- (forall ?p in [1, 2]: ?p > 0)` answered
+    /// `c(?z)` for every `?z` and refused `c(-1)`. Refusing the reuse is what lets the NAF
+    /// gate read a binder as bound (`SearchStream::negand_is_ground`): the quantifier is
+    /// the only thing that can bind it.
+    fn note_variable_occurrence(&mut self, name: Symbol, node: Node) {
+        let shown = self.text(node);
+        match self.quantifier_binders.get(&name) {
+            Some(BinderScope::Body(_)) => {}
+            Some(BinderScope::Collection(_)) => self.err(
+                format!(
+                    "`{shown}` is written in the collection of the quantifier that binds it; \
+                     the binder ranges over the collection's elements and is not bound there \
+                     — rename the binder"
+                ),
+                node,
+            ),
+            Some(BinderScope::Closed(at)) => {
+                let at = at.clone();
+                self.err(
+                    format!(
+                        "`{shown}` is the binder of the quantifier at {at} and is written here, \
+                         outside it; a quantifier's binder is a fresh name, used only inside \
+                         its quantifier — rename the binder or this variable"
+                    ),
+                    node,
+                )
+            }
+            None => {
+                let at = Self::position_of(node);
+                self.free_var_uses.entry(name).or_insert(at);
+            }
+        }
+    }
+
+    /// Open a quantifier's binders, written at `binders` (WI-20261115-JY1XE), in `phase`
+    /// (a bounded quantifier opens at its collection, a discharge at its body). A binder
+    /// the clause wrote outside every quantifier that binds it, or one an enclosing
+    /// quantifier binds, is refused. Returns the names opened, to close with
+    /// [`Self::close_quantifier_binders`].
+    fn open_quantifier_binders(
+        &mut self,
+        binders: &[Node],
+        quantifier: Node,
+        phase: fn(String) -> BinderScope,
+    ) -> Vec<Symbol> {
+        let at = Self::position_of(quantifier);
+        let mut opened = Vec::new();
+        for &b in binders {
+            let text = self.text(b);
+            if text.len() <= 1 {
+                // An anonymous `?` binds nothing and shares no name: there is no reuse to
+                // refuse. (A bounded quantifier refuses one where it reads its binder; a
+                // discharge's `forall(?)` loads, binding nothing.)
+                continue;
+            }
+            let name = self.intern(&text[1..]);
+            if opened.contains(&name) {
+                continue; // `forall(?x, ?x)`: one variable, bound once
+            }
+            match self.quantifier_binders.get(&name) {
+                Some(BinderScope::Collection(outer) | BinderScope::Body(outer)) => {
+                    let outer = outer.clone();
+                    self.err(
+                        format!(
+                            "`{text}` is already the binder of the enclosing quantifier at \
+                             {outer}; a quantifier's binder is a fresh name — rename one of them"
+                        ),
+                        b,
+                    );
+                    continue;
+                }
+                Some(BinderScope::Closed(_)) | None => {}
+            }
+            if let Some(first) = self.free_var_uses.get(&name).cloned() {
+                self.err(
+                    format!(
+                        "the binder `{text}` is already a variable of this clause (written at \
+                         {first}); a quantifier's binder is a fresh name, used only inside its \
+                         quantifier, and reusing one captured the variable — rename the binder"
+                    ),
+                    b,
+                );
+                continue;
+            }
+            self.quantifier_binders.insert(name, phase(at.clone()));
+            opened.push(name);
+        }
+        opened
+    }
+
+    /// Move each of `names` to the body of its quantifier (`Collection` → `Body`).
+    fn enter_quantifier_body(&mut self, names: &[Symbol]) {
+        for name in names {
+            if let Some(scope) = self.quantifier_binders.get_mut(name) {
+                if let BinderScope::Collection(at) = scope {
+                    *scope = BinderScope::Body(std::mem::take(at));
+                }
+            }
+        }
+    }
+
+    /// Close each of `names` past its quantifier.
+    fn close_quantifier_binders(&mut self, names: &[Symbol]) {
+        for name in names {
+            if let Some(scope) = self.quantifier_binders.get_mut(name) {
+                let at = match scope {
+                    BinderScope::Collection(at) | BinderScope::Body(at) | BinderScope::Closed(at) => {
+                        std::mem::take(at)
+                    }
+                };
+                *scope = BinderScope::Closed(at);
+            }
+        }
     }
 
     /// Intern a Name's segments as a single dot-joined symbol.
@@ -757,6 +918,7 @@ impl<'a> Converter<'a> {
     /// `AbstractSort(O = ?)` + `RequiresDecl(Ord[T])`. Returning `Vec<Item>` keeps the
     /// three sort/namespace/root walks uniform.
     fn convert_items_at(&mut self, node: Node, owner: ItemOwner) -> Vec<Item> {
+        self.reset_quantifier_scopes();
         match node.kind() {
             "effects_sort_item" => self.convert_effects_sort_item(node),
             "requires_declaration" => self.convert_requires_items(node, owner),
@@ -766,6 +928,7 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_item(&mut self, node: Node) -> Option<Item> {
+        self.reset_quantifier_scopes();
         match node.kind() {
             "namespace_declaration" => self.convert_namespace(node).map(Item::Namespace),
             "abstract_sort" => self.convert_abstract_sort(node).map(Item::AbstractSort),
@@ -2919,12 +3082,26 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_variable_node(&mut self, node: Node) -> ParseTermId {
+        self.convert_variable_node_at(node, false)
+    }
+
+    /// A quantifier's binder slot: the variable, not an occurrence of it in the clause
+    /// ([`Self::note_variable_occurrence`]) — the quantifier opened it first
+    /// ([`Self::open_quantifier_binders`]).
+    fn convert_binder_variable_node(&mut self, node: Node) -> ParseTermId {
+        self.convert_variable_node_at(node, true)
+    }
+
+    fn convert_variable_node_at(&mut self, node: Node, binder_slot: bool) -> ParseTermId {
         let span = self.span(node);
         let text = self.text(node);
         if text.len() > 1 {
             // Named variable: ?x (shared within scope)
             let name = &text[1..]; // strip leading '?'
             let sym = self.intern(name);
+            if !binder_slot {
+                self.note_variable_occurrence(sym, node);
+            }
             let vid = self.get_or_create_var(sym);
             self.terms.alloc(Term::Var(Var::Global(vid)), span)
         } else {
@@ -2938,9 +3115,12 @@ impl<'a> Converter<'a> {
 
     fn convert_nested_implication(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
+        let binder_nodes = self.fields_by_name(node, "binder");
+        // WI-20261115-JY1XE: the binders scope the antecedents and the consequent.
+        let opened = self.open_quantifier_binders(&binder_nodes, node, BinderScope::Body);
         let mut binders: SmallVec<[ParseTermId; 4]> = SmallVec::new();
-        for n in self.fields_by_name(node, "binder") {
-            binders.push(self.convert_variable_node(n));
+        for n in binder_nodes {
+            binders.push(self.convert_binder_variable_node(n));
         }
         let antecedents: SmallVec<[ParseTermId; 4]> = self
             .field(node, "antecedents")
@@ -2950,6 +3130,7 @@ impl<'a> Converter<'a> {
             .field(node, "consequent")
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
+        self.close_quantifier_binders(&opened);
 
         let binders_tuple = self.alloc_fn_term("tuple", binders, span);
         let antecedents_tuple = self.alloc_fn_term("tuple", antecedents, span);
@@ -2986,7 +3167,14 @@ impl<'a> Converter<'a> {
                 dt::FORALL_IN
             }
         };
-        let binder = match self.field(node, "binder") {
+        // WI-20261115-JY1XE: the binder is not in scope in the collection, only in the body.
+        let binder_node = self.field(node, "binder");
+        let opened = self.open_quantifier_binders(
+            binder_node.as_slice(),
+            node,
+            BinderScope::Collection,
+        );
+        let binder = match binder_node {
             Some(n) => {
                 // A bare `?` binder mints a fresh anonymous var that does NOT
                 // flow into the body, so the quantifier would bind nothing —
@@ -2995,7 +3183,7 @@ impl<'a> Converter<'a> {
                 if self.text(n) == "?" {
                     self.err("bounded quantifier binder must be a named variable (`?name`), not anonymous `?`", n);
                 }
-                self.convert_variable_node(n)
+                self.convert_binder_variable_node(n)
             }
             None => {
                 self.err("bounded quantifier is missing its binder variable", node);
@@ -3009,10 +3197,12 @@ impl<'a> Converter<'a> {
                 self.alloc_bottom(span)
             }
         };
+        self.enter_quantifier_body(&opened);
         let body: SmallVec<[ParseTermId; 4]> = self
             .field(node, "body")
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
+        self.close_quantifier_binders(&opened);
         let body_tuple = self.alloc_fn_term("tuple", body, span);
         self.alloc_fn_term(
             functor,
@@ -5814,6 +6004,12 @@ impl<'a> Converter<'a> {
         // every step; they also share with previously-converted steps
         // in the same proof body, so a later step's `?v_diff_scaled`
         // matches the earlier step that introduced it.
+        //
+        // The QUANTIFIER binders are the step's own, though (WI-20261115-JY1XE): each step
+        // is stored as a clause of its own, so a binder is fresh in it whatever an earlier
+        // step or the parent rule bound under that name — and `convert_proof` has already
+        // forgotten the parent's, resetting before it restores the variable scope.
+        self.reset_quantifier_scopes();
         let span = self.span(node);
 
         let label = self.field(node, "label").map(|n| self.convert_name(n));

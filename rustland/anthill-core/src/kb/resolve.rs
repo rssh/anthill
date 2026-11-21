@@ -4885,6 +4885,139 @@ impl SearchStream {
         out
     }
 
+    /// The NAF groundness gate's question (WI-20261115-JY1XE): is the negand `goal`
+    /// ground once each quantifier it holds is read as BINDING its binder?
+    ///
+    /// `!(forall ?p in [1, 2]: ?p > 5)` holds its binder `?p`, unbound, so
+    /// [`KnowledgeBase::value_is_ground`] says no, and the negation delayed as floundering
+    /// and was never decided. No caller can bind `?p`, though: the quantifier binds it,
+    /// to each element in turn ([`Self::step_bounded_quant`]), and a hereditary-Harrop
+    /// discharge skolemises its binders ([`Self::step_forall_impl`]). The loader refuses
+    /// a binder written anywhere in the clause outside its own quantifier
+    /// (`Converter::note_variable_occurrence`), so a binder the gate reads as bound is
+    /// bound by construction.
+    ///
+    /// ASKED THE WAY THE QUANTIFIER ASKS IT, OF THE SAME OWNER. Each quantifier's body is
+    /// instantiated as the quantifier instantiates it, with the binder replaced by a ground
+    /// value (`Unit`: which ground value stands there does not change whether the instance
+    /// is ground), and the instance is asked of `value_is_ground`. So every other variable
+    /// keeps the reading the gate gave it before: a free variable of the body and a
+    /// collection that is not yet ground still delay. Collecting the free variables
+    /// instead would be a second owner of groundness, the drift WI-982 retired; it would
+    /// already disagree with this one about a rigid on a term carrier.
+    ///
+    /// Only the GOAL STRUCTURE is descended: `not`, the two connectives, and the three
+    /// quantifiers at the arity the resolver expands them. Anything else is an atom whose
+    /// groundness is the owner's, so a quantifier written as DATA (an atom's argument)
+    /// keeps its binder free and delays, as before. Only reached once the owner has said
+    /// no, so a ground negand costs what it did.
+    fn negand_is_ground(kb: &mut KnowledgeBase, goal: &Value, subst: &Substitution) -> bool {
+        if kb.value_is_ground(goal, subst) {
+            return true;
+        }
+        let ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity: 0,
+        } = goal.head(kb)
+        else {
+            return false;
+        };
+        let arg = |kb: &KnowledgeBase, i: usize| kb.walk_arg(goal.pos_arg(kb, i), subst);
+        // A goal list (a quantifier's body, a discharge's slots): its goals, or `None` when
+        // the slot is not a `tuple` and so names no goals to ask. An empty list is `tuple()`,
+        // ground, and an empty conjunction.
+        let goals_of = |kb: &KnowledgeBase, slot: Option<Value>| -> Option<Vec<Value>> {
+            let slot = slot?;
+            let goals = Self::unwrap_tuple_args(kb, &slot);
+            (!goals.is_empty() || kb.value_is_ground(&slot, subst)).then_some(goals)
+        };
+        let tag = kb.builtin_of(functor);
+        // `and` / `or` and the two primitives they are rules over: both operands are goals.
+        let connective = pos_arity == 2
+            && (matches!(tag, Some(BuiltinTag::PushAnd | BuiltinTag::PushChoice))
+                || kb.is_goal_connective(functor, pos_arity));
+        if connective {
+            let (Some(a), Some(b)) = (arg(kb, 0), arg(kb, 1)) else {
+                return false;
+            };
+            return Self::negand_is_ground(kb, &a, subst) && Self::negand_is_ground(kb, &b, subst);
+        }
+        match (tag, pos_arity) {
+            (Some(BuiltinTag::Not), 1) => match arg(kb, 0) {
+                Some(negand) => Self::negand_is_ground(kb, &negand, subst),
+                None => false,
+            },
+            (Some(BuiltinTag::ForallIn | BuiltinTag::SomeIn), 3) => {
+                let (Some(binder), Some(collection), Some(body)) =
+                    (arg(kb, 0), arg(kb, 1), goals_of(kb, arg(kb, 2)))
+                else {
+                    return false;
+                };
+                // The collection is outside the binder's scope: it must be ground as it stands.
+                if !kb.value_is_ground(&collection, subst) {
+                    return false;
+                }
+                let Some(scoped) = Self::binders_read_as_bound(kb, &[binder], subst) else {
+                    return false;
+                };
+                body.iter().all(|g| {
+                    let instance = kb.reify_value_transient(g, &scoped);
+                    Self::negand_is_ground(kb, &instance, subst)
+                })
+            }
+            (Some(BuiltinTag::ForallImpl), 3) => {
+                let (Some(binders), Some(antecedents), Some(consequents)) = (
+                    goals_of(kb, arg(kb, 0)),
+                    goals_of(kb, arg(kb, 1)),
+                    goals_of(kb, arg(kb, 2)),
+                ) else {
+                    return false;
+                };
+                let Some(scoped) = Self::binders_read_as_bound(kb, &binders, subst) else {
+                    return false;
+                };
+                // An antecedent is a hypothesis the discharge ASSUMES, not a goal it proves:
+                // it is data, ground or not as it stands once the binders are read as bound.
+                antecedents.iter().all(|a| {
+                    let instance = kb.reify_value_transient(a, &scoped);
+                    kb.value_is_ground(&instance, subst)
+                }) && consequents.iter().all(|c| {
+                    let instance = kb.reify_value_transient(c, &scoped);
+                    Self::negand_is_ground(kb, &instance, subst)
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// σ with each of a quantifier's `binders` that is still an unbound variable bound to a
+    /// ground placeholder: the substitution under which [`Self::negand_is_ground`] reads
+    /// the quantifier's scope. A binder σ already binds is the value it is bound to, and
+    /// it must then be ground itself; `None` when one is not.
+    fn binders_read_as_bound(
+        kb: &KnowledgeBase,
+        binders: &[Value],
+        subst: &Substitution,
+    ) -> Option<Substitution> {
+        let mut scoped = subst.clone();
+        for b in binders {
+            // A discharge's binders are read out of its tuple unwalked: chase each through σ.
+            let walked = kb.walk_arg(Some(ViewItem::Value(b)), subst)?;
+            match kb.value_global_var(&walked) {
+                // Two binders of one discharge may be one variable (`forall(?x, ?x)`).
+                Some(vid) => {
+                    if scoped.resolve_as_value(vid).is_none() {
+                        scoped.bind_value(kb, vid, Value::Unit);
+                    }
+                }
+                None if kb.value_is_ground(&walked, subst) => {}
+                None => return None,
+            }
+        }
+        Some(scoped)
+    }
+
     /// A DEFINITE builtin verdict about an OPAQUE SKOLEM is trustworthy only where
     /// STRUCTURE forced it — otherwise it is a closed-world reading of a universal, and
     /// the honest answer is [`UnknownCause::OpaqueSkolem`].
@@ -5348,9 +5481,13 @@ impl SearchStream {
         // soundness contract effect discharge (048 §"constructive refutation") and
         // the in-body proof bridge rely on. Outside a Γ query, `var_ref` is a
         // closed reflect datum and keeps its ordinary ground reading.
+        //
+        // GROUND APART FROM ITS QUANTIFIERS' BINDERS (WI-20261115-JY1XE): a binder of a
+        // quantifier the negand holds is bound by that quantifier, never by a caller, so it
+        // does not hold the negation back ([`Self::negand_is_ground`]).
         let open_world_param =
             self.config.gamma.is_some() && kb.value_has_open_world_ref(&inner, &subst);
-        if open_world_param || !kb.value_is_ground(&inner, &subst) {
+        if open_world_param || !Self::negand_is_ground(kb, &inner, &subst) {
             // THE TWO REASONS THIS BRANCH IS TAKEN ARE NOT ONE, and the OR above is
             // what hid it: `!value_is_ground` is a DELAY (a caller may yet bind the
             // inner goal's variables), while `open_world_param` is an

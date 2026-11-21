@@ -242,13 +242,14 @@ fn a_user_pop_assumption_is_not_the_resolvers_marker() {
 
 /// The printer's PARSE view: a parsed file reports the minted name verbatim, so the
 /// marked address is what `is_control` matches there, and a written `forall_impl(…)` is
-/// still printed as the call it is.
+/// still printed as the call it is. The written call's variable is `?w`, not the
+/// discharge's `?z`: a binder is used only inside its quantifier (WI-20261115-JY1XE).
 #[test]
 fn the_parse_view_printer_renders_the_minted_markers_as_surface_forms() {
     use anthill_core::parse::{self, ir::Item};
     let parsed = parse::parse(
         "rule r(?y) :- (forall(?z), p(?z) -: p(?z)), (forall ?e in [1]: p(?e)), \
-         (some ?e in [1]: p(?e)), forall_impl(tuple(?z), tuple(1), tuple(2))",
+         (some ?e in [1]: p(?e)), forall_impl(tuple(?w), tuple(1), tuple(2))",
     )
     .expect("parse");
     let body = parsed
