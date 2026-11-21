@@ -20458,13 +20458,14 @@ fn drop_derived_member_cascades(
 /// label at two calls is one line, and `Money.div` and `Cash.div` are two. The exemption
 /// STAYS, and not for that message: it is a claim about every unlocated error any
 /// producer raises, and keying those on their sentence would trust each producer's
-/// wording to name its subject. One still does not, MEASURED (2026-11-20) by keying them
+/// wording to name its subject. A second one did not, MEASURED (2026-11-20) by keying them
 /// on it: a let annotation's mismatch names the variable and not its operation, so two
 /// operations each refused at a `let r` read `type mismatch in r.annotation
 /// (let-binding): …` alike, and `wi_0rp29_nested_projection_value_in_type_test::
-/// a_call_site_bracket_reaches_the_fallback_contradicted` lost one of its two. Reporting
-/// one true duplicate twice is a smaller harm than dropping a finding, and only the drop
-/// is silent.
+/// a_call_site_bracket_reaches_the_fallback_contradicted` lost one of its two. That one is
+/// located since WI-20260829-6RBPD; the next unlocated producer is the reason the rule is
+/// the channel's. Reporting one true duplicate twice is a smaller harm than dropping a
+/// finding, and only the drop is silent.
 ///
 /// FILE IDENTITY IS THE SOURCE'S ADDRESS, for the reason [`LoadError::render_all`] keys
 /// its line-index cache the same way: every error stamped from one file shares that
@@ -20535,9 +20536,10 @@ mod unlocated_exemption_tests {
     //! mismatch, which is located since WI-20260903-2VPHT.
     //!
     //! RED when the `_ => true` arm keys an unlocated error on its rendering:
-    //! [`two_unlocated_errors_rendering_alike_are_both_kept`], and through a load
+    //! [`two_unlocated_errors_rendering_alike_are_both_kept`] (and, through a load,
     //! `wi_0rp29_nested_projection_value_in_type_test::
-    //! a_call_site_bracket_reaches_the_fallback_contradicted` (MEASURED, 2026-11-20). RED
+    //! a_call_site_bracket_reaches_the_fallback_contradicted` did until WI-20260829-6RBPD
+    //! located its let-annotation mismatch, MEASURED 2026-11-20). RED
     //! when the function returns its input: [`two_located_errors_rendering_alike_are_one`],
     //! the control that the first row is not passing over a dedup that collapses nothing.
     use super::*;

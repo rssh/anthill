@@ -1103,12 +1103,23 @@ pub(super) fn build_type(
                     // (Int64, Int64), B = Int64] = lambda (p, q, r) -> p` is the
                     // same arity disagreement as the op-arg channel's, and
                     // rendered raw it prints the two sides identically.
+                    //
+                    // WI-20260829-6RBPD: AT THE VALUE AS WRITTEN. It had no span, and the
+                    // message names only the variable, so two operations' `let r` were one
+                    // sentence. The written value, not `value_node`: a `@[simp]` rule fired
+                    // there keeps its right-hand side's span, the rule's file, and the error
+                    // is stamped with the body's (the op-return check reads the written
+                    // body for the same reason, `result_position`).
+                    let Some(Expr::Let { value: written, .. }) = occ.as_expr() else {
+                        unreachable!("`LetAfterValue` is pushed over a `let` alone")
+                    };
+                    let written = written.span.span;
                     let (ann, vty) = (ann.clone(), vty.clone());
                     let err = conformance_error(
                         kb,
                         ann,
                         vty,
-                        None,
+                        Some(written),
                         TypeErrorContext::LetBinding { var },
                         Some(&value_node),
                     );

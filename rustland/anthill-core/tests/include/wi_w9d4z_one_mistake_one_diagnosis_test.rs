@@ -63,10 +63,10 @@
 //! two copies are one line ([`one_body_incurring_one_label_twice_is_one_diagnosis`]), two
 //! sorts' are two ([`two_sorts_sharing_an_op_name_are_two_findings`]). The exemption for
 //! an unlocated error stays, for every other producer, and is held on the function itself
-//! (`load::unlocated_exemption_tests`); through a load, a let annotation's mismatch still
-//! needs it (`wi_0rp29_nested_projection_value_in_type_test::
-//! a_call_site_bracket_reaches_the_fallback_contradicted` fails with it keyed on the
-//! sentence, MEASURED 2026-11-20).
+//! (`load::unlocated_exemption_tests`); through a load, a let annotation's mismatch needed
+//! it (`wi_0rp29_nested_projection_value_in_type_test::
+//! a_call_site_bracket_reaches_the_fallback_contradicted` failed with it keyed on the
+//! sentence, MEASURED 2026-11-20) until WI-20260829-6RBPD located that mismatch too.
 //!
 //! So the FIRST family is what the channel rule is for, and it is still the reason this
 //! is not a producer's job: the `Cell[W]` pair crosses the per-file/whole-KB boundary, so
