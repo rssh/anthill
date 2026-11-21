@@ -1,0 +1,23 @@
+## Attributes
+
+- id: WI-20261103-FV92R-a-projection-off-a-let-aliased
+- created: 2026-11-03T09:49:40Z
+
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-21T00:20:07Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- tags: typing
+
+## Description
+
+A PROJECTION OFF A LET-ALIASED COMPOUND RECEIVER, NESTED IN A WRITTEN TYPE, STAYS KEYED TO THE ALIAS: over `sort State { sort P = ?; requires DataProvider[P = P]; entity state(provider: P) }` (`DataProvider { sort P = ?; sort K = ? }`), in `operation fwd(st: State, j: st.provider.K) -> Int64 = let t = st …` with `check(s: State, k: s.provider.K) -> Int64`, `let p: (k: t.provider.K, n: Int64) = (k: j, n: 1)` is refused "type mismatch in p.annotation (let-binding): expected (k: t.provider.K, n: Int64), got (k: st.provider.K, n: Int64)", `let o: Option[T = t.provider.K] = some(j)` likewise, and a lambda binder `p: (k: t.provider.K, n: Int64)` applied to `(k: j, n: 1)` is refused at `check(st, p.k)` "expected st.provider.K, got t.provider.K" — on HEAD 9c60680a and with WI-20261103-SG16K, measured 2026-11-03. At the top of the annotation the alias is read: `let k: t.provider.K = get(t, j)` (WI-0RP29's `a_let_annotation_through_an_alias_names_its_target`) and `lambda (k: t.provider.K)` (SG16K's `a_compound_receiver_through_an_alias_is_the_path_it_names`) are `st.provider.K` and run; that is `canonicalize_projection_receivers`, whose doc names this boundary — it rewrites a top-level projection only, "a loud over-rejection, never a wrong accept". A NESTED projection off a single-name alias is read too (`List[T = y.E]` under `let y = x` is `List[T = x.E]`); a nested one off a compound alias path is read by neither. WHAT: in `read_written_annotation`, the one reader of a body's annotation (a `let`, a lambda, a pattern binder), read a let-aliased receiver as the path it names wherever the projection stands in the written type; measure first whether the discharge's own alias reading or the canonicalization is the place. ACCEPTANCE: the three programs above run to 42 at `go()` (`let st: State[P = MemStore] = state(provider: mem(n: 1))`, `fwd(st, 41)`); a nested `t.provider.K` handed to `check(u, …)` for another `u: State` stays refused; the top-level rows stay green; full workspace green via rustland/scripts/test.sh.
+
+## Changes
+
+### 2026-11-21T00:19:21Z — feedback — claude
+
+DELIVERED 2026-11-21 in d75028d1. Measured first on 5175d999 with the debug CLI: the three programs refused as the description says, and a tuple pattern's binder `let (a: (k: t.provider.K, n: Int64), b) = ((k: j, n: 1), 2)` refused at the binder. WHERE (the description's question): the discharge, not the canonicalization. The alias is read by the elimination walk at the RECEIVER, before the receiver's type (project_expr_carried, kb/typing/projection.rs): under Receivers::Own(Some(env)) a receiver whose head a `let` aliases is rebuilt on the path the alias names (one hop, aliases are stored de-aliased) and projected there; canonicalize_projection_receivers, the top-level step before the walk, is removed. Read on the NEUTRAL instead (the first version), an alias of a field path (`let pr = st.provider`, `pr.K`) was refused "cannot project 'K' off an abstract receiver with no concrete sort", at the top too where the step had read it: only the path `st.provider` finds State's `requires`. ACCEPTANCE: the three programs run to 42 at go(); each handed to `check(u, ...)` for another `u: State` is refused at the call, "expected u.provider.K, got st.provider.K"; the top-level rows stay green (wi_0rp29_review9, wi_sg16k, wi400: 98 rows, pass either way). Rows: wi_fv92r_nested_alias_projection_test (5 tests). Back-out over the whole wi_tests (9687): 4 fail, all in this file. /code-review high: 5 findings, 1 fixed (path-dependent-types.md named the removed step as live), 3 no change (a binder spelled as the alias's target - an arrow's own parameter, a lambda parameter, a `let st = u` - capturing the rewrite: MEASURED not, a binder symbol is fresh per binding site; rows pin all three. Every Own(Some(env)) discharge reading aliases: that is Receivers::Own's contract, field_type_at_path reads them already), 1 skipped (the rebuilt projection's span is its receiver's site, empty on the term carrier; refusals report at the discharge's span). kernel-language 5.2 unchanged: it already says "a `let` alias reads the path it names" with no boundary. Gate 12424 / 0 / 17, all 36 binaries reported; families green, no verdict moved; scaland testFull 811 + 51 + 1. FOUND BESIDE IT, pre-existing and filed separately as WI-20261121-204T6: a lambda whose parameter projects a sibling parameter panics the typer when applied.
+
