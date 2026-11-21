@@ -3,9 +3,9 @@
 - id: WI-20260930-FB53M-a-member-beside-a-spec-default
 - created: 2026-09-30T16:25:09Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-30T16:25:09Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-21T10:32:09Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -20,4 +20,12 @@ A MEMBER BESIDE A SPEC DEFAULT BODY IS NEVER COMPARED WITH THE SPEC OPERATION, Y
 ### 2026-10-13T16:33:09Z — feedback — claude
 
 ONE MORE PROGRAM, measured 2026-10-13 while delivering WI-20260930-JPSDH (d05a3c2a): 'sort Sp { sort T = ?; operation op[U](s: Self, k: Int64) -> Option[T = U] = none }', 'sort Car { sort V = ?; entity car(v: V); provides Sp[T = V]; operation op[W](c: Self, k: W) -> Option[T = W] = some(k) }', 'match Sp.op[U = String](x, 5) case some(w) -> String.length(w) case none() -> 7' over x: Car[V = Int64] LOADS and fails at run time 'TypeMismatch expected String, got Int64'; Car.op[W = String](x, 5) is refused 'op.k (op-arg): expected String, got Int64'. The member declares no effect, so the override is not read at the call at all (typing/carrier.rs dispatched_impl_effects_of returns before override_at_call). JPSDH added a judgement there for a parameter the call's BRACKET fixes, which runs only where the member declares an effect: the same call over 'op[W](c: Self, k: W, u: W) effects {Error[W]}' is refused. It is a stopgap for the bracket's share of this ticket's question and goes with decision (A) or (B).
+
+### 2026-11-21T06:15:05Z — feedback — user
+
+DECIDED WITH THE USER (2026-11-21): (A), the documented reading. Implemented with WI-20261020-NNQ1S, whose fix direction is the same rule: one owner decides whether a carrier's member supplies a spec operation (it fits the spec operation at that carrier), read by every dispatch site; a member that does not fit is skipped and the default runs.
+
+### 2026-11-21T10:27:56Z — feedback — user
+
+Implemented with WI-20261020-NNQ1S; its feedback of 2026-11-21 has the measurements. FB53M's three programs run the default (0, 0 + 1, 0); a member that fits still overrides (44); the JPSDH feedback program's spec call runs the default.
 
