@@ -38,3 +38,20 @@ ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven):
 - written labels are unchanged apart from the location;
 - back-out: without the generated label, row 1 prints two identical lines and row 3 is refused again.
 
+## Changes
+
+### 2026-11-21T13:22:44Z — feedback — claude
+
+EXTENDED with the user 2026-11-21: EVERY UNLABELED CLAUSE GETS A GENERATED LABEL, not only a constraint. A rule's clause and a fact get one by the same rule as a constraint. A description before any of them then has a target. This closes WI-20261115-S6CWK rows 1-3 (a rule, a fact, a constraint) and answers its open design question: the target is the generated label, not the stored clause or its source occurrence.
+
+- A rule's or a fact's label is its head as written: `product_has_positive_price(ShopState(products: ?ps))`.
+- Where two clauses in one scope have the same head, the label adds the body. The three `can_add_to_cart(?s, ?customerId, ?productId, ?delta)` scenarios are such clauses. The body is printed when short, and otherwise replaced by a short hash of its stored form, as for a constraint's guard. Two identical clauses are one clause, as the store holds them, and share their descriptions.
+- A written label is unchanged.
+- The predicate-level case in S6CWK's feedback of 2026-11-21 reads as option (a) there: a predicate's description is its clauses' descriptions together.
+
+ACCEPTANCE, added:
+- S6CWK rows 1-3 load, and each stores a DescriptionInfo naming the generated label;
+- the three `can_add_to_cart` clauses get three different labels, each with its own description;
+- renaming a variable in a body leaves its hash unchanged;
+- back-out: without the generated label, those rows are refused again.
+

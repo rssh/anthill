@@ -33,3 +33,27 @@ PROPOSED (the target design to decide first):
 
 ACCEPTANCE: rows 1-5 load, and each stores a DescriptionInfo that names the clause (or goal, or binder) it is written on. A query for that clause's descriptions answers the text. Row 6 is unchanged. Back-out: rows 1-5 are refused again.
 
+## Changes
+
+### 2026-11-21T13:22:02Z — feedback — claude
+
+EXTENDED with the user 2026-11-21: A DESCRIPTION BEFORE A RULE DESCRIBES THE PREDICATE ITS HEAD NAMES, with no label.
+
+MEASURED on a4fb58dc9 (debug CLI of 2026-11-21), on the explicit-state shop:
+  7 `{< Product: price is greater than zero >}` before `rule product_has_positive_price(ShopState(products: ?ps)) :- (forall ?p in ?ps: ?p.price > 0)`: refused, "description block on unlabeled rule has no stable target" (row 1, unchanged).
+  8 control: with a label that repeats the predicate's name, `rule product_has_positive_price: product_has_positive_price(ShopState(products: ?ps)) :- …`, it loads. The shop's 34 invariant rules would each write their name twice.
+
+WHY IT MATTERS. A `--` comment is discarded by the parser. A description is a DescriptionInfo in the KB, so a query for the rule returns it, and the explanation of a failed goal (WI-20261121-G8E02) can print it on the failing frame.
+
+PROPOSED, beside the clause target above: a description before a rule or a fact describes the predicate its head names, `DescriptionInfo(target: <predicate>, …)`. The predicate is a declared symbol, so the target is stable with no label and no generated name. This needs none of the open design of the clause target (the stored clause or its source occurrence).
+
+DECIDE WITH THE USER: what a description targets when the predicate has several clauses, each describing its own case (`can_add_to_cart`'s three scenarios):
+  (a) its clause, the clause target above, with the predicate's description read as its clauses' descriptions together;
+  (b) the predicate, with the clause target as a later step.
+
+ACCEPTANCE, added: row 7 loads and stores DescriptionInfo(target: product_has_positive_price, content: "Product: price is greater than zero"), and a query for the predicate's descriptions answers the text; a description before a fact describes its predicate; row 8 is unchanged; back-out: row 7 is refused again.
+
+### 2026-11-21T13:22:47Z — feedback — claude
+
+TARGET DECIDED with the user 2026-11-21: the label that WI-20261121-MVQP8 generates for every unlabeled clause, fact and constraint, from its head (with its body, or a hash of it, where heads collide). The predicate-level case above takes option (a): a predicate's description is its clauses' descriptions together.
+
