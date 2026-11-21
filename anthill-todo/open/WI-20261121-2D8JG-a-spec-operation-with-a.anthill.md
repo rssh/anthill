@@ -13,7 +13,7 @@
 
 ## Description
 
-A SPEC OPERATION WITH A RESOLVER BUILTIN IS READ AS BACKED FOR EVERY PROVIDER, so a provision that writes no member for it loads clean and dies at the call (filed with the user 2026-11-21, beside WI-20261121-TV0PA, whose witness with no `eq` was the equality instance of it). MEASURED on cae41c9cc:
+A SPEC OPERATION WITH A RESOLVER BUILTIN IS READ AS BACKED FOR EVERY PROVIDER, so a provision that writes no member for it loads clean and dies at the call (filed with the user 2026-11-21, beside WI-20261121-TV0PA, whose witness with no `eq` was the equality instance of it). MEASURED on 3e378f9f3:
 
   sort C
     entity c(v: Int64)
