@@ -64,7 +64,9 @@
 //! NOT HERE, measured beside it and out of this ticket: `takes(lambda (s2: State[P = MemStore], k:
 //! s2.provider.K) -> …)` against `f: (s: State[P = MemStore], j: s.provider.K) -> Int64` is refused
 //! "type mismatch in <binder>.k (binder-annotation): expected s2.provider.K, got Int64", with or
-//! without this change.
+//! without this change (WI-20261121-59S43); and a field read two hops off a sibling whose argument
+//! is a constructed value (`k: a.st.provider.K` given `wrap0(st: u)`) is refused at the call, "no
+//! `requires` bound on 'State' …", an operation's parameter alike (WI-20261121-YKW7E).
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 
@@ -157,8 +159,12 @@ fn assert_refused(src: &str, refusal: &str, why: &str) {
 
 /// The refusal an application meets where a lambda's parameter reads a slot nested in a field's
 /// written binding (`k: h.f.T` over `f: Box[T = List[T = ?]]`): the lambda's `k` is a list of the
-/// rigid that slot opens to, which no argument is. AN OVER-REJECTION, and no change of this ticket's:
-/// a lambda over a plain `Hold` meets it as before (`a_slot_nested_in_a_field_is_one_unknown_for_both_readings`).
+/// rigid that slot opens to, which no argument is. Of `[1]` it is right where the field writes `?`
+/// (`Hold`, `HoldL`, `WrapH`: an element no argument is known to be), and wrong over `Hold2[X =
+/// List]`, whose holder's type fixes it, and for the argument read off the holder itself
+/// (`h0.f.v`), which an operation's parameter `k: h.f.T` takes (MEASURED): WI-20261121-ZPZDY. No
+/// change of this ticket's: a lambda over a plain `Hold` meets it as before
+/// (`a_slot_nested_in_a_field_is_one_unknown_for_both_readings`).
 const NESTED_SLOT_APPLIED: &str =
     "type mismatch in g.k (op-arg): expected List[T = ?T], got List[T = Int64]";
 
@@ -435,7 +441,7 @@ fn a_sibling_read_off_itself_and_through_a_field() {
 /// as written, in a record of its own — kept in the body's, `a` would be opened at `WrapH[L =
 /// State]` there and read at its closing in the body, a build with debug assertions' stop. STILL
 /// REFUSED, an over-rejection: the binder check reads it with `a` closed, and the two readings
-/// differ, "type mismatch in <binder>.k (binder-annotation)".
+/// differ, "type mismatch in <binder>.k (binder-annotation)" (WI-20261121-XS9YD).
 /// FAILS with that reading kept in the body's record: a panic at load.
 #[test]
 fn one_annotation_reading_a_sibling_both_ways_is_refused_not_crashed() {
