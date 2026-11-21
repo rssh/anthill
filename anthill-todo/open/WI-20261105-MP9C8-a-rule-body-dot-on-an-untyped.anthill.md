@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- tags: proposal-068
+- tags: proposal-068, critical
 
 ## Description
 
@@ -23,4 +23,28 @@ MEASURED 2026-11-15 on 53a0d453b: two more rows of this defect, and both are DEF
 - `=` / `!=` compare the two unevaluated `dot_apply` terms structurally. With `rule neq2(?a, ?b) :- ?a.id != ?b.id`, `neq2(Product(1, 10), Product(1, 20))` answers true, though the ids are equal. With `rule eq2(?a, ?b) :- ?a.id = ?b.id`, `eq2(Product(1, 10), Product(1, 20))` answers no solutions. For comparison, `?a.price > 100` stays conditional, with a warning naming `dot_apply`.
 - The receiver can also be a bounded-quantifier binder over an untyped head variable. `rule ids_unique(?xs) :- (forall ?a in ?xs: (forall ?b in ?xs: (?a.id != ?b.id) | (?a = ?b)))` answers true for `[Product(1, "A"), Product(1, "B")]`. The same body under `rule r(Holder(products: ?xs))`, where destructuring types the list, answers false.
 Found while writing key-uniqueness invariants for a shop state modelled as a value. The generic helper silently accepted duplicate ids, and only the negative fixtures caught it. The load-time refusal this item plans would have caught both rows, so add them to its acceptance.
+
+### 2026-11-21T17:16:38Z — feedback — claude
+
+CRITICAL (decided with the user 2026-11-21): definite wrong answers, and negation over one proves a falsehood. Until the load-time refusal above lands, a standing dot must never be decided as data.
+
+MEASURED on a4fb58dc9 (debug CLI of 2026-11-21), `entity P(id: Int64, name: String)`, every rule untyped:
+  1 `rule id_of(?xs, ?v) :- (some ?a in ?xs: ?v <=> ?a.id)`: `id_of([P(1, "A")], ?v)` answers `?v = P(id: 1, name: "A").id`, definite. The typed control `rule id_of_typed(?a: P, ?v) :- ?v <=> ?a.id` answers `?v = 1`.
+  2 `rule id_is(?xs) :- (forall ?a in ?xs: ?a.id === 1)`: `id_is([P(1, "A")])` answers no solutions. The truth is true.
+  3 `rule id_isnt(?xs) :- (forall ?a in ?xs: ?a.id !== 1)`: `id_isnt([P(1, "A")])` answers true. The truth is false.
+  4 `rule not_id_is(?xs) :- !id_is(?xs)`: `not_id_is([P(1, "A")])` answers true. Negation over row 2 proves a falsehood.
+  5 the key helper of 2026-11-15, written with `!==` / `===`: `rule ids_unique(?xs) :- (forall ?a in ?xs: (forall ?b in ?xs: (?a.id !== ?b.id) | (?a === ?b)))` answers true for `[Product(1, "A", 100, true), Product(1, "B", 100, true)]`.
+  6 the `=` / `!=` rows of 2026-11-15 are now refused at load: "the call is at a type no head column of the clause reaches … give the variable a type, or put it in a head column and declare the requirement there; `===` compares any two values structurally". The message's suggestion leads to rows 2-5.
+  7 control: `(forall ?a in ?xs: ?a.id > 0)` warns "`PartialOrd.gt` has no order for this operand pair (dot_apply and Int64) — the goal is UNDECIDED, not false", and answers conditional. This is the safe behaviour.
+
+WHY these rows decide: `===` / `!==` (`struct_eq` / `struct_neq`) and `<=>` (`unify`) are structural and never dispatch, so they compare or bind the standing `dot_apply` term as data. `gt` reads it as an operand it cannot order, and delays.
+
+PROPOSED, a stopgap that does not wait for smt-gen. It is placed at the dot, not at each connective: a dot that stays undispatched is a pending goal, never data, wherever it is used. Every consumer (`===`, `!==`, `<=>`, `=`, an argument, a head) then sees an undecided goal with the warning naming `dot_apply`, as `gt` does now. Negation over it is undecided, like any other residual. The refusal in row 6 stops recommending `===` and names the repair that works: give the receiver a type, for example by destructuring the value that holds it. The load-time refusal above remains the full fix, and when it lands this stopgap is removed.
+
+ACCEPTANCE, added:
+- rows 1-3 and 5 answer conditional, each with the warning naming `dot_apply`;
+- row 4 is undecided, not true;
+- row 7 and the typed controls are unchanged;
+- row 6's message no longer recommends `===`;
+- back-out: with the stopgap removed, rows 2-4 answer definitely again.
 
