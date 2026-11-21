@@ -391,6 +391,13 @@ fn provider_at_a_spec_type_error(
     let spec = sort_functor_of_view(kb, declared)?;
     let param = spec_over_parameter(kb, spec)?;
     let mut provider = sort_functor_of_view(kb, actual)?;
+    // A value typed at a sort with a dictionary is that dictionary, no provider's value
+    // (proposal 074 §2): `Additive[T = Int64]` where `Additive[T = Float]` is expected is two
+    // dictionaries of one spec, and the note said `Additive` provides `Additive`
+    // (WI-20261113-24ZZ0).
+    if sort_class(kb, provider) == SortClass::Dictionary {
+        return None;
+    }
     // An entity's provision is its parent sort's, as the relation reads it.
     while !carrier_is_an_instance(kb, provider, spec) {
         provider = kb.strict_parent_sort(provider)?;

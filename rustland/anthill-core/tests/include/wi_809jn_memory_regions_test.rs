@@ -211,8 +211,9 @@ fn a_write_to_fresh_memory_adds_nothing() {
 /// process no row can name, so a write through one is refused, in every spelling that binds
 /// the value. Fails with the pool's region backed out (`pool`): every one loaded declaring
 /// nothing; with the charge (`charge`); with a construction's regions (`construct`, the
-/// `boxed` spelling) and a branch's (`join`, `viaIf`). The inline `KB.assert(kb(), …)` stays
-/// refused by the place rule, either way.
+/// `boxed` spelling) and a branch's (`join`, `viaIf`); and with the refusal's location backed out
+/// to the operation functor's span (WI-20260903-2VPHT, MEASURED: unlocated, so no line starts
+/// at a body). The inline `KB.assert(kb(), …)` stays refused by the place rule, either way.
 #[test]
 fn a_write_through_a_knowledge_base_value_is_refused() {
     let src = r#"
@@ -247,12 +248,21 @@ end
 "#;
     let errs = load_errors_of(src);
     for op in ["direct", "alias2", "boxed", "viaIf", "layer"] {
+        // WI-20260903-2VPHT: reported at the body that writes, the line after the header,
+        // and naming the operation by its qualified name. Unlocated before (the span was the
+        // operation functor's, which nothing here writes as a term).
+        let header = src.find(&format!("operation {op}(")).expect("the fixture declares it");
+        let body = header + src[header..].find('\n').unwrap() + 1;
+        let body = body + src[body..].len() - src[body..].trim_start().len();
+        let line = src[..body].matches('\n').count() + 1;
+        let col = body - src[..body].rfind('\n').unwrap();
         assert!(
-            errs.iter().any(|e| e.contains(&format!("{op}.effects"))
+            errs.iter().any(|e| e.starts_with(&format!("{line}:{col}: "))
+                && e.contains(&format!("test.n809.kb.{op}.effects"))
                 && e.contains("anthill.reflect.KBStorage.kb_storage")
                 && e.contains("cannot be declared")),
-            "a write through a knowledge-base value in `{op}` must be refused naming \
-             kb_storage; got:\n{errs:#?}"
+            "a write through a knowledge-base value in `{op}` must be refused at its body \
+             ({line}:{col}) naming kb_storage; got:\n{errs:#?}"
         );
     }
     let inline = r#"

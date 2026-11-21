@@ -1250,10 +1250,9 @@ fn check_branch_external_exclusion(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 site: TypeError::here(),
                 span,
                 context: TypeErrorContext::OperationEffects { op_name: op_sym },
-                expected: format!(
-                    "operation `{}` to declare at most one of `Branch` / `External`",
-                    kb.qualified_name_of(op_sym),
-                ),
+                // The operation is named by the context, qualified (WI-20260903-2VPHT).
+                expected: "the row to declare at most one of `Branch` / `External`"
+                    .to_string(),
                 actual: "effect row carries BOTH `Branch` and `External` — a Branch region \
                      may not perform External: External state has no register_undo (above \
                      Branch is impossible) and is re-run once per solution (below Branch is \

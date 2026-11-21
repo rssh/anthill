@@ -12,7 +12,7 @@
 //! ── WHICH TESTS FAIL WHEN THE CHANGE IS BACKED OUT ─────────────────────────────────
 //!
 //! Back out the FOLD (`Loader::data_slot_const_value` / `data_slot_dotted_const` and the
-//! query twin `query_data_slot_const` answering `None`), MEASURED — SIX FAIL:
+//! query twin `load::query_slot_const` answering `None`), MEASURED — SIX FAIL:
 //! [`persisted_ieee_specials_reload_as_the_float_they_were`] (the three special rows),
 //! [`a_literal_bodied_const_in_a_fact_is_its_value`],
 //! [`a_const_in_a_rule_body_value_slot_is_its_value`] (`gt` / `flag = true` / `<=> nn`),
@@ -23,7 +23,7 @@
 //!
 //! The two `/code-review` fixes, each MEASURED against its own back-out:
 //! [`a_query_evaluates_a_computed_const`] fails without the evaluator in
-//! `query_data_slot_const` (0 ≠ 1), and
+//! `load::query_slot_const` (0 ≠ 1), and
 //! [`a_compound_expression_in_a_fact_keeps_the_const_for_eval`] fails without the term
 //! walk's compound-marker rule (the load refuses `D_MAX`).
 //!

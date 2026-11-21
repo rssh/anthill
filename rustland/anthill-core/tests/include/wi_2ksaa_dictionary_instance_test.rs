@@ -358,39 +358,42 @@ const SORTS: &str = "  sort Box
 
 /// One row per sort `Dictionary.instance` builds no dictionary of — a data sort, an abstract
 /// sort with values of its own, one whose chain declares no operation (whose values are its
-/// providers'), one with no parameter — and the two applications it cannot build one at.
+/// providers'), one with no parameter — and the two applications it cannot build one at: the
+/// type a position is declared at, the bracket, and what the refusal says. Read by the
+/// operation rows here and the constant rows of stage 2 below.
+const NO_DICTIONARY: &[(&str, &str, &str)] = &[
+    ("Box[V = Int64]", "Box[V = Int64]", "`Box` is a data sort"),
+    ("E", "E", "`E` is a data sort"),
+    (
+        "Stream[T = Int64, E = {}]",
+        "Stream[T = Int64, E = {}]",
+        "`Stream` is an abstract sort with values of its own",
+    ),
+    ("Additive", "Additive", "leaves `T` unwritten"),
+    (
+        "Additive[T = Bool]",
+        "Additive[T = Bool]",
+        "expected the dictionary of `Additive[T = Bool]`",
+    ),
+    ("anthill.cli.Main", "anthill.cli.Main", "declares an operation, so it has no dictionary"),
+    ("Marker[T = Int64]", "Marker[T = Int64]", "declares an operation, so it has no dictionary"),
+    (
+        "anthill.logic.Constructive.Constructive",
+        "anthill.logic.Constructive.Constructive",
+        "declares an operation, so it has no dictionary",
+    ),
+    (
+        "anthill.logic.Classical.Classical",
+        "anthill.logic.Classical.Classical",
+        "declares an operation, so it has no dictionary",
+    ),
+    ("Ticker", "Ticker", "has operations and no parameter"),
+    ("anthill.prelude.Time", "anthill.prelude.Time", "has operations and no parameter"),
+];
+
 #[test]
 fn dictionary_instance_refuses_what_has_no_dictionary() {
-    let rows: &[(&str, &str, &str)] = &[
-        ("Box[V = Int64]", "Box[V = Int64]", "`Box` is a data sort"),
-        ("E", "E", "`E` is a data sort"),
-        (
-            "Stream[T = Int64, E = {}]",
-            "Stream[T = Int64, E = {}]",
-            "`Stream` is an abstract sort with values of its own",
-        ),
-        ("Additive", "Additive", "leaves `T` unwritten"),
-        (
-            "Additive[T = Bool]",
-            "Additive[T = Bool]",
-            "expected the dictionary of `Additive[T = Bool]`",
-        ),
-        ("anthill.cli.Main", "anthill.cli.Main", "declares an operation, so it has no dictionary"),
-        ("Marker[T = Int64]", "Marker[T = Int64]", "declares an operation, so it has no dictionary"),
-        (
-            "anthill.logic.Constructive.Constructive",
-            "anthill.logic.Constructive.Constructive",
-            "declares an operation, so it has no dictionary",
-        ),
-        (
-            "anthill.logic.Classical.Classical",
-            "anthill.logic.Classical.Classical",
-            "declares an operation, so it has no dictionary",
-        ),
-        ("Ticker", "Ticker", "has operations and no parameter"),
-        ("anthill.prelude.Time", "anthill.prelude.Time", "has operations and no parameter"),
-    ];
-    for (ty, s, text) in rows {
+    for (ty, s, text) in NO_DICTIONARY {
         let errors = refused(&format!(
             "{SORTS}  operation f() -> {ty} = Dictionary.instance[{s}]()"
         ));
@@ -692,6 +695,220 @@ fn a_spec_with_no_receiving_parameter_takes_any_member_in_a_rule_head() {
     assert_eq!(answers.len(), 1, "{answers:?}");
 }
 
+// ── T12: a constant holds a dictionary (stage 2, WI-20261113-24ZZ0; §2, "A constant may hold
+// a dictionary") ───────────────────────────────────────────────────────────────────────────
+//
+// Measured first on 5175d999: every row of this section that answers a value already did —
+// stage 1's built-in is effect-free, so the const purity gate admits it, and the dictionary
+// the typer stamps on the call is what the const's typed value holds (kernel-language §5.9:
+// the value is typed as an operation body is). The proposal's "today", "const has a
+// non-foldable body", predates stage 1. What this stage changed is in the refusals below:
+// a query naming such a const panicked the bridge, and a mismatch of two dictionaries of one
+// spec said that the spec provided itself. Its back-outs are in the ledger at the end.
+
+const T12: &str = "  operation add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b
+  const ints: Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()
+  operation held() -> Additive[T = Int64] = ints
+";
+
+/// T12: `const ints: Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()`, and
+/// `add2(ints, 2, 3)` answers 5. The const holds the dictionary, which prints as a value.
+#[test]
+fn t12_a_constant_holds_a_dictionary() {
+    let body = format!("{T12}  operation go() -> Int64 = add2(ints, 2, 3)");
+    let mut interp = interp_for(&program("t12", &body));
+    assert_eq!(shown(&mut interp, "p074.t12.go"), "5");
+    assert_eq!(shown(&mut interp, "p074.t12.held"), "Dictionary(impl: Int64)");
+}
+
+/// A constant dictionary is read as any value is: its bracket left to the declared type, the
+/// const named dotted from its sort, a const naming another, a const computed from it, a `let`
+/// over it, a lambda over it, and T2's function value handed two constants.
+#[test]
+fn a_constant_dictionary_is_read_as_any_value_is() {
+    let body = format!(
+        "{T12}  const typed: Additive[T = Int64] = Dictionary.instance()
+  sort C
+    const dict: Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()
+  end
+  const again: Additive[T = Int64] = ints
+  const five: Int64 = add2(ints, 2, 3)
+  const floats: Additive[T = Float] = Dictionary.instance[Additive[T = Float]]()
+  operation viaTyped() -> Int64 = add2(typed, 2, 3)
+  operation viaDotted() -> Int64 = add2(C.dict, 2, 3)
+  operation viaAgain() -> Int64 = add2(again, 2, 3)
+  operation viaFive() -> Int64 = five
+  operation viaLet() -> Int64 =
+    let d = ints
+    add2(d, 2, 3)
+  operation viaLambda() -> Int64 =
+    let g = lambda (a: Int64) -> add2(ints, a, a)
+    g(4)
+  operation applyBoth(f: (d: Additive, x: d.T, y: d.T) -> d.T) -> (Int64, Float) =
+    (f(ints, 1, 2), f(floats, 3.0, 4.3))
+  operation both() -> (Int64, Float) = applyBoth(lambda (d: Additive, x: d.T, y: d.T) -> x + y)"
+    );
+    let mut interp = interp_for(&program("t12read", &body));
+    for (op, want) in [
+        ("viaTyped", "5"),
+        ("viaDotted", "5"),
+        ("viaAgain", "5"),
+        ("viaFive", "5"),
+        ("viaLet", "5"),
+        ("viaLambda", "8"),
+        ("both", "(3, 7.3)"),
+    ] {
+        assert_eq!(shown(&mut interp, &format!("p074.t12read.{op}")), want, "{op}");
+    }
+}
+
+/// A key in a constant's bracket names the provider, as on a call: `Leaf`'s own provision
+/// answers 1, `Alt`'s 2. A dictionary a constant holds is used only where it is passed: with
+/// `altTag` in scope, a call that does not name it answers by `Leaf`'s own provision.
+#[test]
+fn a_constant_names_its_provider_and_is_used_only_where_passed() {
+    let body = "  sort Tag
+    sort T = ?
+    operation tag(x: T) -> Int64
+  end
+  sort Leaf
+    entity leaf(k: Int64)
+    provides Tag[T = Leaf]
+    operation tag(x: Leaf) -> Int64 = 1
+  end
+  sort Alt
+    provides Tag[T = Leaf]
+    operation tag(x: Leaf) -> Int64 = 2
+  end
+  const ownTag: Tag[T = Leaf] = Dictionary.instance[Tag[T = Leaf]]()
+  const altTag: Tag[T = Leaf] = Dictionary.instance[Tag[T = Leaf], Tag = Alt]()
+  operation viaOpen(t: Tag, x: t.T) -> Int64 = Tag.tag(x)
+  operation named() -> (Int64, Int64) = (viaOpen(ownTag, leaf(k: 0)), viaOpen(altTag, leaf(k: 0)))
+  operation unpassed() -> Int64 = Tag.tag(leaf(k: 0))";
+    let mut interp = interp_for(&program("t12key", body));
+    assert_eq!(shown(&mut interp, "p074.t12key.named"), "(1, 2)");
+    assert_eq!(shown(&mut interp, "p074.t12key.unpassed"), "1");
+}
+
+/// A constant at an application stage 1 refuses is refused as there, in its sentence: one row
+/// per row of [`NO_DICTIONARY`], the const declared at the type the operation row returns.
+#[test]
+fn a_constant_is_refused_where_dictionary_instance_is() {
+    for (ty, s, text) in NO_DICTIONARY {
+        let errors = refused(&format!("{SORTS}  const k: {ty} = Dictionary.instance[{s}]()"));
+        assert!(says(&errors, text), "`const k: {ty} = Dictionary.instance[{s}]()`: {errors:?}");
+    }
+}
+
+/// A constant used at another type than its dictionary's is refused at the call (`x.T` is
+/// `Int64`), and one declared at a type that leaves `T` unwritten is a dictionary at some `T`
+/// (§5.9, a slot the declared type leaves out), which `add2(k, 2, 3)` cannot fix at `Int64`.
+#[test]
+fn a_constant_dictionary_fixes_its_type_at_the_call() {
+    let errors = refused(&format!("{T12}  operation bad() -> Float = add2(ints, 1.5, 2.5)"));
+    assert!(says(&errors, "type mismatch in add2.a (op-arg): expected Int64, got Float"), "{errors:?}");
+    let errors = refused(&format!(
+        "{ADD2}  const k: Additive = Dictionary.instance[Additive[T = Int64]]()
+  operation bad() -> Int64 = add2(k, 2, 3)"
+    ));
+    // `k.T` is the const's own open slot, an existential no argument fixes: printed `?T`.
+    assert!(says(&errors, "type mismatch in add2.a (op-arg): expected ?T, got Int64"), "{errors:?}");
+}
+
+/// Two dictionaries of one spec at different types are refused as the mismatch they are, in a
+/// constant, an operation's result, an argument and an annotated `let` alike. FAILS with the
+/// dictionary exclusion backed out of `provider_at_a_spec_type_error`, where each said that
+/// `Additive` provides `Additive` and advised typing the value `Additive`.
+#[test]
+fn two_dictionaries_of_one_spec_mismatch_plainly() {
+    let wrong = "Dictionary.instance[Additive[T = Int64]]()";
+    for (site, body) in [
+        ("k.value (const)", format!("  const k: Additive[T = Float] = {wrong}")),
+        ("f.return (op-return)", format!("  operation f() -> Additive[T = Float] = {wrong}")),
+        (
+            "g.d (op-arg)",
+            format!("  operation g(d: Additive[T = Float]) -> Int64 = 1\n  operation f() -> Int64 = g({wrong})"),
+        ),
+        (
+            "d.annotation (let-binding)",
+            format!("  operation f() -> Int64 =\n    let d: Additive[T = Float] = {wrong}\n    1"),
+        ),
+    ] {
+        let errors = refused(&body);
+        let mismatch = format!(
+            "type mismatch in {site}: expected Additive[T = Float], got Additive[T = Int64]"
+        );
+        assert!(says(&errors, &mismatch), "{site}: {errors:?}");
+        assert!(!says(&errors, "provides it"), "{site}: no provider is involved: {errors:?}");
+    }
+}
+
+/// A dictionary has no value in a data slot (§2, "In a rule body"): a fact and a rule body's
+/// goal naming the constant are refused as a computed body; a query naming it, bare or dotted,
+/// as an argument or as the value of `<=>`, is refused naming the const, where it panicked the
+/// bridge (`add2`'s `x` handed the name) and answered `?r <=> ints` with the name. FAILS with
+/// the query's refusal backed out (`load::query_slot_const`): the conversions succeed.
+/// The controls pass either way: a literal const in a query is its value, and a query reaches
+/// the dictionary through an operation that returns it.
+#[test]
+fn a_constant_dictionary_has_no_value_in_a_data_slot() {
+    let errors = refused(&format!(
+        "{T12}  sort H
+    entity holds(d: Additive[T = Int64])
+  end
+  fact holds(d: ints)"
+    ));
+    assert!(says(&errors, "the const `p074.refused.ints` is written in a data slot"), "{errors:?}");
+    let errors = refused(&format!("{T12}  rule viaRule(?r) :- ?r <=> add2(ints, 2, 3)"));
+    assert!(says(&errors, "the const `p074.refused.ints` is written in a data slot"), "{errors:?}");
+
+    let body = format!(
+        "{T12}  const two: Int64 = 2
+  sort C
+    const dict: Additive[T = Int64] = Dictionary.instance[Additive[T = Int64]]()
+  end"
+    );
+    let mut kb = crate::common::load_kb_with(&program("t12q", &body));
+    for (pattern, name) in [
+        ("?r <=> p074.t12q.add2(p074.t12q.ints, 2, 3)", "p074.t12q.ints"),
+        ("?r <=> p074.t12q.ints", "p074.t12q.ints"),
+        ("?r <=> p074.t12q.add2(p074.t12q.C.dict, 2, 3)", "p074.t12q.C.dict"),
+    ] {
+        let refusals = crate::common::query_pattern_refusals(&mut kb, pattern);
+        let text = format!("the const `{name}` holds a dictionary, `Additive[T = Int64]`");
+        assert!(refusals.iter().any(|e| e.contains(&text)), "{pattern}: {refusals:?}");
+    }
+    for (pattern, want) in [
+        ("2 <=> p074.t12q.two", (1, 1)),
+        ("5 <=> p074.t12q.add2(p074.t12q.held(), 2, 3)", (1, 1)),
+        ("6 <=> p074.t12q.add2(p074.t12q.held(), 2, 3)", (0, 0)),
+    ] {
+        assert_eq!(crate::common::pattern_answer_counts(&mut kb, pattern), want, "{pattern}");
+    }
+}
+
+/// A compound form is evaluated where it is written, even in a clause (§5.9), so a `let` or an
+/// `if` reads a constant dictionary as an operation body does, in a rule body and in a query.
+/// Passes either way, by design: no data slot holds the const.
+#[test]
+fn a_compound_form_reads_a_constant_dictionary_as_an_operation_body_does() {
+    let body = format!(
+        "{T12}  rule viaLet(?r) :- ?r <=> (let d = ints\n    add2(d, 2, 3))
+  rule viaIf(?r) :- ?r <=> (if true then add2(ints, 2, 3) else 0)"
+    );
+    let mut kb = crate::common::load_kb_with(&program("t12form", &body));
+    for rel in ["viaLet", "viaIf"] {
+        let rows = crate::common::query_unary(&mut kb, &format!("p074.t12form.{rel}"));
+        assert!(matches!(rows.as_slice(), [(Value::Int(5), true)]), "{rel}: {rows:?}");
+    }
+    for (pattern, want) in [
+        ("5 <=> (let d = p074.t12form.ints  p074.t12form.add2(d, 2, 3))", (1, 1)),
+        ("6 <=> (let d = p074.t12form.ints  p074.t12form.add2(d, 2, 3))", (0, 0)),
+    ] {
+        assert_eq!(crate::common::pattern_answer_counts(&mut kb, pattern), want, "{pattern}");
+    }
+}
+
 // ── The back-out ledger (measured 2026-11-14, one build, a temporary switch per part, over a
 // binary of this file, the three 073 suites it rewrote, `wi_9bkz4`, `wi_kssa4`, `wi_8dxvk`,
 // `wi903`, `wi_2kv4y`, `wi402`, `wi1063` and their imports — 286 rows) ─────────────────────
@@ -722,3 +939,18 @@ fn a_spec_with_no_receiving_parameter_takes_any_member_in_a_rule_head() {
 // type parameter from the classes (one declares no operation, so it is operation-free).
 // PASS EITHER WAY BY DESIGN: T1, T3, T5 and T9 (no dictionary written), the kept refusals,
 // `a_spec_application_where_a_type_is_expected_is_the_type`.
+//
+// ── Stage 2's back-outs (WI-20261113-24ZZ0; measured 2026-11-20, one optimized build, a
+// temporary switch per part read at run time, over the whole of `wi_tests` — 9683 rows; the
+// control, no switch, 9683 passed) ─────────────────────────────────────────────────────────
+//
+// | part backed out | rows that fail |
+// |---|---|
+// | a query refusing a constant dictionary (`load::query_slot_const`) | `a_constant_dictionary_has_no_value_in_a_data_slot` |
+// | a dictionary excluded from the provider note (`callable::provider_at_a_spec_type_error`) | `two_dictionaries_of_one_spec_mismatch_plainly` |
+// | stage 1's stamp on a `Dictionary.instance` call skipped where a const's value is typed (the mechanism the T12 rows drive, not changed by this stage) | 5: `t12_a_constant_holds_a_dictionary`, `a_constant_dictionary_is_read_as_any_value_is`, `a_constant_names_its_provider_and_is_used_only_where_passed`, `a_compound_form_reads_a_constant_dictionary_as_an_operation_body_does` (each `OperationBodyMissing("Dictionary.instance")` or undecided), and `a_constant_dictionary_has_no_value_in_a_data_slot`'s control through `held()` |
+//
+// PASS EITHER WAY BY DESIGN: `a_constant_is_refused_where_dictionary_instance_is` and
+// `a_constant_dictionary_fixes_its_type_at_the_call` (refusals of the typer, made before any
+// stamp), and cpp-gen's `a_dictionary_held_by_a_const_is_refused_until_stage_7`, which holds
+// the generator to §1.4 for the new position.

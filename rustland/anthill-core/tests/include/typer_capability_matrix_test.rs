@@ -38,7 +38,8 @@
 //!   * [`Verdict::RefusesLocated`]    rejected, correctly, with a message naming a span
 //!   * [`Verdict::RefusesUnlocated`]  rejected correctly, but the message has NO span —
 //!                                    a usable refusal and an unusable diagnostic are not
-//!                                    the same state (WI-20260829-6RBPD)
+//!                                    the same state (WI-20260829-6RBPD, whose op-return
+//!                                    cell was the one; no cell is in it since that fix)
 //!   * [`Verdict::KnownGap`]          rejected TODAY and should not be
 //!   * [`Verdict::SilentlyAccepted`]  ACCEPTED today and should not be — the most
 //!                                    dangerous kind, because a refusal that never comes
@@ -100,7 +101,8 @@
 //! literal AT ALL (it does not parse, with or without parentheses — so "write a lambda
 //! instead" is not available as the repair for the bare-name cells), and every op-return
 //! type mismatch is UNLOCATED while op-arg and dot-dispatch mismatches are located
-//! (WI-20260829-6RBPD, found by a cell of mine failing an assertion I expected to hold).
+//! (WI-20260829-6RBPD, found by a cell of mine failing an assertion I expected to hold;
+//! fixed since, with the let annotation's mismatch, the renderer's third channel).
 //!
 //! SLICE 3 — THE REMAINING POSITIONS. `inline constructor`, `field dot`, `match`,
 //! `qualified call` and `dot call`, each across the routes it can be spelled in, plus the
@@ -391,6 +393,14 @@ fn check_src(label: &str, src: &str, want: Verdict) -> Result<String, String> {
         Ok(_) => Vec::new(),
         Err(e) => e,
     };
+    judge(label, &errs, want)
+}
+
+/// The verdict over a load's rendered errors (empty for a clean load). Apart from
+/// [`check_src`] so [`every_verdict_fails_when_it_should`] can hand it an UNLOCATED
+/// diagnostic without depending on which of the loader's messages still lack a span: it
+/// used an op-return mismatch, located since WI-20260829-6RBPD.
+fn judge(label: &str, errs: &[String], want: Verdict) -> Result<String, String> {
     match want {
         Verdict::Loads => {
             if errs.is_empty() {
@@ -945,6 +955,9 @@ fn every_verdict_fails_when_it_should() {
     // so the hazard this note describes did not fire, and the rule stands for the next
     // cell that would be tempted to reuse a tracked program here.)
     const ALWAYS_REFUSED: &str = "nosuchname(xs)";
+    // A refusal as `try_load_kb_with` renders one that has no span: no `line:col: ` prefix.
+    const UNLOCATED: &str = "type mismatch in z.return (op-return): expected Int64, got String";
+    assert!(!is_located(UNLOCATED), "the fixture must be unlocated");
 
     // A body that LOADS, recorded as a gap ⇒ "the gap closed, flip it".
     let closed = check(
@@ -1027,12 +1040,11 @@ fn every_verdict_fails_when_it_should() {
     // satisfies. If that check regressed to a no-op the `{1}` cell and the whole verdict
     // would go vacuously green and nothing else in the file would notice
     // (found by /code-review).
-    // Through `route_program`, which takes a whole declaration — `program` wraps its
-    // argument in an operation body, and this case needs an operation of its own to get
-    // an (unlocated) op-return error.
-    let unlocated_wrong_reason = check_src(
+    // Handed to the judge as rendered, since no program is known to stay unlocated: this
+    // was an op-return mismatch, located since WI-20260829-6RBPD.
+    let unlocated_wrong_reason = judge(
         "self-test",
-        &route_program("  operation z() -> Int64 = \"x\""),
+        &[UNLOCATED.to_string()],
         Verdict::RefusesUnlocated { wi: "WI-FAKE", expect: "a fragment in no message" },
     )
     .expect_err("a RefusesUnlocated cell whose message does not match `expect` must fail");
@@ -1054,9 +1066,9 @@ fn every_verdict_fails_when_it_should() {
     );
 
     // A RefusesLocated cell over a refusal that carries NO span at all.
-    let never_located = check_src(
+    let never_located = judge(
         "self-test",
-        &route_program("  operation z() -> Int64 = \"x\""),
+        &[UNLOCATED.to_string()],
         Verdict::RefusesLocated("(op-return)"),
     )
     .expect_err("a RefusesLocated cell over an unlocated diagnostic must fail");
@@ -1360,10 +1372,8 @@ fn a_literal_is_checked_on_every_route_that_declares_an_element_type() {
             // set literal" — which this comment asserted first — is false.
             "return hint / one-element braces read as a BRACED EXPRESSION".into(),
             "  operation c() -> Set[T = Int64] = {1}".into(),
-            Verdict::RefusesUnlocated {
-                wi: "WI-20260829-6RBPD",
-                expect: "(op-return)",
-            },
+            // Unlocated until WI-20260829-6RBPD; at the braces since.
+            Verdict::RefusesLocated("c.return (op-return): expected Set[T = Int64], got Int64"),
         ),
         // ── the ARGUMENT route: the slot declares its element type (WI-20261013-M32C2) ──
         //
@@ -1477,73 +1487,127 @@ fn a_lambda_inside_a_list_literal() {
     );
 }
 
-/// AN OP-RETURN MISMATCH CARRIES NO SPAN, while an op-arg mismatch and a dot-dispatch
-/// miss both do — WI-20260829-6RBPD, surfaced by the braced-expression cell above failing
-/// a `RefusesLocated` assertion I had written expecting it to hold.
+/// AN OP-RETURN MISMATCH IS REPORTED AT THE BODY'S VALUE, as an op-arg mismatch and a
+/// dot-dispatch miss are at theirs. Until WI-20260829-6RBPD it carried no span at all,
+/// found by the braced-expression cell above failing a `RefusesLocated` assertion written
+/// expecting it to hold: `operation c() -> Int64 = "x"` told the author only the
+/// operation's name.
 ///
-/// The pairing is the whole content: two unlocated rows beside two located ones, through
-/// the same loader, so the row says "this one path does not use the span machinery"
-/// rather than "spans are missing". Whoever fixes it has the control here — the located
-/// pair must stay located, since it is a change to one raise site and not to the plumbing.
+/// Each row names the text the message must stand at. The `let` rows are the ones that say
+/// it is the body's VALUE and not the body: their mismatch is at the tail the `let`s lead
+/// to. A let annotation's mismatch, the third channel of the same renderer, is at the value
+/// it annotates. RED under each back-out (MEASURED 2026-11-21, over all of `anthill-core`):
+/// the op-return span `None` stops it at the first row (and reds the braced-expression cell
+/// above); the whole body for it, at the first `let`-tail row; the let-annotation span
+/// `None`, at the last row. Nothing else in the crate moved under any of the three.
 ///
-/// `operation c() -> Int64 = "x"` is about as ordinary as a type error gets, and in a
-/// file of any size the author is told only the operation's name.
+/// THE CONTROL is the pair below them, which the change must not move: the op-arg and the
+/// dot-dispatch mismatch, at the positions they had.
 #[test]
-fn an_op_return_mismatch_carries_no_span() {
-    fn errors_for(body: &str) -> Vec<String> {
+fn an_op_return_mismatch_is_at_the_bodys_value() {
+    fn errors_for(body: &str) -> (String, Vec<String>) {
         let src = format!(
             "\nnamespace capmatrix_spans\n  import anthill.prelude.{{Int64, String, Set}}\n  {body}\nend\n"
         );
-        crate::common::try_load_kb_with(&src)
+        let errs = crate::common::try_load_kb_with(&src)
             .err()
-            .unwrap_or_else(|| panic!("this program must be refused: {body}"))
+            .unwrap_or_else(|| panic!("this program must be refused: {body}"));
+        (src, errs)
+    }
+    /// `line:col: ` of the LAST occurrence of `needle`, which in these rows is the body's.
+    fn at(src: &str, needle: &str) -> String {
+        let idx = src
+            .rfind(needle)
+            .unwrap_or_else(|| panic!("fixture does not contain {needle:?}"));
+        let line = src[..idx].matches('\n').count() + 1;
+        let col = idx - src[..idx].rfind('\n').map_or(0, |p| p + 1) + 1;
+        format!("{line}:{col}: ")
     }
 
-    for body in [
-        "operation c() -> Int64 = \"x\"",
-        "operation c() -> Set[T = Int64] = {1}",
+    for (body, value, frag) in [
+        ("operation c() -> Int64 = \"x\"", "\"x\"", "c.return (op-return)"),
+        // Braces group, so the body's value is the `1` inside them.
+        ("operation c() -> Set[T = Int64] = {1}", "1}", "c.return (op-return)"),
+        (
+            "operation c(n: Int64) -> Int64 =\n    let k = n + 1\n    \"tail\"",
+            "\"tail\"",
+            "c.return (op-return)",
+        ),
+        (
+            "operation c(n: Int64) -> Int64 =\n    let k = n + 1\n    let j = k\n    \"tail\"",
+            "\"tail\"",
+            "c.return (op-return)",
+        ),
+        (
+            "operation c() -> Int64 =\n    let r: String = 1\n    0",
+            "1\n",
+            "r.annotation (let-binding)",
+        ),
     ] {
-        let errs = errors_for(body);
-        // The MESSAGE is checked, not just the absence of a span: without this, any
-        // span-less refusal for any other reason satisfies the row, and the ticket's
-        // central claim — that it is the OP-RETURN path specifically — could silently
-        // become untrue while the test stayed green (found by /code-review).
-        // BOTH HALVES OVER THE SAME MESSAGE. Asked independently, a located companion
-        // diagnostic satisfies the second while the op-return error stays span-less, and
-        // the row reds telling its reader to close a live ticket (found by /code-review).
-        let op_return: Vec<&String> = errs.iter().filter(|e| e.contains("(op-return)")).collect();
+        let (src, errs) = errors_for(body);
+        let want = at(&src, value);
+        // ONE message carries both, the fragment and the position: asked apart, a located
+        // companion error would satisfy the position while this one had none.
         assert!(
-            !op_return.is_empty(),
-            "this row is about the OP-RETURN path, but nothing here is one:\n  {body}\n  {}",
-            errs.join("\n  "),
-        );
-        assert!(
-            !op_return.iter().any(|e| is_located(e)),
-            "WI-20260829-6RBPD says an op-return mismatch carries no span, but this one \
-             DOES — good news: flip this row and the braced-expression cell above to \
-             located, and close the ticket.\n  {body}\n  {}",
+            errs.iter().any(|e| e.contains(frag) && e.starts_with(&want)),
+            "expected a `{frag}` message at the body's value ({want}):\n  {body}\n  {}",
             errs.join("\n  "),
         );
     }
 
-    // THE CONTROL, and it is what makes the rows above a defect in one raise site rather
-    // than a statement about the loader: the span machinery works everywhere else.
-    // The fragment is checked here too, and correlated with the span: without it the
-    // control passes on ANY located diagnostic these programs happen to emit, and "the
-    // span machinery works everywhere else" stops being measured — the same weakness the
-    // comment above fixes for the unlocated rows (found by /code-review).
-    for (body, frag) in [
+    for (body, written, frag) in [
         (
             "operation d(v: Int64) -> Int64 = v\n  operation c() -> Int64 = d(\"x\")",
+            "d(\"x\")",
             "expected Int64, got String",
         ),
-        ("operation c() -> Int64 = (1).nosuch", "no such member"),
+        ("operation c() -> Int64 = (1).nosuch", "(1).nosuch", "no such member"),
     ] {
-        let errs = errors_for(body);
+        let (src, errs) = errors_for(body);
+        let want = at(&src, written);
         assert!(
-            errs.iter().any(|e| e.contains(frag) && is_located(e)),
-            "this diagnostic has LOST its span — the op-arg and dot paths must stay \
-             located, and it is THIS message that must carry it ({frag:?}).\n  {body}\n  {}",
+            errs.iter().any(|e| e.contains(frag) && e.starts_with(&want)),
+            "this diagnostic has MOVED — the op-arg and dot paths must stay at {want} \
+             ({frag:?}).\n  {body}\n  {}",
+            errs.join("\n  "),
+        );
+    }
+}
+
+/// A VALUE A `@[simp]` RULE REWROTE IS REPORTED WHERE THE BODY WRITES IT, not where the rule
+/// does. The rewritten node keeps its right-hand side's span (WI-20260903-FCZ3N), which is
+/// in the RULE's file, and these errors are stamped with the BODY's; so both mismatches read
+/// the body as written (WI-20260829-6RBPD). MEASURED with the let annotation's span taken
+/// off the typed value instead: `4:25:`, the rule's offset read in the wrong file. That
+/// back-out reds this row; the op-return half never read the typed tree.
+#[test]
+fn a_rewritten_value_is_reported_where_the_body_writes_it() {
+    const RULE: &str = "\
+namespace capmatrix_simp
+  import anthill.prelude.{Int64}
+  operation mk(x: Int64) -> Int64
+  rule mk(?x) <=> 1 @[simp]
+end
+";
+    const USE: &str = "\
+namespace capmatrix_use
+  import anthill.prelude.{Int64, String}
+  import capmatrix_simp.{mk}
+  operation a() -> Int64 =
+    let r: String = mk(0)
+    0
+  operation b() -> String = mk(0)
+end
+";
+    let errs = crate::common::load_errors_of_files(&[RULE, USE]);
+    for (n, frag) in [(0, "r.annotation (let-binding)"), (1, "b.return (op-return)")] {
+        let idx = USE.match_indices("mk(0)").nth(n).expect("the fixture writes it twice").0;
+        let line = USE[..idx].matches('\n').count() + 1;
+        let col = idx - USE[..idx].rfind('\n').map_or(0, |p| p + 1) + 1;
+        let want = format!("{line}:{col}: ");
+        assert!(
+            errs.iter().any(|e| e.contains(frag) && e.starts_with(&want)),
+            "expected `{frag}` at the written `mk(0)` ({want}):\n  {}",
             errs.join("\n  "),
         );
     }

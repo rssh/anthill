@@ -223,7 +223,7 @@ fn the_callers_row_the_slot_holds_covers_itself() {
     assert_refused_naming(
         &load_errors_of(&projected("wi6mpn2.held_undeclared", "R", "h(5) + i(3)")),
         &[
-            "type mismatch in use.effects (op-effects)",
+            "type mismatch in wi6mpn2.held_undeclared.use.effects (op-effects)",
             "undeclared effect: ?Q",
         ],
         "a `use` not declaring the row the slot does not hold",
@@ -261,7 +261,7 @@ fn a_row_the_caller_does_not_declare_is_refused_at_its_boundary() {
         );
         assert_refused_naming(
             &load_errors_of(&src),
-            &["type mismatch in use.effects (op-effects)", undeclared],
+            &[&format!("type mismatch in {ns}.use.effects (op-effects)"), undeclared],
             &format!("a `use` refused for its {undeclared}"),
         );
     }
@@ -287,7 +287,7 @@ end
     assert_refused_naming(
         &load_errors_of(&cell("wi6mpn2.undeclared_cell", "Error[String], R")),
         &[
-            "type mismatch in use.effects (op-effects)",
+            "type mismatch in wi6mpn2.undeclared_cell.use.effects (op-effects)",
             "undeclared effect: Modify[T = r]",
         ],
         "a `use` not declaring the cell its callback writes",

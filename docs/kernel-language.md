@@ -4725,6 +4725,20 @@ A call in the value is refused where the same call in an operation body is: a sp
 operation, defaulted or body-less, at a carrier that provides no such spec is a load error
 at the const.
 
+**A const may hold a dictionary** (proposal 074 §2). `const ints: Additive[T = Int64] =
+Dictionary.instance[Additive[T = Int64]]()` holds the dictionary of `Additive` at `Int64`,
+built where the value is typed, as at a call at a known type (§8.2), so `add2(ints, 2, 3)`
+over `add2(x: Additive, a: x.T, b: x.T) -> x.T` answers 5. The value is written as anywhere
+else: its bracket may be left to the declared type (`= Dictionary.instance()`), and a key
+names a provider (`Dictionary.instance[Tag[T = Leaf], Tag = Alt]()`). An application
+`Dictionary.instance` refuses in an operation body is refused in a const, in the same
+sentence. The dictionary is used only where the const is passed: a call that does not name
+it is decided as if the const were not there. It has no value in a data slot (below): a fact
+and a rule-body goal naming the const are refused as for a computed body, and a query naming
+it is refused too, naming the const. A rule body or a query reaches the dictionary through an
+operation that hands it on, or in a compound form, which is evaluated where it is written.
+The code generators refuse such a const until they emit dictionaries (proposal 074 stage 7).
+
 **A const in a clause's DATA SLOT is its value, folded when the clause loads**
 (WI-20261001-KDMQS). A data slot is an argument of a `fact` or rule head, of a rule or
 constraint body goal, or of a query pattern, and anything nested inside one. A data slot is
@@ -4755,8 +4769,13 @@ A constructor application (`= Point(x: 0, y: 0)`) is a computed body under this 
 
 A **query pattern** is the exception to the table, because it converts against a LOADED
 program: a const with no load-time value is evaluated there, as an operation body would
-evaluate it. That matters because a fact can hold such a value without naming the const,
-for example when it was asserted at run time or reloaded from a store.
+evaluate it, and the slot holds its value — a literal, or a value built of constructors,
+lists and tuples, at the const's declared type. So over `const origin: P = pt(x: 4)`,
+`at(p: origin)` finds `fact at(p: pt(x: 4))` and `getX(origin)` is 4. That matters because
+a fact can hold such a value without naming the const, for example when it was asserted at
+run time or reloaded from a store. A const whose value no slot can hold is refused there,
+naming it: one that holds a dictionary, as above or inside its value, one whose value is a
+function, and one this runtime cannot evaluate (a host-supplied const with no interpreter binding).
 
 A goal is not a data slot, but a `Bool` const named as one is folded by the same table,
 to the search its value is (§5.3). A const of another type there, or one the table
@@ -6173,7 +6192,7 @@ operation member(w: Tagger.C) -> Int64 = Tagger.probe(w)
 
 Both refusals name this spelling. The rule holds wherever a type is written for a value: an operation's parameters and return, an entity's fields — in a construction and in a fact alike — an annotated `let`, a member that backs a spec operation (§8.7), and a rule variable (§5.3).
 
-A value typed at a sort with a dictionary is that dictionary: `t: Tagger` holds the operations of `Tagger`'s provider at `t.C`, and a call at `t.C` takes its dictionary from `t`. A dictionary is written `Dictionary.instance[Tagger[C = B]]()` (`anthill.realization.runtime.Dictionary`), a built-in typed by its spec application: at a carrier the program names it is the provider §8.7's order selects, or the one a key of the bracket names by the spec's short name (`Dictionary.instance[Tagger[C = B], Tagger = OtherB]()`); under `requires Tagger[C = P]` it is the clause's own. The spec application is the bracket's one positional entry, or the type the call is expected at (`let k: Tagger[C = B] = Dictionary.instance()`). A spec application is a type wherever it is written: where a dictionary is expected it is refused, the message naming the dictionary's spelling, and where a `Type` is expected it is the type. `Dictionary.instance` is refused at an application that leaves a parameter of the spec unwritten or that nothing fixes, at one no provision answers, at a data sort, at a sort with values of its own — one whose chain declares no operation among them — and, for now, at a sort with a dictionary and no parameter. A rule body reads no bracket on a call (§5.4), so it reaches a dictionary through an operation that returns one. A host call is typed as the same call written in an operation body, each argument a local at the type the host holds it at: the type the call that returned it answered, or, for a value passed bare, the type its value reads as (`2` at `Int64`, a construction at its sort with the arguments its fields fix). What the typer refuses there is refused before the call runs, in the same sentence: `zeroOf()` over `zeroOf[X]() -> X requires Additive[T = X]` names `X`, and `add2(7, 2, 3)` over `add2(x: Additive, a: x.T, b: x.T)` names `x`. The result is at the type the typer gave the call. A dictionary prints as the value it is, `Dictionary(impl: B)`, its sub-dictionaries positional before `impl`:
+A value typed at a sort with a dictionary is that dictionary: `t: Tagger` holds the operations of `Tagger`'s provider at `t.C`, and a call at `t.C` takes its dictionary from `t`. A dictionary is written `Dictionary.instance[Tagger[C = B]]()` (`anthill.realization.runtime.Dictionary`), a built-in typed by its spec application: at a carrier the program names it is the provider §8.7's order selects, or the one a key of the bracket names by the spec's short name (`Dictionary.instance[Tagger[C = B], Tagger = OtherB]()`); under `requires Tagger[C = P]` it is the clause's own. The spec application is the bracket's one positional entry, or the type the call is expected at (`let k: Tagger[C = B] = Dictionary.instance()`). A spec application is a type wherever it is written: where a dictionary is expected it is refused, the message naming the dictionary's spelling, and where a `Type` is expected it is the type. `Dictionary.instance` is refused at an application that leaves a parameter of the spec unwritten or that nothing fixes, at one no provision answers, at a data sort, at a sort with values of its own — one whose chain declares no operation among them — and, for now, at a sort with a dictionary and no parameter. A rule body reads no bracket on a call (§5.4), so it reaches a dictionary through an operation that returns one. A const may hold one (§5.9). A host call is typed as the same call written in an operation body, each argument a local at the type the host holds it at: the type the call that returned it answered, or, for a value passed bare, the type its value reads as (`2` at `Int64`, a construction at its sort with the arguments its fields fix). What the typer refuses there is refused before the call runs, in the same sentence: `zeroOf()` over `zeroOf[X]() -> X requires Additive[T = X]` names `X`, and `add2(7, 2, 3)` over `add2(x: Additive, a: x.T, b: x.T)` names `x`. The result is at the type the typer gave the call. A dictionary prints as the value it is, `Dictionary(impl: B)`, its sub-dictionaries positional before `impl`:
 
 ```anthill
 operation probeAt(t: Tagger, x: t.C) -> Int64 = Tagger.probe(x)

@@ -1178,11 +1178,14 @@ pub(super) fn check_operation_bodies(
                     // callback (`-> Function[A = (Int64, Int64), B = Int64]`) is the
                     // third channel that can carry an arity disagreement, and the
                     // third that printed the two sides identically.
+                    //
+                    // WI-20260829-6RBPD: AT THE BODY'S VALUE, which it had no span for at
+                    // all — `operation c() -> Int64 = "x"` named only `c`.
                     errors.push(conformance_error(
                         kb,
                         effective_return.clone(),
                         body_ty.clone(),
-                        None,
+                        Some(result_position(body_node).span.span),
                         TypeErrorContext::OperationReturn {
                             op_name: op.op_sym,
                             surface: None,
@@ -1286,10 +1289,18 @@ pub(super) fn check_operation_bodies(
                 // before.
                 // Proposal 050.1: a write charged to a pool — state outside the process no
                 // row can name — cannot be declared, so it is refused here, once per name.
+                //
+                // WI-20260903-2VPHT: both are reported AT THE BODY, which is what performs
+                // the effect, as an effect a parameter's default incurs is reported at the
+                // default (above). `op.span` is the functor's span, the first TERM the
+                // loader built with the operation's functor: an operation no clause writes
+                // as a term has none, so the mismatch of `div` in `sort Money` and in `sort
+                // Cash` carried no location, and nothing told the two apart.
+                let body_span = Some(body_node.span.span);
                 let mut pool_writes = result.env.take_pool_writes();
                 pool_writes.dedup_by(|a, b| a.name == b.name && a.pool == b.pool);
                 for write in &pool_writes {
-                    errors.push(pool_write_refusal(kb, op.op_sym, op.span, write));
+                    errors.push(pool_write_refusal(kb, op.op_sym, body_span, write));
                 }
                 for (expected, actual) in undeclared_effects(
                     kb,
@@ -1299,7 +1310,7 @@ pub(super) fn check_operation_bodies(
                 ) {
                     errors.push(TypeError::Other {
                         site: TypeError::here(),
-                        span: op.span,
+                        span: body_span,
                         context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
                         expected,
                         actual,
@@ -1649,6 +1660,24 @@ pub(super) fn typable_comparison(
         return copy(kb, &operands, site, field_access);
     }
     copy(kb, cmp, site, field_access)
+}
+
+/// WI-20260829-6RBPD — WHERE A BODY'S VALUE IS WRITTEN: the body, past the `let`s that lead
+/// to it. A return mismatch is reported here, at the expression that disagrees: `let k = n +
+/// 1` then `"tail"` is refused at `"tail"`, not at the `let`. A `let` is the one form whose
+/// value is another sub-expression's; an `if` or a `match` checks each branch against the
+/// declared return itself, so a mismatch that reaches the boundary through one is the
+/// whole form's.
+///
+/// The body AS WRITTEN, not the typed tree: a `@[simp]` rule fired at the tail keeps its
+/// right-hand side's span, which is the rule's file and not the body's, and the error is
+/// stamped with the body's.
+fn result_position(body: &Rc<NodeOccurrence>) -> &Rc<NodeOccurrence> {
+    let mut node = body;
+    while let Some(Expr::Let { body, .. }) = node.as_expr() {
+        node = body;
+    }
+    node
 }
 
 fn undeclared_effects(

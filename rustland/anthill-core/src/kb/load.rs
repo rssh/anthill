@@ -3054,6 +3054,18 @@ pub enum LoadError {
         reason: String,
         span: Span,
     },
+    /// A QUERY's data slot names a `const` it can give no value there. A query evaluates a
+    /// const with no load-time value (kernel-language §5.9) and holds what it computes; this
+    /// is the const it cannot: one that holds a dictionary, which has no value in a data slot
+    /// (proposal 074 §2, WI-20261113-24ZZ0), one whose value has no term form (a function,
+    /// WI-20261120-FTP2S), and one the evaluator could not compute. Refused, not kept as the
+    /// name: kept, `at(p: origin)` answered NO beside the fact holding `origin`'s value, and
+    /// `?r <=> add2(ints, 2, 3)` panicked in the bridge. `why` completes "the const `name`".
+    QueryConstHasNoValue {
+        name: String,
+        why: String,
+        span: Span,
+    },
     /// A clause DATA SLOT names a type member through a type alias (`CQ.L` over `sort CQ =
     /// Q[A = Int64]`) whose definition names a parameter the alias leaves open, so the
     /// member is no type there (`typing::alias_member`); or a type names one through a
@@ -3454,6 +3466,7 @@ impl LoadError {
             | LoadError::ForbiddenInternalAccess { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::ConstValueUnavailableInDataSlot { span, .. }
+            | LoadError::QueryConstHasNoValue { span, .. }
             | LoadError::TypeMemberOpen { span, .. }
             | LoadError::AnnotationNamesNoType { span, .. }
             | LoadError::BindingInContract { span, .. }
@@ -4960,6 +4973,9 @@ impl LoadError {
                     loc.format_start(*span),
                     const_unavailable_message(name, reason),
                 )
+            }
+            LoadError::QueryConstHasNoValue { name, why, span } => {
+                format!("{}: the const `{name}` {why}", loc.format_start(*span))
             }
             LoadError::TypeMemberOpen { name, why, span } => {
                 format!("{}: `{name}` names no type here: {why}", loc.format_start(*span))
@@ -6635,6 +6651,9 @@ impl std::fmt::Display for LoadError {
                     span.start,
                     span.end,
                 )
+            }
+            LoadError::QueryConstHasNoValue { name, why, span } => {
+                write!(f, "the const `{name}` {why} at {}..{}", span.start, span.end)
             }
             LoadError::TypeMemberOpen { name, why, span } => {
                 write!(f, "`{name}` names no type here: {why} at {}..{}", span.start, span.end)
@@ -20359,6 +20378,26 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
         .collect()
 }
 
+/// A refusal raised inside a derived `eq` member (`load_derived_eq_members`) beside one
+/// raised elsewhere is that one again: the member reads the composite's field types, and
+/// what is wrong with a field type is refused where the program writes it. Alone, it is the
+/// derivation's own defect, and it is kept.
+fn drop_derived_member_cascades(
+    errors: Vec<LoadError>,
+    derived_source: Option<&std::sync::Arc<str>>,
+) -> Vec<LoadError> {
+    let Some(derived) = derived_source else {
+        return errors;
+    };
+    let in_member = |e: &LoadError| {
+        matches!(e, LoadError::Located { source, .. } if std::sync::Arc::ptr_eq(source, derived))
+    };
+    if errors.iter().all(in_member) {
+        return errors;
+    }
+    errors.into_iter().filter(|e| !in_member(e)).collect()
+}
+
 /// WI-20260903-W9D4Z — A DIAGNOSTIC THE READER CANNOT TELL APART FROM ONE ALREADY
 /// REPORTED IS REPORTED ONCE. The load phase's whole error batch, keyed on what the
 /// reader ACTUALLY SEES: the file it came from plus its rendering
@@ -20397,25 +20436,36 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
 /// many copies of it there are, and that exemption is the whole difference between
 /// "these render alike" and "these are the same finding". A located error is pinned by
 /// its file and position; an UNLOCATED one has only its sentence, and a sentence that
-/// does not name its subject is not an identity.
+/// does not name its subject is not an identity — which this channel cannot check.
 ///
 /// MEASURED, and it is why this exemption exists (`/code-review` on WI-20260903-2M5XR,
 /// against the first cut of this function, which keyed unlocated errors by their
 /// rendering alone): two sorts in ONE file, each with an `operation div` whose body
-/// raises an undeclared effect. The typer renders that mismatch as `type mismatch in
+/// raises an undeclared effect. The typer rendered that mismatch as `type mismatch in
 /// div.effects (op-effects): …` — naming the operation by its SHORT name, so `Money.div`
-/// and `Cash.div` produce byte-identical sentences with no span to separate them. The
+/// and `Cash.div` produced byte-identical sentences with no span to separate them. The
 /// batch went from **14 errors to 8**, and `Cash`'s two findings were gone: the author
 /// saw one `div.effects` line, could not tell which sort it was about, and had no way to
 /// know a second existed. That is §8.5's "a diagnostic list is never silently truncated"
 /// (WI-20260830-JM7A8) failing on this function's own population. The neighbouring
 /// provider errors in that same batch survived correctly — because THEY name their
 /// carrier (`'zzprobe.Money' provides …`), which is the property the effects message
-/// lacks.
+/// lacked.
 ///
-/// The real repair is for that message to identify its subject; until it does, this
-/// keeps both. Reporting one true duplicate twice is a smaller harm than dropping a
-/// finding, and only the drop is silent. WI-20260903-2VPHT owns the message.
+/// THAT MESSAGE NO LONGER RELIES ON THE EXEMPTION (WI-20260903-2VPHT): it names its
+/// operation by its qualified name and is reported at the body that performs the effect,
+/// so it is deduped here as every located error is — one body incurring one undeclared
+/// label at two calls is one line, and `Money.div` and `Cash.div` are two. The exemption
+/// STAYS, and not for that message: it is a claim about every unlocated error any
+/// producer raises, and keying those on their sentence would trust each producer's
+/// wording to name its subject. A second one did not, MEASURED (2026-11-20) by keying them
+/// on it: a let annotation's mismatch names the variable and not its operation, so two
+/// operations each refused at a `let r` read `type mismatch in r.annotation
+/// (let-binding): …` alike, and `wi_0rp29_nested_projection_value_in_type_test::
+/// a_call_site_bracket_reaches_the_fallback_contradicted` lost one of its two. That one is
+/// located since WI-20260829-6RBPD; the next unlocated producer is the reason the rule is
+/// the channel's. Reporting one true duplicate twice is a smaller harm than dropping a
+/// finding, and only the drop is silent.
 ///
 /// FILE IDENTITY IS THE SOURCE'S ADDRESS, for the reason [`LoadError::render_all`] keys
 /// its line-index cache the same way: every error stamped from one file shares that
@@ -20435,26 +20485,6 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
 /// than through a load phase. Left alone deliberately, and not because it is out of
 /// reach: it is ONE pass over ONE file, so it has no two producers to pair — the shape
 /// this exists for cannot arise there, and no duplicate from it appears in the census.
-/// A refusal raised inside a derived `eq` member (`load_derived_eq_members`) beside one
-/// raised elsewhere is that one again: the member reads the composite's field types, and
-/// what is wrong with a field type is refused where the program writes it. Alone, it is the
-/// derivation's own defect, and it is kept.
-fn drop_derived_member_cascades(
-    errors: Vec<LoadError>,
-    derived_source: Option<&std::sync::Arc<str>>,
-) -> Vec<LoadError> {
-    let Some(derived) = derived_source else {
-        return errors;
-    };
-    let in_member = |e: &LoadError| {
-        matches!(e, LoadError::Located { source, .. } if std::sync::Arc::ptr_eq(source, derived))
-    };
-    if errors.iter().all(in_member) {
-        return errors;
-    }
-    errors.into_iter().filter(|e| !in_member(e)).collect()
-}
-
 fn dedup_rendered_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
     // Rendered in a borrowing pass of its own — `LineIndex` holds a `&str` into the
     // error's own `Arc`, so the cache cannot outlive the borrow the `into_iter` below
@@ -20496,6 +20526,67 @@ fn dedup_rendered_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
         .zip(keep)
         .filter_map(|(e, first)| first.then_some(e))
         .collect()
+}
+
+#[cfg(test)]
+mod unlocated_exemption_tests {
+    //! The channel's exemption for an UNLOCATED error, driven on [`dedup_rendered_load_errors`]
+    //! itself, so that it does not rest on which producers happen to raise one. Its row
+    //! through a load was `wi_w9d4z_one_mistake_one_diagnosis_test`'s, over the op-effects
+    //! mismatch, which is located since WI-20260903-2VPHT.
+    //!
+    //! RED when the `_ => true` arm keys an unlocated error on its rendering:
+    //! [`two_unlocated_errors_rendering_alike_are_both_kept`] (and, through a load,
+    //! `wi_0rp29_nested_projection_value_in_type_test::
+    //! a_call_site_bracket_reaches_the_fallback_contradicted` did until WI-20260829-6RBPD
+    //! located its let-annotation mismatch, MEASURED 2026-11-20). RED
+    //! when the function returns its input: [`two_located_errors_rendering_alike_are_one`],
+    //! the control that the first row is not passing over a dedup that collapses nothing.
+    use super::*;
+
+    fn in_file(source: &Arc<str>, inner: LoadError) -> LoadError {
+        LoadError::Located {
+            path: None,
+            source: Arc::clone(source),
+            inner: Box::new(inner),
+        }
+    }
+
+    fn spanless() -> LoadError {
+        LoadError::IncompatibleEqNonEq {
+            carrier: "zz.Money".to_string(),
+        }
+    }
+
+    #[test]
+    fn two_unlocated_errors_rendering_alike_are_both_kept() {
+        let source: Arc<str> = Arc::from("namespace zz\nend\n");
+        assert!(spanless().user_span().is_none(), "the fixture must be unlocated");
+        let stamped = dedup_rendered_load_errors(vec![
+            in_file(&source, spanless()),
+            in_file(&source, spanless()),
+        ]);
+        assert_eq!(stamped.len(), 2, "stamped with a file, no span: {stamped:#?}");
+        let bare = dedup_rendered_load_errors(vec![spanless(), spanless()]);
+        assert_eq!(bare.len(), 2, "unstamped: {bare:#?}");
+    }
+
+    #[test]
+    fn two_located_errors_rendering_alike_are_one() {
+        let source: Arc<str> = Arc::from("namespace zz\n  import zz.nope\nend\n");
+        let located = || {
+            in_file(
+                &source,
+                LoadError::UnresolvedImport {
+                    path: "zz.nope".to_string(),
+                    span: Span::new(22, 29),
+                },
+            )
+        };
+        assert!(located().user_span().is_some(), "the control must be located");
+        let kept = dedup_rendered_load_errors(vec![located(), located()]);
+        assert_eq!(kept.len(), 1, "{kept:#?}");
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -26562,7 +26653,7 @@ fn convert_query_term_unrouted(
 fn query_goal_citation(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Rc<NodeOccurrence> {
     let sym = resolve_query_name(kb, name, scope);
     let expr = if kb.symbols.is_resolved(sym) {
-        match query_slot_const(kb, sym, ConstFold::Goal) {
+        match query_goal_const(kb, sym) {
             Some(lit) => Expr::Const(lit),
             None => Expr::Ref(sym),
         }
@@ -26638,35 +26729,146 @@ fn expand_bare_entity_query_name(
     })
 }
 
-/// WI-20261001-KDMQS — the query twin of `Loader::data_slot_const_value` and
-/// `Loader::goal_const_value`: `sym`'s value when `sym` is a const and the pattern walk is
-/// in a data slot, or at a goal and the value is a `Bool`.
-///
-/// A QUERY CAN EVALUATE, which a clause conversion cannot: it converts against a LOADED
-/// program. So a const with no load-time value (a computed body) is asked of the
-/// evaluator, 039's own value source. It must be, because a fact can hold such a const's
-/// value without any clause naming it: one asserted at run time by an operation body
-/// (which folds the const), or one reloaded from a store (which wrote the value). Keeping
-/// the symbol would answer `f(v: LIMIT)` with nothing while `f(v: 3.0)` is stored.
-///
-/// What the evaluator cannot produce either (no value source in this runtime, a body that
-/// raises, a value that is not a literal) keeps the symbol, because a query pattern has no
-/// error channel. Its empty answer is then true: no stored clause holds that value. At a
-/// goal, a const that is not a `Bool` keeps the symbol too and matches nothing, which is
-/// what a query does with `not(42)`: it has no refusal to make.
-fn query_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -> Option<Literal> {
-    if !matches!(fold, ConstFold::Data | ConstFold::Goal) || !kb.has_kind(sym, SymbolKind::Const) {
-        return None;
-    }
-    // At a goal only a `Bool` const has a reading, so another is not evaluated to be dropped.
-    if fold == ConstFold::Goal && !kb.const_type_is_bool(sym) {
+/// WI-20261001-KDMQS — the query twin of `Loader::goal_const_value`: a `Bool` const at a goal
+/// is the literal it holds, the search its value is (§5.3). A const of another type keeps
+/// its name there and matches nothing, which is what a query does with `not(42)`; so does
+/// a `Bool` const the evaluator cannot compute.
+fn query_goal_const(kb: &mut KnowledgeBase, sym: Symbol) -> Option<Literal> {
+    if !kb.has_kind(sym, SymbolKind::Const) || !kb.const_type_is_bool(sym) {
         return None;
     }
     let lit = match kb.const_slot_value(sym) {
         Ok(lit) => lit,
-        Err(_) => kb.evaluated_const_literal(sym)?,
+        Err(_) => kb.evaluated_const_value(sym).ok()?.as_literal(kb)?,
     };
-    (fold == ConstFold::Data || matches!(lit, Literal::Bool(_))).then_some(lit)
+    matches!(lit, Literal::Bool(_)).then_some(lit)
+}
+
+/// WI-20261001-KDMQS, WI-20261120-FTP2S — the query twin of `Loader::data_slot_const_value`:
+/// the node a const `convert_query_node` meets in a data slot is, its value, and at a goal a
+/// `Bool` const's ([`query_goal_const`]). `None` for a name that is no const, or a const at
+/// a position that keeps the name.
+///
+/// A QUERY CAN EVALUATE, which a clause conversion cannot: it converts against a LOADED
+/// program. So a const with no load-time value (a computed body) is asked of the evaluator,
+/// 039's own value source, and the slot holds what it computes: a literal, or the term of a
+/// value with one (`node_occurrence::value_to_term`: an entity, a list, a tuple, an
+/// option), typed at the const's declared type as a reference to it is (§5.9: a slot the
+/// declared type leaves out stays open). It must be, because a fact can hold such a const's
+/// value without any clause naming it: one asserted at run time by an operation body (which
+/// folds the const), or one reloaded from a store (which wrote the value). MEASURED before
+/// FTP2S, which kept the name of a value that is no literal: `at(p: origin)` over `const
+/// origin: P = pt(x: 4)` answered NO beside `fact at(p: pt(x: 4))`, `?r <=> origin` answered
+/// `origin`, and `len(xs)` was undecided.
+///
+/// What the slot cannot hold is refused into `errors`, naming the const
+/// ([`LoadError::QueryConstHasNoValue`]): a const holding a dictionary (proposal 074 §2, read
+/// off its declared type, a sort with a dictionary, so before anything is evaluated — its
+/// value is an entity with a term form, and a fact holds no dictionary: kept, a call handed
+/// the name on as its dictionary and the bridge panicked); a value with no term form (a
+/// function); and a const the evaluator could not compute. A query is read after the load,
+/// so the class is the declaration's; a rule body, converted mid-load, refuses every computed
+/// const as one ([`LoadError::ConstValueUnavailableInDataSlot`]).
+fn query_slot_const(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    fold: ConstFold,
+    parsed: &ParsedFile,
+    parse_id: ParseTermId,
+    errors: &mut Vec<LoadError>,
+) -> Option<Rc<NodeOccurrence>> {
+    if fold == ConstFold::Goal {
+        return query_goal_const(kb, sym).map(|lit| expr_node(Expr::Const(lit)));
+    }
+    if fold != ConstFold::Data || !kb.has_kind(sym, SymbolKind::Const) {
+        return None;
+    }
+    let mut refuse = |kb: &KnowledgeBase, why: String| {
+        errors.push(
+            LoadError::QueryConstHasNoValue {
+                name: kb.qualified_name_of(sym).to_string(),
+                why,
+                span: parsed.terms.span(parse_id),
+            }
+            .located_in(parsed),
+        );
+        None
+    };
+    const REPAIR: &str = "hand it to its call in an operation body, and call that operation here";
+    let dictionary = kb.const_type(sym).and_then(|ty| {
+        let sort = super::typing::sort_functor_of_view(kb, ty)?;
+        (super::typing::sort_class(kb, sort) == super::typing::SortClass::Dictionary)
+            .then(|| super::typing::type_display_name_value(kb, ty))
+    });
+    if let Some(ty) = dictionary {
+        return refuse(
+            kb,
+            format!(
+                "holds a dictionary, `{ty}`, and a dictionary has no value in a data slot: \
+                 {REPAIR}"
+            ),
+        );
+    }
+    if let Ok(lit) = kb.const_slot_value(sym) {
+        return Some(expr_node(Expr::Const(lit)));
+    }
+    let value = match kb.evaluated_const_value(sym) {
+        Ok(value) => value,
+        Err(why) => {
+            return refuse(
+                kb,
+                format!("is evaluated where a query names it, and could not be: {why}"),
+            )
+        }
+    };
+    if let Some(lit) = value.as_literal(kb) {
+        return Some(expr_node(Expr::Const(lit)));
+    }
+    match crate::kb::node_occurrence::value_to_term(kb, &value) {
+        // A dictionary inside the value (`Option[T = Additive[T = Int64]]`) has no value in a
+        // data slot either, as one the declared type names at its head has not (found by
+        // /code-review: spliced, `?r <=> od` answered `some(value: Dictionary(impl: Int64))`).
+        Ok(term) if term_holds_a_dictionary(kb, term) => refuse(
+            kb,
+            format!(
+                "holds a dictionary inside its value, and a dictionary has no value in a data \
+                 slot: {REPAIR}"
+            ),
+        ),
+        Ok(term) => {
+            let occ = expr_node(Expr::Spliced(Value::term(term)));
+            if let Some(ty) = kb.const_type(sym) {
+                occ.set_inferred_type(ty.clone());
+            }
+            Some(occ)
+        }
+        Err(_) => {
+            let what = match &value {
+                Value::Closure(_) | Value::OpRef { .. } => "a function".to_string(),
+                other => format!("a {} value", other.type_name()),
+            };
+            refuse(kb, format!("holds {what}, which has no term a data slot can hold: {REPAIR}"))
+        }
+    }
+}
+
+/// Does `term` hold a dictionary, at its root or below — a `Dictionary(…)` application, read
+/// by its constructor ([`crate::kb::term_view::dictionary_view_syms`])?
+fn term_holds_a_dictionary(kb: &KnowledgeBase, term: TermId) -> bool {
+    let Some((ctor, _)) = crate::kb::term_view::dictionary_view_syms(kb) else {
+        return false;
+    };
+    let mut stack = vec![term];
+    while let Some(t) = stack.pop() {
+        if let Term::Fn { functor, pos_args, named_args } = kb.get_term(t) {
+            if *functor == ctor {
+                return true;
+            }
+            stack.extend(pos_args.iter().copied());
+            stack.extend(named_args.iter().map(|(_, a)| *a));
+        }
+    }
+    false
 }
 
 /// The query twin of `Loader::data_slot_alias_type`: in a data slot, a type alias is the
@@ -27626,8 +27828,8 @@ fn convert_query_node(
             if let Some(c) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
                 .and_then(|name| const_named(kb, &name, scope))
             {
-                if let Some(lit) = query_slot_const(kb, c, fold) {
-                    return expr_node(Expr::Const(lit));
+                if let Some(occ) = query_slot_const(kb, c, fold, parsed, parse_id, errors) {
+                    return occ;
                 }
             }
             if fold == ConstFold::Data {
@@ -28051,8 +28253,10 @@ fn convert_query_node(
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);
             match resolve_name_in_kb(kb, name, scope) {
-                ResolveResult::Found(resolved) => match query_slot_const(kb, resolved, fold) {
-                    Some(lit) => Expr::Const(lit),
+                ResolveResult::Found(resolved) => match query_slot_const(
+                    kb, resolved, fold, parsed, parse_id, errors,
+                ) {
+                    Some(occ) => return occ,
                     None => match query_data_slot_alias(kb, resolved, fold) {
                         Some(occ) => return occ,
                         None => return query_resolved_name(kb, resolved, fold),
@@ -28066,8 +28270,8 @@ fn convert_query_node(
         Term::Ref(sym) => {
             let name = parse_symbols.local_name(sym);
             let resolved = resolve_query_name(kb, name, scope);
-            match query_slot_const(kb, resolved, fold) {
-                Some(lit) => Expr::Const(lit),
+            match query_slot_const(kb, resolved, fold, parsed, parse_id, errors) {
+                Some(occ) => return occ,
                 None => match query_data_slot_alias(kb, resolved, fold) {
                     Some(occ) => return occ,
                     None => return query_resolved_name(kb, resolved, fold),

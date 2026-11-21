@@ -47,18 +47,26 @@
 //! `wi_vt8cf` uses `!errs.is_empty()`, so no row was measuring the duplication. That is
 //! what the full-suite run after the change confirms — 0 failures.
 //!
-//! THE SECOND FAMILY IS NO LONGER COLLAPSED, and that is this file's own correction.
-//! The first cut of the key treated an UNLOCATED error like any other and collapsed those
-//! two `div.effects` lines. `/code-review` (high, on WI-20260903-2M5XR) drove the case
-//! the census could not see: TWO SORTS in one file, each with a `div` raising an
-//! undeclared effect. The typer names the operation by its SHORT name and attaches no
-//! span, so `Money.div` and `Cash.div` render byte-identically — and the batch went **14
-//! errors to 8**, with `Cash`'s two findings gone. An unlocated error is now KEPT
-//! unconditionally: a located one is pinned by its position, an unlocated one has only
-//! its sentence, and a sentence that does not name its subject is not an identity. The
-//! real repair is for that message to identify its operation (WI-20260903-2VPHT); until
-//! then, printing one true duplicate twice is the smaller harm, and only the drop is
-//! silent.
+//! THE SECOND FAMILY WAS NOT COLLAPSED, and that was this file's own correction. The
+//! first cut of the key treated an UNLOCATED error like any other and collapsed those two
+//! `div.effects` lines. `/code-review` (high, on WI-20260903-2M5XR) drove the case the
+//! census could not see: TWO SORTS in one file, each with a `div` raising an undeclared
+//! effect. The typer named the operation by its SHORT name and attached no span, so
+//! `Money.div` and `Cash.div` rendered byte-identically — and the batch went **14 errors
+//! to 8**, with `Cash`'s two findings gone. An unlocated error is KEPT unconditionally: a
+//! located one is pinned by its position, an unlocated one has only its sentence, and a
+//! sentence that does not name its subject is not an identity.
+//!
+//! WI-20260903-2VPHT repaired the message: it names its operation by its qualified name
+//! (`zzw9e.Cash.div.effects`) and is reported at the body that performs the effect. So the
+//! family is now collapsed again, by the located key and for the right reason — one body's
+//! two copies are one line ([`one_body_incurring_one_label_twice_is_one_diagnosis`]), two
+//! sorts' are two ([`two_sorts_sharing_an_op_name_are_two_findings`]). The exemption for
+//! an unlocated error stays, for every other producer, and is held on the function itself
+//! (`load::unlocated_exemption_tests`); through a load, a let annotation's mismatch needed
+//! it (`wi_0rp29_nested_projection_value_in_type_test::
+//! a_call_site_bracket_reaches_the_fallback_contradicted` failed with it keyed on the
+//! sentence, MEASURED 2026-11-20) until WI-20260829-6RBPD located that mismatch too.
 //!
 //! So the FIRST family is what the channel rule is for, and it is still the reason this
 //! is not a producer's job: the `Cell[W]` pair crosses the per-file/whole-KB boundary, so
@@ -81,10 +89,13 @@
 //! * [`one_written_type_argument_read_by_two_passes_is_one_diagnosis`] — 2 errors: the
 //!   LOADER's and the TYPER's, which no per-file dedup can pair.
 //!
-//! [`an_unlocated_diagnostic_is_never_collapsed`] and
-//! [`two_sorts_sharing_an_op_name_keep_both_findings`] are GREEN under this back-out —
-//! removing the dedup keeps everything, which is what they assert. They are red against
-//! the key this file originally shipped, which is the correction they exist for.
+//! Since WI-20260903-2VPHT a third of this file's fails here:
+//! [`one_body_incurring_one_label_twice_is_one_diagnosis`], two lines each for `div` and
+//! `mod` where one is asserted. [`two_sorts_sharing_an_op_name_are_two_findings`] is GREEN
+//! under this back-out — removing the dedup keeps everything, and its two lines differ.
+//! (MEASURED 2026-11-20 over all of `anthill-core`: 17 rows fail — these three, the
+//! function's own control in `load::unlocated_exemption_tests`, and 13 rows written in
+//! other files since this census.)
 //!
 //! Nothing outside `wi_tests` can fail under this back-out, and that is an argument
 //! rather than a second measurement: backing the dedup out restores the tree the census
@@ -267,32 +278,28 @@ fn one_written_type_argument_read_by_two_passes_is_one_diagnosis() {
     );
 }
 
-/// **D — AN UNLOCATED DIAGNOSTIC IS KEPT, HOWEVER MANY COPIES THERE ARE**, and this row
-/// asserts the OPPOSITE of what it did when this file was written. It first pinned that
-/// `type_check_sorts` raising one span-less mismatch twice was collapsed to one — and
-/// `/code-review` (high, on WI-20260903-2M5XR) showed that key losing a genuine finding.
-///
-/// THE FIXTURE THAT FOUND IT IS [`two_sorts_sharing_an_op_name_keep_both_findings`]; this
-/// row is its other half, pinning that the exemption is unconditional rather than
-/// special-cased to two sorts. Both `div` and `mod` are raised twice by one pass over one
-/// sort, and all four lines are kept: the channel cannot tell a true duplicate of a
-/// subject-less sentence from two findings, and only ONE of those mistakes is silent.
+/// **D — ONE BODY INCURRING ONE UNDECLARED LABEL TWICE IS ONE DIAGNOSIS**, and this row has
+/// asserted three things in turn. It first pinned that `type_check_sorts` raising one span-less
+/// mismatch twice was collapsed to one; `/code-review` (high, on WI-20260903-2M5XR) showed that
+/// key losing a genuine finding ([`two_sorts_sharing_an_op_name_are_two_findings`]), and it then
+/// pinned that all four lines were KEPT, because the message had no location and named its
+/// operation by its short name. Since WI-20260903-2VPHT the message is reported at the body and
+/// names `zzw9d.Money.div`, so it is a located error like any other, and two copies of it are
+/// one diagnosis: same sentence, same `line:col`, the same declaration to fix. The channel's
+/// exemption for an unlocated error stands, and is held where no message's wording decides it
+/// (`load::unlocated_exemption_tests`).
 ///
 /// TWICE BECAUSE EACH BODY APPLIES TWO PARTIAL OPERATIONS OVER TWO DIVISORS — `/` by
 /// `b.cents` and `%` by `a.cents` in `div`, `Int64.rem` by `b.cents` and `%` by `a.cents` in
-/// `mod` — each incurring its own guarded `Error[DivisionByZero]`: two findings, which render as
-/// one sentence, and stay two however guards come to be compared. The bodies were a single `/` and a single `%`
-/// until WI-20260825-SKWTH: a pinned call was charged the spec operation's guarded label
-/// beside `Int64.div`'s own, and that spurious second atom is what the fixture leaned on.
-/// Charged the override's row alone, one operator is one sentence. So the count is the
-/// typer's as well as the channel's: with SKWTH backed out `div` raises four and `mod` three
-/// — the spec's atom beside each spelled operator's, the qualified `Int64.rem` one alone —
-/// and this row fails on the count (MEASURED).
+/// `mod` — each incurring its own guarded `Error[DivisionByZero]`. The bodies were a single `/`
+/// and a single `%` until WI-20260825-SKWTH: a pinned call was charged the spec operation's
+/// guarded label beside `Int64.div`'s own, and that spurious second atom is what the fixture
+/// leaned on. Charged the override's row alone, one operator is one atom.
 ///
-/// GREEN UNDER AXES 1 AND 3 (no dedup at all, and a span-only key, both keep everything
-/// here). RED under the state this file originally shipped.
+/// RED UNDER AXIS 1 (no dedup: 2 lines each) and with the body's span backed out of the
+/// mismatch (unlocated, so kept: 2 lines each, and not at the body).
 #[test]
-fn an_unlocated_diagnostic_is_never_collapsed() {
+fn one_body_incurring_one_label_twice_is_one_diagnosis() {
     const SRC: &str = "\
 namespace zzw9d
   import anthill.prelude.{Int64, Numeric, PartialOrd, EuclideanDomain}
@@ -315,44 +322,46 @@ namespace zzw9d
 end
 ";
     let e = errs(SRC);
-    for op in ["div", "mod"] {
+    for (op, body) in [
+        ("div", "Money(cents: a.cents / b.cents - b.cents % a.cents)"),
+        ("mod", "Money(cents: Int64.rem(a.cents, b.cents) - b.cents % a.cents)"),
+    ] {
         let hits: Vec<&String> = e
             .iter()
-            .filter(|x| x.contains(&format!("type mismatch in {op}.effects (op-effects)")))
+            .filter(|x| {
+                x.contains(&format!("type mismatch in zzw9d.Money.{op}.effects (op-effects)"))
+            })
             .collect();
         assert_eq!(
             hits.len(),
-            2,
-            "`{op}`'s undeclared-effect mismatch is raised twice by one pass and carries \
-             NO span — the channel has nothing to identify it by, so it must keep both: \
-             {e:#?}"
+            1,
+            "`{op}`'s body incurs `Error[DivisionByZero]` at two calls; the two mismatches \
+             say the same thing at the same place, so they are one line: {e:#?}"
         );
+        let at = line_col(SRC, body);
         assert!(
-            !hits[0].starts_with(|c: char| c.is_ascii_digit()),
-            "the fixture must keep this diagnostic UNLOCATED — a located one is prefixed \
-             `line:col: ` — or it stops measuring the exemption: {:?}",
+            hits[0].starts_with(&format!("{at}: ")),
+            "…reported at the body that performs the effect ({at}): {:?}",
             hits[0]
         );
     }
 }
 
-/// **D2 — THE ROW THAT FOUND THE HOLE, AND THE ONE THIS FILE WAS MISSING.** Two SORTS in
-/// ONE file, each with an `operation div` whose body raises an undeclared effect. The
-/// typer names the operation by its SHORT name, so `Money.div` and `Cash.div` render
-/// byte-identically with no span — two findings the reader cannot separate, which is
-/// exactly the shape the first cut of this dedup collapsed. **MEASURED: the batch went
-/// 14 errors to 8, and `Cash`'s two findings were gone.**
+/// **D2 — TWO SORTS SHARING AN OPERATION NAME ARE TWO FINDINGS, AND THE READER CAN TELL WHICH IS
+/// WHICH.** Two SORTS in ONE file, each with an `operation div` whose body raises an undeclared
+/// effect. Before WI-20260903-2VPHT the typer named the operation by its SHORT name and gave the
+/// mismatch no span, so `Money.div` and `Cash.div` rendered byte-identically: the first cut of
+/// this dedup collapsed them (**MEASURED: the batch went 14 errors to 8, and `Cash`'s two
+/// findings were gone**), and the exemption that kept them left two lines the reader could not
+/// tell apart. Each now names its sort's operation and stands at its own body.
 ///
-/// [`an_unlocated_diagnostic_is_never_collapsed`] could not catch that: its fixture has
-/// ONE sort, so it is homogeneous on the axis that decides, and it passed while a
-/// diagnostic was being dropped. This row varies the sort — and its own control is
-/// INSIDE the batch: the provider-coverage errors for the same two sorts DO name their
-/// carrier and were never at risk, which is what says the defect is the effects
-/// MESSAGE's and not the channel's idea of identity. WI-20260903-2VPHT owns that message.
+/// The control is INSIDE the batch: the provider-coverage errors for the same two sorts always
+/// named their carrier and were never at risk.
 ///
-/// RED against the key that shipped: 1 hit per op instead of 2.
+/// RED with the qualified name backed out (no line names `zzw9e.Money.div`), and with the body's
+/// span backed out (two lines, no `line:col`).
 #[test]
-fn two_sorts_sharing_an_op_name_keep_both_findings() {
+fn two_sorts_sharing_an_op_name_are_two_findings() {
     const SRC: &str = "\
 namespace zzw9e
   import anthill.prelude.{Int64, Numeric, PartialOrd, EuclideanDomain}
@@ -379,27 +388,34 @@ namespace zzw9e
 end
 ";
     let e = errs(SRC);
-    let div_hits = e
-        .iter()
-        .filter(|x| x.contains("type mismatch in div.effects (op-effects)"))
-        .count();
-    assert!(
-        div_hits >= 2,
-        "TWO sorts each declare a `div` that raises an undeclared effect. The message \
-         names the operation by its SHORT name and carries no span, so the two findings \
-         render alike — dropping either leaves the author unable to learn the second \
-         exists: {e:#?}"
-    );
-    // THE CONTROL, INSIDE THE SAME BATCH: a message that DOES name its carrier was never
-    // at risk, which is what separates "the channel over-collapses" from "this message
-    // cannot identify its subject".
-    for sort in ["zzw9e.Money", "zzw9e.Cash"] {
+    let mut sentences: Vec<&String> = Vec::new();
+    for (sort, body) in [
+        ("zzw9e.Money", "Money(cents: a.cents / b.cents)"),
+        ("zzw9e.Cash", "Cash(cents: a.cents / b.cents)"),
+    ] {
+        let at = line_col(SRC, body);
+        let hits: Vec<&String> = e
+            .iter()
+            .filter(|x| x.contains(&format!("type mismatch in {sort}.div.effects (op-effects)")))
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "`{sort}.div` raises an undeclared effect and is named so, once: {e:#?}"
+        );
         assert!(
-            e.iter().any(|x| x.contains(sort)),
-            "the provider-coverage errors name their carrier and must both survive — \
-             expected one mentioning {sort}: {e:#?}"
+            hits[0].starts_with(&format!("{at}: ")),
+            "…at its own body ({at}): {:?}",
+            hits[0]
+        );
+        sentences.push(hits[0]);
+        // THE CONTROL: the provider-coverage error names its carrier, as it always did.
+        assert!(
+            e.iter().any(|x| x.contains(&format!("'{sort}' provides"))),
+            "expected a provider-coverage error naming '{sort}': {e:#?}"
         );
     }
+    assert_ne!(sentences[0], sentences[1], "the two findings must read differently");
 }
 
 /// **E — THE CONTROL FOR FILE IDENTITY**, and the only row in this file that measures it

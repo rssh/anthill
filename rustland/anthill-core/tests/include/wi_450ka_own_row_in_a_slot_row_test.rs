@@ -293,10 +293,14 @@ fn a_row_two_callbacks_share_holds_both_of_the_callers_own_rows() {
     let two = "  operation two[Rho](a: (n: Int64) -> Int64 @ {Rho}, b: (n: Int64) -> Int64 @ {Rho}) -> Int64 effects {Rho} = a(1) + b(2)";
     let boom = "lambda (n: Int64) -> Error.raise(\"boom\")";
     for (tag, call) in [("h_boom", format!("two(h, {boom})")), ("boom_h", format!("two({boom}, h)"))] {
-        let src = program(&format!("wi450ka.two_{tag}"), two, "R, Q", &format!("    {call}"), "");
+        let ns = format!("wi450ka.two_{tag}");
+        let src = program(&ns, two, "R, Q", &format!("    {call}"), "");
         assert_refused_naming(
             &load_errors_of(&src),
-            &["type mismatch in use.effects (op-effects)", "undeclared effect: Error[T = String]"],
+            &[
+                &format!("type mismatch in {ns}.use.effects (op-effects)"),
+                "undeclared effect: Error[T = String]",
+            ],
             &format!("`{call}`"),
         );
     }
