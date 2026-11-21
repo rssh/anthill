@@ -205,12 +205,16 @@ pub(super) fn visit_type(
             // y: x.E) -> x.E` reads the slot's `x.E` as the lambda's own.
             let expected =
                 expected.map(|exp| in_lambda_binders(kb, &exp, &lambda_binder_slots(&param)));
-            // Each binder that writes its type is bound at it before any annotation is read, so
-            // one may project another written after it (`lambda (y: x.E, x: Box) -> y`), as an
-            // operation's parameter may (kernel-language §4.4); a cycle is refused, as an
-            // operation's is. Only where an annotation projects a sibling: otherwise the
-            // binders are read as they always were.
-            let written = written_binder_annotations(kb, &env, &param);
+            // Each binder that writes its type is bound before any annotation is read, so one may
+            // project another written after it (`lambda (y: x.E, x: Box) -> y`), as an operation's
+            // parameter may (kernel-language §4.4); a cycle is refused, as an operation's is. Bound
+            // where the lambda's own types are read ([`read_list_in_order`]), and in the body, where
+            // the binder check reads the annotations too, at the type each has from its turn on,
+            // closed once ([`closed_binder_types`], WI-20261121-204T6). Only where an annotation
+            // projects a sibling: otherwise the binders are read as they always were.
+            let binders = written_binder_annotations(kb, &env, &param);
+            let written: Vec<(Symbol, Value)> =
+                binders.iter().map(|w| (w.name, w.ty.clone())).collect();
             if let Some(cycle) = param_projection_cycle(kb, &written) {
                 let mut names: Vec<String> =
                     cycle.iter().map(|s| kb.local_name_of(*s).to_owned()).collect();
@@ -226,20 +230,29 @@ pub(super) fn visit_type(
                 )));
                 return;
             }
-            let projects_sibling = written.iter().any(|(_, ty)| {
-                let mut receivers = Vec::new();
-                collect_projection_receivers(kb, ty, &mut receivers);
-                receivers.iter().any(|r| written.iter().any(|(b, _)| b == r))
+            let projects_sibling = projects_a_sibling(kb, &binders);
+            // The expected function's `A`, the checking direction (`let f: Function[A, B] =
+            // lambda q -> ...` threads `Function[A, B]` here as `expected`).
+            let context_a = expected
+                .as_ref()
+                .and_then(|exp| extract_function_param_type(kb, exp));
+            // Where the lambda takes an `A` — the ladder below, where the parameter list writes no
+            // type of its own — its binders are typed at its components, and nothing of the list
+            // is read before they are bound. Else the list's annotations are read now, in order,
+            // each binder's type closed once, and the lambda's own tuple is what they read
+            // ([`read_list_in_order`], WI-20261121-204T6).
+            let takes_context = context_a.as_ref().is_some_and(|a| {
+                extract_pattern_type_ann(&param).is_none() && context_fits_lambda(kb, a, &param)
             });
-            let read_env = if projects_sibling {
-                let mut bound = (*env).clone();
-                for (binder, ty) in written {
-                    bound.bind_var(binder, ty);
-                }
-                env.with_types(bound)
+            let closed_early = if projects_sibling && !takes_context {
+                read_list_in_order(kb, &env, &binders)
             } else {
-                env.clone()
+                HashMap::new()
             };
+            let own_components: HashMap<usize, Value> = closed_early
+                .values()
+                .map(|c| (c.at, c.component.clone()))
+                .collect();
             // Lambda param type, in priority order:
             //   1. explicit annotation on the pattern,
             //   2. the expected arrow's param slot (checking direction —
@@ -288,7 +301,7 @@ pub(super) fn visit_type(
                     let binder =
                         extract_pattern_var_name(&param).unwrap_or_else(|| kb.intern("_"));
                     let ctx = TypeErrorContext::BinderAnnotation { binder };
-                    match read_written_annotation(kb, &read_env, &ann, &ctx, &occ) {
+                    match read_written_annotation(kb, &env, &ann, &ctx, &occ) {
                         Ok(ann) => Some(ann),
                         Err(e) => {
                             results.push(Err(e));
@@ -298,11 +311,6 @@ pub(super) fn visit_type(
                 }
                 other => other,
             };
-            // The expected function's `A`, the checking direction (`let f: Function[A, B] =
-            // lambda q -> ...` threads `Function[A, B]` here as `expected`).
-            let context_a = expected
-                .as_ref()
-                .and_then(|exp| extract_function_param_type(kb, exp));
             // THE APPLICATION MATCH AT THE PATTERN (kernel-language §4.4): a lambda's tuple is
             // its pattern's, so `lambda (a, b, c)` given where `A = (Int64, Int64)` is refused
             // here, three binders meeting two components — WI-801's check, which no count
@@ -311,7 +319,7 @@ pub(super) fn visit_type(
             // a tuple of this width.
             if let (Some(a), None) = (&context_a, &ann_type) {
                 if !context_fits_lambda(kb, a, &param) && resolved_type_is_ground(kb, a) {
-                    if let Some(own) = lambda_own_tuple(kb, &read_env, &param) {
+                    if let Some(own) = lambda_own_tuple(kb, &env, &param, &own_components) {
                         results.push(Err(TypeError::TypeMismatch {
                             site: TypeError::here(),
                             span: Some(param.span.span),
@@ -356,7 +364,7 @@ pub(super) fn visit_type(
                     .or_else(|| pattern_own_type(kb, &param))
                     // A list of binders with no fitting context: its own tuple, of what each
                     // binder writes ([`lambda_own_tuple`]).
-                    .or_else(|| lambda_own_tuple(kb, &read_env, &param))
+                    .or_else(|| lambda_own_tuple(kb, &env, &param, &own_components))
                 .unwrap_or_else(|| {
                     // WI-20260904-50B2K — SYNTHESIS MINTS THE ENGINE'S OWN VARIABLE, and
                     // the two forms answer different questions. A `type_var` means "no
@@ -391,7 +399,31 @@ pub(super) fn visit_type(
                     })),
             };
             let binder_type = binder_type.unwrap_or_else(|| param_type.clone());
-            let mut lambda_env = (*read_env).clone();
+            // The body's environment, and each binder of a list that projects itself bound in it at
+            // its type closed once, before any of their annotations is read in it: a forward one
+            // reads its sibling at the type the sibling has from its turn on, and the binder takes
+            // that type at its turn ([`closed_binder_types`], WI-20261121-204T6).
+            let closed = if projects_sibling {
+                let Some(closed) =
+                    closed_binder_types(kb, &binders, &binder_type, &param, &closed_early)
+                else {
+                    results.push(Err(projection_type_error(
+                        &TypeErrorContext::BinderAnnotation { binder: binders[0].name },
+                        occ_span,
+                        "a list of binders that project one another is typed at no tuple of its \
+                         width, or at another than the one its annotations were read at",
+                    )));
+                    return;
+                };
+                Some(closed)
+            } else {
+                None
+            };
+            let mut lambda_env = (*env).clone();
+            for (name, ty) in closed.iter().flatten() {
+                lambda_env.bind_var(*name, ty.clone());
+                lambda_env.clear_receiver_alias(*name);
+            }
             // What the body incurs is the function's row, incurred where it is applied.
             lambda_env.hold_to_guarded_row(None);
             // Proposal 050.1: the lambda's scope begins here — its parameters and its body's
@@ -436,6 +468,14 @@ pub(super) fn visit_type(
                 UnpinnedBinder::Unnameable,
                 &mut binder_errors,
                 &mut shapes,
+                closed.as_ref(),
+            );
+            debug_assert!(
+                closed_early
+                    .iter()
+                    .filter(|(_, c)| c.refused)
+                    .all(|(name, _)| binder_errors.iter().any(|e| binder_refused(e, *name))),
+                "an annotation the list's reading in order could not read is refused by the binder check"
             );
             solving.shapes.extend(shapes);
             debug_assert!(

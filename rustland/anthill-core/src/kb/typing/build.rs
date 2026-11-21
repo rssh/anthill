@@ -1234,6 +1234,7 @@ pub(super) fn build_type(
                 UnpinnedBinder::Unnameable,
                 &mut binder_errors,
                 &mut let_shapes,
+                None,
             );
             solving.shapes.extend(let_shapes);
             ext_env.set_binding_regions(outer_binding);
@@ -1497,6 +1498,7 @@ pub(super) fn build_type(
                     UnpinnedBinder::Unnameable,
                     &mut branch_binder_errors,
                     &mut arm_shapes,
+                    None,
                 );
                 solving.shapes.extend(arm_shapes);
                 branch_env.set_binding_regions(None);

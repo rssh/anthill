@@ -541,6 +541,10 @@ pub(super) fn bind_and_label_pattern(
     // WI-20260904-34J8Z: each tuple pattern bound here over a type that is an inference hole,
     // at any depth — the caller hands them to its walk ([`WalkSolutions::shapes`]).
     shapes: &mut Vec<TupleShape>,
+    // WI-20261121-204T6: the type each binder of a lambda's parameter list whose binders project
+    // one another is bound at, closed once before the list is bound ([`closed_binder_types`]);
+    // `None` for any other pattern. Handed to the list's own elements only, not below them.
+    closed: Option<&HashMap<Symbol, Value>>,
 ) -> Rc<NodeOccurrence> {
     let Some(pat) = pattern.as_pattern() else {
         return Rc::clone(pattern);
@@ -739,8 +743,13 @@ pub(super) fn bind_and_label_pattern(
                     }
                 });
             // WI-20261001-80ZV8: what the value leaves open is closed where it gets a name
-            // ([`closed_where_named`]).
-            let ty = closed_where_named(kb, ty, Some(*name), bound, pattern.span, pattern.owner);
+            // ([`closed_where_named`]) — once: a binder of a lambda's parameter list whose
+            // binders project one another was closed, from this same type, before the list was
+            // bound ([`closed_binder_types`], WI-20261121-204T6).
+            let ty = match closed.and_then(|c| c.get(name)) {
+                Some(closed) => closed.clone(),
+                None => closed_where_named(kb, ty, Some(*name), bound, pattern.span, pattern.owner),
+            };
             env.bind_var(*name, ty);
             // A binder over a stable path is an alias of it, so a projection off the binder
             // is the one off the path (`case hold(s)` over `h` makes `s.E` `h.s.E`); over
@@ -957,6 +966,7 @@ pub(super) fn bind_and_label_pattern(
                     UnpinnedBinder::Unnameable,
                     errors,
                     shapes,
+                    None,
                 ));
             }
             // NAMED sub-patterns: the field each one names.
@@ -975,6 +985,7 @@ pub(super) fn bind_and_label_pattern(
                     UnpinnedBinder::Unnameable,
                     errors,
                     shapes,
+                    None,
                 ));
             }
             // WI-819: `rebuilt` holds SUB-PATTERNS only — the pattern's own `: T`
@@ -1083,7 +1094,7 @@ pub(super) fn bind_and_label_pattern(
             // type standing in the shape.
             let hole = scrutinee_type.as_ref().and_then(|t| inference_hole_var(kb, t));
             let at_hole: Option<Vec<Value>> =
-                hole.map(|_| written_component_types(kb, env, positional, "?pat"));
+                hole.map(|_| written_component_types(kb, env, positional, "?pat", &HashMap::new()));
             // WI-20260904-50B2K: a component with no type of its own asks the question its
             // PARENT's type answers — an unsolved variable one level up makes every
             // component an inference hole (`lambda (a, b) -> a + b` at rung 3), while no
@@ -1130,6 +1141,7 @@ pub(super) fn bind_and_label_pattern(
                         child_unpinned,
                         errors,
                         shapes,
+                        closed.filter(|_| whole == PatternRole::ParameterList),
                     )
                 } else {
                     let mut misaligned = Vec::new();
@@ -1145,6 +1157,7 @@ pub(super) fn bind_and_label_pattern(
                         child_unpinned,
                         &mut misaligned,
                         shapes,
+                        closed.filter(|_| whole == PatternRole::ParameterList),
                     );
                     // WI-20261012-80259: what is dropped is what was judged against a
                     // component the binder does not sit at. A name that denotes no
@@ -1609,14 +1622,25 @@ pub(super) fn lambda_binder_slots(param: &Rc<NodeOccurrence>) -> Vec<Option<Symb
     }
 }
 
+/// A binder of a lambda's parameter pattern that writes its type ([`written_binder_annotations`]).
+pub(super) struct WrittenBinder<'p> {
+    pub(super) name: Symbol,
+    /// The annotation at the body's parameters as [`bind_and_label_pattern`] reads it, its
+    /// projections not yet read.
+    pub(super) ty: Value,
+    /// The binder's place in the parameter list.
+    at: usize,
+    binder: &'p Rc<NodeOccurrence>,
+    annotation: &'p Rc<NodeOccurrence>,
+}
+
 /// Each binder of a lambda's parameter pattern that writes its type — the one binder, or each
-/// of a list of binders — with that annotation, at the body's parameters as
-/// [`bind_and_label_pattern`] reads it, its projections not yet read.
-pub(super) fn written_binder_annotations(
+/// of a list of binders — with that annotation ([`WrittenBinder`]).
+pub(super) fn written_binder_annotations<'p>(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    param: &Rc<NodeOccurrence>,
-) -> Vec<(Symbol, Value)> {
+    param: &'p Rc<NodeOccurrence>,
+) -> Vec<WrittenBinder<'p>> {
     let binders: Vec<&Rc<NodeOccurrence>> = match param.as_pattern() {
         Some(Pattern::Var { .. }) => vec![param],
         Some(Pattern::Tuple { positional, .. }) => positional.iter().collect(),
@@ -1624,12 +1648,247 @@ pub(super) fn written_binder_annotations(
     };
     binders
         .into_iter()
-        .filter_map(|b| {
-            let name = extract_pattern_var_name(b)?;
-            let written = pattern_annotation_value(kb, extract_pattern_type_ann(b)?)?;
-            Some((name, written_type_at_body_rigids(kb, env, &written)))
+        .enumerate()
+        .filter_map(|(at, binder)| {
+            let name = extract_pattern_var_name(binder)?;
+            let annotation = extract_pattern_type_ann(binder)?;
+            let written = pattern_annotation_value(kb, annotation)?;
+            Some(WrittenBinder {
+                name,
+                ty: written_type_at_body_rigids(kb, env, &written),
+                at,
+                binder,
+                annotation,
+            })
         })
         .collect()
+}
+
+/// WI-20261121-204T6 — does an annotation of `written` project a sibling? Walked as the parameter
+/// cycle check walks for the receivers it reads ([`collect_projection_receivers`]).
+pub(super) fn projects_a_sibling(kb: &KnowledgeBase, written: &[WrittenBinder<'_>]) -> bool {
+    written
+        .iter()
+        .any(|w| !sibling_projections(kb, &w.ty, written).is_empty())
+}
+
+/// Each projection in `ty` off a binder of `written`: the binder, and whether it is read through a
+/// FIELD of it (`s2.provider.K`, which reads the field off the binder's type and keeps what it opens
+/// in the record of the path, [`PathOpenings`]) rather than off it as it is (`a.L`, which reads the
+/// member off its type and keeps nothing). A projection's receiver and a rigid projection's subject
+/// are not looked into, as [`collect_projection_receivers`] does not.
+fn sibling_projections(
+    kb: &KnowledgeBase,
+    ty: &Value,
+    written: &[WrittenBinder<'_>],
+) -> Vec<(Symbol, bool)> {
+    let receivers = std::cell::RefCell::new(Vec::new());
+    type_any_part(kb, ty, &|te| match te {
+        TypeExtractor::ExprCarried { value, .. } => {
+            receivers.borrow_mut().push(value.clone());
+            Some(false)
+        }
+        TypeExtractor::RigidTypeProjection { .. } => Some(false),
+        _ => None,
+    });
+    receivers
+        .into_inner()
+        .iter()
+        .filter_map(|receiver| receiver_path_segs(kb, receiver))
+        .filter(|segs| written.iter().any(|w| w.name == segs[0]))
+        .map(|segs| (segs[0], segs.len() > 1))
+        .collect()
+}
+
+/// The skolems `ty` holds, by id.
+fn skolems_in(kb: &KnowledgeBase, ty: &Value) -> HashSet<u32> {
+    let found = std::cell::RefCell::new(HashSet::new());
+    type_any_part(kb, ty, &|te| {
+        if let TypeExtractor::Skolem { id, .. } = te {
+            found.borrow_mut().insert(*id);
+        }
+        None
+    });
+    found.into_inner()
+}
+
+/// WI-20261121-204T6 — each binder of `written`, in the order the annotations project one another
+/// (no cycle: refused before this is asked, `param_projection_cycle`): its component of the lambda's
+/// OWN tuple — its annotation, read after the siblings it projects ([`read_written_annotation`]) —
+/// and that component CLOSED where named ([`closed_where_named`]), ONCE: the type the binder is bound
+/// at in the body ([`closed_binder_types`]). Asked where nothing around the lambda says its parameter
+/// type; the lambda's own tuple takes the components ([`lambda_own_tuple`]).
+///
+/// Each annotation is read with each sibling at its closed type, in the body's record, so the
+/// reading here and the binder check's in the body read the sibling at one type and share what a
+/// field read opens ([`PathOpenings`]). Read with the siblings at their annotations as written, in
+/// the body's record, `lambda (s2: State, k: s2.provider.K)` read `s2.provider` at `State` here and
+/// at `State[P = s2.P]` in the body — "the holder `s2` was opened at `State` and is read at `State[P
+/// = s2.P]`", a build with debug assertions' stop (MEASURED); read so in a record of its own, a slot
+/// nested in a field's written binding (`k: h.f.T` over `f: Box[T = List[T = ?]]`) opened to one
+/// rigid here and another there, and the lambda was refused against its own annotation, "two
+/// different unknowns" (MEASURED).
+///
+/// EXCEPT a sibling the annotation reads OFF ITSELF (`b: a.L`) whose closing filled a slot nested
+/// in a written binding with a fresh rigid (`a: Pair[L = State]`, `State`'s `P`): what the member
+/// names is the slot left open, which the reading binder's closing names as its own (`b.P`); read
+/// off the closed `a` it was that rigid, and `k: b.provider.K` beside it read nothing ("no
+/// `requires` bound on 'State' whose carrier is this abstract type parameter declares a member
+/// 'K'", MEASURED). It is read as written there; and an annotation that reads such a sibling
+/// through a field as well is read in a record of its own ([`TypingEnv::with_own_path_openings`]),
+/// as the body reads that sibling at its closed type.
+///
+/// An annotation that does not read keeps the type as written here, as [`written_component_types`]
+/// keeps it: the binder check reads every annotation that projects at its turn and refuses it there
+/// ([`bind_and_label_pattern`]'s binder arm), which the lambda arm asserts (`refused`).
+pub(super) fn read_list_in_order(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    written: &[WrittenBinder<'_>],
+) -> HashMap<Symbol, ClosedBinder> {
+    let mut done: HashMap<Symbol, ClosedBinder> = HashMap::new();
+    // The binders whose closing minted a rigid for a nested slot.
+    let mut minted: HashSet<Symbol> = HashSet::new();
+    let mut pending: Vec<&WrittenBinder<'_>> = written.iter().collect();
+    while !pending.is_empty() {
+        let at = pending
+            .iter()
+            .position(|w| {
+                sibling_projections(kb, &w.ty, written)
+                    .iter()
+                    .all(|(head, _)| *head == w.name || !pending.iter().any(|p| p.name == *head))
+            })
+            .expect("a lambda's parameters project one another with no cycle");
+        let w = pending.remove(at);
+        let mut refused = false;
+        let component = if value_contains_projection(kb, &w.ty) {
+            let reads = sibling_projections(kb, &w.ty, written);
+            let off_itself = |s: Symbol| reads.iter().any(|(head, field)| *head == s && !field);
+            let through_field = |s: Symbol| reads.iter().any(|(head, field)| *head == s && *field);
+            let as_written = |s: Symbol| minted.contains(&s) && off_itself(s);
+            let mut reading = if minted.iter().any(|s| as_written(*s) && through_field(*s)) {
+                env.with_own_path_openings()
+            } else {
+                env.clone()
+            };
+            for sibling in written {
+                let ty = match done.get(&sibling.name) {
+                    Some(closed) if !as_written(sibling.name) => closed.ty.clone(),
+                    _ => sibling.ty.clone(),
+                };
+                reading.bind_var(sibling.name, ty);
+                reading.clear_receiver_alias(sibling.name);
+            }
+            let ctx = TypeErrorContext::BinderAnnotation { binder: w.name };
+            match read_written_annotation(kb, &reading, &w.ty, &ctx, w.annotation) {
+                Ok(read) => read,
+                Err(_) => {
+                    refused = true;
+                    w.ty.clone()
+                }
+            }
+        } else {
+            w.ty.clone()
+        };
+        let ty = closed_where_named(
+            kb,
+            component.clone(),
+            Some(w.name),
+            BinderOf::Declaration,
+            w.binder.span,
+            w.binder.owner,
+        );
+        if !skolems_in(kb, &ty).is_subset(&skolems_in(kb, &component)) {
+            minted.insert(w.name);
+        }
+        done.insert(w.name, ClosedBinder { at: w.at, component, ty, refused });
+    }
+    done
+}
+
+/// A binder's type closed before its list is bound ([`read_list_in_order`]): its place in the list,
+/// its component of the lambda's own tuple, and that component closed where named; and whether its
+/// annotation did not read there, which the binder check must refuse ([`binder_refused`]).
+pub(super) struct ClosedBinder {
+    pub(super) at: usize,
+    pub(super) component: Value,
+    ty: Value,
+    pub(super) refused: bool,
+}
+
+/// Is `e` a refusal of binder `name`'s annotation?
+pub(super) fn binder_refused(e: &TypeError, name: Symbol) -> bool {
+    matches!(
+        e,
+        TypeError::Other {
+            context: TypeErrorContext::BinderAnnotation { binder },
+            ..
+        } | TypeError::TypeMismatch {
+            context: TypeErrorContext::BinderAnnotation { binder },
+            ..
+        } if *binder == name
+    )
+}
+
+/// WI-20261121-204T6 — THE TYPE EACH BINDER OF `written` IS BOUND AT, closed once: its component of
+/// `binder_type`, the tuple the lambda's list of binders is typed at, closed where named
+/// ([`closed_where_named`]) as [`bind_and_label_pattern`] closes it — or, where nothing around the
+/// lambda gave `binder_type` and the list was read before it was bound ([`read_list_in_order`],
+/// `early`), that closing, of the same component.
+///
+/// The lambda arm binds each in the body's environment BEFORE the list is bound, and each binder
+/// takes its own where it is bound (`closed`, [`bind_and_label_pattern`]), so an annotation read
+/// before a sibling's turn — a forward one, `lambda (k: s2.provider.K, s2: State)` — reads the
+/// sibling at the type it has from its turn on (MEASURED: it stopped a build with debug assertions,
+/// as [`read_list_in_order`] quotes).
+///
+/// ONCE, because closing again is no identity: a slot nested in a written binding takes a fresh
+/// rigid at each closing ([`UnwrittenFill`]), so `h: Hold2[X = List]` closed twice is two types —
+/// "the holder `h` was opened at `Hold2[X = List[T = ?T]]` and is read at `Hold2[X = List[T =
+/// ?T]]`" (MEASURED). What the binder check compares with the annotation is still the component as
+/// it is, unclosed: closed, `b: a.L` beside `a: Pair[L = State]` was refused against its own
+/// annotation, "expected State[P = b.P], got State[P = ?P]" (MEASURED).
+///
+/// `None` where `binder_type` is no tuple of the list's width, or gives a binder closed early another
+/// component than the one it was closed from, which the lambda arm refuses: a list whose binders
+/// project one another is a tuple pattern (one binder projecting itself is a cycle, refused before)
+/// typed at its own tuple or at an `A` that fits it, and the grammar writes no annotation on the
+/// list itself.
+pub(super) fn closed_binder_types(
+    kb: &mut KnowledgeBase,
+    written: &[WrittenBinder<'_>],
+    binder_type: &Value,
+    param: &Rc<NodeOccurrence>,
+    early: &HashMap<Symbol, ClosedBinder>,
+) -> Option<HashMap<Symbol, Value>> {
+    let Some(Pattern::Tuple { positional, .. }) = param.as_pattern() else {
+        return None;
+    };
+    let components = named_tuple_field_pairs(kb, binder_type)
+        .filter(|c| c.len() == positional.len())?;
+    let closed = written
+        .iter()
+        .map(|w| {
+            let closed: Value = match early.get(&w.name) {
+                // Typed at another component than the one it was closed from, the binder would be
+                // bound at a type unrelated to the arrow's parameter: refused by the lambda arm.
+                Some(early) if !views_structurally_equal(kb, &components[w.at].1, &early.component) => {
+                    return None;
+                }
+                Some(early) => early.ty.clone(),
+                None => closed_where_named(
+                    kb,
+                    components[w.at].1.clone(),
+                    Some(w.name),
+                    BinderOf::Declaration,
+                    w.binder.span,
+                    w.binder.owner,
+                ),
+            };
+            Some((w.name, closed))
+        })
+        .collect::<Option<HashMap<Symbol, Value>>>()?;
+    Some(closed)
 }
 
 /// `exp`, the function type a lambda is checked against, in the lambda's own names: the
@@ -1672,15 +1931,19 @@ pub(super) fn in_lambda_binders(
 /// component and the binder it types are one type and the comparison there agrees by
 /// construction — not a fresh variable beside the annotation, which is what made a synthesized
 /// context displace the user's annotations (34J8Z's first obstacle).
+///
+/// `given`, by place: a component read already, the list's annotations having been read in order
+/// before ([`read_list_in_order`], WI-20261121-204T6) — taken as it is, not read again.
 pub(super) fn lambda_own_tuple(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     param: &Rc<NodeOccurrence>,
+    given: &HashMap<usize, Value>,
 ) -> Option<Value> {
     let Some(Pattern::Tuple { positional, .. }) = param.as_pattern() else {
         return None;
     };
-    let fields: Vec<(Symbol, Value)> = written_component_types(kb, env, positional, "?param")
+    let fields: Vec<(Symbol, Value)> = written_component_types(kb, env, positional, "?param", given)
         .into_iter()
         .enumerate()
         .map(|(i, ty)| (kb.intern(&positional_label(i)), ty))
@@ -1777,10 +2040,15 @@ fn written_component_types(
     env: &TypingEnv,
     positional: &[Rc<NodeOccurrence>],
     fresh: &str,
+    given: &HashMap<usize, Value>,
 ) -> Vec<Value> {
     positional
         .iter()
-        .map(|sub| {
+        .enumerate()
+        .map(|(at, sub)| {
+            if let Some(component) = given.get(&at) {
+                return component.clone();
+            }
             // As [`bind_and_label_pattern`] reads it: at the body's parameters, each projection
             // read where it is written. One that does not read is refused there, and the raw
             // annotation stands here as it does there.

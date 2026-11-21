@@ -2497,6 +2497,8 @@ mod wi_ycz0j_carrier_names_inherited_member_test;
 mod wi_ffy4r_witness_pin_every_route_test;
 #[path = "include/wi_fv92r_nested_alias_projection_test.rs"]
 mod wi_fv92r_nested_alias_projection_test;
+#[path = "include/wi_204t6_lambda_sibling_projection_test.rs"]
+mod wi_204t6_lambda_sibling_projection_test;
 #[path = "include/wi_kbz4f_operation_value_reads_projection_test.rs"]
 mod wi_kbz4f_operation_value_reads_projection_test;
 
