@@ -256,16 +256,16 @@ fn derived_row_clause(spec: &str, derived_from: Option<&str>) -> String {
 }
 
 /// WI-20260925-P5G39 — [`derived_row_clause`]'s twin for `ProvisionConditionsTooWeak`,
-/// whose repair is a CONDITION rather than an operation. A derived row carries none and
-/// cannot be given one: conditioning its ORIGIN makes the origin conditional, and a
-/// conditional provision derives nothing (MEASURED — the floor vanished and the origin
-/// was refused for lacking it). So the repair is to write the floor's own clause.
+/// whose repair is a CONDITION rather than an operation. A derived row carries its
+/// origin's conditions (WI-20261121-TV0PA) and no others, so the repair is to write the
+/// floor's own clause, which the derivation then leaves alone.
 fn derived_conditions_clause(spec: &str, derived_from: Option<&str>) -> String {
     match derived_from {
         Some(origin) => format!(
-            " — note '{spec}' is not written on this carrier: it is DERIVED, \
-             unconditionally, from its `provides {origin}`; write `provides {spec}[…] :- …` \
-             with a condition that implies it"
+            " — note '{spec}' is not written on this carrier: it is DERIVED from its \
+             `provides {origin}`, under that provision's conditions; write `provides \
+             {spec}[…] :- …` with a condition that implies it, or condition `provides {origin}` \
+             so that it does"
         ),
         None => String::new(),
     }
@@ -1254,6 +1254,17 @@ pub enum LoadError {
         field: String,
         /// That field's type, as written.
         field_type: String,
+    },
+    /// WI-20261121-TV0PA — a composite's equality is provided and no `eq` answers it: the
+    /// provisions about it supply none, and the load derives none for a sort a provision
+    /// speaks for. A comparison of two of its values would reach no member, the run-time
+    /// `EqualityWithNoMember`.
+    EqualityReachesNoEq {
+        /// The composite, qualified.
+        carrier: String,
+        /// Each provision about it, as `(provider, spec)` qualified — the spec the provider
+        /// WROTE: for a `PartialEq` row derived from `provides Eq`, `Eq`.
+        provisions: Vec<(String, String)>,
     },
     /// A parametric composite writes `provides PartialEq` (or `Eq`) with no condition and no
     /// `eq`, and the derived member compares a field typed by a parameter through `PartialEq` at
@@ -3845,14 +3856,15 @@ impl LoadError {
                         "Strengthen `provides {spec}[…] :- …` to a condition that implies \
                          `{unentailed}`"
                     ),
-                    // Conditioning the ORIGIN would not help: a conditional provision
-                    // derives nothing, so the floor would vanish rather than hold.
+                    // A derived floor carries its origin's conditions and no others
+                    // (WI-20261121-TV0PA), so conditioning the origin conditions the floor.
                     Some(origin) => format!(
-                        "'{spec}' is not written on this carrier: it is DERIVED, \
-                         unconditionally, from its `provides {origin}`, and a derived floor \
-                         carries no condition. Write `provides {spec}[…] :- …` yourself, with \
-                         a condition that implies `{unentailed}` (a conditional provider \
-                         writes each floor, as `pair.anthill` does)"
+                        "'{spec}' is not written on this carrier: it is DERIVED from its \
+                         `provides {origin}`, and carries that provision's conditions and no \
+                         others. Write `provides {spec}[…] :- …` yourself, with a condition \
+                         that implies `{unentailed}` (a conditional provider writes each \
+                         floor, as `pair.anthill` does), or condition `provides {origin}` so \
+                         that it does"
                     ),
                 };
                 format!(
@@ -4086,6 +4098,9 @@ impl LoadError {
                 eq_not_derivable_detail(carrier, field, field_type)
             }
             LoadError::EqNeedsCondition { carrier, params } => eq_needs_condition_detail(carrier, params),
+            LoadError::EqualityReachesNoEq { carrier, provisions } => {
+                equality_reaches_no_eq_detail(carrier, provisions)
+            }
             LoadError::HandWrittenTypeValue { carrier } => {
                 format!("'{}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: '{}' already has its derived instance.",
                     carrier, carrier)
@@ -5971,6 +5986,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::EqNeedsCondition { carrier, params } => {
                 write!(f, "{}", eq_needs_condition_detail(carrier, params))
+            }
+            LoadError::EqualityReachesNoEq { carrier, provisions } => {
+                write!(f, "{}", equality_reaches_no_eq_detail(carrier, provisions))
             }
             LoadError::KeyWithoutEq {
                 container,
@@ -18613,6 +18631,46 @@ fn eq_needs_condition_detail(carrier: &str, params: &[String]) -> String {
     )
 }
 
+/// [`LoadError::EqualityReachesNoEq`]'s text, one for both renders. The repair is the
+/// provider's: a witness writes the `eq` or steps aside for the derivation; the carrier's own
+/// provision writes the `eq`, or a condition at `PartialEq` a derived one can compare under.
+fn equality_reaches_no_eq_detail(carrier: &str, provisions: &[(String, String)]) -> String {
+    let written: Vec<String> = provisions
+        .iter()
+        .map(|(provider, spec)| {
+            if provider == carrier {
+                format!("its own `provides {spec}[…]`")
+            } else {
+                format!("the witness `{provider}`'s `provides {spec}[…]`")
+            }
+        })
+        .collect();
+    let repairs: Vec<String> = provisions
+        .iter()
+        .map(|(provider, _)| {
+            if provider == carrier {
+                format!(
+                    "write `{carrier}`'s `eq`, or write its `PartialEq` under `PartialEq` of the \
+                     parameters its fields compare at (`provides PartialEq[Self] :- PartialEq[T]`), \
+                     under which one is derived"
+                )
+            } else {
+                format!(
+                    "give `{provider}` an `operation eq` over `{carrier}`, or delete its provision and \
+                     let `{carrier}`'s equality be derived"
+                )
+            }
+        })
+        .collect();
+    format!(
+        "`{carrier}`'s equality is provided by {}, and no `eq` answers it: none is written, and the \
+         load derives none for a sort a provision speaks for, so a comparison of two `{carrier}` \
+         values would reach no member. To repair: {}",
+        written.join(" and "),
+        repairs.join("; "),
+    )
+}
+
 /// [`LoadError::EqNotDerivable`]'s text, one for both renders.
 fn eq_not_derivable_detail(carrier: &str, field: &str, field_type: &str) -> String {
     format!(
@@ -19217,6 +19275,14 @@ fn load_phase_inner(
             .filter(|e| !eq_index_said.contains(&e.to_string())),
     );
     mark!("build_eq_dispatch_index (derived members)");
+    // WI-20261121-TV0PA — a composite whose equality is provided and answered by no `eq`, read
+    // off the index just rebuilt: the forwarded rows and the derived members are both in. Over a
+    // load with no refusal yet, as the members are loaded only over one (above), and a
+    // composite whose member was not loaded for that reason is not one with none.
+    if all_errors.is_empty() {
+        all_errors.extend(super::eq_derive::equality_reaching_no_eq(kb));
+    }
+    mark!("eq_derive::equality_reaching_no_eq");
     // WI-879 — the RESOLVER's builtin registry, derived from the `operation_map` facts.
     // HERE and not beside `build_host_op_mappings`: the derivation reads DIRECT provision
     // rows, and `Int64 provides Divisible` / `EuclideanDomain` exists only once

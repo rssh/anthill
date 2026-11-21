@@ -286,12 +286,7 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
     };
     // The carriers given `PartialEq` here, for [`derived_eq_member_source`].
     let mut given: Vec<Symbol> = Vec::new();
-    let spoken_for: HashSet<Symbol> = EQUALITY_SPECS
-        .into_iter()
-        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
-        .flat_map(|spec| super::typing::provision_carriers_of_spec(kb, spec))
-        .map(|s| kb.canonical_sort_sym(s))
-        .collect();
+    let spoken_for = spoken_for(kb);
     // One symbol per canonical composite, in registration order.
     let mut seen: HashSet<Symbol> = HashSet::new();
     let all_candidates: Vec<Symbol> = c
@@ -499,7 +494,7 @@ pub(crate) fn written_without_member(
             let missing: Vec<Symbol> = needed.iter().map(|&(_, p)| p).filter(|&p| !held(p)).collect();
             if missing.is_empty() {
                 members.push(s);
-            } else if !super::typing::provision_is_conditional(kb, s, partial_eq) {
+            } else if !super::typing::partial_eq_is_conditional(kb, s, partial_eq) {
                 refusals.push(super::load::LoadError::EqNeedsCondition {
                     carrier: kb.qualified_name_of(s).to_string(),
                     params: missing.iter().map(|&p| kb.local_name_of(p).to_string()).collect(),
@@ -508,7 +503,11 @@ pub(crate) fn written_without_member(
             // A condition that reaches `PartialEq` at the parameter through another spec
             // (`:- Eq[T]`) gives the frame that spec's slot, and a member's call at the
             // parameter is not read through it, written or derived alike. Such a provision is
-            // left with no member, as before the derivation covered written provisions.
+            // left with no member, and refused for it once the load's suppliers are all in
+            // ([`equality_reaching_no_eq`]) — a `PartialEq` forwarded from `provides Eq[Self]
+            // :- Eq[T]` among them, which `partial_eq_is_conditional` reads before the row
+            // exists: read here as unconditional, it was refused as a `PartialEq` "with no
+            // condition" the author never wrote (WI-20261121-TV0PA).
             continue;
         }
         // A field of a boundary — a carrier whose `eq` its author wrote, a witness's among them
@@ -534,6 +533,131 @@ pub(crate) fn written_without_member(
         });
     }
     (members, refusals)
+}
+
+/// Whether a derived `eq` member can be written at all: the library it is written in —
+/// `PartialEq.eq`, `struct_eq` and `Bool` — is loaded. [`derived_eq_member_source`] writes none
+/// without it, and [`equality_reaching_no_eq`] then asks for none.
+fn eq_members_writable(kb: &KnowledgeBase) -> bool {
+    // Declared, not merely named: the bootstrap names `struct_eq` without the library.
+    let declared = |n: &str| {
+        kb.try_resolve_symbol(n)
+            .is_some_and(|s| super::op_info::operation_is_declared(kb, s))
+    };
+    declared("anthill.prelude.PartialEq.eq")
+        && declared("anthill.kernel.struct_eq")
+        && kb.try_resolve_symbol("anthill.prelude.Bool").is_some()
+}
+
+/// A composite whose equality no derived member writes, by design: the two the member writer
+/// leaves out ([`derived_eq_member_source`]), and so the two [`equality_reaching_no_eq`] does
+/// not ask for one.
+///
+/// The desugaring targets (`TupleLiteral`, `ListLiteral`, …) are how a tuple or a literal is
+/// represented, not sorts a program compares by their constructors: a tuple's components are
+/// compared where `=` meets one (`KnowledgeBase::tuple_component_pairs`). And a sort whose
+/// scope declares `eq` already — a predicate its rules define, which is no operation and so no
+/// `eq` of the carrier's, and which the `eq` bridge proves — has the name for the program: a
+/// member there would be a second definition of it.
+fn compared_without_a_member(kb: &KnowledgeBase, carrier: Symbol) -> bool {
+    use crate::parse::desugar_target as dt;
+    let literals = [dt::TUPLE_LITERAL, dt::LIST_LITERAL, dt::SET_LITERAL].map(dt::qualified);
+    literals.contains(&kb.qualified_name_of(carrier))
+        || kb
+            .try_resolve_symbol(&format!("{}.eq", kb.qualified_name_of(carrier)))
+            .is_some()
+}
+
+/// WI-20261121-TV0PA — every composite a provision of `PartialEq` is about has an `eq` that
+/// answers it, or the load is refused (`LoadError::EqualityReachesNoEq`). Asked once the load's
+/// suppliers are all in: the forwarded rows (`Eq provides PartialEq`, so a witness that writes
+/// `Eq` alone is read here), the derived members, and the eq-dispatch index rebuilt over them.
+///
+/// The run-time error it replaces is `EqualityWithNoMember`, raised at the first comparison: a
+/// witness speaks for its carrier, so the load derives the carrier no equality, and a witness
+/// that writes no `eq` leaves nothing to dispatch to — `sort W { provides PartialEq[T = C] }`
+/// loaded and `eq(c(v: 1), c(v: 2))` died (MEASURED, c3371cd0). `PartialEq.eq` is a builtin,
+/// so the provider-coverage check reads it as backed for every provider: the builtin is the
+/// dispatch to the carrier's `eq`, and backs nothing where there is none. A carrier's own
+/// provision with no `eq` is given the derived member, so it is refused here only where none
+/// can be (a condition at another spec, [`written_without_member`]).
+pub(crate) fn equality_reaching_no_eq(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    let Some(partial_eq) = kb.try_resolve_symbol("anthill.prelude.PartialEq") else {
+        return Vec::new();
+    };
+    if !eq_members_writable(kb) {
+        return Vec::new();
+    }
+    let Some(index) = super::load::EqDispatchIndex::build(kb) else {
+        return Vec::new();
+    };
+    let composites: HashSet<Symbol> = composite_sorts(kb)
+        .into_iter()
+        .filter(|&s| !compared_without_a_member(kb, s))
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect();
+    let mut unanswered: Vec<(Symbol, Vec<(Symbol, Symbol)>)> = Vec::new();
+    for p in super::typing::provisions_about(kb, partial_eq) {
+        if !composites.contains(&p.about) || !index.candidates(kb, p.about).is_empty() {
+            continue;
+        }
+        let provider = kb.canonical_sort_sym(p.provider);
+        let written = written_spec_of(kb, p.provider, p.row, partial_eq);
+        let at = match unanswered.iter().position(|(c, _)| *c == p.about) {
+            Some(at) => at,
+            None => {
+                unanswered.push((p.about, Vec::new()));
+                unanswered.len() - 1
+            }
+        };
+        if !unanswered[at].1.contains(&(provider, written)) {
+            unanswered[at].1.push((provider, written));
+        }
+    }
+    let mut out: Vec<(String, Vec<(String, String)>)> = unanswered
+        .into_iter()
+        .map(|(carrier, provisions)| {
+            (
+                kb.qualified_name_of(carrier).to_string(),
+                provisions
+                    .into_iter()
+                    .map(|(provider, spec)| {
+                        (
+                            kb.qualified_name_of(provider).to_string(),
+                            kb.qualified_name_of(spec).to_string(),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    out.sort();
+    out.into_iter()
+        .map(|(carrier, provisions)| super::load::LoadError::EqualityReachesNoEq { carrier, provisions })
+        .collect()
+}
+
+/// The spec `provider` WROTE for the provision row `row` of `spec`: `spec` itself, or, for a row
+/// the forwarding derived, the spec of the provision it was derived from, followed down to the
+/// written one (`Hash` → `Eq` → `PartialEq`), as deep as the forwarding derives
+/// (`derive_forwarded_provisions`' rounds).
+fn written_spec_of(kb: &KnowledgeBase, provider: Symbol, row: RuleId, spec: Symbol) -> Symbol {
+    let provider = kb.canonical_sort_sym(provider);
+    let (mut row, mut spec) = (row, spec);
+    for _ in 0..8 {
+        let Some(origin) = kb.derived_provision_origin_of(row) else {
+            break;
+        };
+        spec = origin;
+        let Some(source) = super::typing::provisions_about(kb, origin)
+            .into_iter()
+            .find(|q| kb.canonical_sort_sym(q.provider) == provider)
+        else {
+            break;
+        };
+        row = source.row;
+    }
+    spec
 }
 
 /// The arguments of a spec application `v` (`PartialEq[T = A]`, `PartialEq[A]`), by position
@@ -667,15 +791,7 @@ pub(crate) fn derived_eq_member_source(
     kb: &KnowledgeBase,
     carriers: &[Symbol],
 ) -> Result<Option<(String, Vec<Symbol>)>, String> {
-    // Declared, not merely named: the bootstrap names `struct_eq` without the library.
-    let declared = |n: &str| {
-        kb.try_resolve_symbol(n)
-            .is_some_and(|s| super::op_info::operation_is_declared(kb, s))
-    };
-    let library = declared("anthill.prelude.PartialEq.eq")
-        && declared("anthill.kernel.struct_eq")
-        && kb.try_resolve_symbol("anthill.prelude.Bool").is_some();
-    if !library {
+    if !eq_members_writable(kb) {
         return Ok(None);
     }
     let mut seen: HashSet<Symbol> = HashSet::new();
@@ -690,21 +806,7 @@ pub(crate) fn derived_eq_member_source(
     // In one order on every run: the carriers arrive in a hash map's, and the text's order
     // is the order its names are interned in.
     carriers.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
-    // The desugaring targets (`TupleLiteral`, `ListLiteral`, …) are how a tuple or a literal
-    // is represented, not sorts a program compares by their constructors: a tuple's
-    // components are compared where `=` meets one (`KnowledgeBase::tuple_component_pairs`).
-    {
-        use crate::parse::desugar_target as dt;
-        let literals = [dt::TUPLE_LITERAL, dt::LIST_LITERAL, dt::SET_LITERAL].map(dt::qualified);
-        carriers.retain(|&c| !literals.contains(&kb.qualified_name_of(c)));
-    }
-    // A sort whose scope declares `eq` already — a predicate its rules define, which is no
-    // operation and so no `eq` of the carrier's — has the name for the program: a member
-    // there would be a second definition of it.
-    carriers.retain(|&c| {
-        kb.try_resolve_symbol(&format!("{}.eq", kb.qualified_name_of(c)))
-            .is_none()
-    });
+    carriers.retain(|&c| !compared_without_a_member(kb, c));
     if carriers.is_empty() {
         return Ok(None);
     }
@@ -1204,6 +1306,23 @@ struct EqualityProvision {
 /// The equality-family specs, in the order a diagnostic lists them.
 const EQUALITY_SPECS: [&str; 3] = ["PartialEq", "Eq", "NonEq"];
 
+/// Every sort a provision of the equality family is ABOUT, canonical — the sorts the
+/// derivation leaves alone, a provision having spoken for their equality. Read through
+/// [`super::typing::provisions_about`], at the spec's carrier parameter or its sole one,
+/// and not through the parameter an operation receives on: `Eq` declares no operation, so
+/// that reading filed `sort W { provides Eq[T = C]; operation eq(…) }` under `W`, `C`
+/// derived its own equality beside the witness's, and `W.eq` was never called (MEASURED,
+/// c3371cd0, WI-20261121-TV0PA). The equality-closure record reads the same function
+/// ([`equality_signatures`]), so the two agree on which provisions are about a sort.
+fn spoken_for(kb: &KnowledgeBase) -> HashSet<Symbol> {
+    EQUALITY_SPECS
+        .into_iter()
+        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
+        .flat_map(|spec| super::typing::provisions_about(kb, spec))
+        .map(|p| p.about)
+        .collect()
+}
+
 /// The [`EqualitySignature`] of every composite the KB holds now, by canonical sort.
 fn equality_signatures(
     kb: &mut KnowledgeBase,
@@ -1602,11 +1721,7 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
     let parametric = |kb: &KnowledgeBase, s: Symbol| !kb.type_param_syms_of(s).is_empty();
     // Every carrier ANY equality provision already names — read carrier-side, which is
     // a DIFFERENT question from the three above (WI-1069). See the seed's comment.
-    let spoken_for: HashSet<Symbol> = EQUALITY_SPECS
-        .into_iter()
-        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
-        .flat_map(|spec| super::typing::provision_carriers_of_spec(kb, spec))
-        .collect();
+    let spoken_for = spoken_for(kb);
 
     let mut total: HashSet<Symbol> = sorts
         .iter()

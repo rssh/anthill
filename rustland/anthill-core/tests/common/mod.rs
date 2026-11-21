@@ -935,6 +935,20 @@ pub fn recipe_load(
     recipe_load_files(&user_files(sources, names), options, recipe, prepare)
 }
 
+/// [`recipe_load`] with the KB the load left beside its verdict ([`LoadOutcome`]) — for a test
+/// PINNED to one recipe whose load is refused on purpose and whose KB it reads on: a later
+/// load over a refused earlier one, which holds the earlier load's sorts as a clean one does.
+#[allow(dead_code)]
+pub fn recipe_outcome(
+    sources: &[&str],
+    names: Option<&[&str]>,
+    options: load::LoadOptions,
+    recipe: LoadRecipe,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> LoadOutcome {
+    load_outcome_of(run_recipe(&user_files(sources, names), options, recipe, Some(prepare)))
+}
+
 /// [`recipe_load`] over [`UserFile`]s — for a test PINNED to one recipe, with the reason
 /// at its site, whose files are on disk.
 #[allow(dead_code)]

@@ -105,8 +105,8 @@ fn a_sort_writing_its_own_eq_keeps_it() {
 /// the member, which a typed `=` at it calls; with none, it is refused, naming the condition;
 /// with one reaching `PartialEq` through another spec (`:- Eq[T]`), whose slot a member's
 /// comparison at the parameter is not read through (as a written member's is not), it is given
-/// none, and its `=` is an equality with no member: an error where it runs (kernel-language
-/// §8.3, WI-20261105-CBRD2), neither rule answering — the control, counted.
+/// none — and is refused at load for it since WI-20261121-TV0PA (`EqualityReachesNoEq`), where
+/// its `=` loaded and was an error where it ran.
 #[test]
 fn a_parametric_written_provision_is_given_its_member_or_refused() {
     let src = |ns: &str, cond: &str| {
@@ -126,10 +126,7 @@ end
 "#
         )
     };
-    for (ns, cond, with_member) in [
-        ("test.cbrd2.wpm.pc", ":- PartialEq[T]", true),
-        ("test.cbrd2.wpm.pe", ":- Eq[T]", false),
-    ] {
+    for (ns, cond, with_member) in [("test.cbrd2.wpm.pc", ":- PartialEq[T]", true)] {
         let mut kb = load_kb_with(&src(ns, cond));
         assert_eq!(
             kb.try_resolve_symbol(&format!("{ns}.Bx.eq")).is_some(),
@@ -153,6 +150,12 @@ end
     assert!(
         errors.iter().any(|e| e.contains("`test.cbrd2.wpm.pu.Bx` provides `PartialEq` with no condition")
             && e.contains("Write the provision with `:- PartialEq[T]`")),
+        "{errors:?}"
+    );
+    let errors = load_errors_of(&src("test.cbrd2.wpm.pe", ":- Eq[T]"));
+    assert!(
+        errors.iter().any(|e| e.contains("`test.cbrd2.wpm.pe.Bx`'s equality is provided by its own")
+            && e.contains("no `eq` answers it")),
         "{errors:?}"
     );
 }

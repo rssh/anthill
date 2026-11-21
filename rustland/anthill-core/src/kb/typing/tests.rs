@@ -7377,9 +7377,9 @@ end
     /// `conditioned_provision_pairs` was rewritten from a loop calling
     /// [`provision_conditions`] once PER CARRIER into one sweep of the condition facts,
     /// and its answer is what `derive_forwarded_provisions` consults twice: a conditional
-    /// provision neither forwards nor is forwarded through, because copying a head without
-    /// its `:- goals` tail would claim a floor unconditionally at bindings where the
-    /// source provision does not hold.
+    /// forwarder forwards nothing, and a conditional carrier row forwards with its `:- goals`
+    /// tail copied (WI-20261121-TV0PA), because copying the head alone would claim a floor
+    /// unconditionally at bindings where the source provision does not hold.
     ///
     /// POSITIVE AND NEGATIVE IN ONE RUN. `CCond` writes two conditional provisions and
     /// both pairs must be present; `CPlain` writes an unconditional one and its pair must

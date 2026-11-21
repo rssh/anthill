@@ -62,7 +62,7 @@ use anthill_core::kb::KnowledgeBase;
 
 use crate::common::{
     assert_refused_naming, expect_loaded, load_in_a_later_call, load_kb_with, recipe_load,
-    rendered_load_errors, LoadRecipe,
+    recipe_outcome, rendered_load_errors, LoadRecipe,
 };
 
 /// The earlier load: a sort that reaches a `Float`, so its derived equality is the
@@ -248,9 +248,14 @@ end
 /// An `eq` added to a WITNESS the earlier load declared without one. No provision is
 /// written and the composite gains no member of its own — only who supplies its `eq`
 /// changes, which is why the check compares that and not what the load wrote.
+///
+/// Since WI-20261121-TV0PA the earlier load is itself refused: the witness speaks for `Point`,
+/// which so derives no equality, and no `eq` answers it (`EqualityReachesNoEq`). A sort a
+/// refused load defined is held like any other (kernel-language §8.3), so the later load is
+/// refused as before; the earlier refusal is pinned here.
 #[test]
 fn a_later_eq_member_of_an_earlier_witness_is_refused() {
-    let (mut kb, _) = expect_loaded(recipe_load(
+    let (mut kb, earlier) = recipe_outcome(
         &[
             POINT,
             r#"
@@ -267,7 +272,12 @@ end
         LoadOptions::default(),
         LoadRecipe::OneShot,
         |_| {},
-    ));
+    )
+    .kb_and_errors();
+    assert!(
+        matches!(earlier.as_slice(), [LoadError::EqualityReachesNoEq { carrier, .. }] if carrier == "test.le.total.Point"),
+        "the earlier load is refused for the witness's missing `eq` alone, got {earlier:?}",
+    );
     let errors = match later(
         &mut kb,
         r#"
@@ -368,7 +378,9 @@ end
 /// provision row, which is what a provision in the signature is identified by.
 #[test]
 fn a_later_provision_for_another_instantiation_is_refused() {
-    let (mut kb, _) = expect_loaded(recipe_load(
+    // Refused itself since WI-20261121-TV0PA, the witness answering `Crate`'s equality with no
+    // `eq` — and held all the same ([`a_later_eq_member_of_an_earlier_witness_is_refused`]).
+    let (mut kb, earlier) = recipe_outcome(
         &[r#"
 namespace test.le.inst
   import anthill.prelude.{PartialEq, Int64}
@@ -385,7 +397,12 @@ end
         LoadOptions::default(),
         LoadRecipe::OneShot,
         |_| {},
-    ));
+    )
+    .kb_and_errors();
+    assert!(
+        matches!(earlier.as_slice(), [LoadError::EqualityReachesNoEq { carrier, .. }] if carrier == "test.le.inst.Crate"),
+        "the earlier load is refused for the witness's missing `eq` alone, got {earlier:?}",
+    );
     let errors = match later(
         &mut kb,
         r#"

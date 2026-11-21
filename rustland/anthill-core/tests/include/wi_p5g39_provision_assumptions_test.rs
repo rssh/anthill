@@ -376,8 +376,10 @@ fn a_written_condition_fact_with_no_spec_head_is_reported() {
 
 /// A DERIVED FLOOR IS TOLD TO WRITE ITS OWN CLAUSE. `provides Ord[Foo]` is unconditional,
 /// so the `WeakOrd[Foo]` derived from it is too, and it requires the `Eq[Foo]` that holds
-/// only under `Eq[A]`. Conditioning `provides Ord` — what the first cut advised — makes it
-/// derive nothing, and the author is then refused for the missing floor instead.
+/// only under `Eq[A]`. Since WI-20261121-TV0PA a derived floor carries its origin's
+/// conditions, so conditioning `provides Ord` is the other repair, and the refusal names it
+/// (`wi_tv0pa_eq_gives_partial_eq_test::a_conditional_ord_conditions_its_derived_floor` drives
+/// it).
 #[test]
 fn a_derived_floor_is_told_to_write_its_own_clause() {
     let src = "\nnamespace p5g39.derived\n  \
@@ -390,7 +392,8 @@ fn a_derived_floor_is_told_to_write_its_own_clause() {
         errs.iter().any(|e| e.contains(
             "'p5g39.derived.Foo' provides 'anthill.prelude.WeakOrd', which requires \
              'anthill.prelude.Eq'"
-        ) && e.contains("DERIVED, unconditionally")
+        ) && e.contains("DERIVED from its `provides anthill.prelude.Ord`")
+            && e.contains("or condition `provides anthill.prelude.Ord`")
             && e.contains("write `provides anthill.prelude.WeakOrd[…] :- …`")),
         "the refusal must say the floor is derived and to write its own clause; \
          got {errs:?}",

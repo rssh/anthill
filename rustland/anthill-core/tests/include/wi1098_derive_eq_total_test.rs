@@ -496,17 +496,23 @@ end
 ///
 /// Both rows are the ones that come back if the `spoken_for` clause is removed from
 /// the seed in `total_composites`, and nothing else in this file moves.
+///
+/// Since WI-20261121-TV0PA a witness's provision no `eq` answers is a load error
+/// (`EqualityReachesNoEq`) — the carrier derives none, and a comparison would reach no member —
+/// so the non-reflexive witness writes its `eq`, and the bare one is read off the KB its refused
+/// load leaves.
 #[test]
 fn a_carrier_a_witness_already_speaks_for_derives_nothing() {
     let noneq_witness = r#"
 namespace wi1098.wit
-  import anthill.prelude.{Int64, NonEq, PartialEq}
+  import anthill.prelude.{Int64, NonEq, PartialEq, Bool}
   sort Wrapper
     entity w(n: Int64)
   end
   sort WrapperNonEq
     provides PartialEq[T = Wrapper]
     provides NonEq[T = Wrapper]
+    operation eq(a: Wrapper, b: Wrapper) -> Bool = false
     operation nonEqRefl() -> Wrapper = w(n: 0)
   end
 end
@@ -533,12 +539,19 @@ namespace wi1098.wit2
   end
 end
 "#;
-    let kb2 = crate::common::load_kb_with(bare_partialeq_witness);
+    let (kb2, errors) = crate::common::load_outcome(bare_partialeq_witness).kb_and_errors();
     assert_eq!(
         provisions_under(&kb2, "wi1098.wit2"),
         vec![("CW".to_string(), "PartialEq".to_string())],
         "ONE claim about `C`'s equality, the one written — a derived second would put \
          two candidates in the coherence group where the author put one"
+    );
+    assert!(
+        errors.iter().any(|e| matches!(
+            e,
+            anthill_core::kb::load::LoadError::EqualityReachesNoEq { carrier, .. } if carrier == "wi1098.wit2.C"
+        )),
+        "and `CW` writes no `eq`, so nothing answers `C`'s equality: refused at load, got {errors:?}"
     );
 }
 

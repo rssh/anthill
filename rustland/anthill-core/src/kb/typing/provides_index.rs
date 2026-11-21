@@ -1630,6 +1630,8 @@ struct DecodedProvision {
     pub(super) carrier: Symbol,
     pub(super) base: Symbol,
     pub(super) bindings: SmallVec<[(Symbol, Value); 2]>,
+    /// The row's spec view, which its `ProvidesConditionInfo` facts are joined to.
+    pub(super) spec_view: Value,
 }
 
 /// WI-1109 — every provision row, decoded ONCE.
@@ -1652,13 +1654,50 @@ fn decoded_provision_rows(kb: &KnowledgeBase) -> Vec<DecodedProvision> {
             carrier: kb.canonical_sort_sym(row.provider),
             base: kb.canonical_sort_sym(row.spec_base),
             bindings: row.bindings(kb),
+            spec_view: row.spec_view,
         })
         .collect()
 }
 
+/// WI-20261121-TV0PA — the clauses of ONE provision row: the conditions of each
+/// `provides` clause written (or derived) at the row's own view, by clause index and in
+/// fact order. Empty for a row with no conditioned clause at its view, which holds
+/// outright. Read off the row's view and not off its (provider, spec) pair, so a provider
+/// that writes one spec at two applications, one of them conditioned, gives each its own.
+fn clauses_at_row(kb: &KnowledgeBase, row: &DecodedProvision) -> Vec<Vec<Value>> {
+    let mut out: Vec<(i64, Vec<Value>)> = Vec::new();
+    for rid in condition_rids_by_carrier(kb, row.carrier) {
+        let Some((owner, base, condition)) = decoded_condition_row(kb, rid) else {
+            continue;
+        };
+        if kb.canonical_sort_sym(owner) != row.carrier || kb.canonical_sort_sym(base) != row.base {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let at_row = crate::kb::op_info::head_field_value(kb, head, "provided")
+            .is_some_and(|provided| {
+                crate::kb::term_view::views_structurally_equal(kb, &provided, &row.spec_view)
+            });
+        if !at_row {
+            continue;
+        }
+        let clause = crate::kb::op_info::head_field_term(kb, head, "clause")
+            .and_then(|t| match kb.get_term(t) {
+                Term::Const(Literal::Int(n)) => Some(*n),
+                _ => None,
+            })
+            .unwrap_or(-1);
+        match out.iter_mut().find(|(c, _)| *c == clause) {
+            Some((_, conditions)) => conditions.push(condition),
+            None => out.push((clause, vec![condition])),
+        }
+    }
+    out.into_iter().map(|(_, conditions)| conditions).collect()
+}
+
 /// The (carrier, provided-spec) pairs whose provision carries a `:- goals` tail, from ONE
-/// sweep of the condition facts. A conditional provision neither forwards nor is forwarded
-/// through — see [`derive_forwarded_provisions`].
+/// sweep of the condition facts. A conditional forwarder forwards nothing, and a conditional
+/// carrier row forwards under its own clauses — see [`derive_forwarded_provisions`].
 ///
 /// ONE SWEEP IS WHAT THIS SAYS AND, SINCE WI-20260920-E3DC5, WHAT IT DOES. The body used
 /// to call [`provision_conditions`] once PER CARRIER, and that predicate walks the WHOLE
@@ -1750,17 +1789,20 @@ pub(super) fn conditioned_provision_pairs(
 /// keeps `Float` — which writes `provides PartialOrd` and no `compare` — untouched, and
 /// what stops a derived row becoming a rival at a coherent spec.
 ///
-/// A CONDITIONAL PROVISION DERIVES NOTHING, and the `!kb.is_fact` guard below is what
-/// enforces it — deliberately, not incidentally. `Pair provides Ord[Pair] :- Ord[A],
-/// Ord[B]` is a RULE, and this pass asserts FACTS: copying only the head would drop the
-/// `:- goals` tail and claim the lower floor UNCONDITIONALLY, at element bindings where
-/// the source provision does not hold. That is precisely the over-claim WI-1033's
-/// `ProvisionConditionsTooWeak` exists to refuse, manufactured by the deriver instead of
-/// written by an author. So the pass UNDER-derives here: a conditional provider writes
-/// both floors by hand, each with its own tail (`pair.anthill` does, and its two tails
-/// differ — weak iff both components weak, strong iff both strong, which is why one
-/// copied tail could not serve both anyway). Deriving a conditional row means asserting
-/// a rule with the source's body, and is the next increment, not this one.
+/// A CONDITIONAL PROVISION FORWARDS UNDER ITS OWN CONDITIONS (WI-20261121-TV0PA):
+/// `Box provides Eq[Self] :- Eq[T]` gives `Box provides PartialEq[Self] :- Eq[T]`, one
+/// derived clause per clause of the source, each with the source's goals. That is sound
+/// for the reason the forwarding is: where the conditions hold the source does, and the
+/// source converts to the floor. Copying the head alone would claim the floor
+/// UNCONDITIONALLY, at bindings where the source does not hold — the over-claim WI-1033's
+/// `ProvisionConditionsTooWeak` refuses — and deriving nothing left the carrier with no
+/// floor at all: `eq(box(v: 1), box(v: 2))` over that `Box`, with its own `eq`, was
+/// refused "`Box` provides `Eq`, which requires `PartialEq`" (MEASURED, c3371cd0). A
+/// carrier that writes the floor with a tail of its own keeps it (fill silence): `Pair`
+/// writes both floors, weak iff both components weak and strong iff both strong, which one
+/// copied tail could not say. A CONDITIONAL FORWARDER still forwards nothing
+/// ([`forwarded_rows_to_derive`]): a conversion holding only under goals is not one this
+/// pass can relocate a carrier's bindings through.
 pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
     // Bounded fixpoint, so a tower deeper than one hop still derives; the bound is a
     // runaway guard, not a depth claim — the shipped tower needs one round and settles
@@ -1771,11 +1813,14 @@ pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
         if pending.is_empty() {
             return;
         }
-        for (carrier, target, source_spec, bindings) in pending {
-            let rid = assert_forwarded_provides(kb, carrier, target, &bindings);
+        for row in pending {
+            let (rid, view) = assert_forwarded_provides(kb, row.carrier, row.target, &row.bindings);
             // Provenance, so a later refusal against this row can say where it came
             // from instead of naming a `provides` clause the author never wrote.
-            kb.mark_derived_provision(rid, source_spec);
+            kb.mark_derived_provision(rid, row.source_spec);
+            if !row.clauses.is_empty() {
+                assert_forwarded_conditions(kb, &row, view);
+            }
         }
     }
     // ONE MORE READ BEFORE ACCUSING THE FIXPOINT (WI-1111 review). The loop returns early
@@ -1802,13 +1847,27 @@ pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
     );
 }
 
+/// One row [`forwarded_rows_to_derive`] finds missing.
+pub(super) struct ForwardedRow {
+    pub(super) carrier: Symbol,
+    /// The floor the row provides.
+    pub(super) target: Symbol,
+    /// The spec whose provision it is forwarded from.
+    pub(super) source_spec: Symbol,
+    /// Keyed by the TARGET's parameter LOCAL NAMES, already translated through
+    /// [`forwarding_param_map`].
+    pub(super) bindings: Vec<(String, Value)>,
+    /// The source row's conditioned clauses, each a conjunction of goals, copied as they are
+    /// ([`clauses_at_row`]). Empty for a source that holds outright.
+    pub(super) clauses: Vec<Vec<Value>>,
+    /// Whether the source provision also has a clause with no condition, which the derived
+    /// one is then given too: a provision reads as holding outright where one does.
+    pub(super) unconditioned_too: bool,
+}
+
 /// One round: every (carrier, forwarded floor) row not already present, with the source
-/// spec that produced it. Reads only — the caller asserts. The emitted bindings are keyed
-/// by the TARGET's parameter LOCAL NAMES, already translated through
-/// [`forwarding_param_map`].
-pub(super) fn forwarded_rows_to_derive(
-    kb: &KnowledgeBase,
-) -> Vec<(Symbol, Symbol, Symbol, Vec<(String, Value)>)> {
+/// spec that produced it and the source's conditions. Reads only — the caller asserts.
+pub(super) fn forwarded_rows_to_derive(kb: &KnowledgeBase) -> Vec<ForwardedRow> {
     let rows = decoded_provision_rows(kb);
 
     let conditioned = conditioned_provision_pairs(kb);
@@ -1853,18 +1912,44 @@ pub(super) fn forwarded_rows_to_derive(
             .push(&r.bindings);
     }
 
-    let mut pending: Vec<(Symbol, Symbol, Symbol, Vec<(String, Value)>)> = Vec::new();
+    let mut pending: Vec<ForwardedRow> = Vec::new();
     for r in &rows {
         // The forwarding row itself is what is being read THROUGH, never a carrier of it.
         if same_sort_canonical(kb, r.carrier, r.base) {
             continue;
         }
-        if conditioned.contains(&(r.carrier, r.base)) {
-            continue;
-        }
         let Some(targets) = forwards.get(&r.base) else {
             continue;
         };
+        // A conditioned row forwards under its own clauses (WI-20261121-TV0PA). One that is
+        // itself a forwarding is a conditional CONVERSION, which forwards nothing above, and
+        // copied onto a carrier it would be one again.
+        let clauses = if conditioned.contains(&(r.carrier, r.base)) {
+            if is_param_forwarding(kb, r.carrier, r.base, &r.bindings) {
+                continue;
+            }
+            let clauses = clauses_at_row(kb, r);
+            // A conditioned provider's row with no clause at its view holds outright only where
+            // the provider wrote an unconditioned clause (another application of the spec).
+            // Without one, the row's conditions were filed under a view this did not match, and
+            // forwarding it would claim the floor unconditionally: not derived, and loud in a
+            // build with debug assertions.
+            if clauses.is_empty() && !kb.provides_unconditioned_clause(r.carrier, r.base) {
+                debug_assert!(
+                    false,
+                    "WI-20261121-TV0PA: `{}`'s provision of `{}` is conditioned and no clause \
+                     is filed at its view",
+                    kb.qualified_name_of(r.carrier),
+                    kb.qualified_name_of(r.base),
+                );
+                continue;
+            }
+            clauses
+        } else {
+            Vec::new()
+        };
+        let unconditioned_too =
+            !clauses.is_empty() && kb.provides_unconditioned_clause(r.carrier, r.base);
         for (target, map) in targets {
             // TRANSLATE, don't copy (WI-1111). Each target parameter takes the value this
             // row binds the SUBJECT parameter the forwarding sends it to. A target
@@ -1897,16 +1982,67 @@ pub(super) fn forwarded_rows_to_derive(
             // a debug build and silently dropping rows in a release one. Driven by
             // `nine_bindings_of_one_forwarder_all_derive`.
             if already
-                || pending.iter().any(|(c, t, _, b)| {
-                    *c == r.carrier && *t == *target && bindings_cover_named_pairs(kb, b, &mapped)
+                || pending.iter().any(|p| {
+                    p.carrier == r.carrier
+                        && p.target == *target
+                        && bindings_cover_named_pairs(kb, &p.bindings, &mapped)
                 })
             {
                 continue;
             }
-            pending.push((r.carrier, *target, r.base, mapped));
+            pending.push(ForwardedRow {
+                carrier: r.carrier,
+                target: *target,
+                source_spec: r.base,
+                bindings: mapped,
+                clauses: clauses.clone(),
+                unconditioned_too,
+            });
         }
     }
     pending
+}
+
+/// The `:- goals` tail of a forwarded row, filed as the loader files a written one
+/// (`load_provides_conditions`): one `ProvidesConditionInfo` per goal, joined to the row by
+/// its view, each clause under a fresh clause index and recorded for
+/// `provides_clause_count` — so dispatch reads the derived provision's clauses as it reads
+/// the source's ([`provision_conditions`], `alternative_condition_goals`).
+fn assert_forwarded_conditions(kb: &mut KnowledgeBase, row: &ForwardedRow, view: Value) {
+    let cond_sym = kb.resolve_symbol("anthill.reflect.ProvidesConditionInfo");
+    let sort_ref_sym = kb.intern("sort_ref");
+    let provided_sym = kb.intern("provided");
+    let condition_sym = kb.intern("condition");
+    let clause_sym = kb.intern("clause");
+    kb.register_entity_fields(
+        cond_sym,
+        vec![sort_ref_sym, provided_sym, condition_sym, clause_sym],
+    );
+    let carrier_term = kb.make_name_term_from_sym(row.carrier);
+    let scope = kb.symbols.scope_id(row.carrier);
+    for conditions in &row.clauses {
+        let clause = kb.next_provides_clause_index(scope);
+        let clause_term = kb.alloc(Term::Const(Literal::Int(clause as i64)));
+        for condition in conditions {
+            kb.assert_fact_carrier(
+                cond_sym,
+                Vec::new(),
+                vec![
+                    (sort_ref_sym, Value::term(carrier_term)),
+                    (provided_sym, view.clone()),
+                    (condition_sym, condition.clone()),
+                    (clause_sym, Value::term(clause_term)),
+                ],
+                crate::kb::ClauseKind::Requirement,
+                row.carrier,
+                None,
+            );
+        }
+        kb.record_provides_clause(row.carrier, row.target, view.clone(), conditions.clone(), None);
+    }
+    if row.unconditioned_too {
+        kb.record_provides_clause(row.carrier, row.target, view, Vec::new(), None);
+    }
 }
 
 /// Assert `SortProvidesInfo(sort_ref = carrier, spec = SortView(target, <bindings>))`.
@@ -1919,7 +2055,7 @@ fn assert_forwarded_provides(
     carrier: Symbol,
     target: Symbol,
     bindings: &[(String, Value)],
-) -> RuleId {
+) -> (RuleId, Value) {
     let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
     let sort_view_sym = kb.resolve_symbol("anthill.reflect.SortView");
     let sort_ref_key = kb.intern("sort_ref");
@@ -1955,15 +2091,16 @@ fn assert_forwarded_provides(
     let spec_view = kb.fn_value(sort_view_sym, vec![Value::term(spec_name)], named_args);
     let sort_ref_term = kb.make_name_term_from_sym(carrier);
     kb.register_entity_fields(provides_sym, vec![sort_ref_key, spec_key]);
-    kb.assert_fact_carrier(
+    let rid = kb.assert_fact_carrier(
         provides_sym,
         Vec::new(),
         vec![
             (sort_ref_key, Value::term(sort_ref_term)),
-            (spec_key, spec_view),
+            (spec_key, spec_view.clone()),
         ],
         crate::kb::ClauseKind::Requirement,
         carrier,
         None,
-    )
+    );
+    (rid, spec_view)
 }

@@ -1025,12 +1025,15 @@ pub(super) fn provision_bindings(
 /// same owner the eq-dispatch index reads, so the two cannot disagree about which sort
 /// a provision is ABOUT.
 ///
-/// The one caller is `eq_derive`'s Total classification, which must not derive a claim
-/// over a carrier somebody has already made one about. MEASURED before the guard: a
+/// Written for `eq_derive`'s Total classification, which must not derive a claim over a
+/// carrier somebody has already made one about. MEASURED before the guard: a
 /// `provides NonEq[T = Wrapper]` witness left `Wrapper` seeded Total, so the derivation
 /// asserted `provides Eq[Wrapper]` — reflexivity of an equality the author had
 /// explicitly witnessed as non-reflexive — and `check_eq_noneq_exclusive` could not see
-/// the contradiction either, because it groups by `sort_ref` too.
+/// the contradiction either, because it groups by `sort_ref` too. That reader has moved to
+/// [`provisions_about`] (WI-20261121-TV0PA): this one files an `Eq`-only witness under the
+/// witness, `Eq` declaring no operation to receive on. The derivations of `SortDomain` and
+/// `TypeValue` read it still.
 pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     provides_rows_of_spec(kb, spec_sort)
         .map(|row| {
@@ -1049,6 +1052,21 @@ pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) 
 /// the sort a row is ABOUT: `eq_derive`'s partial seed asks who wrote a `NonEq`.
 pub(crate) fn providers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     provides_rows_of_spec(kb, spec_sort).map(|row| row.provider).collect()
+}
+
+/// WI-20261121-TV0PA — does `carrier`'s `PartialEq` hold only under conditions? Its own
+/// provision's ([`provision_is_conditional`]) where it writes one, else that of a provision it
+/// writes of a spec that provides `PartialEq` (`provides Eq[Self] :- Eq[T]`), which the
+/// forwarded row is derived under — asked before that row exists, by `eq_derive`.
+pub(crate) fn partial_eq_is_conditional(kb: &KnowledgeBase, carrier: Symbol, partial_eq: Symbol) -> bool {
+    let pe = kb.canonical_sort_sym(partial_eq);
+    let direct = provides_out_edges(kb, kb.canonical_sort_sym(carrier));
+    if direct.contains(&pe) {
+        return provision_is_conditional(kb, carrier, partial_eq);
+    }
+    direct
+        .iter()
+        .any(|&spec| sort_provides(kb, spec, partial_eq) && provision_is_conditional(kb, carrier, spec))
 }
 
 /// WI-20261006-SZKV7 — one provision of `spec`, with the sort it is ABOUT.
