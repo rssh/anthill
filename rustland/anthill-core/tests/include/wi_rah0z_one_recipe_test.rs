@@ -486,14 +486,20 @@ fn the_recogniser_fires_on_a_use_and_not_on_prose() {
 /// (kernel-language.md §8.3): `EqList` supplies an `eq` for the stdlib's `List`, and a
 /// composite's equality is closed by the load that defines it. In the stdlib's load it
 /// is the supplier; in a later one it is `EqualityOfEarlierSort`.
+///
+/// A CONDITION PER PROVISION, the shape `List` derives (WI-20261121-QAA6S). In the stdlib's
+/// load the witness takes the WHOLE of `List`'s equality — the derivation steps aside for a
+/// sort a provision names — so it must cover every element type the library compares lists
+/// of. One `requires Eq[T = A]` for both provisions did not: the library compares a
+/// `List[Term]` (`EffectExpression.guarded`'s `guard`), `Term` is `PartialEq` and not `Eq`, and
+/// the one-shot load was refused there (`wi_qaa6s_a_witness_takes_the_whole_equality_test`).
 const AN_EQ_FOR_THE_STDLIBS_LIST: &str = r#"
 namespace test.rah0z.eqlist
   import anthill.prelude.{Eq, PartialEq, List, Bool}
   sort EqList
     sort A = ?
-    requires Eq[T = A]
-    provides PartialEq[T = List[T = A]]
-    provides Eq[T = List[T = A]]
+    provides PartialEq[T = List[T = A]] :- PartialEq[T = A]
+    provides Eq[T = List[T = A]] :- Eq[T = A]
     operation eq(x: List[T = A], y: List[T = A]) -> Bool = true
   end
 end
