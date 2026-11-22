@@ -208,3 +208,7 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
   name) passes the receiver of a self-representing spec's operation, the first parameter the
   spec types `Self` and the bound operation types the provider, as `check_member_signature`
   does (step 5).
+- The `NoCandidates` arm of `check_apply_call`: for a self-representing spec something
+  provides, a call naming no carrier is held to the provisions at the type-vars σ fixed
+  (`a_provision_meets_fixed`, step 6, e7), beside `carriers_no_provision_binds`, which asks a
+  carrier at the single parameter.

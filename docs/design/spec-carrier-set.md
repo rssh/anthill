@@ -1107,3 +1107,17 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   carrier only at the single parameter. A spec with a dictionary refuses the same call at load
   ("requirement `Coll[C = Bar]` cannot be supplied"). By decision 1 the call fixes `C = Crate`
   and no provision is at it, so it is refused at load.
+- **2026-11-22, stage 2's sixth step (WI-20261122-CXR5B): a self-representing spec's call at a
+  type-var nothing provides** (e7, measured by the fifth step). `Holder.peek(crate(n: 5))`, with
+  `Bag provides Holder[C = Box]` and nothing at `C = Crate`, reached the dispatch with no
+  candidate and no carrier and loaded clean, then died at run, "operation has no body". In the
+  `NoCandidates` arm of `check_apply_call`, for a self-representing spec something provides,
+  where the call names no carrier, the type-vars it fixed are read off σ, and where no provision
+  of the spec is at them (`typing::a_provision_meets_fixed`: a binding left out, or at a type
+  parameter of the provider, is any) the call is refused, `NoProvisionAtCarriers` ("no provision
+  of `Holder` binds `C = Crate` … Add a `provides Holder[C = Crate]`"), as a spec with a
+  dictionary refuses it. A first cut without the "something provides" gate refused
+  `Set.empty[T = Int64]()` in six suites: `Set` takes `Self` values and nothing provides it,
+  and those calls are symbolic algebra left as data. Moved: e7 refused at load. Rows:
+  `wi_cxr5b_self_rep_no_provision_test` (2), the refusal failing with `src/` at `dc607734e` and
+  e4's control passing; the six suites guard the gate.

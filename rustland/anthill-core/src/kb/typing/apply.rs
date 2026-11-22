@@ -5345,6 +5345,13 @@ fn check_apply_call(
                                 named_results,
                                 &subst,
                             );
+                            let body = if env.enclosing_op().is_some() {
+                                CallBody::Operation
+                            } else if env.in_rule_body() {
+                                CallBody::Rule
+                            } else {
+                                CallBody::Constant
+                            };
                             if let Some(bindings) =
                                 carriers_no_provision_binds(kb, fn_sym, spec_sort, &arg_carriers)
                             {
@@ -5353,14 +5360,50 @@ fn check_apply_call(
                                     callee_op: fn_sym,
                                     spec_sort_sym: spec_sort,
                                     bindings,
-                                    body: if env.enclosing_op().is_some() {
-                                        CallBody::Operation
-                                    } else if env.in_rule_body() {
-                                        CallBody::Rule
-                                    } else {
-                                        CallBody::Constant
-                                    },
+                                    body,
                                 });
+                            }
+                            // WI-20261122-CXR5B (e7 of `docs/design/spec-carrier-set.md`) — A
+                            // SELF-REPRESENTING spec's call with no `Self` value names no carrier
+                            // (the provider), and the reads above ask one at the spec's single
+                            // parameter. What it fixes is read off σ: where no provision of the
+                            // spec is at it, nothing can run the call (decision 1). Passed
+                            // through, `Holder.peek(crate(n: 5))` beside `Bag provides Holder[C =
+                            // Box]` loaded clean and died at run, "operation has no body"
+                            // (MEASURED); a spec with a dictionary refused it here already.
+                            // Only for a spec something provides: a sort nothing provides is no
+                            // provision's to answer, and its own body-less operations are
+                            // symbolic algebra left as data (`Set.empty[T = Int64]()`, which a
+                            // first cut refused in six suites).
+                            if carrier.is_none()
+                                && spec_is_self_representing(kb, kb.canonical_sort_sym(spec_sort))
+                                && spec_has_any_providers(kb, spec_sort)
+                            {
+                                let mut fixed: Vec<(Symbol, Value)> = Vec::new();
+                                let mut named: Vec<(Symbol, Symbol)> = Vec::new();
+                                for tv in sort_carrier(kb, spec_sort).type_vars {
+                                    let Some(vid) = type_param_vid_in_sort(kb, spec_sort, tv) else {
+                                        continue;
+                                    };
+                                    let Some(b) =
+                                        spec_param_binding(kb, &subst, vid).filter(|b| type_is_ground(kb, b))
+                                    else {
+                                        continue;
+                                    };
+                                    if let Some(sort) = carrier_sort_of_value(kb, &b) {
+                                        named.push((tv, sort));
+                                        fixed.push((tv, b));
+                                    }
+                                }
+                                if !fixed.is_empty() && !a_provision_meets_fixed(kb, spec_sort, &fixed) {
+                                    return Err(TypeError::NoProvisionAtCarriers {
+                                        span,
+                                        callee_op: fn_sym,
+                                        spec_sort_sym: spec_sort,
+                                        bindings: named,
+                                        body,
+                                    });
+                                }
                             }
                         }
                     }

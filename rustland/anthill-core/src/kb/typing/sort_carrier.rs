@@ -260,6 +260,23 @@ impl SpecApplication {
     }
 }
 
+/// WI-20261122-CXR5B (e7 of `docs/design/spec-carrier-set.md`) — does a provision of the
+/// SELF-REPRESENTING `spec` stand at the type-vars a call fixed, `fixed` (each type-var with the
+/// ground type the call fixed it to)? A provision's binding left out, or bound to a type
+/// parameter of its provider, is any there; a binding with one nested is any where it is
+/// ([`carrier_views_overlap`]). Decision 1: a call reads what it leaves free off the provisions at
+/// what it fixes, and where there is none, nothing can run it.
+pub(crate) fn a_provision_meets_fixed(kb: &KnowledgeBase, spec: Symbol, fixed: &[(Symbol, Value)]) -> bool {
+    provides_rows_of_spec(kb, spec).any(|row| {
+        let view = row.bindings(kb);
+        fixed.iter().all(|(tv, b)| match binding_for_param(kb, &view, *tv, BindingKeyMatch::Label) {
+            None => true,
+            Some(v) if is_type_param_view(kb, v) => true,
+            Some(v) => carrier_views_overlap(kb, v, b),
+        })
+    })
+}
+
 /// Does `carrier`, a provision's carrier ([`provision_carrier`]), name `sort` — as its head,
 /// or as the head of one of its bindings? The question decision 6 asks of a provision's
 /// provider, asked of any sort: what a probe of the default rows "at one sort" lists.
