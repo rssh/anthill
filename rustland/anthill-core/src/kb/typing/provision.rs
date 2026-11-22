@@ -130,6 +130,37 @@ pub(super) fn provision_carrier_sort(
 /// uncanonicalized read would give one relation two answers depending on which spelling
 /// a provision was written with. Memoized on `kb.spec_carrier_param_cache`, since the
 /// walk builds an `OperationInfoFull` per declared operation.
+/// WI-20261122-CXR5B (decision 3 of `docs/design/spec-carrier-set.md`) — EVERY type-var of
+/// `spec_sort` some declared operation takes a value of, in declaration order, each with the
+/// first such operation: a parameter typed at the type-var, or at an application it heads
+/// (`m: M[A]`, [`declared_type_param_head_vid`]). "Takes a value of" is the PARAMETERS, on
+/// purpose: a type-var only a result mentions may be left out of a provision, and the member
+/// check then judges whether the member returns every type there. [`spec_carrier_param`] is the
+/// first of them; [`check_provision_names_carrier`] asks a written provision to bind each.
+pub(super) fn spec_taken_type_vars(kb: &KnowledgeBase, spec_sort: Symbol) -> SmallVec<[(Symbol, Symbol); 2]> {
+    let canon = kb.canonical_sort_sym(spec_sort);
+    let mut takers: Vec<(VarId, Symbol)> = Vec::new();
+    for &op in crate::kb::op_requirements::operations_of_sort(kb, canon).iter() {
+        let Some(info) = lookup_operation_info_full(kb, op) else {
+            continue;
+        };
+        for (_, pty) in &info.params {
+            if let Some(v) = declared_type_param_head_vid(kb, pty) {
+                if !takers.iter().any(|(w, _)| *w == v) {
+                    takers.push((v, op));
+                }
+            }
+        }
+    }
+    sort_type_params_as_pairs(kb, canon)
+        .iter()
+        .filter_map(|(s, _)| {
+            let v = type_param_global_var(kb, *s)?;
+            takers.iter().find(|(w, _)| *w == v).map(|(_, op)| (*s, *op))
+        })
+        .collect()
+}
+
 pub(super) fn spec_carrier_param(kb: &KnowledgeBase, spec_sort: Symbol) -> Option<Symbol> {
     let canon = kb.canonical_sort_sym(spec_sort);
     if let Some(cached) = kb.spec_carrier_param_cache.borrow().get(&canon) {
@@ -655,18 +686,45 @@ pub(crate) fn check_provision_names_carrier(
 ) -> Vec<crate::kb::load::LoadError> {
     let mut errors = Vec::new();
     for clause in clauses {
-        let Some(carrier_param) = spec_carrier_param(kb, clause.spec) else {
-            continue;
-        };
-        if written_spec_binds_param(kb, clause.spec, &clause.spec_view, carrier_param) {
-            continue;
+        // WI-20261122-CXR5B (decision 3) — EVERY type-var an operation takes a value of, not
+        // the one `spec_carrier_param` reads: over `Bag2 { put(c: C, x: T) }`, `provides Bag2[C
+        // = Self]` was refused as naming no carrier with `T` declared first, and passed this
+        // check with `C` first (MEASURED, the design's decision 3).
+        //
+        // A `?` WRITTEN there binds nothing either (decided with the user 2026-11-22): a
+        // left-out parameter IS the `?` written there (§5.2, WI-20261003-GR5EN), and the two
+        // spellings have one verdict. Refused for the left-out spelling alone, `Car provides
+        // Sp[T = Int64]` over `op(t: T, x: K)` was refused and `Sp[T = Int64, K = ?]` ran. A `?`
+        // inside a binding (`K = List[T = ?]`) binds `K`.
+        let dispatch = spec_carrier_param(kb, clause.spec);
+        for (type_var, taken_by) in spec_taken_type_vars(kb, clause.spec) {
+            // A variable that is the provider's own type parameter (`provides Ord[T = E]`, should
+            // it be held as the parameter's alias variable) binds; only a variable of the clause's
+            // own, the `?` written, binds nothing. Asked of the provider's parameters by their
+            // variables: `is_type_param_view` answers yes for every variable, the `?` included.
+            // Read only where the binding IS a variable, off the parameters' own variable terms:
+            // `type_param_global_var` refuses a dotted declaration's parameter (`Rec.Inner.T`),
+            // and a first cut asking it of every provider parameter panicked there.
+            let written_bare_variable = view_is_sort_view(kb, &clause.spec_view)
+                && provision_binding_value_at_param(kb, type_var, &clause.spec_view)
+                    .and_then(|v| kb.value_global_var(&v))
+                    .is_some_and(|vid| {
+                        !sort_type_params_as_pairs(kb, kb.canonical_sort_sym(clause.provider))
+                            .iter()
+                            .any(|(_, var)| kb.value_global_var(&Value::term(*var)) == Some(vid))
+                    });
+            if written_spec_binds_param(kb, clause.spec, &clause.spec_view, type_var) && !written_bare_variable {
+                continue;
+            }
+            errors.push(crate::kb::load::LoadError::ProvisionNamesNoCarrier {
+                spec: kb.qualified_name_of(clause.spec).to_string(),
+                carrier_param: short_name_of(kb.local_name_of(type_var)).to_string(),
+                taken_by: kb.qualified_name_of(taken_by).to_string(),
+                dispatch: dispatch == Some(type_var),
+                provider: kb.qualified_name_of(clause.provider).to_string(),
+                site: crate::kb::load::render_decl_site(kb, clause.span),
+            });
         }
-        errors.push(crate::kb::load::LoadError::ProvisionNamesNoCarrier {
-            spec: kb.qualified_name_of(clause.spec).to_string(),
-            carrier_param: short_name_of(kb.local_name_of(carrier_param)).to_string(),
-            provider: kb.qualified_name_of(clause.provider).to_string(),
-            site: crate::kb::load::render_decl_site(kb, clause.span),
-        });
     }
     errors
 }

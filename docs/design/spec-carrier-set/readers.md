@@ -167,7 +167,7 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 | kb/typing/sorts.rs:1960 | check_value_sort_membership | sop | X | the same note, for a constructor value |
 | kb/typing/provision.rs:385 | provider_conforms_to | shcp | SC | does a provider's value conform to the spec as a type |
 | kb/typing/provision.rs:413 | positions_typed_at_a_spec_over_a_parameter | shcp | SC | a census of such positions (read by the wi_kssa4 test) |
-| kb/typing/provision.rs:669 | check_provision_names_carrier | scp | K | a written provision must bind the carrier (`ProvisionNamesNoCarrier`) |
+| kb/typing/provision.rs:669 | check_provision_names_carrier | scp | K | a written provision must bind the carrier (`ProvisionNamesNoCarrier`) — **done** (CXR5B step 7: every type-var an operation takes, `spec_taken_type_vars`; a written `?` binds nothing) |
 | kb/typing/provision.rs:811 | check_rule_sort_uses | sop | K | rule-head `Spec.member` at a dictionary spec is checked against the carrier |
 | kb/typing/provision.rs:813 | check_rule_sort_uses | scp | K | the carrier the member must name: its own inline ladder (below) |
 | kb/typing/provision.rs:865 | parameter_spec_written_as_type | sop | K | a dictionary spec written as a value type is refused |

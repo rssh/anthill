@@ -574,7 +574,10 @@ corrected to describe the set, as 074 §1.2 has it:
    operation's result mentions may be left out (`?`), and the member check then judges
    whether the member returns every type there. The standard library is unaffected: every provision of
    `PersistentCollection`, `MutableCollection` and `VectorSpace` binds both type-vars. The
-   test fixtures are not measured.
+   test fixtures are not measured. (Done by stage 2's seventh step, History. Measured: one test fixture moved,
+   `wi_gr5en`'s member generic over a left-out `K`, and the user decided on 2026-11-22 that a
+   `?` written at a taken type-var binds nothing either, so its two spellings keep one verdict:
+   refused.)
 4. **The sort carrier is all the type-vars, for every spec. DECIDED 2026-11-22**, after
    measuring. The question was whether a spec where one operation takes `Self` and another
    a type-var (`spec_carrier_param`'s doc: "a spec declaring BOTH a carrier parameter and
@@ -1121,3 +1124,28 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   and those calls are symbolic algebra left as data. Moved: e7 refused at load. Rows:
   `wi_cxr5b_self_rep_no_provision_test` (2), the refusal failing with `src/` at `dc607734e` and
   e4's control passing; the six suites guard the gate.
+- **2026-11-22, stage 2's seventh step (WI-20261122-CXR5B): decision 3.** A written provision
+  binds each type-var an operation of its spec takes a value of — a parameter typed at it or at
+  an application it heads (`typing::spec_taken_type_vars`, the set `spec_carrier_param` takes the
+  first of) — and `check_provision_names_carrier` refuses one that does not, naming the
+  type-var and an operation that takes it (`LoadError::ProvisionNamesNoCarrier` gains
+  `taken_by` and `dispatch`; the parameter dispatch reads keeps its consequence and repair).
+  It asked the one dispatch parameter, so over `Bag2 { put(c: C, x: T) }` `MyBag provides
+  Bag2[C = Self]` was refused naming `T` with `T` declared first, and with `C` first passed it,
+  refused only by the member check for a narrower `x` and LOADED for a member generic over
+  `T`. Measured: the standard library unaffected, and one fixture moved,
+  `wi_gr5en_left_out_parameter_test`'s member generic over a left-out `K`, which ran (42).
+  That collided with GR5EN (a left-out parameter IS the `?` written there, one verdict for
+  both spellings): refusing the left-out spelling alone left `K = ?` written running. Decided
+  with the user: a `?` written at a taken type-var binds nothing either (a `?` inside a
+  binding, `K = List[T = ?]`, binds `K`), so both are refused; GR5EN's row moved, renamed. A
+  type-var only a result mentions may still be left out. `kernel-language.md` §5.1's refusal
+  and §5.2's left-out sentence restated, approved by the user. Rows:
+  `wi_cxr5b_taken_type_vars_test` (3), the refusal failing with `src/` at `6d0df4aef` and the two
+  controls passing; GR5EN's moved row fails backed out too. The family `a-declaration-rule`
+  moved 6,160 verdict lines, each already refused and now adding `ProvisionNamesNoCarrier`
+  (every provision of its template leaves `L` out, which `op(…, y: L)` takes); none crosses to
+  loading, and the file is blessed with the step. A /code-review of the step had the written
+  `?` told from a provider's own type parameter by the parameters' variables, read only where
+  the binding is a variable: asked of every provider parameter through `type_param_global_var`,
+  it panicked on a dotted declaration's (`wi1000`).

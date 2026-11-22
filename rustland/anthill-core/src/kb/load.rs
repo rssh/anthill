@@ -1885,8 +1885,14 @@ pub enum LoadError {
     ProvisionNamesNoCarrier {
         /// The spec the clause names, qualified.
         spec: String,
-        /// The spec's carrier parameter, by short name (`C`).
+        /// The type-var of the spec's sort carrier the clause leaves out, by short name (`C`)
+        /// — one an operation of the spec takes a value of (WI-20261122-CXR5B, decision 3).
         carrier_param: String,
+        /// An operation of the spec that takes a value of it, qualified (`Bag2.put`).
+        taken_by: String,
+        /// Is it the parameter dispatch reads ([`crate::kb::typing`]'s `spec_carrier_param`),
+        /// whose binding is the provider in the repair the message prescribes.
+        dispatch: bool,
         /// The sort whose body the clause stands in, qualified — its PROVIDER, and the
         /// repair the message prescribes.
         provider: String,
@@ -4917,13 +4923,15 @@ impl LoadError {
             LoadError::ProvisionNamesNoCarrier {
                 spec,
                 carrier_param,
+                taken_by,
+                dispatch,
                 provider,
                 site,
             } => {
                 format!(
                     "{}: {}",
                     site,
-                    provision_names_no_carrier_message(spec, carrier_param, provider)
+                    provision_names_no_carrier_message(spec, carrier_param, taken_by, *dispatch, provider)
                 )
             }
             LoadError::AmbiguousSpecMember {
@@ -5477,13 +5485,15 @@ impl std::fmt::Display for LoadError {
             LoadError::ProvisionNamesNoCarrier {
                 spec,
                 carrier_param,
+                taken_by,
+                dispatch,
                 provider,
                 site,
             } => {
                 write!(
                     f,
                     "{} at {}",
-                    provision_names_no_carrier_message(spec, carrier_param, provider),
+                    provision_names_no_carrier_message(spec, carrier_param, taken_by, *dispatch, provider),
                     site
                 )
             }
@@ -10141,17 +10151,40 @@ fn spec_alias_refused_message(alias: &str, reason: &str) -> String {
 /// And it says what the silence COST — the shape's whole history is that it loads clean and
 /// dies at a call site in another file, so a refusal that did not connect the two would
 /// read as the loader being newly fussy about a program that "worked".
-fn provision_names_no_carrier_message(spec: &str, carrier_param: &str, provider: &str) -> String {
-    format!(
-        "`provides {spec}` in '{provider}' binds nothing at '{spec}'s carrier \
-         parameter `{carrier_param}`, so it names no carrier — §5.1: a `provides` clause \
-         names its PROVIDER by where it is written, and its CARRIER by its bindings. The \
-         provision is not about '{provider}', and value-directed dispatch finds no \
-         provider for '{spec}'s operations: a call on a '{provider}' value fails \
-         `OperationBodyMissing` at run time, against a sort that implements it. Write the \
-         carrier into the clause — `provides {spec}[{carrier_param} = {provider}]` — \
-         alongside any bindings it already carries."
-    )
+///
+/// WI-20261122-CXR5B (decision 3 of `docs/design/spec-carrier-set.md`) — the refusal is for
+/// EVERY type-var an operation of the spec takes a value of, not the first one declared, so the
+/// sentence names the operation that takes it. The parameter dispatch reads keeps its own
+/// consequence and the provider in the repair; another one's binding is the author's to write.
+fn provision_names_no_carrier_message(
+    spec: &str,
+    carrier_param: &str,
+    taken_by: &str,
+    dispatch: bool,
+    provider: &str,
+) -> String {
+    if dispatch {
+        format!(
+            "`provides {spec}` in '{provider}' binds nothing at '{spec}'s carrier \
+             parameter `{carrier_param}`, which `{taken_by}` takes a value of, so it names no \
+             carrier — §5.1: a `provides` clause names its PROVIDER by where it is written, and \
+             its CARRIER by its bindings, binding each type-var an operation of its spec takes a \
+             value of. The provision is not about '{provider}', and value-directed dispatch \
+             finds no provider for '{spec}'s operations: a call on a '{provider}' value fails \
+             `OperationBodyMissing` at run time, against a sort that implements it. Write the \
+             carrier into the clause — `provides {spec}[{carrier_param} = {provider}]` — \
+             alongside any bindings it already carries."
+        )
+    } else {
+        format!(
+            "`provides {spec}` in '{provider}' binds nothing at '{spec}'s carrier \
+             parameter `{carrier_param}`, which `{taken_by}` takes a value of, so it names no \
+             carrier there — §5.1: a `provides` clause binds each type-var an operation of its \
+             spec takes a value of, and a `?` written there binds nothing, as leaving it out \
+             does. Write a type into the clause — `provides {spec}[{carrier_param} = …]` — \
+             alongside any bindings it already carries."
+        )
+    }
 }
 
 /// WI-20260923-ZBWMC — the sentence for [`LoadError::AmbiguousSpecMember`]. One owner,

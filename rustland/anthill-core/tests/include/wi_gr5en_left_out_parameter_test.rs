@@ -1,6 +1,8 @@
 //! A SPEC PARAMETER A `provides` CLAUSE LEAVES OUT IS THE `?` WRITTEN THERE — `provides Sp[T =
-//! V]` is `provides Sp[T = V, K = ?]` — the spec's carrier parameter excepted, which names the
-//! provider (decided with the user during WI-20261003-GR5EN). And a call through the spec is at
+//! V]` is `provides Sp[T = V, K = ?]` (decided with the user during WI-20261003-GR5EN) — except
+//! where an operation of the spec takes a value of it: a provision binds each such type-var to a
+//! type, and neither spelling is admitted (WI-20261122-CXR5B, decision 3, `kernel-language.md`
+//! §5.2; [`a_member_generic_over_a_left_out_taken_parameter_is_refused`] moved with it). And a call through the spec is at
 //! one instance, `Sp[T = V, K = ?k]`: `?k` is one variable of the call, inferred there, which
 //! every reading of `K` in the call is — `k: K` and `s.K` alike — and one rigid type in the
 //! member, which may not pick it. So a member takes every `K` the provision answers a call at:
@@ -95,14 +97,25 @@ fn a_member_fixing_a_left_out_parameter_is_refused() {
     );
 }
 
-/// … AND A MEMBER GENERIC OVER IT FITS, its parameter named or written `?W`, and runs at any `K`.
+/// … AND A MEMBER GENERIC OVER IT IS NO REPAIR. MOVED by WI-20261122-CXR5B (decision 3 of
+/// `docs/design/spec-carrier-set.md`, decided with the user 2026-11-22): a provision binds each
+/// type-var an operation of its spec takes a value of, and `op` takes `K`, so the clause is
+/// refused in both spellings — left out and `K = ?` alike, GR5EN's one verdict. It ran at any
+/// `K` (42) before, the member named or written `?W`. The repair is a type written at `K`.
 #[test]
-fn a_member_generic_over_a_left_out_parameter_fits() {
+fn a_member_generic_over_a_left_out_taken_parameter_is_refused() {
     for member in [
         "op[W](t: Int64, x: W) -> Int64 = t + 1",
         "op(t: Int64, x: ?W) -> Int64 = t + 1",
     ] {
-        runs_both("generic", "Int64", "op(t: T, x: K) -> Int64", member, "Sp.op(41, \"s\")", 42);
+        refused_both(
+            "generic",
+            "Int64",
+            "op(t: T, x: K) -> Int64",
+            member,
+            "Sp.op(41, \"s\")",
+            &["binds nothing at", "carrier parameter `K`", "Sp.op` takes a value of"],
+        );
     }
 }
 

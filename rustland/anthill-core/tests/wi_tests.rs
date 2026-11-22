@@ -2360,6 +2360,8 @@ mod wi_cxr5b_hk_witness_test;
 mod wi_cxr5b_bound_receiver_test;
 #[path = "include/wi_cxr5b_self_rep_no_provision_test.rs"]
 mod wi_cxr5b_self_rep_no_provision_test;
+#[path = "include/wi_cxr5b_taken_type_vars_test.rs"]
+mod wi_cxr5b_taken_type_vars_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;

@@ -39,6 +39,11 @@
 //! type of its own fixes the caller's slot and is refused there — 3,704 verdicts moved, each to
 //! `narrower` at `x` or `y`, none from refused to running. Most programs now stop at that
 //! refusal, before the rule the family was built for; the controls were not measured again.
+//!
+//! WI-20261122-CXR5B (decision 3, decided with the user 2026-11-22): a provision binds each
+//! type-var an operation of its spec takes a value of, and `op` takes `L` (`y: L`), which every
+//! provision here leaves out. So every program adds `ProvisionNamesNoCarrier` to its refusals —
+//! 6,160 verdict lines moved, each refused before and after, none crossing to loading.
 
 use super::{opt, spelt, Exception, Family, Hole, Picks, Program};
 
