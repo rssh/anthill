@@ -1,0 +1,23 @@
+namespace carrier_set.d12
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  sort Greeter
+    operation greet() -> Int64
+  end
+  sort W1
+    provides Greeter
+    operation greet() -> Int64 = 7
+  end
+
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(Greeter.greet[Greeter = W1]()))
+      0
+  end
+end

@@ -1,6 +1,6 @@
 # The sort carrier and the operation carrier
 
-## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Open: decision 4 (measure, then decide) and the scope. For WI-20261121-JE2MT.
+## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), with an amendment to the approved §5.4 wording proposed. Open: that amendment's approval, decision 6, and the scope. For WI-20261121-JE2MT.
 
 The MODEL is the type system's own, so this corrects the implementation to it. Proposal 074
 §1.2 (decided): "a spec may have several carriers … a value typed at the spec is the
@@ -41,21 +41,34 @@ A bare "carrier" in this document is one of the first two by its context. Quotat
 spec, of proposals and of messages keep their own words. §2 to §4 keep the implementation's
 "carrier parameter", the single parameter they measure.
 
-**The sort carrier** often has one type-var; not always.
+**The sort carrier is ALL the type-vars of the spec, for every spec** (decision 4). It often
+has one type-var; not always: `Eq[T]`, `SortDomain[T]`, `TypeValue[T]`, `Monad[M]` have one,
+and `Iterable[C, Element, E]`, `VectorSpace[V, F]`, `Convert[X, Y]`, `Stream[T, E]` several.
+`Self` is not a further member of it. By §5.2's definition `Self` is the sort at all its own
+type-vars (`Cell[V = V]`), one per signature, fixed by the call. A type-var an operation
+writes is that `Self`'s projection: in `Cell.get(c: Self) -> V`, `V` is what this cell holds.
 
-| the spec | its sort carrier | examples |
+What does differ between specs is their CLASS (074 §2): whether a value of type `Self`
+exists.
+
+| the spec | a value of the spec is | examples |
 |---|---|---|
-| a spec with a dictionary: no operation takes the spec itself | ALL its type-vars | `Eq[T]`, `SortDomain[T]`, `TypeValue[T]`, `Monad[M]` (one); `Iterable[C, Element, E]`, `VectorSpace[V, F]`, `Convert[X, Y]` (several) |
-| a self-representing spec: an operation takes the spec itself | the providing sort itself (`Self`); its type-vars are read off the provider | `Stream[T, E]` (`splitFirst(s: Self)`), so `List provides Stream[T = T, E = {}]` is at `List` |
+| a spec with a dictionary: no operation takes a value of type `Self` | a dictionary | `Eq`, `Iterable`, `Convert` |
+| a self-representing spec: an operation takes a value of type `Self` | a value of a provider's sort | `Stream` (`splitFirst(s: Self)`): a `List` value is a `Stream` value |
 
-A provision `W provides S[p₁ = t₁, …]` is AT the substituted sort its bindings of the sort
-carrier make: the whole binding list for a dictionary spec, the provider for a
-self-representing one. From that:
+The class decides where a `Self`-typed argument comes from, not where a provision is.
+
+A provision `W provides S[p₁ = t₁, …]` is AT the substituted sort its bindings make, the
+spec at all its type-vars, whatever the class: `List provides Stream[T = T, E = {}]` is at
+`Stream[T = T, E = {}]`. From that:
 
 - **Two provisions are at the same substituted sort** where those bindings unify. A binding can be
   an effect row (`Iterable`'s `E`), so the unification is over rows too.
-- **A witness** is a provider that is none of the sorts its bindings name, a binding's sort
-  being its head (`List` for `List[T = E]`).
+- **A provider provides a spec for itself** where its sort is one of the sorts its bindings
+  name (a binding's sort being its head, `List` for `List[T = E]`), or where the spec is
+  self-representing: then the provider's values are the spec's values (`List` provides
+  `Stream` for itself). Otherwise it is a **witness**. Whether a binding that only an
+  operation's RESULT mentions counts is open (decision 6).
 - **"Add this provision unless one is written"** (the derivations) asks whether a written
   provision is at a substituted sort that unifies with the one to be added.
 - **What a call fixes** is a question about its OPERATION. The **operation carrier** is
@@ -89,7 +102,8 @@ words. Read through it, the question "which sort is this provision for" disappea
   the PROVIDER's value: `s.provider.K` is `SubscriberStore`'s `K`, which its provision
   binds to `String`. The tests that drive that example today give `DataProvider` a
   self-receiving `pick(p: Self)` (`wi1082_self_return_tie_test`), which puts it in that
-  class: the provider is the carrier, and `K` is one of its members.
+  class: a value of `DataProvider` is a value of a provider's sort, and `K` is one of its
+  members.
 - **So two provisions are at one substituted sort when their members agree**, and nothing needs to
   name one member as "the" carrier. A reader that picks one type-var reads one member of
   the substituted sort and ignores the others. That is what every row of §3 B does.
@@ -311,17 +325,15 @@ memoized per canonical spec:
 
 ```rust
 struct SortCarrier {
-    /// An operation takes the spec itself: the provider is part of the sort carrier.
-    self_sort: bool,
-    /// The type-vars in the sort carrier, in declaration order: every one, for a spec with
-    /// a dictionary; for a self-representing spec, none or some, as decision 4 decides.
+    /// Every type-var of the spec, in declaration order (decision 4: every spec, both classes).
     type_vars: SmallVec<[Symbol; 2]>,
 }
 ```
 
-The shape holds decision 4's three possible answers (`Self`; `Self` and some type-vars; the
-type-vars alone), so the owner can be written before decision 4 is measured. Only its
-CONTENTS for a self-representing spec wait on it.
+Decision 4 left it a list of type-vars and nothing else. Whether a value of type `Self`
+exists is the spec's class (`sort_class`, 074 §2), and it stays a question of its own.
+(The shape with a `self_sort` flag that this paragraph had until decision 4 was taken is in
+the History.)
 
 It replaces L1–L5 as the answer to "where is this provision". Two questions stay apart from
 it, under names that say what they answer: the operation carrier (L6, per operation,
@@ -361,7 +373,11 @@ corrected to describe the set, as 074 §1.2 has it:
   the carrier is read off the operations … The rule as implemented …", with the
   sole-parameter sentence (around 1476–1491); `ProvisionNamesNoCarrier` (around 1495);
   "Where a spec genuinely has no carrier parameter, a witness for it cannot exist" (around 1570).
-- §5.2: a left-out parameter is `?` "the spec's carrier parameter excepted" (around 2143).
+- §5.2: a left-out parameter is `?` "the spec's carrier parameter excepted" (around 2143);
+  and `Self` "in a spec it is the spec, and does not become each carrier (a spec's carrier
+  parameter is what stands for the carrier)" (around 2135). The parenthesis is the single
+  parameter again; `Self` is the spec at all its type-vars (decision 4). The wording is for
+  the user's approval.
 - §5.4: the last case of "A body-less operation must have something that can run it"
   (around 3542), reworded per decision 1. The wording is approved (§6, decision 1), and it
   lands with stage 2.
@@ -371,7 +387,7 @@ corrected to describe the set, as 074 §1.2 has it:
   first typed by a spec parameter the provision binds to the carrier" (around 7325).
 - 058 §3.6 keeps its rule. A note says its "carrier" is the substituted sort.
 
-## 6. Decisions (taken with the user 2026-11-22, each as proposed; after review, 1 reopened and decided, 5 added and decided)
+## 6. Decisions (taken with the user 2026-11-22, each as proposed; after review, 1 reopened and decided, 4 decided, 5 added and decided, 6 open)
 
 1. **What a call fixes, for every provider. DECIDED 2026-11-22**, after it was reopened. It
    began as "§8.7, one provider declaring one spec twice" (d5, refused at load), decided
@@ -390,7 +406,16 @@ corrected to describe the set, as 074 §1.2 has it:
    - the provisions at what it fixes disagree on a type-var it leaves unfixed (b8, d3).
 
    Then the substituted sort is written at the call. One provider and several are held to
-   the same rule, for a spec with a dictionary.
+   the same rule, for every spec (decision 4 removed the self-representing exception).
+
+   **Why a call that fixes nothing is refused even with one provision (d9), while one that
+   fixes something reads the rest off it (d8).** A call that fixes no type-var is open in
+   all of them. The operation it is written in must then require the spec at them, as
+   today's message says ("missing `requires Dflt[T = …]`"). Taking the one provision that
+   happens to exist would let any later provision change the call. A call that fixes `C`
+   reads the rest off the provisions at `C`, as `Iterable.find(xs)` reads `Element` off
+   `List`'s. A later load can still add a provision at `C = Foo` that disagrees; that is the
+   open-world limit of every such reading, today's included.
 
    Corrected after the second review: the first statement of this rule refused a call
    whenever a type-var of the operation carrier was fixed by nothing. That would have
@@ -431,9 +456,31 @@ corrected to describe the set, as 074 §1.2 has it:
    not taken: it would refuse d3's program, whose repair d4 runs today and is the one §5.4
    itself prints.
 
-   For a SELF-REPRESENTING spec the carrier is the provider, so two provisions by one
-   provider that differ in a type-var are two claims at one carrier. They stay refused
-   (§8.7's rule, kept for that class).
+   For a SELF-REPRESENTING spec the rule is the same (decision 4). Two provisions by one
+   provider that differ in a type-var are two substituted sorts. A call that takes only
+   `Self` values reads the type-var off the provider's provisions, and is refused when they
+   disagree (e5). This paragraph used to keep §8.7's refusal for that class; decision 4
+   removed it.
+
+   **A call that names its provider** (found by the third review, measured on `409250372`).
+   A bracket naming the provider selects provisions without fixing any type-var:
+
+   | probe | program | today |
+   |---|---|---|
+   | d11 | one witness `W1` at `Dflt[T = Int64]`; `let x = Dflt.dflt[Dflt = W1]()`, nothing expected | refused at load: "… `Dflt.dflt.dispatch`: expected matching impl for per-call bindings, got no impl matches — unresolved: `Dflt` (the call selected `W1` …" |
+   | d12 | a spec with NO type-vars, `sort Greeter { operation greet() -> Int64 }`, and `W1 provides Greeter` with `greet() = 7`; `to_string(Greeter.greet[Greeter = W1]())` | LOADS, then fails at run: "operation has no body: `Greeter.greet` — nothing this runtime can run is registered for it" |
+   | d13 | d12 without the bracket | refused at load: "no provider can be selected here …" |
+
+   d11 should answer 1: the provider is named, and `T` is read off its one provision. d12
+   loads clean and fails when it runs, which is exactly what §5.4 exists to refuse. It is
+   a defect of today, independent of the single parameter, and it is a stage 2 row.
+
+   **Proposed amendment to the approved wording, for the user's approval** (the wording
+   below was approved before this was found). In the first refusal, after "it fixes no
+   type-var of `S` at all", add "and names no provider". Before "Whether one provider or
+   several", add: "A bracket naming a provider (`Dflt.dflt[Dflt = W1]()`) fixes that
+   provider's provisions, and what the call leaves unfixed is read off them. A spec with
+   no type-vars (`Greeter.greet()`) is fixed only that way, or by a `requires`."
 
    **Wording for §5.4, approved by the user 2026-11-22.** It goes into `kernel-language.md`
    with the stage that implements decision 1 (stage 2), so that the spec never describes
@@ -481,12 +528,58 @@ corrected to describe the set, as 074 §1.2 has it:
    whether the member returns every type there. The standard library is unaffected: every provision of
    `PersistentCollection`, `MutableCollection` and `VectorSpace` binds both type-vars. The
    test fixtures are not measured.
-4. **A spec that takes itself and also has a type-var an operation takes**
-   (`spec_carrier_param`'s doc: "a spec declaring BOTH a carrier parameter and a
-   self-receiving operation", measured to refuse a program that loads when its binding
-   was discarded). Is its carrier `Self`, or `Self` and those type-vars? Decided: measure
-   it in the tree before stage 2, and decide from the measurement. (`Stream` is not in this
-   class: its operations take only `Self`.)
+4. **The sort carrier is all the type-vars, for every spec. DECIDED 2026-11-22**, after
+   measuring. The question was whether a spec where one operation takes `Self` and another
+   a type-var (`spec_carrier_param`'s doc: "a spec declaring BOTH a carrier parameter and
+   a self-receiving operation") has `Self`, or `Self` and its type-vars, as its sort
+   carrier.
+
+   The user resolved it from `Self`'s definition, `kernel-language.md` §5.2: "**`Self` — the
+   sort a declaration is written in, at its own parameters** … in `sort Cell` with
+   `sort V = ?` it is `Cell[V = V]` … every `Self` of one signature is one instance — the
+   one the call fixes". So `Self` already is all the type-vars, and it is not a member of
+   the sort carrier beside them. A type-var an operation writes is that `Self`'s projection
+   (`Cell.get(c: Self) -> V`: "returns what this cell holds"). So "an operation that takes
+   `Self`" and "an operation that takes a type-var" are not two kinds: both are about the
+   one `Self` the call fixes.
+
+   What remains different between specs is their class: whether a value of type `Self`
+   exists (§1).
+
+   **Census** (a temporary unit test over the standard library, run on `409250372` and
+   removed): 146 self-representing sorts, of which 9 also have a type-var an operation takes:
+   `List`, `Cell`, `MappedStream`, `FilteredStream`, `Function`, `Map`, `MutableStack`,
+   `Set`, `SortedSet`. All 9 are data sorts that nothing provides (zero provisions), so this
+   decision moves nothing in the standard library. The test fixtures were not censused. The
+   one behind the doc's note is `wi1076_self_representing_spec_carrier_test`'s `Holder`.
+
+   **Probes** over that `Holder` (`sort C`, `sort Element`, `peek(c: C) -> Int64`,
+   `joinTwo(a: Self, b: Self) -> Int64`):
+
+   | probe | program | today | decided |
+   |---|---|---|---|
+   | e1 | `BoxHolder` (no constructors) at `C = Box`; `Holder.peek(box(n: 5))` | 2; filed at `Box` | 2 |
+   | e2 | witnesses at `C = Box` (2) and `C = Crate` (7) | 9 | 9 |
+   | e3 | ONE provider (no constructors) writing both provisions | refused at load, "ambiguous instance … for carrier `TwoHolder`" | loads; `peek` picks by `C` |
+   | e4 | `Bag` with constructors at `C = Box`; `joinTwo(bag, bag) * 10 + peek(box)` (`joinTwo`'s second parameter takes any provider, `b: Holder`, per §8.7) | 32; but filed at `Box`, so `Bag` counts as a witness although `joinTwo` dispatches on its values | 32; `Bag` provides `Holder` for itself (§1) |
+   | e5 | `Bag` at `C = Box` and at `C = Crate` | refused at load, three times | loads; `peek` picks by `C`; `joinTwo(bag, bag)` refused (`Bag`'s provisions disagree on `C`) unless `Holder[C = Box].joinTwo(…)` is written |
+
+   Two of e5's three refusals today are a separate defect. A `joinTwo` bound by name
+   (`joinTwo = Bag.join`) has its receiver `a: Bag` refused as incompatible with
+   `Holder[C = Box, …]`, while the same receiver written as a member passes (e4). It is a
+   stage 2 row.
+
+   Consequences, each written where it applies:
+   - §1's table is now about the class, not the carrier.
+   - Decision 1's self-representing exception is removed.
+   - Decision 5's `?c` for `Stream` is `Stream[T = T, E = {}]`, not `List[T = T]`: one shape
+     in the column, whatever the class (this also answers the third review's finding 2).
+   - "Provides for itself" also holds where the spec is self-representing. Otherwise the
+     seven `Stream` provisions of the standard library would lose their inferred default
+     rows, the loss WI-1076 once measured.
+   - `SortCarrier` holds type-vars only.
+   - §5.2's "a spec's carrier parameter is what stands for the carrier" joins the spec text
+     to correct.
 5. **The reflect relation's carrier is the substituted sort. DECIDED 2026-11-22** (added
    after review). `anthill.reflect.typing.provision_carrier(?p, ?s, ?c)`, "sort P provides
    spec S at dispatch carrier C", answers ONE sort per provision. b1, b3 and b4 are
@@ -520,7 +613,8 @@ corrected to describe the set, as 074 §1.2 has it:
 
    The rules then read:
    - `self_provides(C, S)`: the provider is one of the sorts the substituted sort binds
-     (`MyBag` is at `C`, in both orders).
+     (`MyBag` is at `C`, in both orders), or `S` is self-representing (`List` provides
+     `Stream` for itself; decision 4).
    - `default_provider(S, I, W)`: a call whose substituted sort is `I`, tied between
      providers, takes `W`. That is what decision 1's call fixes.
    - `one_default` compares two rows by unifying their substituted sorts, as it already
@@ -531,23 +625,39 @@ corrected to describe the set, as 074 §1.2 has it:
    `self_provides`, `default_provider`, the loader's index and `one_default`, and the tests
    that assert the rows (`wi860_default_provider_relations_test` among them).
    `examples/guardians` has an operation of its own named `provision_carrier`, which reads
-   `SortProvidesInfo` directly. It is not this relation. For a self-representing spec the
-   carrier is the provider (`List provides Stream[T = T, E = {}]` is at `List[T = T]`);
-   whether its type-vars join it is decision 4.
+   `SortProvidesInfo` directly. It is not this relation. For a self-representing spec `?c`
+   has the same shape: `List provides Stream[T = T, E = {}]` is at `Stream[T = T, E = {}]`
+   (decision 4). The provider is the relation's `?p`. This sentence said `List[T = T]` until
+   decision 4 was taken. The key of the loader's default index under a compound `?c` is
+   stage 2's to choose, and it is on the per-call path.
+6. **OPEN: "provides for itself" through a binding no operation takes a value of** (the
+   third review, finding 3; not measured). `Int64 provides Coll[C = Foo, Elem = Int64]`
+   names `Int64` at `Elem`, so by §1 it is `Int64`'s own provision. Yet `Elem` appears only
+   in `first`'s result, and no operation ever receives an `Int64`. Decision 3 already
+   separates the type-vars an operation takes a value of from the rest. Should "provides
+   for itself" use the same restriction? It feeds the supply route, the member checks and
+   `self_provides`. For the user to decide.
 
 ## 7. Acceptance
 
 If the user accepts the proposed scope, the stage 1 rows are JE2MT's and the stage 2 rows
 move to stage 2's ticket.
 
-
 - **Stage 1 rows:** b1 derives no second row, with its back-out. The equality rows of
   `wi_tv0pa_eq_gives_partial_eq_test` stay green.
-- **Stage 2 rows:** b2 still names `W` once the witness criterion moves; b3 and b4 agree
-  (`MyBag`'s own in both orders); b5–b8, d5 and d7 answer as decision 1's table says, and
-  d1–d4 and d6 as they do today; `VectorSpace` declared `F` first still reads `Vec3`'s
-  provision as its own; c1 answers 42 or its cause is named; each of §6's decisions has its
-  driven row.
+- **Stage 2 rows:**
+  - b2 still names `W` once the witness criterion moves.
+  - b3 and b4 agree: `MyBag`'s own provision in both orders, `?c` is
+    `Bag2[T = Int64, C = MyBag]`, and `self_provides` and `default_provider` answer the same
+    in both orders.
+  - Decision 5's `?c` table holds, `Stream`'s row included.
+  - b5–b8, d5 and d7–d10 answer as decision 1's table says; d1–d4 and d6 as they do today.
+  - d11 answers 1, and d12 is refused at load or answers 7, as the amendment is decided.
+  - e1–e5 answer as decision 4's table says, and e5's bound `joinTwo` loads.
+  - `VectorSpace` declared `F` first still reads `Vec3`'s provision as its own.
+  - c1 answers 42, or its cause is named.
+  - The diagnostics the X readers print ("Write the instance: …") use the substituted sort.
+  - Each of §6's decisions has its driven row.
 - **The a-rows** pass before and after, by design.
 - **Gates:** families green; full workspace via `rustland/scripts/test.sh`; scaland
   `testFull`.
@@ -617,3 +727,20 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
     changed to them, and the owner became `sort_carrier` / `SortCarrier`.
 - **2026-11-22, §5.4's wording approved by the user**, as restated after the second review.
   It lands in `kernel-language.md` with stage 2, the stage that implements it.
+- **2026-11-22, decision 4 decided with the user.** A temporary census of the standard
+  library (removed): none of the 9 sorts with both shapes is provided. Probes e1–e5 over
+  `wi1076`'s `Holder`. The user's point: `Self` is by definition the sort at all its
+  type-vars (§5.2), so a type-var an operation writes is that `Self`'s projection, and the
+  sort carrier is all the type-vars for every spec. Decision 1's self-representing
+  exception and decision 5's `List[T = T]` sentence were corrected; `SortCarrier` lost its
+  `self_sort` flag (it was `{ self_sort: bool, type_vars }`).
+- **2026-11-22, third review from the other session** (anthill-6d), on `c3f0cd4e5`, before
+  the §5.4 approval and decision 4. Taken from it, each measured here first:
+  - A call that names its provider is not covered by the approved wording. d11 is refused
+    though it should answer, and d12 loads clean and fails at run. An amendment is
+    proposed for the user's approval.
+  - The two shapes of `?c` (its finding 2) are resolved by decision 4.
+  - "Provides for itself" through a result-only binding (its finding 3) is decision 6, open.
+  - The d8/d9 asymmetry has its reason stated.
+  - §7 lists d8–d13, e1–e5, decision 5's shapes, and the X readers' message.
+  - The default index's key under a compound `?c` is noted as stage 2's to choose.

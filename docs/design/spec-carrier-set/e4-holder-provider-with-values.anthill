@@ -1,0 +1,33 @@
+namespace carrier_set.e4
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  sort Holder
+    sort C = ?
+    sort Element = ?
+    operation peek(c: C) -> Int64
+    operation joinTwo(a: Self, b: Self) -> Int64
+  end
+  sort Box
+    entity box(n: Int64)
+  end
+  sort Crate
+    entity crate(n: Int64)
+  end
+  sort Bag
+    entity bag(n: Int64)
+    provides Holder[C = Box, Element = Int64]
+    operation peek(c: Box) -> Int64 = 2
+    operation joinTwo(a: Bag, b: Holder) -> Int64 = 3
+  end
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(Holder.joinTwo(bag(n: 1), bag(n: 2)) * 10 + Holder.peek(box(n: 5))))
+      0
+  end
+end
