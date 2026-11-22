@@ -87,6 +87,8 @@ fn main() {
             "ResolveStreamFailure".into(),
             // WI-20261115-0WT09 — the limit `search_truncated` names. Same closure reason.
             "SearchLimit".into(),
+            // WI-20261122-96QKW — the budget `KB.execute_with` takes. Same closure reason.
+            "ExecuteOptions".into(),
             // proposal 053: the write-policy enum the persistence `Store`
             // algebra's `monotonicity` op returns (store.anthill imports it).
             "Monotonicity".into(),

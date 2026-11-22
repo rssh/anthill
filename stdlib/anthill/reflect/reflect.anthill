@@ -657,7 +657,8 @@ namespace anthill.reflect
   --
   -- The first four come from a census of the host bridge's raise sites, not a guess. Three
   -- carry `detail` as prose — the variant is what a handler branches on, the text is
-  -- for a human: `malformed_query` (a query that does not lower) and `stream_misused`
+  -- for a human: `malformed_query` (a query that does not lower, or an `ExecuteOptions` limit
+  -- below 0) and `stream_misused`
   -- (a stream pulled after it was spent, or after it raised) are CALLER bugs;
   -- `unsupported_operation` is a GAP in the face — a well-formed query or stream
   -- operation it has not implemented — which the caller cannot fix by rewriting. A
@@ -707,6 +708,14 @@ namespace anthill.reflect
     entity depth(max_depth: Int64)
     entity steps(max_steps: Int64)
   end
+
+  -- The budget of the search `KB.execute_with` runs (WI-20261122-96QKW): the two limits
+  -- `SearchLimit` names, `max_depth` the deepest a goal may be nested and `max_steps` the
+  -- steps the whole search may take. A field that is `none()` keeps the limit `execute` runs
+  -- at (depth 100, 10 000 000 steps), and a limit the search reaches is reported as the one
+  -- given here. A limit is a count: one below 0 is refused, as `malformed_query`, before the
+  -- search starts.
+  entity ExecuteOptions(max_depth: Option[T = Int64], max_steps: Option[T = Int64])
 
   -- The proof the SLD search makes, given back as a value (WI-20261121-G8E02; proposal 075;
   -- kernel-language §8.3, "The proof of a goal"). `SLDProof.of(goal, ?p)` takes a goal `g` or
@@ -863,6 +872,15 @@ namespace anthill.reflect
     -- The row is also the host signature, as for `loaded` above: it generates
     -- `Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure>`.
     operation execute(kb: KB, query: LogicalQuery)
+      -> Stream[T = Solution, E = Error[ResolveStreamFailure]]
+      effects Error[ResolveStreamFailure] requires TypeValue[T = ResolveStreamFailure] @[host_implemented]
+
+    -- `execute` at the budget `options` gives (WI-20261122-96QKW): a search a checker wants
+    -- deeper than the default, or cut short with a fast `search_truncated(steps(n))`. The
+    -- stream is `execute`'s in every other way — typed when it is read, every proof an
+    -- answer. The relations an operation body drains, and `Relation.splitFirst`, keep the
+    -- default.
+    operation execute_with(kb: KB, query: LogicalQuery, options: ExecuteOptions)
       -> Stream[T = Solution, E = Error[ResolveStreamFailure]]
       effects Error[ResolveStreamFailure] requires TypeValue[T = ResolveStreamFailure] @[host_implemented]
 

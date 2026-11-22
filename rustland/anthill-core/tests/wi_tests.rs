@@ -2105,6 +2105,8 @@ mod wi_8y5be_interpreter_stream_failure_test;
 mod wi_p9qbf_lazy_truncation_test;
 #[path = "include/wi_0wt09_depth_is_nesting_test.rs"]
 mod wi_0wt09_depth_is_nesting_test;
+#[path = "include/wi_96qkw_execute_options_test.rs"]
+mod wi_96qkw_execute_options_test;
 #[path = "include/wi_yr3n7_domain_check_test.rs"]
 mod wi_yr3n7_domain_check_test;
 #[path = "include/wi_sxz3g_clause_order_test.rs"]

@@ -1040,7 +1040,7 @@ impl Interpreter {
     }
 
     /// A `ResolveStreamFailure` variant that carries only prose `detail`.
-    fn raise_resolve_stream_failure(&mut self, ctor: &str, detail: String, by: RaiseBy) -> EvalError {
+    pub(crate) fn raise_resolve_stream_failure(&mut self, ctor: &str, detail: String, by: RaiseBy) -> EvalError {
         self.raise_error_payload(
             &format!("anthill.reflect.ResolveStreamFailure.{ctor}"),
             ctor,

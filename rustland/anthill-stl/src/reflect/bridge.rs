@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anthill_core::eval::Value;
+use anthill_core::kb::execute::ExecuteOptions as CoreExecuteOptions;
 use anthill_core::kb::resolve::{ResolveConfig, SearchStream};
 use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var, VarId};
 use anthill_core::kb::term_view::TermView;
@@ -295,6 +296,20 @@ impl KbBridge {
         };
         let goals = self.query_to_goals(query, &mut config)?;
         Ok((goals, config))
+    }
+
+    /// The stream `KB.execute` and `KB.execute_with` hand out: `query`'s goals run at
+    /// `options`' budget.
+    fn execute_at(
+        &self,
+        query: &LogicalQuery,
+        options: &CoreExecuteOptions,
+    ) -> Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure> {
+        let (goals, mut config) = self.query_to_goals_and_config(query)?;
+        config.max_depth = options.max_depth;
+        config.max_steps = options.max_steps;
+        let stream = self.kb.borrow().resolve_lazy_goals(goals, &config);
+        Ok(Box::new(SearchStreamAdapter::over(&self.kb, Pending::Search(stream))))
     }
 
     /// Recursively convert a `LogicalQuery` into goal [`Value`]s. A
@@ -1076,9 +1091,20 @@ impl KB for KbBridge {
         &self,
         query: LogicalQuery,
     ) -> Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure> {
-        let (goals, config) = self.query_to_goals_and_config(&query)?;
-        let stream = self.kb.borrow().resolve_lazy_goals(goals, &config);
-        Ok(Box::new(SearchStreamAdapter::over(&self.kb, Pending::Search(stream))))
+        self.execute_at(&query, &CoreExecuteOptions::default())
+    }
+
+    /// WI-20261122-96QKW — `execute` at the caller's budget. A limit below 0 is
+    /// `MalformedQuery`, refused by the rule the interpreter's face reads
+    /// ([`CoreExecuteOptions::from_limits`]).
+    fn execute_with(
+        &self,
+        query: LogicalQuery,
+        options: ExecuteOptions,
+    ) -> Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure> {
+        let options = CoreExecuteOptions::from_limits(options.max_depth, options.max_steps)
+            .map_err(|detail| ResolveStreamFailure::MalformedQuery { detail })?;
+        self.execute_at(&query, &options)
     }
 
     fn facts_of(&self, sort: Type) -> Vec<Term> {
@@ -1648,6 +1674,48 @@ end
             }
         };
         bridge.execute(query).expect("execute builds the stream")
+    }
+
+    /// WI-20261122-96QKW — `execute_with` at the caller's budget: `stuck`, an infinite descent,
+    /// is cut at the caller's depth or steps, and the cut names that limit; a field left `None`
+    /// keeps the default; a limit below 0 is `MalformedQuery` before the search starts.
+    ///
+    /// FAILS WHEN BACKED OUT (`execute_at` ignoring its options): every cut is depth 100's.
+    #[test]
+    fn execute_with_runs_at_the_callers_budget() {
+        let bridge = load_source_bridge_with_stdlib(CUT_SEARCH);
+        let run = |max_depth: Option<i64>, max_steps: Option<i64>| {
+            let query = {
+                let mut kb = bridge.kb.borrow_mut();
+                LogicalQuery::PatternQuery {
+                    term: ReflectTerm::new(Value::term(kb.resolve_qualified_name_term("rstl.cut.stuck"))),
+                }
+            };
+            bridge
+                .execute_with(query, ExecuteOptions { max_depth, max_steps })
+                .and_then(|stream| stream.split_first().map(|r| r.is_some()))
+        };
+        let depth_cut = |r: &Result<bool, ResolveStreamFailure>, d: i64| {
+            matches!(r, Err(ResolveStreamFailure::SearchTruncated {
+                limit: SearchLimit::Depth { max_depth },
+            }) if *max_depth == d)
+        };
+        let at_7 = run(Some(7), None);
+        assert!(depth_cut(&at_7, 7), "cut at the caller's depth: {at_7:?}");
+        let at_50 = run(None, Some(50));
+        assert!(
+            matches!(at_50, Err(ResolveStreamFailure::SearchTruncated {
+                limit: SearchLimit::Steps { max_steps: 50 },
+            })),
+            "cut at the caller's steps: {at_50:?}"
+        );
+        let at_default = run(None, None);
+        let default_depth = ResolveConfig::default().max_depth as i64;
+        assert!(depth_cut(&at_default, default_depth), "`None` keeps the default: {at_default:?}");
+        assert!(
+            matches!(run(Some(-1), None), Err(ResolveStreamFailure::MalformedQuery { ref detail }) if detail.contains("`max_depth` is -1")),
+            "a negative limit is refused, naming the field"
+        );
     }
 
     fn is_truncated<T: std::fmt::Debug>(r: &Result<T, ResolveStreamFailure>) -> bool {

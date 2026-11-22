@@ -1107,9 +1107,11 @@ pub struct OpaqueSkolems {
 /// and this repository's own ticket store (about 1 770 items, every read command), NO search
 /// took 100 000 steps — a temporary census logged each one crossing 10^5, 10^6, 10^7 and 10^8,
 /// and logged none. So this is more than a hundred times the largest search there is, chosen
-/// that wide because a PROGRAM cannot raise it: the relations an operation body drains and its
-/// `execute` calls run at the default, and only the CLI (`--max-steps`) and a Rust caller can
-/// set another. A join over a thousand rows by a thousand is a million steps by itself. At
+/// that wide because a PROGRAM could not raise it: the relations an operation body drains and its
+/// `execute` calls run at the default, and only the CLI (`--max-steps`) and a Rust caller could
+/// set another. A program sets another through `KB.execute_with` since WI-20261122-96QKW; the
+/// relations it drains, and `execute`, still run at this. A join over a thousand rows by a
+/// thousand is a million steps by itself. At
 /// roughly 5 µs a step (an optimized build on a loaded machine), it stops a runaway search in
 /// under a minute.
 pub const DEFAULT_MAX_STEPS: u64 = 10_000_000;
@@ -1755,7 +1757,8 @@ pub struct ResolveStats {
     /// constraint / quantifier guards, which read `is_empty()` / a count as a
     /// verdict) can read it off the drained stream ([`SearchStream::drain_all`])
     /// instead of silently deciding from a truncated search. Mirrors the
-    /// stream-level [`SearchStream::truncated`] flag, snapshotted at drain time.
+    /// stream-level [`SearchStream::truncated`] flag, snapshotted at drain time or when
+    /// a lazy consumer reads [`SearchStream::stats`].
     pub truncated: bool,
     /// WI-20261115-0WT09 — the truncation was the FUEL's: the search took
     /// [`ResolveConfig::max_steps`] steps and stopped (implies `truncated`). `false` with
@@ -2240,10 +2243,25 @@ impl SearchStream {
     /// nothing — this method consumed the stream on exhaustion and dropped `errors`
     /// with it. The eager drains that want the rows and the faults side by side
     /// (`drain_verdict`, `ResolveStats`) step the stream themselves.
+    ///
+    /// The pull is [`Self::next_solution`]'s; this hands the stream on with the answer.
     pub fn split_first(
         mut self,
         kb: &mut KnowledgeBase,
     ) -> Result<Option<(Solution, SearchStream)>, SearchFailure> {
+        Ok(self.next_solution(kb)?.map(|sol| (sol, self)))
+    }
+
+    /// WI-20261122-96QKW — [`Self::split_first`]'s pull, with the stream kept: the next
+    /// answer, `Ok(None)` at the end, or the failure, each as `split_first` reports it. A
+    /// consumer that holds the stream reads [`Self::stats`] after any pull — after the end
+    /// and after a failure too, where `split_first` has consumed the stream and the
+    /// statistics with it.
+    ///
+    /// A FAULT ENDS THE SEARCH: where one is reported at a yield, the branches still open
+    /// are dropped, so a later pull reports the same fault at the end and the steps counted
+    /// are the ones that found it. Every pull after the end reports the end again.
+    pub fn next_solution(&mut self, kb: &mut KnowledgeBase) -> Result<Option<Solution>, SearchFailure> {
         if self.config.max_solutions > 0 && self.answers_yielded >= self.config.max_solutions {
             return Ok(None);
         }
@@ -2255,13 +2273,17 @@ impl SearchStream {
                 Some(StepResult::Continue) => continue,
                 Some(StepResult::YieldSolution(sol)) => {
                     return match self.faults.first() {
-                        Some(error) => Err(SearchFailure::Faulted(SearchFault {
-                            error: error.clone(),
-                            residual: sol.residual,
-                        })),
+                        Some(error) => {
+                            let error = error.clone();
+                            self.stack.clear();
+                            Err(SearchFailure::Faulted(SearchFault {
+                                error,
+                                residual: sol.residual,
+                            }))
+                        }
                         None => {
                             self.answers_yielded += 1;
-                            Ok(Some((sol, self)))
+                            Ok(Some(sol))
                         }
                     };
                 }
@@ -2270,18 +2292,33 @@ impl SearchStream {
         }
     }
 
-    /// The exhaustion exit of [`Self::split_first`]: the first recorded fault, else the
+    /// The exhaustion exit of [`Self::next_solution`]: the first recorded fault, else the
     /// truncation, else the end.
-    fn exhausted(self) -> Result<Option<(Solution, SearchStream)>, SearchFailure> {
-        let limit = self.limit_reached();
-        match self.faults.into_iter().next() {
+    fn exhausted(&self) -> Result<Option<Solution>, SearchFailure> {
+        match self.faults.first() {
             Some(error) => Err(SearchFailure::Faulted(SearchFault {
-                error,
+                error: error.clone(),
                 residual: Vec::new(),
             })),
-            None if self.truncated => Err(SearchFailure::Truncated { limit }),
+            None if self.truncated => Err(SearchFailure::Truncated {
+                limit: self.limit_reached(),
+            }),
             None => Ok(None),
         }
+    }
+
+    /// WI-20261122-96QKW — what the search has cost so far and how complete it is, read at
+    /// any point of the pull. `truncated`, `out_of_fuel` and `errors` are the stream's as
+    /// they stand: before the end they say whether a branch has been cut SO FAR, so a
+    /// consumer that stops at a definite answer reads what was cut before it — the answer
+    /// stands either way — and after the end ([`Self::next_solution`]) whether the end is
+    /// the claim that the answers were all. [`Self::drain_all`] hands this out at its end.
+    pub fn stats(&self) -> ResolveStats {
+        let mut stats = self.stats.clone();
+        stats.truncated = self.truncated;
+        stats.out_of_fuel = self.out_of_fuel;
+        stats.errors = self.errors.clone();
+        stats
     }
 
     /// WI-20261115-0WT09 — the limit a truncated search reached: its fuel where it ran out,
@@ -2504,10 +2541,7 @@ impl SearchStream {
                 None => break,
             }
         }
-        let mut stats = self.stats.clone();
-        stats.truncated = self.truncated;
-        stats.out_of_fuel = self.out_of_fuel;
-        stats.errors = self.errors.clone();
+        let stats = self.stats();
         (solutions, stats)
     }
 

@@ -830,8 +830,8 @@ impl KnowledgeBase {
     }
 
     /// Construct a lazy search stream over the lowered goals of the given
-    /// `LogicalQuery`. Callers that want custom depth or solution caps should use
-    /// `lower_query` + `resolve_lazy` directly.
+    /// `LogicalQuery`, at the default budget ([`ExecuteOptions::default`]); the typed face
+    /// takes another ([`Self::execute_typed_logical_query_with`]).
     ///
     /// Per proposal 026.1 §"Query-lowering at execute": this is the sole
     /// public entry for value-driven KB queries. Every reflect operation
@@ -865,7 +865,7 @@ impl KnowledgeBase {
     /// (1, not 6 — a zero-column relation's multiplicity IS its proof count).
     pub fn execute_logical_query(&mut self, q: &Value) -> Result<SearchStream, LowerError> {
         let goals = self.lower_query(q)?;
-        Ok(self.resolve_lazy(&goals, &execute_config()))
+        Ok(self.resolve_lazy(&goals, &execute_config(&ExecuteOptions::default())))
     }
 
     /// A query a program builds as a value, typed when `KB.execute` reads it (proposal 010.1
@@ -877,10 +877,27 @@ impl KnowledgeBase {
     /// conditions `where`, `join` and `fix` add to it are typed at the columns its goals give their
     /// variables, and a goal in its citation marker, typed by its citation's load, is kept as it
     /// was routed.
+    ///
+    /// The search runs at the default budget; [`Self::execute_typed_logical_query_with`]
+    /// takes the caller's.
     pub fn execute_typed_logical_query(&mut self, q: &Value) -> Result<SearchStream, LowerError> {
+        self.execute_typed_logical_query_with(q, &ExecuteOptions::default())
+    }
+
+    /// WI-20261122-96QKW — [`Self::execute_typed_logical_query`] at the caller's budget:
+    /// the search runs to `options.max_depth` and `options.max_steps`, and a limit it reaches
+    /// is reported as that limit ([`super::resolve::SearchLimit`]). What the search cost
+    /// is read off the stream ([`SearchStream::stats`]). `KB.execute_with` is this, from a
+    /// program. Every proof is still an answer: the options hold the budget and nothing
+    /// else (`execute_config`).
+    pub fn execute_typed_logical_query_with(
+        &mut self,
+        q: &Value,
+        options: &ExecuteOptions,
+    ) -> Result<SearchStream, LowerError> {
         let goals = self.lower_query(q)?;
         let goals = self.type_query_goals(&goals)?;
-        Ok(self.resolve_lazy(&goals, &execute_config()))
+        Ok(self.resolve_lazy(&goals, &execute_config(options)))
     }
 
     /// `goals` routed as one query's, each as the occurrence the typer read. The typer marks
@@ -906,10 +923,58 @@ impl KnowledgeBase {
     }
 }
 
+/// WI-20261122-96QKW — the budget of the search a `LogicalQuery` runs
+/// ([`KnowledgeBase::execute_typed_logical_query_with`]; `anthill.reflect.ExecuteOptions` is
+/// its program-facing twin). The default is [`ResolveConfig::default`]'s.
+///
+/// THE BUDGET AND NOTHING ELSE, and not a [`ResolveConfig`]: a config built the usual way,
+/// `..ResolveConfig::default()`, has `dedup_answers` on, and would turn the bag of proofs this
+/// face answers into a set of answers without anyone asking for it (`execute_logical_query`'s
+/// doc says why the bag is the semantics).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecuteOptions {
+    /// [`ResolveConfig::max_depth`].
+    pub max_depth: usize,
+    /// [`ResolveConfig::max_steps`].
+    pub max_steps: u64,
+}
+
+impl Default for ExecuteOptions {
+    fn default() -> Self {
+        let config = ResolveConfig::default();
+        Self {
+            max_depth: config.max_depth,
+            max_steps: config.max_steps,
+        }
+    }
+}
+
+impl ExecuteOptions {
+    /// The budget a program's `ExecuteOptions(max_depth, max_steps)` gives, for both faces of
+    /// `KB.execute_with` (the interpreter's builtin and the host bridge): a limit `Some(n)`
+    /// sets it, `None` keeps the default. A limit below 0 is refused, naming the field. The
+    /// text is the prose of the `malformed_query` the faces raise, so it names `KB.execute_with`;
+    /// a Rust caller building options from its own input words its own message.
+    pub fn from_limits(max_depth: Option<i64>, max_steps: Option<i64>) -> Result<Self, String> {
+        let refused =
+            |field: &str, n: i64| format!("KB.execute_with: `{field}` is {n}; a limit is a count, at least 0");
+        let mut options = Self::default();
+        if let Some(n) = max_depth {
+            options.max_depth = usize::try_from(n).map_err(|_| refused("max_depth", n))?;
+        }
+        if let Some(n) = max_steps {
+            options.max_steps = u64::try_from(n).map_err(|_| refused("max_steps", n))?;
+        }
+        Ok(options)
+    }
+}
+
 /// The search a `LogicalQuery` runs: every proof is an answer, a relation's multiplicity being
-/// its proof count (`execute_logical_query`'s doc).
-fn execute_config() -> ResolveConfig {
+/// its proof count (`execute_logical_query`'s doc), within `options`' budget.
+fn execute_config(options: &ExecuteOptions) -> ResolveConfig {
     ResolveConfig {
+        max_depth: options.max_depth,
+        max_steps: options.max_steps,
         dedup_answers: false,
         ..ResolveConfig::default()
     }

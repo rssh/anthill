@@ -306,6 +306,7 @@ const HOST_FNS: &[(
     ("kb_layer_symbols", 1, kb_layer_symbols),
     ("kb_layer_clauses", 1, kb_layer_clauses),
     ("kb_execute", 2, kb_execute),
+    ("kb_execute_with", 3, kb_execute_with),
     ("kb_facts_of", 2, kb_facts_of),
     ("kb_stored_facts_of", 2, kb_stored_facts_of),
     ("subst_lookup", 2, subst_lookup),
@@ -4309,6 +4310,64 @@ fn named_child(interp: &Interpreter, v: &Value, name: &str) -> Option<Value> {
 /// pull whose search faulted (`Interpreter::stream_split_first`).
 fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb_arg, query] = expect_args::<2>("KB.execute", args)?;
+    execute_stream(interp, &query, &crate::kb::execute::ExecuteOptions::default())
+}
+
+/// `KB.execute_with(kb: KB, q: LogicalQuery, options: ExecuteOptions)` (WI-20261122-96QKW):
+/// [`kb_execute`] at the budget `options` gives. A field that is `none()` keeps the default,
+/// and a limit below 0 raises `malformed_query` before the search starts.
+fn kb_execute_with(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [_kb_arg, query, options] = expect_args::<3>("KB.execute_with", args)?;
+    let max_depth = execute_limit_field(interp, &options, "max_depth")?;
+    let max_steps = execute_limit_field(interp, &options, "max_steps")?;
+    let options = match crate::kb::execute::ExecuteOptions::from_limits(max_depth, max_steps) {
+        Ok(options) => options,
+        Err(detail) => {
+            return Err(interp.raise_resolve_stream_failure(
+                "malformed_query",
+                detail,
+                crate::eval::effects::RaiseBy::Operation,
+            ))
+        }
+    };
+    execute_stream(interp, &query, &options)
+}
+
+/// One `Option[Int64]` field of an `ExecuteOptions` value: `Some(n)` for `some(n)`, `None` for
+/// `none()`. Anything else is a value the typer let through as `ExecuteOptions`, and loud.
+fn execute_limit_field(interp: &Interpreter, options: &Value, field: &str) -> Result<Option<i64>, EvalError> {
+    use crate::kb::term_view::TermView;
+    let not_options = |what: String| {
+        EvalError::Internal(format!(
+            "KB.execute_with: `options.{field}` is {what}, not an Option[Int64] \
+             (expected an ExecuteOptions value)"
+        ))
+    };
+    let value = named_child(interp, options, field)
+        .ok_or_else(|| not_options(format!("missing from {}", options.type_name())))?;
+    let head = value.head(&interp.kb).functor_sym();
+    match head.map(|f| interp.kb.qualified_name_of(f)) {
+        Some("anthill.prelude.Option.none") => Ok(None),
+        // The payload rides positionally OR named, by which producer built it
+        // (`reflect_builtins::option_string_arg` says the same).
+        Some("anthill.prelude.Option.some") => value
+            .pos_arg(&interp.kb, 0)
+            .map(|c| c.to_value())
+            .or_else(|| named_child(interp, &value, "value"))
+            .and_then(|inner| inner.literal_int64(&interp.kb))
+            .map(Some)
+            .ok_or_else(|| not_options("a `some` that holds no Int64".to_string())),
+        _ => Err(not_options(value.type_name().to_string())),
+    }
+}
+
+/// The resolver stream `KB.execute` and `KB.execute_with` hand out: `query` lowered, typed and
+/// run at `options`' budget, retained against the scope it was built in.
+fn execute_stream(
+    interp: &mut Interpreter,
+    query: &Value,
+    options: &crate::kb::execute::ExecuteOptions,
+) -> Result<Value, EvalError> {
     // WI-SPGBP — the KB argument is REAL now, and this is what it buys: the search this
     // builds is RETAINED against the scope it was built in. `execute` returns a
     // `StreamSource::Resolver` that `splitFirst` pumps LATER, so a layer whose last
@@ -4336,7 +4395,7 @@ fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     // WI-20260911-8Y5BE — a query that does not lower is the declared
     // `Error[ResolveStreamFailure]`, not an internal fault, which a handler can catch.
     // Proposal 010.1 §3.2 — the query is typed when it is read, as a written one is.
-    let search = match interp.kb.execute_typed_logical_query(&query) {
+    let search = match interp.kb.execute_typed_logical_query_with(query, options) {
         Ok(search) => search,
         Err(e) => return Err(interp.raise_query_lowering(e, crate::eval::effects::RaiseBy::Operation)),
     };
