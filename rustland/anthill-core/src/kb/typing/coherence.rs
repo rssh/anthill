@@ -2251,9 +2251,9 @@ fn provider_owes_operations(
         || is_witness_provision(kb, p, &bindings)
 }
 
-/// WI-20260909-M8QWJ — does `p` name its provider the WITNESS for another type? Read at the
-/// spec's CARRIER parameter ([`spec_carrier_param`], the reading
-/// `check_provision_names_carrier` holds a written provision to): the binding there is
+/// WI-20260909-M8QWJ — does `p` name its provider the WITNESS for another type? A provision
+/// that is not its provider's own (decision 6 of `docs/design/spec-carrier-set.md`; it was
+/// read at the spec's single carrier parameter, WI-20261122-CXR5B) and binds a type that is
 /// neither a parameter of the provider (a forwarding of the carrier — the provider's own
 /// providers stand behind it) nor the provider itself. A composite of the provider's
 /// parameter is such a type too: `sort Hi { sort T = ?  provides Lo[T = Box[T = T]] }`
@@ -2279,18 +2279,16 @@ fn is_witness_provision(
             && !carrier_sort_of_value(kb, value)
                 .is_some_and(|s| same_sort_canonical(kb, s, p.carrier))
     };
-    match spec_carrier_param(kb, p.spec) {
-        Some(carrier_param) => {
-            let carrier_short = short_name_of(kb.local_name_of(carrier_param));
-            // An unbound carrier is `check_provision_names_carrier`'s refusal, not this one's.
-            bindings
-                .iter()
-                .find(|(param, _)| short_name_of(kb.local_name_of(*param)) == carrier_short)
-                .is_some_and(|(_, at_carrier)| names_another_type(at_carrier))
-        }
-        None if spec_is_self_representing(kb, p.spec) => false,
-        None => bindings.iter().any(|(_, value)| names_another_type(value)),
-    }
+    // WI-20261122-CXR5B (decision 6 of `docs/design/spec-carrier-set.md`) — a witness is a
+    // provision that is NOT its provider's own (`SpecApplication::is_own_of`: the provider heads
+    // the carrier, every provision of a self-representing spec, or one of its bindings) and
+    // binds another type: a forwarding of the provider's own parameters (`Ord provides WeakOrd[T
+    // = T]`) stays a sub-interface. It read the binding at the single carrier parameter, so a
+    // constructor-less `MyBag provides Bag2[T = Int64, C = Self]` over `put(c: C, x: T)` was a
+    // witness at `Int64`, refused "backs no operation", with `T` declared first, and its own
+    // provision, which may leave `put` to its providers, with `C` first (MEASURED).
+    !SpecApplication::of_view(kb, p.spec, &p.spec_view).is_own_of(kb, p.carrier)
+        && bindings.iter().any(|(_, value)| names_another_type(value))
 }
 
 /// Every `anthill.reflect.SortProvidesInfo` fact, as [`Provision`] rows.

@@ -96,7 +96,7 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 | kb/typing/dot_rule.rs:884 | requires_edge_is_carrier_preserving | scp | V | does a `requires` edge bind the receiver's carrier, so it lends members |
 | kb/typing/provider_constraint.rs:98 | type_application_goal | or_sole | S | suspend until the carrier binding is known, then resolve there |
 | kb/typing/provider_constraint.rs:199 | provider_requirement_goal_with_provider | or_sole | S | keep the carrier binding, drop variable siblings, check against actual |
-| kb/typing/coherence.rs:2265 | is_witness_provision | scp | W | binding at the carrier names another type ⇒ witness (backing obligation) |
+| kb/typing/coherence.rs:2265 | is_witness_provision | scp | W | binding at the carrier names another type ⇒ witness (backing obligation) — **done** (CXR5B step 9: not the provider's own, decision 6, and binding another type) |
 | kb/typing/coherence.rs:2448 | provider_coherence_groups_with | wdc | O | witness vs self provisions into (spec, carrier) ambiguity groups |
 | kb/typing/requires.rs:2021 | param_instance_requires | sop | SC | a parameter typed at a dictionary spec is an instance requirement |
 | kb/typing/requires.rs:2067 | lambda_instance_requires | sop | SC | the same, for a lambda binder |

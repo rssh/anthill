@@ -1175,3 +1175,29 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   Int64]` of `Src.make[Src = Ones, T = Int64]()` was refused; it is the provider at what the
   call fixed of the spec's type-var each of its own type-vars stands for, and the fourth row
   fails with the bare typing restored.
+- **2026-11-22, stage 2's ninth step (WI-20261122-CXR5B): the witness that owes a spec's
+  operations, read by decision 6.** `provider_owes_operations` holds a constructor-less provider
+  to backing a spec's operations only where its provision is a witness (`is_witness_provision`,
+  readers.md's coherence.rs:2265); its own provision may leave them to its providers. It read the
+  witness at the single carrier parameter, so a constructor-less `MyBag provides Bag2[T = Int64,
+  C = Self]` with no `put`, over `put(c: C, x: T)`, was refused "backs no operation" with `T`
+  declared first and loaded with `C` first (measured). Now a witness is a provision that is not
+  its provider's own (`SpecApplication::is_own_of`) and binds another type, a forwarding of the
+  provider's own parameters staying a sub-interface. Moved: that program loads and answers 105
+  in both orders; the measured cases of the function's doc (`Hi provides MySpec[T = Int64]`,
+  `Hi provides Lo[T = Box[T = T]]`) still owe. Also moved (found by the step's /code-review,
+  measured): a constructor-less provider whose own provision backs nothing is no longer refused
+  at its declaration — `BoxHolder provides Holder[C = Box]` with no `peek` (e1's shape, which took
+  `C` as `Holder`'s single parameter), a constructor-less `Num provides Coll[C = Foo, Elem =
+  Self]` with no `first` — and each call of such an operation is refused at load, "a call nothing
+  can run"; it is how the rule already holds a sub-interface (`sort Mid provides Stream[…]`),
+  which a later load may give providers. Rows: `wi_cxr5b_witness_backing_test` (3), the first
+  failing with `src/` at `7cb515b08`, the two controls passing.
+
+  Measured with it, and NOT a reader to move: "the untyped eval path". A load without the typer
+  dispatches no body-less spec operation by value — b5, d5, one witness and a carrier's own
+  provision alike die "operation has no body: `Coll.first`" — so there is no unpinned run-time
+  read answering wrongly; eval's value-directed read (`spec_call_runtime_carrier`,
+  `carrier_param_receiver_for_values`) runs for calls the typer deferred, whose selection the
+  typed path made. And b3's calls (`MyBag` and `OtherBag` each providing `Bag2[T = Int64, C =
+  Self]`) answer 6105 in both declaration orders.
