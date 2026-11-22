@@ -882,6 +882,18 @@ pub enum RuleHead {
 
 // ── Operation ───────────────────────────────────────────────────
 
+/// WI-20261122-517Y5 — one goal of an operation's `requires` / `ensures` clause: its term, and
+/// the span the goal is WRITTEN over, which is not always the term's. A parenthesized goal
+/// `(x > 0)` converts to its inner term, and a named requirement slot `plus: Monoid[T]`
+/// (WI-840) to its type alone; `written` is the goal's own node in the clause, parentheses and
+/// binder included. A diagnostic about the term keeps the term's span; a reader that quotes
+/// the clause as written reads this one.
+#[derive(Debug, Clone, Copy)]
+pub struct ContractGoal {
+    pub term: ParseTermId,
+    pub written: Span,
+}
+
 #[derive(Debug)]
 pub struct Operation {
     pub visibility: Option<Visibility>,
@@ -892,8 +904,10 @@ pub struct Operation {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: TypeExpr,
-    pub requires: Vec<Vec<ParseTermId>>,
-    pub ensures: Vec<Vec<ParseTermId>>,
+    /// One entry per written `requires` clause, each its goals in order.
+    pub requires: Vec<Vec<ContractGoal>>,
+    /// One entry per written `ensures` clause, each its goals in order.
+    pub ensures: Vec<Vec<ContractGoal>>,
     pub effects: Vec<Effect>,
     pub body: Option<ParseTermId>,
     /// WI-1070: the operation's OWN `{< … >}` blocks, in source order — the peer of

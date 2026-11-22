@@ -1781,7 +1781,7 @@ pub struct KnowledgeBase {
     /// * an OPERATION — the flattened requirement GOALS in SOURCE order, i.e. what
     ///   `op_requires_entries` enumerates (value preconditions included, since they
     ///   occupy positions in the written list too). NOT `OperationInfo.requires`,
-    ///   which holds CLAUSES: `convert_clause_list_with_extra` collapses a multi-goal
+    ///   which holds CLAUSES: `convert_written_clauses` collapses a multi-goal
     ///   clause into one `conjunction(…)`, so the two named slots of the example
     ///   above index a list of length 1 there.
     /// * a SORT — its CHAIN, which is the order of its `SortRequiresInfo` facts
@@ -4261,8 +4261,50 @@ impl KnowledgeBase {
             .map_or(&[], |r| r.param_defaults.as_slice())
     }
 
-    /// WI-656 — the unified per-operation record (cached signature + body node),
-    /// if this operation has one. Backs `op_info::lookup_operation_info`'s O(1)
+    /// WI-20261122-517Y5 — record `op_sym`'s contract as its declaration wrote it
+    /// ([`op_info::OperationRecord::contract`]). Called by the loader once per declaration it
+    /// converts. FIRST-WRITE-WINS, as the signature readers are: a symbol that carries a second
+    /// `OperationInfo` fact (a file presented again to a live KB, WI-1049) is answered from
+    /// the first by [`op_info::lookup_operation_info`], and the clauses recorded here must be
+    /// that fact's own, which [`op_info::OperationContract`] promises a reader.
+    pub(crate) fn record_operation_contract(
+        &mut self,
+        op_sym: Symbol,
+        contract: op_info::OperationContract,
+    ) {
+        self.op_records
+            .entry(op_sym)
+            .or_default()
+            .contract
+            .get_or_insert(contract);
+    }
+
+    /// WI-20261122-517Y5 — `op_sym`'s contract as its declaration wrote it: each `requires`
+    /// and `ensures` clause with its site, the stored clause and its goals, and the `requires`
+    /// clauses the loader added ([`op_info::OperationContract`]). `None` when no declaration
+    /// of `op_sym` was converted: a symbol that names no operation. A derived member's text
+    /// is converted as a declaration, so it answers its (empty) record.
+    pub fn operation_contract(&self, op_sym: Symbol) -> Option<&op_info::OperationContract> {
+        self.op_records.get(&op_sym)?.contract.as_ref()
+    }
+
+    /// WI-20261122-517Y5 — the text `site` covers, exactly as it is written in its source.
+    /// `None` when the span is EMPTY — which is how a node with no location is marked
+    /// (`empty_span`, `0..0`), so an empty answer would read as text written as nothing — when
+    /// the source was registered by name only (no text), or when the span does not lie within
+    /// its text on character boundaries. Its location as `path:line:col` is
+    /// [`Self::render_site`].
+    pub fn source_text(&self, site: crate::span::SourceSpan) -> Option<&str> {
+        if site.span.start >= site.span.end {
+            return None;
+        }
+        self.sources
+            .text(site.source)?
+            .get(site.span.start as usize..site.span.end as usize)
+    }
+
+    /// WI-656 — the unified per-operation record (cached signature, body node, defaults,
+    /// typed contract conjuncts, contract as written), if this operation has one. Backs `op_info::lookup_operation_info`'s O(1)
     /// fast path.
     pub(crate) fn op_record(&self, op_sym: Symbol) -> Option<&op_info::OperationRecord> {
         self.op_records.get(&op_sym)

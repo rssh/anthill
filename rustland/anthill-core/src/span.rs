@@ -267,6 +267,16 @@ impl SourceRegistry {
         Some((e.path.clone(), e.source.clone()))
     }
 
+    /// WI-20261122-517Y5: a source's text, borrowed. `None` if the id is out of range or
+    /// the source carries no text (registered by name only), as [`Self::provenance`].
+    pub fn text(&self, id: SourceId) -> Option<&str> {
+        let e = self.entries.get(id.index())?;
+        if e.source.is_empty() {
+            return None;
+        }
+        Some(&e.source)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

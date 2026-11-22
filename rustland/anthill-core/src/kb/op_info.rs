@@ -114,7 +114,8 @@ pub struct OpSignature {
 }
 
 /// WI-656 — the unified per-operation record: an operation's cached
-/// [`OpSignature`] and its (mutable) body node, keyed by op symbol in
+/// [`OpSignature`] and its (mutable) body node — and its parameter defaults, the typed
+/// conjuncts of its contract and its contract as written — keyed by op symbol in
 /// [`crate::kb::KnowledgeBase`]'s `op_records`. Replaces the former standalone
 /// `op_bodies` map — the body now lives here beside the signature, so the typer's
 /// signature lookup and body access are one O(1) hit. `signature` is `None` until
@@ -138,6 +139,96 @@ pub struct OperationRecord {
     /// conjunct reads them there (`typing::clause_goal`). The clause in the signature stays
     /// as loaded, which every other reader reads.
     pub typed_contract: Vec<(crate::kb::term::TermId, Rc<NodeOccurrence>)>,
+    /// WI-20261122-517Y5 — the contract as the declaration wrote it ([`OperationContract`]),
+    /// recorded by the loader where it converts the clauses.
+    ///
+    /// So a body-less operation with no defaults has a record from its conversion on, where
+    /// before the first was `build_op_signatures`' (in the typer). The readers that take a
+    /// record's PRESENCE for "this names an operation" — `names_a_computation`, the reduction
+    /// gate in `resolve.rs`, and the typer's `operation_application`, `is_operation_call`,
+    /// `holds_an_operation_call`, `takes_dictionaries` — now answer for such an operation
+    /// correctly from conversion on; before, it read as no operation in between. Measured
+    /// 2026-11-22 with a probe at each of the six that panicked on a record holding nothing
+    /// but its contract: no load of the workspace gate (12 564 tests) or of the generated
+    /// families (8 168 programs) asked one of them about such an operation in between.
+    pub contract: Option<OperationContract>,
+}
+
+/// WI-20261122-517Y5 — AN OPERATION'S CONTRACT AS WRITTEN: every `requires` and `ensures`
+/// clause its declaration wrote, each with where it is written and its goals, and apart from
+/// them the `requires` clauses the loader adds.
+///
+/// Why it is a record of its own. `OperationInfo.requires` / `.ensures` hold one `Value` per
+/// clause, and a ground clause is a hash-consed term: it has no location, and two clauses
+/// written alike are one term (`term_spans` is keyed by that term, first-write-wins across
+/// files). The loader has each goal's parse node when it converts the clause, so it records
+/// the site there; and it is the loader that appends its own clauses, so it says which those
+/// are rather than leaving a reader to recognise them by their functor.
+///
+/// The clauses line up with `OperationInfo` BY POSITION, by construction, and a reader may
+/// rely on it: `OperationInfo.requires` is each `requires[i].stored` in order, then each
+/// `added_requires[j].stored`; `OperationInfo.ensures` is each `ensures[i].stored`. A
+/// clause's index among the written clauses of its kind is its position in `requires` /
+/// `ensures`. Pair by that position: two clauses written alike are one hash-consed term, so
+/// a stored value names no clause by itself — it confirms a pairing, it does not make one.
+///
+/// Recorded for every declaration the loader converts, a derived member's included (an
+/// entity's `eq` is loaded from the text its derivation writes, which writes no clause, so
+/// its record is empty — measured).
+///
+/// The goals are the occurrences of the goals AS LOADED, each located at its own written
+/// span ([`WrittenClause::goals`] says how far down). Read as the KB's own readers read a
+/// stored conjunct (`value_as_occurrence` in the typer and the contract prover materializes
+/// the same term the same way), so a reflect form written in a goal reads as they read it.
+/// Not the typed form: the typer types only a conjunct that holds a comparison
+/// ([`OperationRecord::typed_contract`]), and places every node of that copy at the
+/// operation's declaration, so it has neither a node for every goal nor the goal's site.
+#[derive(Debug, Clone, Default)]
+pub struct OperationContract {
+    pub requires: Vec<WrittenClause>,
+    pub ensures: Vec<WrittenClause>,
+    /// The loader's `requires` clauses, in the order `OperationInfo.requires` holds them
+    /// after the written ones.
+    pub added_requires: Vec<AddedClause>,
+}
+
+/// One `requires` or `ensures` clause as its declaration wrote it ([`OperationContract`]).
+#[derive(Debug, Clone)]
+pub struct WrittenClause {
+    /// Where the clause is written: from the first byte of its first goal to the last byte
+    /// of its last, each goal as written ([`crate::parse::ir::ContractGoal::written`]: its
+    /// parentheses, and a named requirement slot's binder, `plus: Monoid[T]` (WI-840),
+    /// included). The keyword is not part of it.
+    pub site: crate::span::SourceSpan,
+    /// The clause as `OperationInfo` holds it, at this clause's position there: its one
+    /// goal, or `conjunction(g1, …, gn)` of its goals — the same `Value`.
+    pub stored: Value,
+    /// Its goals, in the order written — the conjunction split — each the occurrence of the
+    /// goal as loaded, its root located at the goal's written span. Located TO THE GOAL, not
+    /// below it: every node materialized from the goal's term is at that same span, and
+    /// carries no owner. The one exception is a binding written through a type alias, which
+    /// the goal holds on the loader's own occurrence of it — at the binding's span, owned by
+    /// the operation. Never empty: the grammar writes a clause with at least one goal.
+    pub goals: Vec<Rc<NodeOccurrence>>,
+}
+
+/// A `requires` clause the loader adds to an operation's own ([`OperationContract`]).
+#[derive(Debug, Clone)]
+pub struct AddedClause {
+    /// The clause as `OperationInfo.requires` holds it.
+    pub stored: Value,
+    pub by: AddedBy,
+}
+
+/// Which rule of the loader added a `requires` clause ([`AddedClause`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddedBy {
+    /// WI-320 (proposal 045 §6): `EffectsRuntime[Effects = E]` for a free row variable `E`
+    /// of the operation's effects.
+    EffectsRow,
+    /// WI-201: `Spec[Member = ?P]` for a bare `Spec.Member` written in the signature, `?P`
+    /// the type parameter minted for it.
+    BareSpecMember,
 }
 
 /// WI-398: every operation's `(symbol, params)` in ONE pass over the `OperationInfo`
@@ -406,8 +497,10 @@ pub(crate) fn with_op_signature<R>(
     }
     // Fallback: the fact read. Taken by any lookup that runs BEFORE
     // `build_op_signatures` — the eq-dispatch-table build (`load.rs`'s
-    // `build_eq_dispatch_index`, which runs before `type_check_sorts`), when both the
-    // record map and the index are still empty — or on a KB that never type-checks. NOT
+    // `build_eq_dispatch_index`, which runs before `type_check_sorts`), when no record
+    // holds a signature yet (a converted operation's record holds its contract and, where
+    // written, its body and defaults — WI-20261122-517Y5) — or on a KB that never
+    // type-checks. NOT
     // the const-purity gate, which this comment used to name beside it: that one runs
     // AFTER the type-check (`check_const_purity`, well below `type_check_sorts` in
     // `load_phase_inner`), so both tiers are populated by the time it asks. The example
@@ -848,7 +941,8 @@ pub fn head_field_value(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<V
 
 /// Decode a clause-list field (`requires` / `ensures`) to its clause `Value`s
 /// carrier-faithfully (WI-366 B2). The field is a cons-list built by
-/// `convert_clause_list`; a hash-consed head stores a `TermId` list (each element
+/// `load_operation` (`value_or_ground_list`) from the written clauses
+/// (`convert_written_clauses`) and then the loader's own; a hash-consed head stores a `TermId` list (each element
 /// wrapped `Value::Term`), a value fact a value list whose elements (possibly
 /// `Value::Node` for a denoted precondition) are returned verbatim. Mirrors
 /// [`effects_of_head`]. `pub` so the reflect builtins (`KB.operations`) surface

@@ -4066,6 +4066,9 @@ impl<'a> Converter<'a> {
     /// rewrite added for one is added for both.
     fn convert_rule_body(&mut self, node: Node) -> Vec<ParseTermId> {
         self.convert_requires_body(node, &mut Vec::new(), 0)
+            .into_iter()
+            .map(|goal| goal.term)
+            .collect()
     }
 
     /// The requirement spellings proposal 060.1 §5 removed, refused wherever a goal of a
@@ -4210,13 +4213,18 @@ impl<'a> Converter<'a> {
     /// clauses of this operation, so the recorded position is over the operation's
     /// whole requirement list rather than per-clause (an operation may carry several
     /// `requires` clauses; `convert_operation` accumulates rather than last-wins).
+    ///
+    /// WI-20261122-517Y5: each goal with the span it is WRITTEN over ([`ContractGoal`]) —
+    /// its own node in the list, which keeps the parentheses a `paren_expr` goal converts
+    /// out of and the binder a slot's goal is converted without. A rule body takes the
+    /// terms alone ([`Self::convert_rule_body`]).
     fn convert_requires_body(
         &mut self,
         node: Node,
         type_params: &mut Vec<TypeParam>,
         slot_base: usize,
-    ) -> Vec<ParseTermId> {
-        let mut terms = Vec::new();
+    ) -> Vec<ContractGoal> {
+        let mut terms: Vec<ContractGoal> = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "requires_binder" {
@@ -4233,7 +4241,10 @@ impl<'a> Converter<'a> {
                 let goal = self.convert_term(goal_node);
                 self.refuse_removed_requirement_forms(goal);
                 let slot = slot_base + terms.len();
-                terms.push(goal);
+                terms.push(ContractGoal {
+                    term: goal,
+                    written: self.span(child),
+                });
                 // `binder` is mandatory in the grammar exactly as `type` is, so a
                 // missing one is the same tree-sitter-recovery case — and the same
                 // treatment. Anything softer leaves the slot silently UNNAMED while
@@ -4254,7 +4265,10 @@ impl<'a> Converter<'a> {
             if is_term_kind(child.kind()) {
                 let tid = self.convert_term(child);
                 self.refuse_removed_requirement_forms(tid);
-                terms.push(tid);
+                terms.push(ContractGoal {
+                    term: tid,
+                    written: self.span(child),
+                });
             }
         }
         terms
@@ -5288,8 +5302,8 @@ impl<'a> Converter<'a> {
                 TypeExpr::Simple(Name::simple(sym, span))
             });
 
-        let mut requires = Vec::new();
-        let mut ensures = Vec::new();
+        let mut requires: Vec<Vec<ContractGoal>> = Vec::new();
+        let mut ensures: Vec<Vec<ContractGoal>> = Vec::new();
         let mut effects = Vec::new();
 
         for clause in self.children_by_kind(node, "operation_clause") {
@@ -5305,7 +5319,9 @@ impl<'a> Converter<'a> {
                     }
                     "ensures_clause" => {
                         if let Some(body) = self.child_by_kind(child, "rule_body") {
-                            ensures.push(self.convert_rule_body(body));
+                            // The rule-body walk, with each goal's written span kept: no
+                            // binder is reachable in a `rule_body`, so no slot is minted.
+                            ensures.push(self.convert_requires_body(body, &mut Vec::new(), 0));
                         }
                     }
                     "effects_clause" => {

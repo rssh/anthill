@@ -3730,7 +3730,7 @@ pub(super) fn op_requires_entries_of(
 }
 
 /// Decode one operation `requires` clause into [`RequiresEntry`]s. A multi-goal
-/// clause (`requires A, B`) lowers to `conjunction(A, B)` (load's `convert_clause_list`),
+/// clause (`requires A, B`) lowers to `conjunction(A, B)` (load's `convert_written_clauses`),
 /// so flatten it into its conjuncts — otherwise the conjunction functor would mask both
 /// specs and silently drop them. A single spec application is itself one entry; a clause
 /// with no resolvable spec functor carries no projectable members (skipped — it can never

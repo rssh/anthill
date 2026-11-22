@@ -2559,7 +2559,7 @@ fn check_apply_call(
         // unproved precondition, unchanged.
         // WI-862 — SPLIT FIRST, CLASSIFY SECOND. `is_value_precondition_clause` reads a
         // clause's HEAD, and the loader lowers several comma-separated goals on ONE
-        // clause as a single `conjunction(g1, …, gn)` (`convert_clause_list`). So a
+        // clause as a single `conjunction(g1, …, gn)` (`convert_written_clauses`). So a
         // MIXED clause — `requires neq(a, 0), lo: Ord[T = Int64]`, the shape WI-840's
         // overloaded list makes ordinary — presents the head `conjunction`, which is not
         // a `Sort`, and the whole thing was classified a value precondition and PROVED

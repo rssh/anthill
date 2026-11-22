@@ -1416,7 +1416,7 @@ pub(crate) fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -
 
 /// WI-539: split a `requires`/`ensures` clause term into its conjuncts. The loader
 /// lowers several comma-separated goals on ONE clause as a single
-/// `conjunction(g1, …, gn)` term (`convert_clause_list`); a single goal is itself.
+/// `conjunction(g1, …, gn)` term (`convert_written_clauses`); a single goal is itself.
 /// Mirrors [`push_op_requires_clause`] (which flattens the same shape) and
 /// [`guarded_atom_refuted`]'s per-conjunct walk — without the split a multi-goal
 /// clause would be proved / assumed as one opaque `conjunction(...)` goal that no

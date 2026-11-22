@@ -18,6 +18,7 @@ use smallvec::SmallVec;
 
 use super::entity_slots::{self, expr_node};
 use super::node_occurrence::{self, Expr, NodeOccurrence, ReflectForm};
+use super::op_info::{AddedBy, AddedClause, OperationContract, WrittenClause};
 use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{TermIdView, TermView, ViewHead};
@@ -18215,7 +18216,7 @@ fn check_rule_body_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
 ///
 ///   * WHICH CONJUNCTS a clause has — [`super::typing::clause_conjuncts`], the same
 ///     decomposer the prove/assume path uses. The loader lowers several comma-separated
-///     goals as one `conjunction(g1, …, gn)` (`convert_clause_list`), and that wrapper
+///     goals as one `conjunction(g1, …, gn)` (`convert_written_clauses`), and that wrapper
 ///     names nothing itself, so a walk that tested its head instead of splitting it
 ///     would report `conjunction` on every multi-goal clause in the tree.
 ///   * WHICH FUNCTORS ARE UNDEFINED, and how far to descend into connectives —
@@ -49558,7 +49559,7 @@ impl<'a> Loader<'a> {
         ) {
             return None;
         }
-        let spec_atom = o.ensures.iter().flatten().copied().find(|&atom| {
+        let spec_atom = o.ensures.iter().flatten().map(|g| g.term).find(|&atom| {
             self.ensures_atom_carrier_name(atom).as_deref() == Some(ret_str.as_str())
         })?;
         Some((ret_str, spec_atom))
@@ -50030,7 +50031,8 @@ impl<'a> Loader<'a> {
         // params, effects — has now been converted). Each minted carrier becomes an
         // extra op type-param AND a synthesized `requires Spec[Member = ?P]` clause
         // (rebuilt from the entry — `minted` is the single source), extending the
-        // requires extra-terms alongside the WI-320 auto-requires. The candidate filter
+        // loader's own requires clauses alongside the WI-320 auto-requires (`added_requires`,
+        // WI-20261122-517Y5). The candidate filter
         // `requires_entry_lends_member` accepts it: the spec DECLARES `member` and the
         // application MENTIONS `?P`, so it licenses dispatch and constrains `?P`.
         let sugar =
@@ -50049,7 +50051,15 @@ impl<'a> Loader<'a> {
                 })
                 .collect(),
         );
-        let mut extra_requires = auto_requires_terms;
+        // WI-20261122-517Y5: each clause the loader adds is said to be the loader's, by the
+        // rule that adds it, where it is made — not recognised later by its functor.
+        let mut added_requires: Vec<AddedClause> = auto_requires_terms
+            .into_iter()
+            .map(|t| AddedClause {
+                stored: Value::term(t),
+                by: AddedBy::EffectsRow,
+            })
+            .collect();
         // ONE CLAUSE PER SPEC, binding every member of it the signature names
         // (WI-20261005-KSSA4): `total(c: FiniteCollection.C) effects FiniteCollection.E`
         // is `total[P, Q](c: P) effects Q requires FiniteCollection[C = P, E = Q]` — the
@@ -50086,18 +50096,22 @@ impl<'a> Loader<'a> {
             named_args.extend(fixed.into_iter().flatten().copied());
             named_args.extend(members);
             self.kb.canonicalize_record_named_args(spec, &mut named_args);
-            extra_requires.push(self.kb.alloc(Term::Fn {
+            let clause = self.kb.alloc(Term::Fn {
                 functor: spec,
                 pos_args: SmallVec::new(),
                 named_args,
-            }));
+            });
+            added_requires.push(AddedClause {
+                stored: Value::term(clause),
+                by: AddedBy::BareSpecMember,
+            });
         }
         // WI-20260909-S8CBV: the contract clauses are the one term position whose spec
         // bracket is a TYPE position — see [`Loader::in_op_contract_clause`]. Save and
         // restore rather than set/clear: an operation declared inside another
         // declaration's conversion must not inherit or erase the outer flag.
         let prev_contract = std::mem::replace(&mut self.in_op_contract_clause, true);
-        let requires_clauses = self.convert_clause_list_with_extra(&o.requires, &extra_requires);
+        let written_requires = self.convert_written_clauses(&o.requires);
         // `ensures` IS NOT COVERED, and the asymmetry is the point. A `requires` clause
         // that names a SPEC carries a type bracket (`Desc[T = x.E]`); an `ensures` clause
         // is a predicate over VALUES (`ensures eq(?result, Variant1)`), whose dotted
@@ -50106,7 +50120,23 @@ impl<'a> Loader<'a> {
         // does not merely classify, it MINTS terms and pushes visibility / ambiguity
         // errors of its own. Found by `/code-review`; the flag was set across both.
         self.in_op_contract_clause = prev_contract;
-        let ensures_clauses = self.convert_clause_list(&o.ensures);
+        let written_ensures = self.convert_written_clauses(&o.ensures);
+        // `OperationInfo` holds the written clauses, then the loader's (WI-320 / WI-201) —
+        // the order `OperationContract` promises its reader.
+        let requires_clauses: Vec<Value> = written_requires
+            .iter()
+            .map(|c| c.stored.clone())
+            .chain(added_requires.iter().map(|a| a.stored.clone()))
+            .collect();
+        let ensures_clauses: Vec<Value> = written_ensures.iter().map(|c| c.stored.clone()).collect();
+        self.kb.record_operation_contract(
+            functor,
+            OperationContract {
+                requires: written_requires,
+                ensures: written_ensures,
+                added_requires,
+            },
+        );
 
         // WI-840 (058 §4.2 / §4.7): the operation's type parameters against the OTHER
         // things one bracket key can name, and the NAMED requirement slots the
@@ -50127,14 +50157,14 @@ impl<'a> Loader<'a> {
         // never unify.
         let no_tvars = HashSet::new();
         for clause in &o.requires {
-            for &tid in clause {
+            for tid in clause.iter().map(|g| g.term) {
                 self.reject_binding_unify_in_contract(tid, "requires");
                 // WI-618: a keyword-less lambda typo in a contract clause.
                 self.check_bare_arrow_typo(tid, "a `requires` clause", &no_tvars);
             }
         }
         for clause in &o.ensures {
-            for &tid in clause {
+            for tid in clause.iter().map(|g| g.term) {
                 self.reject_binding_unify_in_contract(tid, "ensures");
                 self.check_bare_arrow_typo(tid, "an `ensures` clause", &no_tvars);
             }
@@ -51285,13 +51315,13 @@ impl<'a> Loader<'a> {
         //    spec/precondition line cannot leave the guard behind.
         //
         // `convert_term` on an already-converted goal is a `term_map` memo hit
-        // (`convert_term_inner`), not a second walk — `convert_clause_list_with_extra`
+        // (`convert_term_inner`), not a second walk — `convert_written_clauses`
         // ran a few lines above. Reading its output back instead would be the harder
         // path: it collapses a multi-goal clause into one `conjunction`.
         let mut spec_bases: Vec<(String, String)> = Vec::new();
         let mut captured: Vec<String> = Vec::new();
-        for goal in o.requires.iter().flatten() {
-            let converted = self.convert_term(*goal);
+        for goal in o.requires.iter().flatten().map(|g| g.term) {
+            let converted = self.convert_term(goal);
             let Some(base) = self.kb.head_functor(converted) else {
                 continue;
             };
@@ -51393,7 +51423,7 @@ impl<'a> Loader<'a> {
         if !o.type_params.iter().any(|tp| tp.requirement_slot.is_some()) {
             return;
         }
-        let goals: Vec<ParseTermId> = o.requires.iter().flatten().copied().collect();
+        let goals: Vec<ParseTermId> = o.requires.iter().flatten().map(|g| g.term).collect();
         for tp in &o.type_params {
             let Some(slot) = tp.requirement_slot else {
                 continue;
@@ -53093,52 +53123,95 @@ impl<'a> Loader<'a> {
         wrap_places_as_var_ref(&mut self.kb, term, &places, var_ref_sym, expr_carried_sym)
     }
 
-    fn convert_clause_list(
-        &mut self,
-        clauses: &[Vec<ParseTermId>],
-    ) -> Vec<crate::eval::value::Value> {
-        self.convert_clause_list_with_extra(clauses, &[])
-    }
-
-    /// Like `convert_clause_list`, plus a tail of additional kb-space clause
-    /// terms to append after the user-written clauses. The `extra_terms` are
-    /// already-built kb TermIds (one term per clause, no conjunction wrap),
-    /// used by WI-320's auto-requires inference to append synthesized
-    /// `EffectsRuntime[Effects = E_i]` clauses to a user's requires list.
+    /// Convert an operation's written `requires` or `ensures` clauses, in source order. A
+    /// clause is stored as `OperationInfo` holds it — its one goal, or `conjunction(g1, …,
+    /// gn)` of its goals — and, WI-20261122-517Y5, recorded with where it is written and each
+    /// goal's occurrence at the span that goal is written over ([`WrittenClause`]). The parse
+    /// IR is at hand only here: once stored, a ground clause is a hash-consed term, which has
+    /// no location, and two goals written alike are one term. A goal's written span is the
+    /// parser's ([`ContractGoal::written`]): its own node in the clause, which keeps the
+    /// parentheses and a named slot's binder that its term was converted without.
     ///
-    /// Each clause on the carrier it needs: a goal with a binding written through a type
+    /// Each goal on the carrier it needs: a goal with a binding written through a type
     /// alias holds that binding's occurrence ([`Self::contract_goal_as_written`]), and any
-    /// other is the term it always was.
-    fn convert_clause_list_with_extra(
-        &mut self,
-        clauses: &[Vec<ParseTermId>],
-        extra_terms: &[TermId],
-    ) -> Vec<crate::eval::value::Value> {
-        use crate::eval::value::Value;
-        let mut clause_values: Vec<Value> = clauses
+    /// other is the term it always was. The loader's own clauses (WI-320, WI-201) are not
+    /// converted here; `load_operation` appends them after these.
+    fn convert_written_clauses(&mut self, clauses: &[Vec<ContractGoal>]) -> Vec<WrittenClause> {
+        clauses
             .iter()
             .map(|clause| {
-                // WI-552: canonicalize each goal's param/`result` refs to var_ref
-                // at the producer, so the stored clause carries the binder as the
-                // variable it is (the discharge-time normalize pass is retired).
-                let mut goals: Vec<Value> = clause
-                    .iter()
-                    .map(|&tid| {
-                        let t = self.convert_term(tid);
-                        let goal = self.var_ref_signature_places(t);
-                        self.contract_goal_as_written(tid, goal)
-                    })
-                    .collect();
-                if goals.len() == 1 {
+                let (Some(first), Some(last)) = (clause.first(), clause.last()) else {
+                    unreachable!(
+                        "the grammar writes a `requires` / `ensures` clause with at least one goal"
+                    );
+                };
+                let site = SourceSpan::from_span(self.source_id, Span::merge(first.written, last.written));
+                let mut goals: Vec<Value> = Vec::with_capacity(clause.len());
+                let mut occurrences: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(clause.len());
+                for written in clause {
+                    // WI-552: canonicalize each goal's param/`result` refs to var_ref
+                    // at the producer, so the stored clause carries the binder as the
+                    // variable it is (the discharge-time normalize pass is retired).
+                    let t = self.convert_term(written.term);
+                    let goal = self.var_ref_signature_places(t);
+                    let goal = self.contract_goal_as_written(written.term, goal);
+                    let at = SourceSpan::from_span(self.source_id, written.written);
+                    occurrences.push(self.contract_goal_occurrence(&goal, at));
+                    goals.push(goal);
+                }
+                let stored = if goals.len() == 1 {
                     goals.remove(0)
                 } else {
                     let conj_sym = self.kb.intern("conjunction");
                     self.kb.fn_value(conj_sym, goals, Vec::new())
+                };
+                WrittenClause {
+                    site,
+                    stored,
+                    goals: occurrences,
                 }
             })
-            .collect();
-        clause_values.extend(extra_terms.iter().map(|t| Value::term(*t)));
-        clause_values
+            .collect()
+    }
+
+    /// WI-20261122-517Y5 — the occurrence of a contract goal as loaded, located at `site`,
+    /// the span the goal is written at. A goal that is a term is materialized there
+    /// ([`node_occurrence::materialize_at`]: every node at `site`, not at the term's
+    /// `term_spans` entry, which is first-write-wins and which a goal written in two clauses
+    /// would share). A goal holding a binding's occurrence ([`Self::contract_goal_as_written`])
+    /// is the application of its functor over its arguments, each binding the occurrence it
+    /// holds and every other argument materialized at `site`.
+    fn contract_goal_occurrence(&self, goal: &Value, site: SourceSpan) -> Rc<NodeOccurrence> {
+        let argument = |arg: &Value| match arg {
+            Value::Term { id, .. } => node_occurrence::materialize_at(self.kb, *id, site),
+            Value::Node(occ) => Rc::clone(occ),
+            other => unreachable!(
+                "`contract_goal_as_written` holds a goal's argument as a term or a binding's \
+                 occurrence, not {other:?}"
+            ),
+        };
+        match goal {
+            Value::Term { id, .. } => node_occurrence::materialize_at(self.kb, *id, site),
+            Value::Entity {
+                functor,
+                pos,
+                named,
+            } => NodeOccurrence::new_expr(
+                Expr::Apply {
+                    recv_type: None,
+                    functor: *functor,
+                    pos_args: pos.iter().map(argument).collect(),
+                    named_args: named.iter().map(|(k, v)| (*k, argument(v))).collect(),
+                    type_args: Vec::new(),
+                },
+                site,
+                None,
+            ),
+            other => unreachable!(
+                "`contract_goal_as_written` builds a goal as a term or an application, not \
+                 {other:?}"
+            ),
+        }
     }
 
     /// One goal of an operation's `requires`, converted to `goal` from the parse term

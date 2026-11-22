@@ -73,7 +73,7 @@ use std::rc::Weak;
 use super::node_occurrence::{
     EffectExprNode, Expr, MatchBranch, NodeKind, OccurrenceOrigin, Pattern, TypeChild, TypeNode,
 };
-use super::op_info::{OpSignature, OperationRecord};
+use super::op_info::{AddedClause, OpSignature, OperationContract, OperationRecord, WrittenClause};
 use super::typing::{CallClass, RequiresEntry, ResolvedRequiresNode};
 use super::*;
 use crate::eval::value::Value;
@@ -1000,8 +1000,10 @@ impl Copier {
             body,
             param_defaults,
             typed_contract,
+            contract,
         } = record;
         OperationRecord {
+            contract: contract.as_ref().map(|contract| self.operation_contract(contract)),
             signature: signature.as_ref().map(|signature| {
                 let OpSignature {
                     params,
@@ -1031,6 +1033,37 @@ impl Copier {
                 .iter()
                 .map(|(term, typed)| (plain(term), self.node(typed)))
                 .collect(),
+        }
+    }
+
+    fn operation_contract(&mut self, contract: &OperationContract) -> OperationContract {
+        let OperationContract {
+            requires,
+            ensures,
+            added_requires,
+        } = contract;
+        OperationContract {
+            requires: requires.iter().map(|c| self.written_clause(c)).collect(),
+            ensures: ensures.iter().map(|c| self.written_clause(c)).collect(),
+            added_requires: added_requires
+                .iter()
+                .map(|added| {
+                    let AddedClause { stored, by } = added;
+                    AddedClause {
+                        stored: self.value(stored),
+                        by: plain(by),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn written_clause(&mut self, clause: &WrittenClause) -> WrittenClause {
+        let WrittenClause { site, stored, goals } = clause;
+        WrittenClause {
+            site: plain(site),
+            stored: self.value(stored),
+            goals: goals.iter().map(|goal| self.node(goal)).collect(),
         }
     }
 
@@ -1376,6 +1409,11 @@ mod tests {
             roots.extend(record.body.as_ref());
             roots.extend(record.param_defaults.iter().map(|(_, default)| default));
             roots.extend(record.typed_contract.iter().map(|(_, typed)| typed));
+            if let Some(contract) = &record.contract {
+                for clause in contract.requires.iter().chain(&contract.ensures) {
+                    roots.extend(clause.goals.iter());
+                }
+            }
         }
         for rule in &kb.rules {
             roots.extend(rule.body_nodes.iter());
@@ -1442,6 +1480,14 @@ mod tests {
                 signature.params.iter().for_each(|(_, ty)| payloads(ty, &mut out));
                 payloads(&signature.return_type, &mut out);
             }
+        }
+        // WI-20261122-517Y5: a clause written through a type alias is stored as an
+        // application over its binding's occurrence (a `Value::Entity`, with payloads).
+        for contract in kb.op_records.values().filter_map(|record| record.contract.as_ref()) {
+            for clause in contract.requires.iter().chain(&contract.ensures) {
+                payloads(&clause.stored, &mut out);
+            }
+            contract.added_requires.iter().for_each(|added| payloads(&added.stored, &mut out));
         }
         kb.const_types.values().for_each(|ty| payloads(ty, &mut out));
         for occ in occurrences(kb).values().filter_map(Weak::upgrade) {
