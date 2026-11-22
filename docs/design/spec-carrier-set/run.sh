@@ -53,3 +53,22 @@ carrier f1-provider-named-only-in-a-result.anthill Coll 'Num'
 echo "=== f1: self_provides rows of Coll"
 "$A" query --path f1-provider-named-only-in-a-result.anthill --max-results 100000 \
   'anthill.reflect.typing.self_provides(?c, ?s)' 2>&1 | grep -E "\?s = Coll\b" || echo "  (none)"
+echo "=== f2: Foo provides Dflt[T = Self], T result-only"
+for q in 'self_provides(?c, ?s)' 'default_provider(?s, ?c, ?w)'; do
+  "$A" query --path f2-only-type-var-is-result-only.anthill --max-results 100000 \
+    "anthill.reflect.typing.$q" 2>&1 | grep -E "\?s = Dflt\b" | sed "s/^/  ${q%%(*}: /"
+done
+
+run f4-two-sorts-own-one-substituted-sort.anthill
+echo "=== f4: default_provider rows of Coll"
+"$A" query --path f4-two-sorts-own-one-substituted-sort.anthill --max-results 100000 \
+  'anthill.reflect.typing.default_provider(?s, ?c, ?w)' 2>&1 | grep -E "\?s = Coll\b"
+
+echo "##### G. Decision 5: the default rows of a self-representing spec"
+"$A" load g1-two-defaults-overlap-refused.anthill 2>&1 | head -1 | cut -c1-300 | sed 's/^/=== g1: /'
+run g2-self-representing-two-providers.anthill
+echo "=== g2: default_provider rows of Src"
+"$A" query --path g2-self-representing-two-providers.anthill --max-results 100000 \
+  'anthill.reflect.typing.default_provider(?s, ?c, ?w)' 2>&1 | grep -E "\?s = Src\b"
+run g3-self-returning-call-names-no-provider.anthill
+run g4-self-returning-call-names-a-concrete-provider.anthill

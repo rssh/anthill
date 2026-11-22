@@ -1,0 +1,11 @@
+namespace carrier_set.f2
+  sort Dflt
+    sort T = ?
+    operation dflt() -> T
+  end
+  sort Foo
+    entity foo
+    provides Dflt[T = Self]
+    operation dflt() -> Foo = foo
+  end
+end

@@ -1,0 +1,36 @@
+namespace carrier_set.f4
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  sort Coll
+    sort C = ?
+    sort Elem = ?
+    operation first(c: C) -> Elem
+  end
+
+  sort Num
+    entity num(v: Int64)
+    provides Coll[C = Foo, Elem = Self, first = Num.firstOf]
+    operation firstOf(c: Foo) -> Num = num(v: 2)
+    operation value(n: Num) -> Int64 =
+      match n
+        case num(v) -> v
+  end
+
+  sort Foo
+    entity foo
+    provides Coll[C = Self, Elem = Num, first = Foo.firstOf]
+    operation firstOf(c: Foo) -> Num = num(v: 1)
+  end
+
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(Num.value(Coll.first(foo))))
+      0
+  end
+end

@@ -1,0 +1,23 @@
+namespace carrier_set.g1
+  import anthill.prelude.{Int64}
+
+  sort Show
+    sort T = ?
+    operation show(x: T) -> Int64
+  end
+
+  sort Box
+    sort T = ?
+    entity box(v: T)
+  end
+
+  sort ShowAnyBox
+    default provides Show[T = Box[T = ?]]
+    operation show(x: Box) -> Int64 = 1
+  end
+
+  sort ShowIntBox
+    default provides Show[T = Box[T = Int64]]
+    operation show(x: Box[T = Int64]) -> Int64 = 2
+  end
+end

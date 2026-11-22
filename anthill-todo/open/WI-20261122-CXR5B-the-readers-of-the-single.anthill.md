@@ -46,3 +46,9 @@ TO DO:
 
 ACCEPTANCE: design §7's stage 2 rows, each driven with its back-out; families green; full workspace green via rustland/scripts/test.sh; scaland testFull.
 
+## Changes
+
+### 2026-11-22T11:03:31Z — feedback — claude
+
+Two decisions this ticket restates changed with the user on 2026-11-22, after a fourth review of docs/design/spec-carrier-set.md. They supersede the description where it differs. DECISION 5, corrected: provision_carrier's ?c is the type of the values the provision is for. For a spec with a dictionary that is the spec at all its type-vars (`Set provides Eq[T = Self]` is at `Eq[T = Set]`). For a self-representing spec it is the PROVIDER at its own type-vars (`List provides Stream[T = T, E = {}]` is at `List[T = T]`), and the spec's type-vars are read off it. With the spec's substituted sort there instead, rule (2) of default_provider would write six overlapping 'default Stream' rows, and one_default (check_one_default, kb/defaults.rs:798) would refuse the standard library (probes g1-g4). DECISION 6, decided again (it was option (b)): every binding counts. A provider provides a spec for itself when its sort is the head of the carrier or the head of one of the carrier's bindings. One verdict moves: f4, two sorts each owning a provision of Coll[C = Foo, Elem = Num], is refused at load until one is marked `default provides`; it runs today. f1's Num gains a harmless inferred default row. f2's Foo for Dflt and the nine stdlib NonEq self-provisions keep their own provisions. Stage 2's rows for both are in the design's §7.
+

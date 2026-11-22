@@ -1,6 +1,6 @@
 # The sort carrier and the operation carrier
 
-## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), and an amendment to §5.4's wording, approved by the user. Decision 6 decided the same day ((b): a result-only binding does not make a provision the provider's own). Scope decided the same day: JE2MT is stage 1, and stage 2 is WI-20261122-CXR5B (§5). For WI-20261121-JE2MT.
+## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), and an amendment to §5.4's wording, approved by the user. Decision 6 decided the same day, reopened by a fourth review, and decided again: every binding counts (rule 1). That review also had decision 5 corrected with the user: for a self-representing spec the carrier is the provider at its own type-vars (`List[T = T]`). Scope decided the same day: JE2MT is stage 1, and stage 2 is WI-20261122-CXR5B (§5). For WI-20261121-JE2MT.
 
 The MODEL is the type system's own, so this corrects the implementation to it. Proposal 074
 §1.2 (decided): "a spec may have several carriers … a value typed at the spec is the
@@ -56,19 +56,21 @@ exists.
 | a spec with a dictionary: no operation takes a value of type `Self` | a dictionary | `Eq`, `Iterable`, `Convert` |
 | a self-representing spec: an operation takes a value of type `Self` | a value of a provider's sort | `Stream` (`splitFirst(s: Self)`): a `List` value is a `Stream` value |
 
-The class decides where a `Self`-typed argument comes from, not where a provision is.
+The class decides where a `Self`-typed argument comes from, and so what a provision is at
+(decision 5).
 
-A provision `W provides S[p₁ = t₁, …]` is AT the substituted sort its bindings make, the
-spec at all its type-vars, whatever the class: `List provides Stream[T = T, E = {}]` is at
-`Stream[T = T, E = {}]`. From that:
+A provision is AT a substituted sort: the type of the values it is for (decision 5). For a
+spec with a dictionary that is the spec at all its type-vars: `Set provides Eq[T = Self]` is
+at `Eq[T = Set]`. For a self-representing spec it is the PROVIDER at its own type-vars, its
+`Self`: `List provides Stream[T = T, E = {}]` is at `List[T = T]`, and `Stream`'s type-vars
+are read off it (`Stream.T` is `List`'s `T`, `E` is `{}`). From that:
 
 - **Two provisions are at the same substituted sort** where those bindings unify. A binding can be
   an effect row (`Iterable`'s `E`), so the unification is over rows too.
-- **A provider provides a spec for itself** where its sort is one of the sorts its bindings
-  name (a binding's sort being its head, `List` for `List[T = E]`), or where the spec is
-  self-representing: then the provider's values are the spec's values (`List` provides
-  `Stream` for itself). Otherwise it is a **witness**. A binding does not count when its
-  type-var appears only in operations' RESULTS (decision 6).
+- **A provider provides a spec for itself** where its sort is the head of the carrier (a
+  self-representing spec: `List` at `List[T = T]`) or the head of one of the carrier's
+  bindings (`Set` at `Eq[T = Set]`). Every binding counts (decision 6). Otherwise it is a
+  **witness**, and a witness for a self-representing spec cannot exist.
 - **"Add this provision unless one is written"** (the derivations) asks whether a written
   provision is at a substituted sort that unifies with the one to be added.
 - **What a call fixes** is a question about its OPERATION. The **operation carrier** is
@@ -390,7 +392,7 @@ corrected to describe the set, as 074 §1.2 has it:
   first typed by a spec parameter the provision binds to the carrier" (around 7325).
 - 058 §3.6 keeps its rule. A note says its "carrier" is the substituted sort.
 
-## 6. Decisions (taken with the user 2026-11-22, each as proposed; after review, 1 reopened and decided, 4 decided, 5 added and decided, 6 added and decided)
+## 6. Decisions (taken with the user 2026-11-22; after review, 1 reopened and decided, 4 decided, 5 added, decided and corrected, 6 added, decided, reopened and decided again)
 
 1. **What a call fixes, for every provider. DECIDED 2026-11-22**, after it was reopened. It
    began as "§8.7, one provider declaring one spec twice" (d5, refused at load), decided
@@ -576,11 +578,12 @@ corrected to describe the set, as 074 §1.2 has it:
    Consequences, each written where it applies:
    - §1's table is now about the class, not the carrier.
    - Decision 1's self-representing exception is removed.
-   - Decision 5's `?c` for `Stream` is `Stream[T = T, E = {}]`, not `List[T = T]`: one shape
-     in the column, whatever the class (this also answers the third review's finding 2).
-   - "Provides for itself" also holds where the spec is self-representing. Otherwise the
-     seven `Stream` provisions of the standard library would lose their inferred default
-     rows, the loss WI-1076 once measured.
+   - Decision 5's `?c` for `Stream` was first rewritten to `Stream[T = T, E = {}]` here. The
+     fourth review showed that this collides, and the user corrected it to `List[T = T]`, the
+     provider at its own type-vars (decision 5).
+   - "Provides for itself" holds for a self-representing spec's provider, because it is the
+     head of the carrier (decision 5). Otherwise the stdlib's `Stream` provisions would lose
+     their inferred default rows, the loss WI-1076 once measured.
    - `SortCarrier` holds type-vars only.
    - §5.2's "a spec's carrier parameter is what stands for the carrier" joins the spec text
      to correct.
@@ -600,12 +603,18 @@ corrected to describe the set, as 074 §1.2 has it:
 
    So whether `MyBag`'s own provision is its default depends on which of two lines comes
    first. Decided, of three shapes (one row per type-var; the substituted sort; one sort
-   for one type-var and the substituted sort for several): **`?c` is the substituted sort**,
-   one compound carrier. It is the spec with its carrier type-vars substituted, a type like
-   any other, and the operation bindings (`pure = optionPure`, `eq = cEq`) are left out.
-   It is not new data: the provision fact's `spec` field already holds it
-   (`SortView(Bag2, T: Int64, C: MyBag)`), and today the relation throws it away to answer
-   one sort.
+   for one type-var and the substituted sort for several): **`?c` is a substituted sort**,
+   one compound carrier, a type like any other, with the operation bindings
+   (`pure = optionPure`, `eq = cEq`) left out.
+
+   **Which substituted sort: the type of the values the provision is for** (corrected with
+   the user after the fourth review). The spec's class picks it:
+   - For a spec with a dictionary, the values are dictionaries, so `?c` is the SPEC at all
+     its type-vars. It is not new data: the provision fact's `spec` field already holds it
+     (`SortView(Bag2, T: Int64, C: MyBag)`), and today the relation throws it away to answer
+     one sort.
+   - For a self-representing spec, the values are the provider's, so `?c` is the PROVIDER at
+     its own type-vars, its `Self` (`List[T = T]`). The spec's type-vars are read off it.
 
    | provision | `?c` today | `?c` decided |
    |---|---|---|
@@ -614,11 +623,37 @@ corrected to describe the set, as 074 §1.2 has it:
    | `MyBag provides Bag2[T = Int64, C = Self]` | `Int64` or `MyBag`, by order | `Bag2[T = Int64, C = MyBag]` in both orders |
    | `W1`/`W2` over `Coll` (b5) | `Foo`, `Foo` | `Coll[C = Foo, Elem = Int64]`, `Coll[C = Foo, Elem = String]` |
    | `Option provides Monad[M = Self, pure = optionPure, …]` | `Option` | `Monad[M = Option]` |
+   | `List provides Stream[T = T, E = {}]` (self-representing) | `List` | `List[T = T]` |
+   | `FiniteStream provides Stream[T, E]` (self-representing) | `FiniteStream` | `FiniteStream[T = T, E = E]` |
+
+   **Why not the spec for `Stream` too** (the fourth review's finding 1, worked through with
+   the user; probes g1–g4). The loader writes inferred default rows by itself: rule (2) of
+   `default_provider` in `reflect/typing.anthill`, `default_provider(?S, ?C, ?C) :-
+   self_provides(?C, ?S)`, gives every sort that provides a spec for itself a row "this
+   sort is its own default". `one_default` (§8.7's "at most one default per carrier",
+   `check_one_default`, kb/defaults.rs:798) refuses two default rows of one spec at
+   overlapping carriers with different providers. g1 shows it doing that rightly:
+   `Show[T = Box[T = ?]]` beside `Show[T = Box[T = Int64]]`.
+
+   A self-representing spec has no default in that sense, and needs none:
+   - a call's argument value picks the provider (g2: `Src.next(ones)` reaches `Ones`, answers 12);
+   - a call that names no value cannot pick one among many (g3, refused today);
+   - so there is no "default `Stream`".
+
+   With the spec's substituted sort in `?c`, rule (2) would WRITE one, six times:
+   "`List` is the default for `Stream[T = T, E = {}]`", "`FiniteStream` … for
+   `Stream[T = T, E = E]`", and so on. Those carriers unify, so `one_default` would refuse
+   the standard library. With the provider at its own type-vars, rule (2)'s rows stay at
+   `List[T = T]`, `FiniteStream[T = T, E = E]`, … and do not overlap, as today's rows at
+   `List`, `FiniteStream` do not. No special comparison rule is needed. (A first answer to
+   the finding proposed one: compare the provider beside the substituted sort. This
+   replaces it.) It also settles the third review's "two shapes of `?c`": there is one
+   definition, and the class picks which sort.
 
    The rules then read:
-   - `self_provides(C, S)`: the provider is one of the sorts the substituted sort binds
-     (`MyBag` is at `C`, in both orders), or `S` is self-representing (`List` provides
-     `Stream` for itself; decision 4).
+   - `self_provides(C, S)`: the provider is the head of `?c` (`List` at `List[T = T]`) or the
+     head of one of its bindings (`MyBag` at `C`, in both orders); every binding counts
+     (decision 6).
    - `default_provider(S, I, W)`: a call whose substituted sort is `I`, tied between
      providers, takes `W`. That is what decision 1's call fixes.
    - `one_default` compares two rows by unifying their substituted sorts, as it already
@@ -629,37 +664,42 @@ corrected to describe the set, as 074 §1.2 has it:
    `self_provides`, `default_provider`, the loader's index and `one_default`, and the tests
    that assert the rows (`wi860_default_provider_relations_test` among them).
    `examples/guardians` has an operation of its own named `provision_carrier`, which reads
-   `SortProvidesInfo` directly. It is not this relation. For a self-representing spec `?c`
-   has the same shape: `List provides Stream[T = T, E = {}]` is at `Stream[T = T, E = {}]`
-   (decision 4). The provider is the relation's `?p`. This sentence said `List[T = T]` until
-   decision 4 was taken. The key of the loader's default index under a compound `?c` is
-   stage 2's to choose, and it is on the per-call path.
-6. **"Provides for itself" needs a binding an operation receives. DECIDED 2026-11-22**
-   (the third review's finding 3). The case, measured on `aa4e60674` (f1):
+   `SortProvidesInfo` directly. It is not this relation. The key of the loader's default
+   index under a compound `?c` is stage 2's to choose, and it is on the per-call path.
+6. **"Provides for itself": every binding counts. DECIDED 2026-11-22**, after it was decided
+   once, reopened by the fourth review, and discussed with the user. The rule, one sentence
+   with no exception: **a provider provides a spec for itself when its sort is the head of
+   the carrier, or the head of one of the carrier's bindings.** Otherwise it is a witness.
+   With decision 5 this covers both classes. A self-representing spec's provider is the head
+   of its carrier (`List` at `List[T = T]`); a dictionary spec's provider is found among the
+   bindings (`Set` at `Eq[T = Set]`). It feeds the inferred default rows (rule (2) of
+   `default_provider`), the supply route and the member checks.
 
-   ```anthill
-   sort Num
-     entity num(v: Int64)
-     provides Coll[C = Foo, Elem = Self, first = Num.firstOf]
-     operation firstOf(c: Foo) -> Num = num(v: 42)
-   end
-   ```
+   | probe | provision | today | decided |
+   |---|---|---|---|
+   | f1 | `Num provides Coll[C = Foo, Elem = Self]` (`Elem` only in `first`'s result) | witness; 42 | `Num`'s own, so it gains an inferred default row, used only on a tie at `Coll[C = Foo, Elem = Num]`; 42 |
+   | f2 | `Foo provides Dflt[T = Self]` over `dflt() -> T` | its own; default row | unchanged |
+   | f4 | `Num provides Coll[C = Foo, Elem = Self]` AND `Foo provides Coll[C = Self, Elem = Num]` | runs, 1: `Foo` its own and the default, `Num` a witness | refused at load: both are their own, so `one_default` sees two defaults at one carrier, until one is marked `default provides` |
+   | | the nine stdlib `NonEq` providers (`nonEqRefl() -> T`) | their own; default rows | unchanged |
 
-   `Num` is named at `Elem`, and `Elem` appears only in `first`'s result: no operation
-   receives a `Num`. Today it answers 42, and `Num` is filed as a witness at `Foo`, with no
-   `self_provides` and no default row. As §1 was first written, every binding counted (a),
-   which would have made it `Num`'s own provision, with an inferred default row. Decided,
-   option (b): **a binding does not count when its type-var appears only in operations'
-   results**, the restriction decision 3 already uses. `Num` stays a witness, as today.
-   "For itself" means the operations act on the provider's own values, and a result-only
-   type-var is what they produce, not what they receive. A spec with no operations of its
-   own (`Effect`, `SortDomain`) is unaffected, none of its type-vars being result-only. It
-   feeds the supply route, the member checks and `self_provides`.
+   **Two rules were weighed**, each one sentence:
+   - **Rule 1, every binding counts.** Taken. Its one refusal (f4) is loud and is repaired
+     by one mark. It changes nothing in the standard library.
+   - **Rule 2, a binding at an output-only type-var never counts.** Not taken. It takes
+     away a sort's own provision of every spec whose type-vars are all output-only: f2, the
+     nine `NonEq` providers, `Default`- and `Bounded`-like specs. Their uses would need
+     rewriting with `default provides` marks. It also makes a phantom type-var that is
+     bound only in a result second-class.
+
+   The first decision, option (b), was rule 2 with an exception (where no operation takes
+   any type-var, every binding counts), so that f2 and `NonEq` kept their own provisions.
+   The user did not want a rule with variants. No single rule was found that keeps both f4
+   and f2: "the provider is at every type-var an operation takes" breaks `MyBag provides
+   Bag2[T = Int64, C = Self]` (`put(c: C, x: T)` takes both).
 
 ## 7. Acceptance
 
-If the user accepts the proposed scope, the stage 1 rows are JE2MT's and the stage 2 rows
-move to stage 2's ticket.
+The stage 1 rows are JE2MT's; the stage 2 rows are WI-20261122-CXR5B's.
 
 - **Stage 1 rows:** b1 derives no second row, with its back-out. The equality rows of
   `wi_tv0pa_eq_gives_partial_eq_test` stay green.
@@ -675,7 +715,11 @@ move to stage 2's ticket.
   - `VectorSpace` declared `F` first still reads `Vec3`'s provision as its own.
   - c1 answers 42, or its cause is named.
   - The diagnostics the X readers print ("Write the instance: …") use the substituted sort.
-  - f1 keeps `Num` a witness, with no `self_provides` row (decision 6).
+  - f1, f2 and f4 answer as decision 6's table says: f4 is refused at load until one
+    provision is marked `default provides`.
+  - The stdlib's `Stream` providers keep their inferred default rows, at `List[T = T]` and
+    the others (decision 5), and `one_default` passes. g1 is still refused, g2 answers 12,
+    and g3 and g4 answer as decision 1 and c3 decide.
   - Each of §6's decisions has its driven row.
 - **The a-rows** pass before and after, by design.
 - **Gates:** families green; full workspace via `rustland/scripts/test.sh`; scaland
@@ -770,3 +814,19 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   binding at a result-only type-var does not make a provision the provider's own (probe
   f1, measured on `aa4e60674`). Scope: JE2MT delivers stage 1, and stage 2 is filed as
   WI-20261122-CXR5B, depending on it.
+- **2026-11-22, fourth review from the other session** (anthill-6d), on `0a3f0acb8`. Taken
+  from it, each measured here first:
+  - Finding 1, the stdlib `Stream` default rows colliding under decision 5. Worked through
+    with the user (probes g1–g4), who corrected decision 5: for a self-representing spec
+    `?c` is the provider at its own type-vars (`List[T = T]`), so the rows stay apart. A
+    first answer, comparing the provider beside the spec's substituted sort, was replaced
+    by this.
+  - Finding 2: decision 6's (b) takes away `Foo`'s own `Dflt` (f2) and the nine stdlib
+    `NonEq` self-provisions. Decision 6 is reopened.
+  - Finding 3: §7's stale scope sentence is fixed.
+  - Finding 4: WI-20261122-CXR5B restates decisions 5 and 6, and gets a note when they
+    settle.
+- **2026-11-22, decision 6 decided again with the user: rule 1, every binding counts.**
+  Probe f4 (measured on `0a3f0acb8`) was the case where the candidates differ. Rule 2,
+  where output-only bindings never count, was weighed and not taken, because of `NonEq`,
+  `Default`-like specs and phantom type-vars.
