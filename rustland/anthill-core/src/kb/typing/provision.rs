@@ -137,7 +137,10 @@ pub(super) fn spec_carrier_param(kb: &KnowledgeBase, spec_sort: Symbol) -> Optio
     }
     // Every type-param VarId any declared operation receives on, in one pass over the
     // operations — the dual of `self_receiver_param_index`, which matches a parameter
-    // typed as the SORT where this matches one typed as a PARAMETER of it.
+    // typed as the SORT where this matches one typed as a PARAMETER of it. A parameter
+    // typed at an application of a higher-kinded type-var (`m: M[A]`) takes `M`
+    // ([`declared_type_param_head_vid`], WI-20261122-CXR5B's c1): read bare-only, `Monad`
+    // took none, and a witness of it was read as its provider's own.
     let received: std::collections::HashSet<VarId> =
         crate::kb::op_requirements::operations_of_sort(kb, canon)
             .iter()
@@ -145,7 +148,7 @@ pub(super) fn spec_carrier_param(kb: &KnowledgeBase, spec_sort: Symbol) -> Optio
             .flat_map(|info| {
                 info.params
                     .iter()
-                    .filter_map(|(_, pty)| declared_type_param_vid(kb, pty))
+                    .filter_map(|(_, pty)| declared_type_param_head_vid(kb, pty))
                     .collect::<Vec<_>>()
             })
             .collect();

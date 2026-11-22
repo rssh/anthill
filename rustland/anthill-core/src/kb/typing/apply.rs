@@ -4327,7 +4327,7 @@ fn check_apply_call(
                     sort_type_params_as_pairs(kb, spec_sort)
                         .iter()
                         .filter(|(p, _)| !kb.type_params_of_sort(*p).is_empty())
-                        .find_map(|(_, var)| {
+                        .find_map(|(param, var)| {
                             // WI-394: walk to a `Value` so a non-`Term`
                             // (`Value::Node`) carrier binding resolves through
                             // the view. A `Term` carrier views identically to
@@ -4338,7 +4338,7 @@ fn check_apply_call(
                             let c = extract_sort_ref_sym(kb, &walked)?;
                             (!is_sort_param_symbol(kb, c)
                                 && kb.has_kind(c, crate::intern::SymbolKind::Sort))
-                            .then_some(c)
+                            .then_some((*param, c))
                         })
                 })
                 .flatten();
@@ -4349,7 +4349,27 @@ fn check_apply_call(
             // that is not its own it is refused, as it is at any other type.
             let hk_carrier =
                 hk_carrier.filter(|_| enclosing_selection_for(kb, &selections, spec_sort).is_none());
-            if let Some(c) = hk_carrier {
+            // WI-20261122-CXR5B (c1 of `docs/design/spec-carrier-set.md`) — NOT FOR A CALL THE
+            // CARRIER'S OWN PROVISION DOES NOT ANSWER. This branch reads `C`'s own provision and
+            // returns; a WITNESS providing the spec at `C` (`BoxM provides Monad[M = Box]`), or a
+            // bracket naming a provider other than `C`, is the resolution's below, which weighs the
+            // witnesses, reads the bracket and discharges a provision's conditions. Answered here,
+            // `Monad.flatMap(box(v: 41), …)` over that witness was refused "no impl matches"
+            // (MEASURED, c1), and a first cut that took the witness here ran one whose condition
+            // nothing met, and ran `Box`'s own beside a bracket naming the witness (found by
+            // /code-review).
+            let hk_carrier = hk_carrier.filter(|(hk_param, c)| {
+                let named_other = pinned_witness_for(kb, &selections, spec_sort)
+                    .is_some_and(|w| !same_sort_canonical(kb, w, *c));
+                let witness_at_c = provider_spec_view_bindings(kb, *c, spec_sort).is_none()
+                    && type_param_vid_in_sort(kb, spec_sort, *hk_param).is_some_and(|vid| {
+                        provisions_at_carrier(kb, spec_sort, vid, *c)
+                            .iter()
+                            .any(|(p, _)| !same_sort_canonical(kb, *p, *c))
+                    });
+                !named_other && !witness_at_c
+            });
+            if let Some((_, c)) = hk_carrier {
                 // DISCHARGE the implicit `Spec[F = C]` obligation: confirm `C` provides
                 // the spec (the WI-431 instance fact). No provision ⟹ undischarged: a
                 // USER spec (warrants the abstract check) is a loud no-instance error

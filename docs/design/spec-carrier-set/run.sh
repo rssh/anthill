@@ -36,7 +36,7 @@ carrier b4-order-C-first.anthill Bag2 MyBag
 for f in b5 b6 b7 b8; do run "$(ls $f-*.anthill)"; done
 
 echo "##### C. Not decided here (kept apart)"
-for f in c1 c2 c3; do run "$(ls $f-*.anthill)"; done
+for f in c1 c2 c3 c4; do run "$(ls $f-*.anthill)"; done
 
 echo "##### D. Decision 1: what a call fixes, for every provider"
 for f in d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11 d12 d13 d14 d15; do run "$(ls $f-*.anthill)"; done

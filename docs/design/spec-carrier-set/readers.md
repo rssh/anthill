@@ -197,3 +197,10 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
   one view per provider).
 - The instance-fact leg of `provider_coherence_groups_with`: two facts of a group are
   ambiguous only at one `SpecApplication` (step 3).
+- `spec_carrier_param` (L1) counts a parameter typed at an application of a higher-kinded
+  type-var (`m: M[A]` takes `M`) through `declared_type_param_head_vid` (step 4, c1); its 24
+  direct callers (scp above), and the ladders built on it, then see `Monad`'s `M`.
+  `declared_type_param_vid` keeps its arity pin for its other 25 callers.
+- The higher-kinded branch of `check_apply_call` (WI-453) leaves a call a witness at the filled
+  carrier answers, or whose bracket names another provider, to the resolution after it (step 4,
+  c1).

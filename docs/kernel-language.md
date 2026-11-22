@@ -1379,9 +1379,10 @@ provision, the witness leg of the coherence grouping, the supply route a witness
 members are filed under, the member checks and the refusal of a provision naming no
 carrier (below) read ONE type-var of the spec, the one read off its operations
 (below), not the carrier. The two agree where an operation takes the one type-var a
-spec declares. They part where none does (`Eq`, `SortDomain`, `Monad`): these readers
-then see no parameter and read a witness as its provider's own, so a `Monad` witness
-at another sort is refused at its call. Among the provisions at that parameter, what
+spec declares, directly or as the head of an application (`Monad.flatMap(m: M[A], …)`
+takes `M`, so `BoxM provides Monad[M = Box]` is a witness at `Box`). They part where
+none does (`Eq`, `SortDomain`): these readers then see no parameter and read a witness
+as its provider's own. Among the provisions at that parameter, what
 a call fixes chooses (§5.4), and one provider's provisions are told apart by their
 binding of every type-var (§8.7). Moving these readers to the type-vars an
 operation's signature mentions is WI-20261122-CXR5B's.
@@ -1549,7 +1550,8 @@ of written clauses rather than the provision relation, so the rule cannot drift
 into the rows the loader itself derives.
 
 **"Takes" is the rule, not an approximation of one** (WI-1077), for the parameter
-dispatch reads. A narrower reading is imaginable — whether an operation **receives
+dispatch reads. An operation takes a type-var a parameter is typed at, or that heads a
+parameter's type (`m: M[A]`, a higher-kinded type-var). A narrower reading is imaginable — whether an operation **receives
 on** a parameter rather than merely **accepting** it — and the two part company in two
 shapes: a spec that takes its own element somewhere (`Set.insert(s: Set, x: T)`,
 `Map.put(m: Map, key: K, value: V)`), and a spec that declares its element *first* and

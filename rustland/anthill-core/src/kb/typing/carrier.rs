@@ -400,6 +400,23 @@ pub(super) fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option
     }
 }
 
+/// WI-20261122-CXR5B — the type-var a declared parameter type TAKES A VALUE OF: a bare one
+/// ([`declared_type_param_vid`], `c: C`), or one heading an application (`m: M[A]`, a
+/// higher-kinded type-var). What [`spec_carrier_param`] asks of each operation's parameters
+/// (the operation carrier of `docs/design/spec-carrier-set.md` §1 mentions a type-var
+/// "directly or inside an application").
+///
+/// [`declared_type_param_vid`] keeps its arity pin for its other readers, which ask whether a
+/// parameter IS a type-var (the receiver at it, a field's shape). Read through it here, `Monad`
+/// (`flatMap(m: M[A], …)`) took no type-var, so a provision binding `M` to another sort was no
+/// witness, and `BoxM provides Monad[M = Box]` was refused at its call (c1, MEASURED).
+pub(super) fn declared_type_param_head_vid(kb: &KnowledgeBase, pty: &Value) -> Option<VarId> {
+    declared_type_param_vid(kb, pty).or_else(|| match pty.head(kb) {
+        ViewHead::Functor { functor: s, .. } => type_param_global_var(kb, s),
+        _ => None,
+    })
+}
+
 /// WI-424 — the gate distinguishing a spec's CARRIER param from an
 /// element-like param: does `carrier_sym`'s provision of `spec_sort` bind the
 /// spec param whose canonical var is `pvid` to an application of the carrier

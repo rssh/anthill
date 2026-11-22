@@ -279,6 +279,7 @@ takes `F` too, so with `F` declared first `Vec3`'s provision would read as a wit
 |---|---|---|---|
 | c1 | `sort BoxM { provides Monad[M = Box]; … }` with its own `pure`/`flatMap`/`map`; `Monad.flatMap(box(v: 41), …)` | refused: "no impl matches" | moving L1 to L2 does not fix it (both experiments, reverted). That does NOT show it is independent of the V question: the readers that find the argument at the carrier match a bare type-var (`declared_type_param_vid`'s arity pin), so `m: M[A]` may be missed there too. A stage 2 row; its cause is to be named when stage 2 reaches the V readers |
 | c2 | control: `Box` providing `Monad[M = Self]` with the same members | 42 | |
+| c4 | c1 with a second witness `BoxM2` at `Monad[M = Box]` (added by stage 2's fourth step) | refused "no impl matches", naming neither (measured on `4467ab69f`) | a stage 2 row with c1 |
 | c3 | two data sorts each `provides Dflt[T = Int64]` | refused, and no bracket is accepted: "each is a CONCRETE provider, where … the VALUE decides" | the bracket rule asks whether the provider has constructors (`is_value_directed_provider`, dispatch.rs:426), not which parameter is the carrier. Known since wi822 (`TieRepair::ValueDirected`) |
 
 c3 is a separate defect. It became central with decision 8, and the user folded it into
@@ -789,7 +790,8 @@ The stage 1 rows are JE2MT's; the stage 2 rows are WI-20261122-CXR5B's.
   - The bound-`joinTwo` receiver defect (§6 decision 4) gets a probe of its own, with ONE
     provision, since e5 is refused by decision 7 anyway.
   - `VectorSpace` declared `F` first still reads `Vec3`'s provision as its own.
-  - c1 answers 42, or its cause is named.
+  - c1 answers 42, or its cause is named. (Done by the fourth step: 42, and the cause named,
+    History; c4 refused naming both witnesses, the bracket naming either answering.)
   - g6 (`let o: Ones = Src.make[T = Int64]()`) answers 1: the type expected at a `Self`
     result fixes the provider (§5.4's second amendment). g5 keeps answering 1.
   - c3, folded in by the user: a provider with constructors may be named in a bracket where
@@ -1051,3 +1053,32 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   the untyped eval path, the witness classification behind c1 (and the call-site tie of e3/e5
   still renders its suppliers as witness routes, `provision_supplier`'s), decision 3, the P/M/K/X
   readers, and §5.2, §8.3.
+- **2026-11-22, stage 2's fourth step (WI-20261122-CXR5B): a witness of a higher-kinded
+  spec** (c1). The cause, named: two readers. (1) Which type-var an operation takes
+  (`spec_carrier_param`, L1) read a parameter typed at a bare type-var only
+  (`declared_type_param_vid`'s arity pin, §2), so `Monad` (`flatMap(m: M[A], …)`) took none and
+  no provision of it was a witness at another sort; it now counts a type-var heading an
+  application (`declared_type_param_head_vid`), the operation carrier's "directly or inside an
+  application". (2) The higher-kinded branch of `check_apply_call` (WI-453), with `M` filled to
+  `Box` by the argument, asked only `Box`'s own provision (`provider_spec_view_bindings`) and
+  refused "no impl matches"; a call a witness at `Box` answers (`provisions_at_carrier`), or
+  whose bracket names a provider other than `Box`, now goes to the resolution after it, which
+  weighs the witnesses, reads the bracket and discharges a provision's conditions. Where `Box`
+  has its own provision and nothing is named, the branch still answers with it, which is what
+  058's rung 2a answers there (its inferred default). Either reader alone backed out refuses
+  c1. Moved: c1 → 42; c4 (new probe, two witnesses) refused naming both, the bracket naming
+  either → 42; a bracket naming a witness beside the carrier's own provision runs the witness
+  (it ran the carrier's own, before this step too). A bare `provides Wrap` over a user
+  higher-kinded spec `Wrap[W[T]]` with `unwrap(w: W[A])` is now refused "binds nothing at the
+  carrier parameter `W`", as a bare provision of a spec whose operation takes its type-var
+  bare already was (decision 3's direction; it loaded and answered before; kept, with the
+  user, 2026-11-22, as was §5.1's wording). Over the standard
+  library and anthill-core's tests the wider L1 moves nothing else. A /code-review of the step
+  found that a first cut, which took the witness inside the branch, ran a conditional witness
+  whose condition nothing met and ignored a bracket beside the carrier's own provision; both
+  have rows. `kernel-language.md` §5.1's paragraph on the readers on one parameter and its
+  "takes" rule say an application's head is taken. Rows: `wi_cxr5b_hk_witness_test` (6), 5
+  failing with `src/` at `4467ab69f` and the control passing.
+  Not moved: the bound-`joinTwo` receiver defect (a bound operation's `Self` parameter compared
+  at the spec's bindings, `check_instance_fact_op_signatures`; an M reader, reproduced with one
+  provision).
