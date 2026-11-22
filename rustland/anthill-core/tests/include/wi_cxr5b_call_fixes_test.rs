@@ -20,7 +20,7 @@
 //!   provider, and types the result.
 //!
 //! WHAT FAILS IF THIS IS BACKED OUT, and what passes either way, is said at each row.
-//! MEASURED 2026-11-22 with `src/` at the step-1 tree (`b91a09bbe`) and these rows kept: 7 of
+//! MEASURED 2026-11-22 with `src/` at the step-1 tree (`7425f192a`) and these rows kept: 7 of
 //! the 8 fail, and the d8 control passes, by design.
 //!
 //! NOT HERE: one provider writing two provisions (d5, refused at load by three checks), a

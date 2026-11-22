@@ -1011,8 +1011,8 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   supplier, after a first cut loaded it clean and it died at run); and `wi_0rp29`'s control
   of a bracket naming the other witness is refused at `go`'s return in both declaration
   orders, where it had been refused at the call only with `OptIntBoxH` declared first
-  (measured on `b91a09bbe`). Rows: `wi_cxr5b_call_fixes_test` (8), 7 failing with `src/` at
-  `b91a09bbe`, the d8 control passing. Not moved yet: d5 (three load checks), c3 and g4 (the
+  (measured on `7425f192a`). Rows: `wi_cxr5b_call_fixes_test` (8), 7 failing with `src/` at
+  `7425f192a`, the d8 control passing. Not moved yet: d5 (three load checks), c3 and g4 (the
   concrete-provider bracket, whose §5.4 paragraph is to be reworded for the user), the
   untyped eval path, and the witness classification behind c1. §5.4's approved wording lands
   with d5, since it says "whether one provider or several".

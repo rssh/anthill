@@ -1125,7 +1125,7 @@ end
 /// declared first: the call read `T` off the first witness at the carrier, put `T = Int64` in
 /// its goal beside a result already read as `String`, and the pin then failed against that
 /// goal. Declared the other way round it was refused at the return, as it is now in both orders
-/// (MEASURED on the step-1 tree, `b91a09bbe`: the int-first half of this row is refused at the
+/// (MEASURED on the step-1 tree, `7425f192a`: the int-first half of this row is refused at the
 /// call there, the reordered half at `go.return`). A call whose RESULT is the type-var itself (`first(c: C) ->
 /// Elem`) is still refused at the call, the expected type fixing what the bracket's provider
 /// contradicts (`wi_cxr5b_call_fixes_test`).
