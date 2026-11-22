@@ -1,6 +1,6 @@
 # The sort carrier and the operation carrier
 
-## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. Open: decision 4 (measure, then decide), the scope, and the §5.4 wording's approval. For WI-20261121-JE2MT.
+## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Open: decision 4 (measure, then decide) and the scope. For WI-20261121-JE2MT.
 
 The MODEL is the type system's own, so this corrects the implementation to it. Proposal 074
 §1.2 (decided): "a spec may have several carriers … a value typed at the spec is the
@@ -363,7 +363,8 @@ corrected to describe the set, as 074 §1.2 has it:
   "Where a spec genuinely has no carrier parameter, a witness for it cannot exist" (around 1570).
 - §5.2: a left-out parameter is `?` "the spec's carrier parameter excepted" (around 2143).
 - §5.4: the last case of "A body-less operation must have something that can run it"
-  (around 3542), reworded per decision 1.
+  (around 3542), reworded per decision 1. The wording is approved (§6, decision 1), and it
+  lands with stage 2.
 - §8.3: "a provision being about the sort it binds to its spec's carrier parameter, or to
   the sole one" (around 6266).
 - §8.7: "One carrier declaring one spec twice" (around 7272); the member receiver "the
@@ -434,7 +435,11 @@ corrected to describe the set, as 074 §1.2 has it:
    provider that differ in a type-var are two claims at one carrier. They stay refused
    (§8.7's rule, kept for that class).
 
-   **Proposed wording for §5.4**, for the user's approval before the spec changes:
+   **Wording for §5.4, approved by the user 2026-11-22.** It goes into `kernel-language.md`
+   with the stage that implements decision 1 (stage 2), so that the spec never describes
+   behaviour the implementation does not have yet. It replaces the case's first part, up to
+   "the call's receiver"; the paragraph after it ("A rule written in a sort that requires
+   `S` …", with `Sat` and `Two2`) stays as it is:
 
    > - At the call, in an operation body or a rule body, of a body-less member `op` of a
    >   spec `S` whose substituted sort the call does not fix. The **operation carrier** of
@@ -610,3 +615,5 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
     "instance" was NOT taken: the user had just ruled that word out in that meaning. The
     user's terms were taken instead: **sort carrier** and **operation carrier**. The title
     changed to them, and the owner became `sort_carrier` / `SortCarrier`.
+- **2026-11-22, §5.4's wording approved by the user**, as restated after the second review.
+  It lands in `kernel-language.md` with stage 2, the stage that implements it.
