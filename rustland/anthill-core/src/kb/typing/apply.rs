@@ -648,46 +648,22 @@ fn check_apply_call(
                     open.contains(&p)
                 });
                 if apart.len() > 1 {
-                    // The instance as the author writes it: the carrier parameter at the
-                    // receiver's sort, and every other one left to fill — the arguments are
-                    // not unified with the parameters yet, so the carrier is all this knows.
-                    let mut bindings: Vec<String> = Vec::new();
-                    for (param, _) in sort_type_params_as_pairs(kb, spec_sort).iter().copied() {
-                        let name = short_name_of(kb.local_name_of(param)).to_owned();
-                        let at_carrier = type_param_vid_in_sort(kb, spec_sort, param) == Some(carrier_pvid);
-                        bindings.push(if at_carrier {
-                            format!("{name} = {}", short_name_of(kb.qualified_name_of(carrier_sym)))
-                        } else {
-                            format!("{name} = …")
-                        });
-                    }
-                    // A rule's own term takes no call-site bracket, and the instance is written
-                    // on the call's receiver instead, `Conv[A = Meters, B = …].tag(…)`.
-                    let suggestion = if env.in_rule_own_term() {
-                        format!(
-                            "{}[{}].{}(…)",
-                            short_name_of(kb.qualified_name_of(spec_sort)),
-                            bindings.join(", "),
-                            kb.local_name_of(fn_sym)
-                        )
-                    } else {
-                        let open_only: Vec<String> = open
-                            .iter()
-                            .map(|p| format!("{} = …", short_name_of(kb.local_name_of(*p))))
-                            .collect();
-                        format!("{}[{}](…)", kb.qualified_name_of(fn_sym), open_only.join(", "))
-                    };
-                    return Err(TypeError::ParameterNamedApart {
+                    // The arguments are not unified with the parameters yet, so the carrier is
+                    // all the suggestion knows.
+                    let view = &carrier_param_info.as_ref().expect("filtered above").3;
+                    let call = CarrierCall {
+                        spec_sort,
+                        carrier_sym,
+                        carrier_pvid,
+                        view,
+                        at_carrier: &at_carrier,
+                        selections: &selections,
+                        expected: expected.as_ref(),
+                        result: &op.return_type,
+                        fn_sym,
                         span,
-                        op: fn_sym,
-                        spec: spec_sort,
-                        open: open
-                            .iter()
-                            .map(|p| short_name_of(kb.local_name_of(*p)).to_owned())
-                            .collect(),
-                        providers: apart,
-                        suggestion,
-                    });
+                    };
+                    return Err(parameter_named_apart(kb, env, &call, &open, apart));
                 }
             }
         }
@@ -2125,16 +2101,28 @@ fn check_apply_call(
         // Modify model names). The REF-shaped binding (`V ↦ Cell.V`) is already threaded
         // by `bind_spec_params_from_carrier_param` above; this closes only the
         // GROUND-valued case it skips.
-        if let Some((
-            spec_sort,
-            _carrier_sym,
-            _recv_ty,
-            view,
-            _carrier_pvid,
-            _recv_arg_sym,
-        )) = &carrier_param_info
+        //
+        // WI-20261122-CXR5B — from the provision at the carrier the CALL selects, where several
+        // stand there: the bracket's provider, what `σ` holds, the type expected at the call
+        // ([`select_provision_at_carrier`]); refused where they still disagree on what it
+        // leaves free. One provision binds as before, so its binding still wins over `expected`.
+        if let Some((spec_sort, carrier_sym, _recv_ty, view, carrier_pvid, _recv_arg_sym)) =
+            &carrier_param_info
         {
-            bind_ground_value_params_from_provider(kb, &mut subst, *spec_sort, view);
+            let call = CarrierCall {
+                spec_sort: *spec_sort,
+                carrier_sym: *carrier_sym,
+                carrier_pvid: *carrier_pvid,
+                view,
+                at_carrier: &at_carrier,
+                selections: &selections,
+                expected: expected.as_ref(),
+                result: &proj_return_type,
+                fn_sym,
+                span,
+            };
+            let view = select_provision_at_carrier(kb, env, &subst, &call)?;
+            bind_ground_value_params_from_provider(kb, &mut subst, *spec_sort, &view);
         }
 
         // WI-270 / WI-379: now that the arguments have been synthesized,
@@ -4460,6 +4448,66 @@ fn check_apply_call(
                 pos_results,
                 named_results,
             );
+            // WI-20261122-CXR5B (§5.4's second amendment, `docs/design/spec-carrier-set.md`
+            // decision 1): with no value at a parameter typed `Self`, the type expected at a
+            // result typed `Self` fixes the provision's carrier, the provider whose value the
+            // call answers. `let o: Ones = Src.make[T = Int64]()` is at `Ones`; read at no
+            // carrier, `Ones` and `Twos` both answered `Src[T = Int64]`, and the call was
+            // refused as a tie whose repair named the very expected type (g6, MEASURED).
+            // The value the call answers is then a value of that provider, and so is its type:
+            // the type expected, which is what the provider's `Self` is there.
+            let carrier = match (&carrier, &expected) {
+                (ReceiverCarrier::NotApplicable, Some(exp))
+                    if spec_is_self_representing(kb, kb.canonical_sort_sym(spec_sort))
+                        && carrier_sort_of_value(kb, &op.return_type)
+                            .is_some_and(|r| same_sort_canonical(kb, r, spec_sort)) =>
+                {
+                    // A provider of the spec that supplies the operation: an expected type that
+                    // provides nothing names no provision, and one that supplies no member that
+                    // runs (`Relation` for `LogicalStream.guard`) leaves the call to the refusal
+                    // it had, "nothing can run" — taken as the carrier, the call reached no
+                    // candidate, loaded clean and died at run (MEASURED, `wi_ck7pp`'s case 4).
+                    match concrete_receiver_carrier(kb, spec_sort, exp).filter(|&sort| {
+                        sort_provides(kb, sort, spec_sort)
+                            && spec_op_suppliers_for_carrier(kb, spec_sort, sort, fn_sym, op_short_sym)
+                                .iter()
+                                .any(|supplier| op_is_executable(kb, supplier.target))
+                    }) {
+                        Some(sort) => {
+                            let exp = expand_sorts_deep(kb, exp, SlotVar::Flexible);
+                            // What the call fixed of the spec holds at the provider: a type
+                            // expected that contradicts it is no type of this call's value.
+                            if let Some(actual) = self_result_contradicts_expected(
+                                kb,
+                                &subst,
+                                spec_sort,
+                                sort,
+                                &exp,
+                                &op.return_type,
+                            ) {
+                                return Err(TypeError::TypeMismatch {
+                                    site: TypeError::here(),
+                                    span,
+                                    context: TypeErrorContext::OperationReturn {
+                                        op_name: fn_sym,
+                                        surface: surface_of(kb, occ, fn_sym),
+                                    },
+                                    expected: exp,
+                                    quoted: None,
+                                    actual,
+                                });
+                            }
+                            resolved_ret = exp.clone();
+                            ReceiverCarrier::Concrete(GoalCarrier {
+                                sort,
+                                args: receiver_type_args(kb, &exp),
+                            })
+                        }
+                        None => carrier,
+                    }
+                }
+                _ => carrier,
+            };
 
             // WI-357: a concretely-dispatched self-receiver spec op (e.g.
             // `Stream.splitFirst` on a `List[Int]`) binds none of the spec's

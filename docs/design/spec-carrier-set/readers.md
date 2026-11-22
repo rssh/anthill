@@ -107,10 +107,10 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 | kb/typing/instances.rs:1377 | spec_application_where_a_dictionary_is_expected | sop | K | refuse a spec application where a dictionary is expected |
 | kb/typing/instances.rs:1704 | call_at_own_instance | scp | S | in a default body, a call at the body's carrier takes the body's instance |
 | kb/typing/carrier.rs:445 | provision_binds_param_to_carrier | wdc | V | does this argument position name the carrier, through a witness |
-| kb/typing/carrier.rs:464 | provisions_at_carrier | wdc | S | own and witness provisions at a carrier (the `ParameterNamedApart` tie) |
+| kb/typing/carrier.rs:464 | provisions_at_carrier | wdc | S | own and witness provisions at a carrier (the `ParameterNamedApart` tie) — now also read by `select_provision_at_carrier` (CXR5B step 2), which chooses among them by the call; the carrier itself is still the single parameter's |
 | kb/typing/carrier.rs:541 | witness_provider_for | wdc | P | whose binder the view's variables belong to |
 | kb/typing/carrier.rs:3323 | subtype_provider_view | scp | P | drop the composed self-referencing carrier binding of a provider view |
-| kb/typing/candidates.rs:483 | bind_carrier_the_witness_says | scp | S | the open carrier to bind from a named witness `[Mk = W2]` |
+| kb/typing/candidates.rs:483 | bind_carrier_the_witness_says | scp | S | the open carrier to bind from a named witness `[Mk = W2]` — **done** (CXR5B step 2: every open type-var the named provider's provisions write one ground type for) |
 | kb/typing/candidates.rs:503 | bind_carrier_the_witness_says | wdcv | S | the carrier value the named witness provides at |
 | kb/typing/candidates.rs:786 | candidates_at | or_sole | S | the column that grounds the provider's parameters in candidate matching |
 | kb/typing/candidates.rs:2764 | head_answers_at | or_sole | O | the column compared when ranking heads by specificity |

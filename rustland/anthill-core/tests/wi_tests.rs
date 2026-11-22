@@ -2348,6 +2348,8 @@ mod wi_tv0pa_eq_gives_partial_eq_test;
 mod wi_je2mt_provision_at_its_carrier_test;
 #[path = "include/wi_cxr5b_provision_carrier_test.rs"]
 mod wi_cxr5b_provision_carrier_test;
+#[path = "include/wi_cxr5b_call_fixes_test.rs"]
+mod wi_cxr5b_call_fixes_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;

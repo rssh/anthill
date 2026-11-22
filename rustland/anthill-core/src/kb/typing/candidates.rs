@@ -465,50 +465,68 @@ pub(super) fn bind_params_the_provisions_say(
     !said.is_empty()
 }
 
-/// Bind the carrier parameter of `spec` a call's `subst` leaves open to the carrier the witness
-/// the call names provides it at (WI-20261003-FFY4R): `Mk.viaDefault[Mk = W2]()`, whose arguments
-/// and expected type say nothing of `C`, is at `W2`'s `provides Mk[C = A]`, so its instance, its
-/// result and the dispatch of its body's calls are read at `A`. Left open, the goal the call
-/// states names no carrier, no provision answers it, and the defaulted call loaded and ran its
-/// body without an instance ("operation has no body", MEASURED), the body-less one refused as
-/// ambiguous with the bracket written. Only a carrier the witness's one provision of `spec` writes
-/// ground; a parameter already bound is the call's, held to the selection by its checks. `false`
-/// where nothing was bound.
+/// Bind each type-var of `spec` a call's `subst` leaves open to what the provisions of the
+/// provider the call names write for it (WI-20261003-FFY4R; WI-20261122-CXR5B, decision 1 of
+/// `docs/design/spec-carrier-set.md`: a bracket naming a provider fixes that provider's
+/// provisions, and what the call leaves unfixed is read off them). `Mk.viaDefault[Mk = W2]()`,
+/// whose arguments and expected type say nothing of `C`, is at `W2`'s `provides Mk[C = A]`, so
+/// its instance, its result and the dispatch of its body's calls are read at `A`; and
+/// `Dflt.dflt[Dflt = W1]()` over `dflt() -> T` is at `W1`'s `Dflt[T = Int64]`. Left open, the
+/// goal the call states names no binding the provider wrote, no provision answers it, and the
+/// call was refused "no impl matches" with the bracket written (d11, MEASURED) — or, read only
+/// at the spec's one carrier parameter, which `Dflt` has none of, never bound.
+///
+/// Every type-var counts, not one parameter: a type-var is bound where the provider's
+/// provisions of `spec` all write it, and write it one GROUND type. A parameter already bound
+/// is the call's, held to the selection by its checks; a binding to the provider's own
+/// parameter (`Ones provides Src[T = T]`) is no ground type and leaves it open. `false` where
+/// nothing was bound.
 pub(super) fn bind_carrier_the_witness_says(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     spec: Symbol,
     witness: Symbol,
 ) -> bool {
-    let Some(param) = spec_carrier_param(kb, spec) else {
-        return false;
-    };
-    let Some((_, vid)) = spec_param_vars(kb, spec).into_iter().find(|(p, _)| *p == param) else {
-        return false;
-    };
-    let open = match spec_param_binding(kb, subst, vid) {
-        None => vid,
-        Some(bound) => match kb.value_global_var(&bound) {
-            Some(var) => var,
-            None => return false,
-        },
-    };
     let spec_canon = kb.canonical_sort_sym(spec);
-    let rows: Vec<ProvidesRow> = provides_rows_of_provider(kb, witness)
+    let views: Vec<SmallVec<[(Symbol, Value); 2]>> = provides_rows_of_provider(kb, witness)
         .filter(|row| kb.canonical_sort_sym(row.spec_base) == spec_canon)
+        .map(|row| row.bindings(kb))
         .collect();
-    let [row] = &rows[..] else {
-        return false;
-    };
-    let Some((carrier, _)) = witness_dispatch_carrier_value(kb, spec, row.provider, &row.spec_view)
-    else {
-        return false;
-    };
-    if !type_is_ground(kb, &carrier) {
+    if views.is_empty() {
         return false;
     }
-    subst.bind_value(kb, open, carrier);
-    true
+    let mut bound = false;
+    for (param, vid) in spec_param_vars(kb, spec) {
+        let open = match spec_param_binding(kb, subst, vid) {
+            None => vid,
+            Some(at) => match kb.value_global_var(&at) {
+                Some(var) => var,
+                None => continue,
+            },
+        };
+        let label = short_name_of(kb.local_name_of(param)).to_owned();
+        let written: Vec<Option<Value>> = views
+            .iter()
+            .map(|view| {
+                view.iter()
+                    .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == label)
+                    .map(|(_, v)| v.clone())
+                    .filter(|v| type_is_ground(kb, v))
+            })
+            .collect();
+        let Some(Some(first)) = written.first().cloned() else {
+            continue;
+        };
+        let one_type = written.iter().all(|w| {
+            w.as_ref()
+                .is_some_and(|w| unify_types(kb, &mut Substitution::new(), w, &first))
+        });
+        if one_type {
+            subst.bind_value(kb, open, first);
+            bound = true;
+        }
+    }
+    bound
 }
 
 /// Bind each parameter of `requirement`'s spec a call's `subst` leaves open to the type the

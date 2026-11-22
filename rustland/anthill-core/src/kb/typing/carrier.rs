@@ -518,6 +518,294 @@ pub(super) fn providers_apart_at_carrier(
     providers
 }
 
+/// WI-20261122-CXR5B (decision 1 of `docs/design/spec-carrier-set.md`, §5.4) — which
+/// provision at the receiver's carrier a call reads what it leaves free off, once its
+/// arguments are unified.
+///
+/// [`carrier_param_receiver`] classifies the receiver by the FIRST provision at its carrier,
+/// in declaration order, and the late ground bind read that provision's bindings into every
+/// type-var still free. With two provisions at `C = Foo` that differ in `Elem` (`first(c: C)
+/// -> Elem`), the one declared first answered, whatever the call wrote: MEASURED, b5–b8 —
+/// `to_string(Coll.first(foo))` answered `W1`'s 1 or was refused "expected Int64, got String"
+/// by which witness was declared first, a bracket naming `W1` was refused against `W2`'s
+/// bindings (d7), and `let x = Coll.first(foo)` ran with `W1`'s `Elem`.
+///
+/// What the call fixes chooses among them, in order, each narrowing only where it leaves a
+/// provision standing (where it would leave none, a later check refuses the call with its own
+/// message): a bracket naming a provider (`Coll.first[Coll = W1](foo)`); what `σ` already
+/// holds — the arguments, and a bracket on the receiver (`Coll[Elem = Int64].first(foo)`);
+/// and the type expected AT the call, read off the operation's result in a scratch `σ`, so a
+/// single provision's binding still wins over the caller's claim, as the late bind's own note
+/// requires. What the call still leaves free is read off the provisions standing, and where
+/// two give it different types the call is refused, as `Conv.tag("km")` is for a type-var its
+/// signature does not mention ([`providers_apart_at_carrier`]) — unless the bracket names the
+/// provider or a `requires` in scope supplies the instance.
+///
+/// Compared where both bindings are GROUND: a provision binding a type-var to a type
+/// parameter of its provider (`AnyC provides Coll[C = Foo, Elem = E]`) is at every type there,
+/// and is neither narrowed away nor counted as disagreeing.
+pub(super) fn select_provision_at_carrier(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    call: &CarrierCall<'_>,
+) -> Result<SmallVec<[(Symbol, Value); 2]>, TypeError> {
+    let (spec_sort, pvid, carrier_sym) = (call.spec_sort, call.carrier_pvid, call.carrier_sym);
+    let mut standing = call.at_carrier.to_vec();
+    if standing.len() < 2 {
+        return Ok(call.view.clone());
+    }
+    let mut withheld: SmallVec<[Symbol; 2]> = SmallVec::new();
+    let narrow = |standing: &mut Vec<(Symbol, SmallVec<[(Symbol, Value); 2]>)>,
+                  keep: &dyn Fn(&(Symbol, SmallVec<[(Symbol, Value); 2]>)) -> bool| {
+        if standing.iter().any(keep) {
+            standing.retain(|row| keep(row));
+        }
+    };
+    let named = pinned_witness_for(kb, call.selections, spec_sort).map(|w| kb.canonical_sort_sym(w));
+    if let Some(w) = named {
+        narrow(&mut standing, &|(p, _)| kb.canonical_sort_sym(*p) == w);
+    }
+    // The spec's type-vars other than the carrier's, each with its variable in `σ`.
+    let params: SmallVec<[(Symbol, VarId); 2]> = sort_type_params_as_pairs(kb, spec_sort)
+        .iter()
+        .filter_map(|(p, _)| Some((*p, type_param_vid_in_sort(kb, spec_sort, *p)?)))
+        .filter(|(_, vid)| *vid != pvid)
+        .collect();
+    let ground_in = |kb: &mut KnowledgeBase, s: &Substitution, vid: VarId| {
+        spec_param_binding(kb, s, vid).filter(|b| type_is_ground(kb, b))
+    };
+    let mut fixed: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    for &(p, vid) in &params {
+        if let Some(b) = ground_in(kb, subst, vid) {
+            fixed.push((p, b));
+        }
+    }
+    let agrees = |kb: &mut KnowledgeBase, view: &SmallVec<[(Symbol, Value); 2]>, at: &[(Symbol, Value)]| {
+        at.iter().all(|(p, b)| match binding_named(kb, view, *p) {
+            Some(v) if type_is_ground(kb, &v) => ground_types_equal(kb, &v, b),
+            _ => true,
+        })
+    };
+    let keep: Vec<bool> = standing.iter().map(|(_, view)| agrees(kb, view, &fixed)).collect();
+    narrow_by(&mut standing, keep);
+    if let Some(exp) = call.expected {
+        let exp = expand_sorts_deep(kb, exp, SlotVar::Flexible);
+        let mut scratch = subst.clone();
+        unify_types(kb, &mut scratch, call.result, &exp);
+        let mut expected_fixes: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+        for &(p, vid) in &params {
+            if fixed.iter().any(|(q, _)| *q == p) {
+                continue;
+            }
+            if let Some(b) = ground_in(kb, &scratch, vid) {
+                expected_fixes.push((p, b));
+            }
+        }
+        let keep: Vec<bool> = standing.iter().map(|(_, view)| agrees(kb, view, &expected_fixes)).collect();
+        // Where the type expected contradicts every provision standing — a bracket naming a
+        // provider at `T = String` in a call expected at `Int64` — it still fixes what it
+        // fixes: those type-vars are not read off a provision, the expected type binds them,
+        // and the selection's own check refuses the call AT the call, naming the pin
+        // (WI-20261003-FFY4R). Read off the named provider, the call was refused at its
+        // caller's return instead.
+        if !keep.iter().any(|k| *k) {
+            withheld.extend(expected_fixes.iter().map(|(p, _)| *p));
+        }
+        narrow_by(&mut standing, keep);
+        fixed.extend(expected_fixes);
+    }
+    // What the call leaves free, and the provisions standing give different ground types.
+    let mut open: SmallVec<[Symbol; 2]> = SmallVec::new();
+    for &(p, _) in &params {
+        if fixed.iter().any(|(q, _)| *q == p) {
+            continue;
+        }
+        let grounds: Vec<Value> = standing
+            .iter()
+            .filter_map(|(_, view)| binding_named(kb, view, p).filter(|v| type_is_ground(kb, v)))
+            .collect();
+        if grounds.windows(2).any(|w| !ground_types_equal(kb, &w[0], &w[1])) {
+            open.push(p);
+        }
+    }
+    let covered = named.is_some()
+        || env.enclosing_requires().iter().any(|r| {
+            same_sort_canonical(kb, r.required_sort, spec_sort)
+                && view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, &spec_view_bindings_value(kb, &r.spec))
+        })
+        || op_requires_covers_call(kb, env, subst, spec_sort);
+    if !open.is_empty() && !covered {
+        let mut providers: SmallVec<[Symbol; 2]> = SmallVec::new();
+        for (provider, _) in &standing {
+            if !providers.iter().any(|p| same_sort_canonical(kb, *p, *provider)) {
+                providers.push(*provider);
+            }
+        }
+        return Err(parameter_named_apart(kb, env, call, &open, providers));
+    }
+    // One provision standing is read whole. Several are read for every type-var any of them
+    // writes ground — which, past the refusal above, they write alike — whether the call
+    // excluded some or none. Read off one of them alone, what it left out stayed out of the
+    // goal, and a goal that leaves a type-var out answers no row writing it
+    // ([`candidates_at`]'s omission rule): the first declared answered where it left it out,
+    // the other where it wrote it. Read as the union, two provisions of one provider writing
+    // different type-vars (`Desc[T = Leaf, A = Int64]` beside `Desc[T = Leaf, B = Int64]`) stay
+    // the tie they are, as the carrier's own view of them read them (MEASURED: read where they
+    // all write alike, the goal left both out and no row answered).
+    let unwithheld = |kb: &KnowledgeBase, view: SmallVec<[(Symbol, Value); 2]>| -> SmallVec<[(Symbol, Value); 2]> {
+        view.into_iter()
+            .filter(|(k, _)| {
+                !withheld.iter().any(|p| short_name_of(kb.local_name_of(*p)) == short_name_of(kb.local_name_of(*k)))
+            })
+            .collect()
+    };
+    if standing.len() == 1 {
+        let view = standing.swap_remove(0).1;
+        return Ok(unwithheld(kb, view));
+    }
+    let mut written: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    for (_, view) in &standing {
+        for (key, value) in view {
+            let label = short_name_of(kb.local_name_of(*key)).to_owned();
+            if !type_is_ground(kb, value)
+                || written.iter().any(|(k, _)| short_name_of(kb.local_name_of(*k)) == label)
+            {
+                continue;
+            }
+            written.push((*key, value.clone()));
+        }
+    }
+    Ok(unwithheld(kb, written))
+}
+
+/// A call [`select_provision_at_carrier`] is asked about: the receiver's classification
+/// ([`carrier_param_receiver`]), what the call wrote, and its result.
+pub(super) struct CarrierCall<'a> {
+    pub(super) spec_sort: Symbol,
+    pub(super) carrier_sym: Symbol,
+    pub(super) carrier_pvid: VarId,
+    /// The provision the classification read.
+    pub(super) view: &'a SmallVec<[(Symbol, Value); 2]>,
+    /// Every provision at the carrier ([`provisions_at_carrier`]), as the call already read
+    /// them for its first check — asked once per call, on the per-call path.
+    pub(super) at_carrier: &'a [(Symbol, SmallVec<[(Symbol, Value); 2]>)],
+    pub(super) selections: &'a [InstanceSelection],
+    pub(super) expected: Option<&'a Value>,
+    /// The operation's result type, in this call's `σ`.
+    pub(super) result: &'a Value,
+    pub(super) fn_sym: Symbol,
+    pub(super) span: Option<Span>,
+}
+
+/// WI-20261122-CXR5B (§5.4's second amendment) — does the call's own reading of `spec_sort`
+/// contradict the type expected at its `Self` result, read at `provider`? The call's bindings
+/// of the spec are read through the provider's provision (`Ones provides Src[T = T]`: `Src.T`
+/// is `Ones.T`), and each provider type-var the expected type writes must be the type the call
+/// fixed there. `Some(the call's result)` where one is not — `let o: Ones[T = String] =
+/// Src.make[T = Int64]()` — so the call is refused at its return rather than typed as the
+/// expected type it contradicts.
+pub(super) fn self_result_contradicts_expected(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    provider: Symbol,
+    expected: &Value,
+    result: &Value,
+) -> Option<Value> {
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    let view = transitive_provider_spec_view_bindings(kb, provider, spec_sort, &mut visited)?;
+    let written = receiver_type_args(kb, expected);
+    for (spec_param, bound) in &view {
+        let Some(param) = view_ref_symbol(kb, bound) else {
+            continue;
+        };
+        if type_param_vid_in_sort(kb, provider, param).is_none() {
+            continue;
+        }
+        let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, *spec_param) else {
+            continue;
+        };
+        let Some(called) = spec_param_binding(kb, subst, spec_vid).filter(|b| type_is_ground(kb, b)) else {
+            continue;
+        };
+        let Some(expected_at) = binding_named(kb, &written, param).filter(|b| type_is_ground(kb, b)) else {
+            continue;
+        };
+        if !ground_types_equal(kb, &called, &expected_at) {
+            return Some(walk_type_deep_value(kb, subst, result));
+        }
+    }
+    None
+}
+
+/// `standing` without the rows `keep` marks false, where that leaves one.
+fn narrow_by(standing: &mut Vec<(Symbol, SmallVec<[(Symbol, Value); 2]>)>, keep: Vec<bool>) {
+    if keep.iter().any(|k| *k) {
+        let mut at = keep.into_iter();
+        standing.retain(|_| at.next().unwrap_or(false));
+    }
+}
+
+/// A provision view's binding of the spec's type-var `param`, by its label.
+fn binding_named(kb: &KnowledgeBase, view: &SmallVec<[(Symbol, Value); 2]>, param: Symbol) -> Option<Value> {
+    view.iter()
+        .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short_name_of(kb.local_name_of(param)))
+        .map(|(_, v)| v.clone())
+}
+
+/// Are two ground types one type? Unified in a scratch `σ`: a ground type has no variable for
+/// the unifier to bind, so this is equality read through the unifier's own spelling rules (an
+/// alias, a nullary name).
+fn ground_types_equal(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
+    unify_types(kb, &mut Substitution::new(), a, b)
+}
+
+/// [`TypeError::ParameterNamedApart`] for a call that leaves `open` free over providers that
+/// fix it apart, with the instance as the author writes it: on the call's own bracket, or — in
+/// a rule's own term, which takes none — on the call's receiver (`Conv[A = Meters, B =
+/// …].tag(…)`), the carrier parameter at the receiver's sort.
+pub(super) fn parameter_named_apart(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    call: &CarrierCall<'_>,
+    open: &[Symbol],
+    providers: SmallVec<[Symbol; 2]>,
+) -> TypeError {
+    let (spec_sort, fn_sym) = (call.spec_sort, call.fn_sym);
+    let suggestion = if env.in_rule_own_term() {
+        let bindings: Vec<String> = sort_type_params_as_pairs(kb, spec_sort)
+            .iter()
+            .map(|(param, _)| {
+                let name = short_name_of(kb.local_name_of(*param)).to_owned();
+                if type_param_vid_in_sort(kb, spec_sort, *param) == Some(call.carrier_pvid) {
+                    format!("{name} = {}", short_name_of(kb.qualified_name_of(call.carrier_sym)))
+                } else {
+                    format!("{name} = …")
+                }
+            })
+            .collect();
+        format!(
+            "{}[{}].{}(…)",
+            short_name_of(kb.qualified_name_of(spec_sort)),
+            bindings.join(", "),
+            kb.local_name_of(fn_sym)
+        )
+    } else {
+        let open_only: Vec<String> =
+            open.iter().map(|p| format!("{} = …", short_name_of(kb.local_name_of(*p)))).collect();
+        format!("{}[{}](…)", kb.qualified_name_of(fn_sym), open_only.join(", "))
+    };
+    TypeError::ParameterNamedApart {
+        span: call.span,
+        op: fn_sym,
+        spec: spec_sort,
+        open: open.iter().map(|p| short_name_of(kb.local_name_of(*p)).to_owned()).collect(),
+        providers,
+        suggestion,
+    }
+}
+
 /// WI-20260828-57MRM — the WITNESS sort whose provision of `spec_sort` dispatches at
 /// `carrier_sym`, if the provision comes from a witness rather than from the carrier's own
 /// `provides`. The same scan [`provision_binds_param_to_carrier`]'s witness arm makes,

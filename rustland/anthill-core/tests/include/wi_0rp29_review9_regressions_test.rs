@@ -1117,16 +1117,31 @@ end
 /// CONTROL: naming the OTHER witness reads ITS member, a `String`, where `go` promises an
 /// `Int64`. Refused under every part, and FAILS under ledger part 118 by what it names: without
 /// the narrowing the projection reads both witnesses and refuses their disagreement instead.
-/// Refused AT THE CALL since WI-20261003-FFY4R, the resolution reading the pin: the named
-/// witness's instance is at `T = String`, the call at the `Int64` `go` promises. It was refused
-/// at `go`'s return before ("expected Int64, got String"); part 118 backed out still gives the
-/// disagreement (MEASURED on the FFY4R tree with the debug CLI).
+///
+/// REFUSED AT `go`'S RETURN, in either declaration order (WI-20261122-CXR5B, decision 1: the
+/// bracket's provider fixes its provision, `T = String`, and the result is `OptStrBoxH`'s
+/// `String`). Since WI-20261003-FFY4R it had been refused at the call, "the call selected
+/// `OptStrBoxH` … provides no instance at these bindings" — but only because `OptIntBoxH` was
+/// declared first: the call read `T` off the first witness at the carrier, put `T = Int64` in
+/// its goal beside a result already read as `String`, and the pin then failed against that
+/// goal. Declared the other way round it was refused at the return, as it is now in both orders
+/// (MEASURED on the step-1 tree, `b91a09bbe`: the int-first half of this row is refused at the
+/// call there, the reordered half at `go.return`). A call whose RESULT is the type-var itself (`first(c: C) ->
+/// Elem`) is still refused at the call, the expected type fixing what the bracket's provider
+/// contradicts (`wi_cxr5b_call_fixes_test`).
 #[test]
 fn a_bracket_naming_a_witness_dispatches_to_it_over_an_undecided_slot_control() {
-    let src = r#"
-namespace wi0rp29r9.witness_undecided_other
-  import anthill.prelude.{Int64, String, List, Option}
-  import anthill.prelude.Option.{some, none}
+    let program = |ns: &str, int_first: bool| {
+        let int = "  sort OptIntBoxH\n    provides Holder[C = Box[V = Option[T = Int64]], T = Int64]\n    \
+                   operation get(c: Box[V = Option[T = Int64]]) -> Int64 = 42\n  end\n";
+        let str = "  sort OptStrBoxH\n    provides Holder[C = Box[V = Option[T = String]], T = String]\n    \
+                   operation get(c: Box[V = Option[T = String]]) -> String = \"s\"\n  end\n";
+        let (a, b) = if int_first { (int, str) } else { (str, int) };
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, String, List, Option}}
+  import anthill.prelude.Option.{{some, none}}
   sort Holder
     sort C = ?
     sort T = ?
@@ -1136,27 +1151,18 @@ namespace wi0rp29r9.witness_undecided_other
     sort V = ?
     entity box(v: V)
   end
-  sort OptIntBoxH
-    provides Holder[C = Box[V = Option[T = Int64]], T = Int64]
-    operation get(c: Box[V = Option[T = Int64]]) -> Int64 = 42
-  end
-  sort OptStrBoxH
-    provides Holder[C = Box[V = Option[T = String]], T = String]
-    operation get(c: Box[V = Option[T = String]]) -> String = "s"
-  end
-  operation go() -> Int64 = Holder.get[Holder = OptStrBoxH](box(v: none))
+{a}{b}  operation go() -> Int64 = Holder.get[Holder = OptStrBoxH](box(v: none))
 end
-"#;
-    assert_refused_naming(
-        &load_errors(src),
-        &[
-            "Holder.get.dispatch",
-            "T = anthill.prelude.Int64]",
-            "the call selected `wi0rp29r9.witness_undecided_other.OptStrBoxH` for \
-             wi0rp29r9.witness_undecided_other.Holder, which provides no instance at these bindings",
-        ],
-        "the other witness's member",
-    );
+"#
+        )
+    };
+    for (ns, int_first) in [("wi0rp29r9.witness_undecided_other", true), ("wi0rp29r9.witness_undecided_other_rev", false)] {
+        assert_refused_naming(
+            &load_errors(&program(ns, int_first)),
+            &["go.return", "expected Int64, got String"],
+            &format!("the other witness's member, OptIntBoxH declared first: {int_first}"),
+        );
+    }
 }
 
 // ── a constructor type in a provision ───────────────────────────────────────────────────────

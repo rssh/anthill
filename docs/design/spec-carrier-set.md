@@ -987,3 +987,32 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   "provides for itself" (decisions 5, 6, 8), names the readers that still read one parameter
   and where they part from the carrier (`Eq`, `SortDomain`, `Monad`; §3 B), and calls WI-1077's
   "takes" rule the reading of that one parameter, which this ticket retires.
+- **2026-11-22, stage 2's second step (WI-20261122-CXR5B): what a call fixes selects its
+  provision**, decision 1 and §5.4's two amendments on the typed call path. Mapped first
+  (an explorer over b5–b8, d7, d11, d12, g6, c3, g4): the late ground bind of
+  `check_apply_call` read every free type-var off the FIRST provision at the receiver's
+  carrier, before the expected type; a bracket naming a provider was read only at the single
+  parameter; `resolve_inner` answered the pinned goal of a spec with no type-var with the spec
+  itself; and the expected type never reached a `Self` result's carrier. Now
+  `select_provision_at_carrier` chooses among the provisions at the carrier by the named
+  provider, by what `σ` holds and by the expected type (in a scratch `σ`, so one provision's
+  binding still wins over the caller's claim), reads several standing provisions for every
+  type-var any of them writes (a goal leaving a type-var out answers no row writing it, so
+  read off one of them the first declared answered), and refuses (`ParameterNamedApart`) where they disagree on what the
+  call leaves free; where the expected type contradicts every provision standing it keeps what
+  it fixes, and the selection is refused at the call. `bind_carrier_the_witness_says` binds
+  every type-var the named provider's provisions write one ground type for; a pinned call skips
+  the leaf shortcut; and for a self-representing spec the expected type at a `Self` result
+  fixes the provider where that provider supplies the operation, the result typed as expected
+  once what the call fixed is checked at the provider. Moved: b6 → 1, b7 → two, b8 refused
+  with its repair, d7 → 1, d11 → 1, d12 → 7, g6 → 1; a1–a7, d1–d4, d6, d8–d10, d13, g2, g5
+  unchanged. Two existing rows moved with it: `wi_ck7pp`'s guard expected at a `Relation`,
+  which `Relation` supplies no member for, stays refused "nothing can run" (the arm requires a
+  supplier, after a first cut loaded it clean and it died at run); and `wi_0rp29`'s control
+  of a bracket naming the other witness is refused at `go`'s return in both declaration
+  orders, where it had been refused at the call only with `OptIntBoxH` declared first
+  (measured on `b91a09bbe`). Rows: `wi_cxr5b_call_fixes_test` (8), 7 failing with `src/` at
+  `b91a09bbe`, the d8 control passing. Not moved yet: d5 (three load checks), c3 and g4 (the
+  concrete-provider bracket, whose §5.4 paragraph is to be reworded for the user), the
+  untyped eval path, and the witness classification behind c1. §5.4's approved wording lands
+  with d5, since it says "whether one provider or several".

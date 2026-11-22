@@ -1502,7 +1502,13 @@ pub(super) fn resolve_inner<'a>(
             .is_some_and(|c| !same_sort_canonical(kb, c.sort, goal.spec_sort))
             && !sort_is_data(kb, kb.canonical_sort_sym(goal.spec_sort))
     };
-    if !clause_is_dispatchable(kb, goal.spec_sort) && !answered_by_its_carrier(kb) {
+    // NOR THE GOAL OF A CALL WHOSE BRACKET NAMES ITS PROVIDER (WI-20261122-CXR5B, decision 1
+    // of `docs/design/spec-carrier-set.md`): `Greeter.greet[Greeter = W1]()` over a spec with
+    // no type-var is fixed by the bracket alone, and step 0 below reads the pin. Taken as the
+    // leaf, the pin was never consulted, the call ran `Greeter.greet` itself, and a program
+    // that loaded clean failed at run, "operation has no body" (d12, MEASURED).
+    let pinned_call = stack.is_empty() && scope.pin.and_then(InstanceSelection::witness).is_some();
+    if !clause_is_dispatchable(kb, goal.spec_sort) && !answered_by_its_carrier(kb) && !pinned_call {
         return ResolutionResult::Resolved(ResolvedRequiresNode::Leaf {
             impl_sort: goal.spec_sort,
             spec_sort: goal.spec_sort,
