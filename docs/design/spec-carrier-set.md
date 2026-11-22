@@ -1,6 +1,6 @@
 # The sort carrier and the operation carrier
 
-## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), and an amendment to §5.4's wording, approved by the user. Open: decision 6 and the scope. For WI-20261121-JE2MT.
+## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), and an amendment to §5.4's wording, approved by the user. Decision 6 decided the same day ((b): a result-only binding does not make a provision the provider's own). Scope decided the same day: JE2MT is stage 1, and stage 2 is WI-20261122-CXR5B (§5). For WI-20261121-JE2MT.
 
 The MODEL is the type system's own, so this corrects the implementation to it. Proposal 074
 §1.2 (decided): "a spec may have several carriers … a value typed at the spec is the
@@ -67,8 +67,8 @@ spec at all its type-vars, whatever the class: `List provides Stream[T = T, E = 
 - **A provider provides a spec for itself** where its sort is one of the sorts its bindings
   name (a binding's sort being its head, `List` for `List[T = E]`), or where the spec is
   self-representing: then the provider's values are the spec's values (`List` provides
-  `Stream` for itself). Otherwise it is a **witness**. Whether a binding that only an
-  operation's RESULT mentions counts is open (decision 6).
+  `Stream` for itself). Otherwise it is a **witness**. A binding does not count when its
+  type-var appears only in operations' RESULTS (decision 6).
 - **"Add this provision unless one is written"** (the derivations) asks whether a written
   provision is at a substituted sort that unifies with the one to be added.
 - **What a call fixes** is a question about its OPERATION. The **operation carrier** is
@@ -354,10 +354,13 @@ Every spec these read has one type-var, so stage 1 moves ONE verdict: b1. b2 nam
 before and after stage 1 (the witness criterion does not move in it), so b2 is a GUARD for
 stage 2, when the criterion moves, not a stage 1 row.
 
-**Scope** (finding 9 of the review; the user's call). JE2MT asks for a row per reader that
-answers wrongly for a one-parameter spec, and one owner. That is stage 1. Stage 2 is the
-114-site change on the per-call path with decisions 1, 3 and 5. Proposed: deliver JE2MT as
-the owner and stage 1, and give stage 2 a ticket of its own.
+**Scope, decided with the user 2026-11-22.** JE2MT asks for a row per reader that answers
+wrongly for a one-parameter spec, and one owner. It delivers stage 1:
+[WI-20261121-JE2MT](../../anthill-todo/open/WI-20261121-JE2MT-two-readings-of-which-sort-a.anthill.md),
+whose note of that day says so. Stage 2, the change of about 114 sites on the per-call
+path, has its own ticket:
+[WI-20261122-CXR5B](../../anthill-todo/open/WI-20261122-CXR5B-the-readers-of-the-single.anthill.md),
+which depends on JE2MT.
 
 **Stage 2: everything else**, by question, in the order W, O, S, V, P, M, K, with the two
 indexes that are keyed by the single parameter: `ProvidesIndex`'s witness carriers memo
@@ -387,7 +390,7 @@ corrected to describe the set, as 074 §1.2 has it:
   first typed by a spec parameter the provision binds to the carrier" (around 7325).
 - 058 §3.6 keeps its rule. A note says its "carrier" is the substituted sort.
 
-## 6. Decisions (taken with the user 2026-11-22, each as proposed; after review, 1 reopened and decided, 4 decided, 5 added and decided, 6 open)
+## 6. Decisions (taken with the user 2026-11-22, each as proposed; after review, 1 reopened and decided, 4 decided, 5 added and decided, 6 added and decided)
 
 1. **What a call fixes, for every provider. DECIDED 2026-11-22**, after it was reopened. It
    began as "§8.7, one provider declaring one spec twice" (d5, refused at load), decided
@@ -631,13 +634,27 @@ corrected to describe the set, as 074 §1.2 has it:
    (decision 4). The provider is the relation's `?p`. This sentence said `List[T = T]` until
    decision 4 was taken. The key of the loader's default index under a compound `?c` is
    stage 2's to choose, and it is on the per-call path.
-6. **OPEN: "provides for itself" through a binding no operation takes a value of** (the
-   third review, finding 3; not measured). `Int64 provides Coll[C = Foo, Elem = Int64]`
-   names `Int64` at `Elem`, so by §1 it is `Int64`'s own provision. Yet `Elem` appears only
-   in `first`'s result, and no operation ever receives an `Int64`. Decision 3 already
-   separates the type-vars an operation takes a value of from the rest. Should "provides
-   for itself" use the same restriction? It feeds the supply route, the member checks and
-   `self_provides`. For the user to decide.
+6. **"Provides for itself" needs a binding an operation receives. DECIDED 2026-11-22**
+   (the third review's finding 3). The case, measured on `aa4e60674` (f1):
+
+   ```anthill
+   sort Num
+     entity num(v: Int64)
+     provides Coll[C = Foo, Elem = Self, first = Num.firstOf]
+     operation firstOf(c: Foo) -> Num = num(v: 42)
+   end
+   ```
+
+   `Num` is named at `Elem`, and `Elem` appears only in `first`'s result: no operation
+   receives a `Num`. Today it answers 42, and `Num` is filed as a witness at `Foo`, with no
+   `self_provides` and no default row. As §1 was first written, every binding counted (a),
+   which would have made it `Num`'s own provision, with an inferred default row. Decided,
+   option (b): **a binding does not count when its type-var appears only in operations'
+   results**, the restriction decision 3 already uses. `Num` stays a witness, as today.
+   "For itself" means the operations act on the provider's own values, and a result-only
+   type-var is what they produce, not what they receive. A spec with no operations of its
+   own (`Effect`, `SortDomain`) is unaffected, none of its type-vars being result-only. It
+   feeds the supply route, the member checks and `self_provides`.
 
 ## 7. Acceptance
 
@@ -658,6 +675,7 @@ move to stage 2's ticket.
   - `VectorSpace` declared `F` first still reads `Vec3`'s provision as its own.
   - c1 answers 42, or its cause is named.
   - The diagnostics the X readers print ("Write the instance: …") use the substituted sort.
+  - f1 keeps `Num` a witness, with no `self_provides` row (decision 6).
   - Each of §6's decisions has its driven row.
 - **The a-rows** pass before and after, by design.
 - **Gates:** families green; full workspace via `rustland/scripts/test.sh`; scaland
@@ -748,3 +766,7 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
 - **2026-11-22, the amendment to §5.4's wording approved by the user**, merged into the
   approved wording: a bracket naming a provider fixes its provisions; the first refusal
   reads "and names no provider"; "`Self` mentions them all" (decision 4).
+- **2026-11-22, decision 6 and the scope decided with the user.** Decision 6, option (b): a
+  binding at a result-only type-var does not make a provision the provider's own (probe
+  f1, measured on `aa4e60674`). Scope: JE2MT delivers stage 1, and stage 2 is filed as
+  WI-20261122-CXR5B, depending on it.

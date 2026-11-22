@@ -46,3 +46,10 @@ for f in e1 e2 e3 e4 e5; do
   run "$(ls $f-*.anthill)"
   carrier "$(ls $f-*.anthill)" Holder 'Holder'
 done
+
+echo "##### F. Decision 6: a provider named only at a result-only type-var"
+run f1-provider-named-only-in-a-result.anthill
+carrier f1-provider-named-only-in-a-result.anthill Coll 'Num'
+echo "=== f1: self_provides rows of Coll"
+"$A" query --path f1-provider-named-only-in-a-result.anthill --max-results 100000 \
+  'anthill.reflect.typing.self_provides(?c, ?s)' 2>&1 | grep -E "\?s = Coll\b" || echo "  (none)"
