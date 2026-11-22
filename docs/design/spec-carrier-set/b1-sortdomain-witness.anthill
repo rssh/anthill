@@ -1,0 +1,19 @@
+namespace carrier_set.b1
+  import anthill.reflect.{SortDomain}
+
+  sort Colour
+    entity red
+    entity green
+  end
+
+  -- a witness: W writes the provision, for Colour
+  sort W
+    provides SortDomain[T = Colour]
+    rule fill(?x) :- ?x = red
+  end
+
+  -- something asks for SortDomain, so the loader derives rows
+  sort Q
+    requires SortDomain[T = Colour]
+  end
+end

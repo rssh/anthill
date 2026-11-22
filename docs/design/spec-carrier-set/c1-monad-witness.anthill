@@ -1,0 +1,36 @@
+namespace carrier_set.c1
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error, Monad}
+
+  sort Box
+    sort T = ?
+    entity box(v: T)
+  end
+
+  sort BoxM
+    provides Monad[M = Box]
+    operation pure[A](a: A) -> Box[T = A] = box(v: a)
+    operation flatMap[A, B, EffP](m: Box[T = A], f: (A) -> Box[T = B] @ {EffP}) -> Box[T = B] effects {EffP} =
+      match m
+        case box(x) -> f(x)
+    operation map[A, B, EffP](m: Box[T = A], f: (A) -> B @ {EffP}) -> Box[T = B] effects {EffP} =
+      match m
+        case box(x) -> box(v: f(x))
+  end
+
+  operation unbox(b: Box[T = Int64]) -> Int64 =
+    match b
+      case box(x) -> x
+
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let r = Monad.flatMap(box(v: 41), lambda (x: Int64) -> box(v: x + 1))
+      let _ = println(console(), to_string(unbox(r)))
+      0
+  end
+end

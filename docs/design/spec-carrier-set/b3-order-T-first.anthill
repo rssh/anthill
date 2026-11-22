@@ -1,0 +1,13 @@
+namespace carrier_set.b3
+  import anthill.prelude.{Int64}
+  sort Bag2
+    sort T = ?
+    sort C = ?
+    operation put(c: C, x: T) -> C
+  end
+  sort MyBag
+    entity bag
+    provides Bag2[T = Int64, C = Self]
+    operation put(c: MyBag, x: Int64) -> MyBag = c
+  end
+end

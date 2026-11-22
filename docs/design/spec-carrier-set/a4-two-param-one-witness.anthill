@@ -1,0 +1,31 @@
+namespace carrier_set.a4
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  sort Color
+    entity red
+  end
+  sort Tag
+    entity tg
+  end
+  sort Dflt2
+    sort A = ?
+    sort B = ?
+    operation dflt() -> A
+  end
+  sort W1
+    provides Dflt2[A = Int64, B = String]
+    operation dflt() -> Int64 = 1
+  end
+
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(Dflt2.dflt[A = Int64, B = String]()))
+      0
+  end
+end

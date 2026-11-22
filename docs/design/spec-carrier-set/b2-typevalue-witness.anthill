@@ -1,0 +1,27 @@
+namespace carrier_set.b2
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+  import anthill.reflect.{TypeValue}
+
+  sort Dflt
+    sort T = ?
+    operation dflt() -> T
+  end
+  sort C
+    entity c(v: Int64)
+  end
+  sort W
+    provides TypeValue[T = C]
+  end
+
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(0))
+      0
+  end
+end

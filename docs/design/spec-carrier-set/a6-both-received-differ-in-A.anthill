@@ -1,0 +1,35 @@
+namespace carrier_set.a6
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  sort Color
+    entity red
+  end
+  sort Tag
+    entity tg
+  end
+  sort Rel
+    sort A = ?
+    sort B = ?
+    operation relate(a: A, b: B) -> Int64
+  end
+  sort W
+    provides Rel[A = Tag, B = Int64]
+    operation relate(a: Tag, b: Int64) -> Int64 = 1
+  end
+  sort V
+    provides Rel[A = Color, B = Int64]
+    operation relate(a: Color, b: Int64) -> Int64 = 2
+  end
+
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(Rel.relate(red, 5)))
+      0
+  end
+end
