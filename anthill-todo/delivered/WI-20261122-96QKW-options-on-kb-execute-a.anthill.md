@@ -3,9 +3,9 @@
 - id: WI-20261122-96QKW-options-on-kb-execute-a
 - created: 2026-11-22T15:13:49Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-22T15:13:49Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-22T15:45:48Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -27,4 +27,10 @@ WHAT IS ASKED.
 WHAT IS NOT ASKED. Changing the defaults; a budget for Relation.splitFirst or for the relations an operation body drains (they keep execute_config()); an option to commit to the first proof of a ground goal (also measured by anthill-traces, recorded on WI-20261122-3QJ36 — a separate question). This is the budget half of WI-20261122-3QJ36 as that item is narrowed by the spike's feedback there.
 
 DONE WHEN. A test drives the Rust variant on a query over a recursive membership rule and a ground list of 150 elements, with a holding and a failing goal: at the default config both end truncated at depth 100; with max_depth 200 both are definite, and the stream's stats report steps and truncated (true for the default runs). A test drives KB.execute from anthill code with maxDepth to the same outcomes, and one with a small maxSteps ends search_truncated(steps(n)) with the caller's n.
+
+## Changes
+
+### 2026-11-22T15:45:46Z — feedback — user
+
+Implemented 2026-11-22 (uncommitted at the time of writing). Rust: KnowledgeBase::execute_typed_logical_query_with(q, &ExecuteOptions { max_depth, max_steps }) in kb/execute.rs; execute_typed_logical_query calls it at ExecuteOptions::default(). DEVIATION from the ask: it takes kb::execute::ExecuteOptions, the budget alone, not a ResolveConfig, because a config built the usual way (..ResolveConfig::default()) has dedup_answers on and would silently turn the bag of proofs into a set; this keeps dedup_answers unexposed on the Rust face too. SearchStream gains next_solution(&mut self, kb), split_first's pull without consuming the stream, and stats(&self) -> ResolveStats, an owned snapshot with truncated / out_of_fuel / errors as they stand; split_first and drain_all are built on them. Without the non-consuming pull the stats would be lost at the end, where split_first consumes the stream. anthill: entity anthill.reflect.ExecuteOptions(max_depth: Option[T = Int64], max_steps: Option[T = Int64]) and KB.execute_with(kb, query, options), host kb_execute_with; none() keeps the default; a limit hit is search_truncated naming the caller's limit; a limit below 0 is malformed_query (ExecuteOptions::from_limits, the one rule both faces read). The anthill-stl bridge implements execute_with too (the generated KB trait gains it; ExecuteOptions added to build.rs emit_only). Measured depth semantics: the query goal is depth 0, so over a list of 150 the last element is found at max_depth 149 and a miss is refuted at 150 (the description's k / n + 1 is one too high). Tests: anthill-core tests/include/wi_96qkw_execute_options_test.rs (8 rows, back-out ledger in its header) and anthill-stl bridge execute_with_runs_at_the_callers_budget. Gate: scripts/test.sh, 12 556 passed, 0 failed; scaland testFull 811 + 51 + 1 passed.
 
