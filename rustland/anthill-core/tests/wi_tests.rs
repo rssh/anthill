@@ -2368,6 +2368,8 @@ mod wi_cxr5b_taken_type_vars_test;
 mod wi_cxr5b_concrete_bracket_test;
 #[path = "include/wi_cxr5b_witness_backing_test.rs"]
 mod wi_cxr5b_witness_backing_test;
+#[path = "include/wi_cxr5b_order_swap_test.rs"]
+mod wi_cxr5b_order_swap_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;

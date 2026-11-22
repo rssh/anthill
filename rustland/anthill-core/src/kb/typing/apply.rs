@@ -4361,11 +4361,17 @@ fn check_apply_call(
             let hk_carrier = hk_carrier.filter(|(hk_param, c)| {
                 let named_other = pinned_witness_for(kb, &selections, spec_sort)
                     .is_some_and(|w| !same_sort_canonical(kb, w, *c));
+                // A WITNESS: a provider other than `C` whose provision is not its own (decision 6) —
+                // `Car provides Lift[C = Self, F = Option]` is `Car`'s, at `F = Option`, and no
+                // witness at `Option` (`wi_dk83q`'s row, which read it as one once
+                // `provisions_at_carrier` read the asked parameter, and loaded an `Int64` where
+                // `F[T = Int64]` is taken).
                 let witness_at_c = provider_spec_view_bindings(kb, *c, spec_sort).is_none()
                     && type_param_vid_in_sort(kb, spec_sort, *hk_param).is_some_and(|vid| {
-                        provisions_at_carrier(kb, spec_sort, vid, *c)
-                            .iter()
-                            .any(|(p, _)| !same_sort_canonical(kb, *p, *c))
+                        provisions_at_carrier(kb, spec_sort, vid, *c).iter().any(|(p, view)| {
+                            !same_sort_canonical(kb, *p, *c)
+                                && !SpecApplication::of_bindings(kb, spec_sort, view).is_own_of(kb, *p)
+                        })
                     });
                 !named_other && !witness_at_c
             });

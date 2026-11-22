@@ -121,10 +121,16 @@ fn run(src: &str, qn: &str) -> i64 {
     }
 }
 
-/// NOTHING AT THE CALL FIXES THE CARRIER: `Conv.tag("km")` requests `Conv[A = a, B = String]`
-/// for every `a`, which no provision answers. Both bodies loaded, and the call answered
-/// nothing when it ran — a residual from a rule body, a failed dispatch from an operation's.
-/// FAILS with the carrier skipped again: both load.
+/// NOTHING AT THE CALL FIXES `A`: `Conv.tag("km")` fixes `B = String`, at which `Meters` and
+/// `Feet` give `A` different types, so the call names no instance. Both bodies loaded, and the
+/// call answered nothing when it ran — a residual from a rule body, a failed dispatch from an
+/// operation's. FAILS with the carrier skipped again: both load.
+///
+/// MOVED by WI-20261122-CXR5B's tenth step (decision 1 of `docs/design/spec-carrier-set.md`): the
+/// refusal is decision 1's — "it leaves `A` open, and `Meters` and `Feet` provide `Conv` at what
+/// it fixes" — as it is over `AT_B` with `FEET`, the verdict not depending on whether `Conv`
+/// declares `conv`. It was "the carrier parameter is fixed by nothing", `A` read as the carrier
+/// because `conv` takes it first, and `tag` taking no value there.
 #[test]
 fn an_unfixed_carrier_is_refused_in_both_bodies() {
     crate::common::assert_refused_naming(
@@ -133,7 +139,7 @@ fn an_unfixed_carrier_is_refused_in_both_bodies() {
             &[AT_A],
             "  rule t(?r) :- Conv.tag(\"km\", ?r)",
         )),
-        &["rydnv.unfixedrule.Conv.tag", "the instance written at the call, `Conv[A = …].tag(…)`"],
+        &["rydnv.unfixedrule.Conv.tag", "it leaves `A` open", "Write the instance: `Conv[A = …, B = String].tag(…)`"],
         "a rule body names the instance at the call as the repair",
     );
     crate::common::assert_refused_naming(
@@ -142,8 +148,8 @@ fn an_unfixed_carrier_is_refused_in_both_bodies() {
             &[AT_A],
             "  sort U\n    operation use() -> Int64 = Conv.tag(\"km\")\n  end",
         )),
-        &["rydnv.unfixedop.Conv.tag", "requires Conv[A = …]", "rydnv.unfixedop.U.use"],
-        "an operation body names a `requires` on the operation",
+        &["rydnv.unfixedop.Conv.tag", "it leaves `A` open", "rydnv.unfixedop.Conv.tag[A = …](…)"],
+        "an operation body names the instance at the call",
     );
 }
 
@@ -263,8 +269,8 @@ fn an_unfixed_carrier_under_a_let_is_refused_too() {
             &[AT_A],
             "  rule t(?r) :- ?r <=> (let s = \"km\"  Conv.tag(s))",
         )),
-        &["rydnv.unfixedlet.Conv.tag", "the instance written at the call, `Conv[A = …].tag(…)`"],
-        "under a `let`",
+        &["rydnv.unfixedlet.Conv.tag", "it leaves `A` open"],
+        "under a `let` (decision 1's refusal since WI-20261122-CXR5B's tenth step, as above)",
     );
 }
 

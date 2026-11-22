@@ -1201,3 +1201,31 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   `carrier_param_receiver_for_values`) runs for calls the typer deferred, whose selection the
   typed path made. And b3's calls (`MyBag` and `OtherBag` each providing `Bag2[T = Int64, C =
   Self]`) answer 6105 in both declaration orders.
+- **2026-11-22, stage 2's tenth step (WI-20261122-CXR5B): an order-swap sweep, and the call of
+  an operation that takes no value at the dispatch parameter.** A sweep of 136 programs
+  ([`spec-carrier-set/sweep/`](spec-carrier-set/sweep/), `run.sh`): `Sp[A, B]` in both
+  declaration orders; operations taking both type-vars, one, the other, swapped; provisions own
+  at either type-var or a witness at another sort, one or two of them; members written or bound;
+  calls qualified, through a `requires`, at an expected type, by a bracket. One verdict
+  differed: `Sp { op(c: A, x: B); get(c: A) -> B }`, where `op` makes the type-var declared
+  first the single parameter. With `B` first, `get(c: A)` takes no value there, and the witness
+  readers (`provision_binds_param_to_carrier`, `provisions_at_carrier`, readers.md's
+  carrier.rs:445/:464) accepted a witness only by its binding at it: `Sp.get(foo)` beside `W
+  provides Sp[A = Foo, B = Int64]` answered 6 with `A` first and was refused "missing `requires
+  Sp`" with `B` first. Now an operation taking no value at the dispatch parameter reads a
+  witness at the type-var it takes (`WitnessRead::AtAskedParam`, in `carrier_param_receiver`),
+  and the provisions a call chooses among are read there too; a call taking a value at the
+  dispatch parameter reads as before, so an element-typed parameter declared before it is no
+  receiver. A first cut that read only the classification there answered `W1`'s 5 for two
+  witnesses at `A = Foo` with `B` apart (`provisions_at_carrier` saw one), and the second half
+  read `Car provides Lift[C = Self, F = Option]` as a witness at `Option` in step 4's
+  higher-kinded branch, loading an `Int64` where `F[T = Int64]` is taken (`wi_dk83q`); that
+  branch now asks for a provision that is not its provider's own (decision 6). Moved, by
+  decision 1 (a call's verdict does not depend on which other operations the spec declares):
+  `Conv.tag("km")` over a `Conv` declaring `conv(a: A, b: B)` and `tag(b: B)` reads `A` off the
+  one provision at `B = String` and answers 3 (`wi_cynpe`), as it already did over a `Conv`
+  declaring `tag` alone; over `Meters` and `Feet` there it is refused with decision 1's reason,
+  "it leaves `A` open" (`wi_rydnv`'s two rows, which named "the carrier parameter fixed by
+  nothing"). The sweep then differs nowhere. Rows: `wi_cxr5b_order_swap_test` (3), the first two
+  failing with `src/` at `a7d4cf8d0`, the selection half alone failing the second; the control
+  passing.

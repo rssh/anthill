@@ -195,22 +195,20 @@ fn a_call_that_never_gets_its_argument_is_a_conditional_answer() {
 /// refused, each, naming the instance written at the call that would fix `A` (it named the
 /// clause's `require[Conv[A = …]]`, which proposal 060.1 §5 removed). They loaded, and their
 /// goals reached the run time as the rows below ask them.
+///
+/// MOVED by WI-20261122-CXR5B's tenth step (decision 1 of `docs/design/spec-carrier-set.md`): the
+/// call fixes `B = String`, and the ONE provision there, `Meters`', gives what it leaves free, as
+/// `rydnv`'s control over a `Conv` declaring `tag` alone answers 3 — the verdict does not depend
+/// on whether `Conv` declares `conv`. So a clause writing the call loads, and answers `Meters`' 3;
+/// it was refused, `A` read as the carrier because `conv` takes it first. The goal built at run
+/// time, untyped, is still the unreduced one the rows below ask.
 #[test]
-fn a_clause_that_writes_the_unreduced_call_is_refused_at_load() {
+fn a_clause_writing_the_call_reads_a_off_the_one_provision() {
     let src = SRC.replace("\nend\n", &format!("\n{}end\n", UNREDUCED_CLAUSES.concat()));
     let errs = crate::common::load_errors_of(&src);
-    let refused = errs
-        .iter()
-        .filter(|e| e.contains("wicynpe.Conv.tag") && e.contains("`Conv[A = …].tag(…)`"))
-        .count();
-    assert_eq!(refused, UNREDUCED_CLAUSES.len(), "one refusal per clause: {errs:#?}");
-    // A query is typed where it is read, as a clause is, and is refused the same way.
-    let mut kb = kb();
-    crate::common::assert_refused_naming(
-        &crate::common::query_pattern_refusals(&mut kb, TAG),
-        &["wicynpe.Conv.tag", "`Conv[A = …].tag(…)`"],
-        "the call asked as a query",
-    );
+    assert!(errs.is_empty(), "the clauses load: {errs:#?}");
+    let mut kb = crate::common::load_kb_with(&src);
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wicynpe.convTag"), Some(3));
 }
 
 /// PRVA2's row, the run-time half: no provider supplies `Conv.tag("km")`, so the call is

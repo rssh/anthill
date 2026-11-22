@@ -433,6 +433,31 @@ pub(super) fn provision_binds_param_to_carrier(
     pvid: VarId,
     carrier_sym: Symbol,
 ) -> Option<SmallVec<[(Symbol, Value); 2]>> {
+    provision_binds_param_to_carrier_read(kb, spec_sort, pvid, carrier_sym, WitnessRead::AtDispatchParam)
+}
+
+/// Where [`provision_binds_param_to_carrier_read`] reads whether a provision is a WITNESS at the
+/// carrier.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum WitnessRead {
+    /// At the spec's single carrier parameter ([`witness_dispatch_carrier`]), as dispatch reads
+    /// it: what every call taking a value there classifies by.
+    AtDispatchParam,
+    /// At the parameter asked about: the provider is not the carrier, and the provision binds
+    /// that parameter to it. WI-20261122-CXR5B — for an operation that takes NO value at the
+    /// dispatch parameter (`get(c: A) -> B` beside `op(c: A, x: B)`, with `B` declared first),
+    /// so the type-var it does take is what the call fixes (decision 1).
+    AtAskedParam,
+}
+
+/// [`provision_binds_param_to_carrier`], reading the witness where `read` says.
+pub(super) fn provision_binds_param_to_carrier_read(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    carrier_sym: Symbol,
+    read: WitnessRead,
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     let carrier_canon = kb.canonical_sort_sym(carrier_sym);
     let binds_pvid_to_carrier = |view: &SmallVec<[(Symbol, Value); 2]>| {
         view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, view)
@@ -458,9 +483,11 @@ pub(super) fn provision_binds_param_to_carrier(
     // this carrier at all. Taking "the first witness" also answered `None` when the
     // first bound no matching param and a second did.
     provides_rows_of_spec(kb, spec_sort)
-        .filter(|row| {
-            witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view)
-                == Some(carrier_canon)
+        .filter(|row| match read {
+            WitnessRead::AtDispatchParam => {
+                witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view) == Some(carrier_canon)
+            }
+            WitnessRead::AtAskedParam => kb.canonical_sort_sym(row.provider) != carrier_canon,
         })
         .map(|row| row.bindings(kb))
         .find(|view| binds_pvid_to_carrier(view))
@@ -475,11 +502,23 @@ pub(super) fn provisions_at_carrier(
     carrier_sym: Symbol,
 ) -> Vec<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
     let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+    // WI-20261122-CXR5B — a witness read where the classification read it
+    // ([`carrier_param_receiver`]'s `WitnessRead`): at the dispatch parameter where the asked
+    // parameter is it, and otherwise at the asked one. Read at the dispatch parameter alone, two
+    // witnesses at `A = Foo` that bind `B` apart, asked at `A` with `B` declared first, were no
+    // provisions here, and the call took the one the classification found: `Sp.get(foo)`
+    // answered `W1`'s 5 where it leaves `B` open (MEASURED, the step's order-swap sweep).
+    let at_dispatch = spec_carrier_param(kb, spec_sort)
+        .and_then(|p| type_param_vid_in_sort(kb, spec_sort, p))
+        .is_some_and(|v| v == pvid);
     provides_rows_of_spec(kb, spec_sort)
         .filter(|row| {
             kb.canonical_sort_sym(row.provider) == carrier_canon
-                || witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view)
-                    == Some(carrier_canon)
+                || if at_dispatch {
+                    witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view) == Some(carrier_canon)
+                } else {
+                    true
+                }
         })
         .map(|row| (row.provider, row.bindings(kb)))
         .filter(|(_, view)| view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, view))
@@ -1224,9 +1263,21 @@ pub(super) fn transitive_provision_view(
     carrier_sym: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
 ) -> Option<SmallVec<[(Symbol, Value); 2]>> {
+    transitive_provision_view_read(kb, spec_sort, pvid, carrier_sym, visited, WitnessRead::AtDispatchParam)
+}
+
+/// [`transitive_provision_view`], reading a witness where `read` says.
+pub(super) fn transitive_provision_view_read(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    carrier_sym: Symbol,
+    visited: &mut SmallVec<[Symbol; 8]>,
+    read: WitnessRead,
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     // Direct: the carrier itself provides spec_sort binding the carrier param.
     compose_through_provision_chain(kb, carrier_sym, visited, VisitOrder::VisitedFirst, &|c| {
-        provision_binds_param_to_carrier(kb, spec_sort, pvid, c)
+        provision_binds_param_to_carrier_read(kb, spec_sort, pvid, c, read)
     })
 }
 
@@ -1762,6 +1813,20 @@ pub(super) fn carrier_param_receiver(
     Option<Symbol>,
 )> {
     let (spec_sort, candidates) = spec_carrier_param_candidates(kb, params, fn_sym)?;
+    // WI-20261122-CXR5B (decision 1 of `docs/design/spec-carrier-set.md`) — an operation that
+    // takes NO value at the spec's dispatch parameter fixes the type-vars it does take, and a
+    // witness is read at them. Over `Sp { op(c: A, x: B); get(c: A) -> B }` with `B` declared
+    // first, `B` is that parameter, and `Sp.get(foo)` beside `W provides Sp[A = Foo, B = Int64]`
+    // was read as fixing no carrier and refused "missing `requires Sp`" — answering 6 with `A`
+    // first (MEASURED, the step's order-swap sweep). A call taking a value there classifies as
+    // before: an element-typed parameter declared before it (`has(e: Element, c: C)`) is no
+    // receiver.
+    let dispatch_vid = spec_carrier_param(kb, spec_sort).and_then(|p| type_param_vid_in_sort(kb, spec_sort, p));
+    let read = if candidates.iter().any(|(_, _, v)| Some(*v) == dispatch_vid) {
+        WitnessRead::AtDispatchParam
+    } else {
+        WitnessRead::AtAskedParam
+    };
     for (i, pname, pvid) in candidates {
         let Some(recv_ty) = recv_ty_of(i, pname) else {
             continue;
@@ -1778,7 +1843,7 @@ pub(super) fn carrier_param_receiver(
         // view COMPOSED through transitive provision (a `List` carrier whose
         // Iterable-ness rides through `Stream`), so `Element`/`E` still ground.
         let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-        let Some(view) = transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
+        let Some(view) = transitive_provision_view_read(kb, spec_sort, pvid, carrier_sym, &mut visited, read)
         else {
             continue;
         };
