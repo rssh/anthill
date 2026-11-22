@@ -20,8 +20,8 @@ Questions:
 | | the question the caller has |
 |---|---|
 | D | add a provision unless one is written; or check the written ones |
-| S | select the instance a goal or call asks for; a goal's key or column |
-| V | which argument of an operation fixes the instance |
+| S | select the provision a goal or call asks for; a goal's key or column |
+| V | which argument of an operation fixes the substituted sort |
 | W | is this provision a witness or the provider's own; its supply route |
 | O | overlap: coherence groups, default rows, specificity |
 | M | member-signature check against the spec operation |
@@ -55,6 +55,9 @@ Not counted above — the callers of two WRAPPERS:
   `enclosing_requires_licensing_clause` (V), carrier.rs:2276 and :2487 (P).
 
 ## The sites
+
+Each row describes the code in its own words. There, "instance" means the dictionary a
+call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 
 | file:line | function | calls | Q | what the answer is used for |
 |---|---|---|---|---|

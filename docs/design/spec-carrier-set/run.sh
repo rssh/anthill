@@ -24,7 +24,7 @@ carrier() { # which sort the reflect relation says a provision is at
     | grep -E "\?s = $2\b" | grep -E "\b($3)\b"
 }
 
-echo "##### A. Selection: which instance a call gets"
+echo "##### A. Selection: which provision a call gets"
 for f in a1 a2 a3 a4 a5 a6 a7; do run "$(ls $f-*.anthill)"; done
 
 echo "##### B. The single carrier parameter, read two ways"
@@ -39,4 +39,4 @@ echo "##### C. Not decided here (kept apart)"
 for f in c1 c2 c3; do run "$(ls $f-*.anthill)"; done
 
 echo "##### D. Decision 1: what a call fixes, for every provider"
-for f in d1 d2 d3 d4 d5 d6 d7; do run "$(ls $f-*.anthill)"; done
+for f in d1 d2 d3 d4 d5 d6 d7 d8 d9 d10; do run "$(ls $f-*.anthill)"; done
