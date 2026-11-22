@@ -3,9 +3,9 @@
 - id: WI-20261121-JE2MT-two-readings-of-which-sort-a
 - created: 2026-11-21T18:04:53Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-21T18:04:53Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-22T12:46:44Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -30,4 +30,8 @@ ACCEPTANCE: a row per reader that answered wrongly, driven, with its back-out; t
 ### 2026-11-22T10:24:17Z — feedback — claude
 
 Scope decided with the user 2026-11-22: this ticket delivers STAGE 1 of docs/design/spec-carrier-set.md. That is the owner `sort_carrier` (the spec's type-vars, all of them, decision 4), read off the declaration, and the derivations built on it in place of provisions_about and provision_carriers_of_spec: eq_derive (spoken_for, equality_signatures, equality_reaching_no_eq, written_spec_of), load.rs EqProviders::of, sort_domain_derive's already, and type_value_derive's already, with HandWrittenTypeValue naming the PROVIDER. Every spec these read has one type-var, so stage 1 moves one verdict: row b1 (a written `W provides SortDomain[T = Colour]` gets no second, derived row), with its back-out; wi_tv0pa_eq_gives_partial_eq_test's rows stay green. The readers of the single carrier parameter, the indexes keyed by it and the kernel-language.md text are stage 2, WI-20261122-CXR5B, which depends on this ticket.
+
+### 2026-11-22T12:46:40Z — feedback — user
+
+Delivered in e09defbc3 (stage 1 of docs/design/spec-carrier-set.md). Owner typing::sort_carrier; typing::ProvisionsOfSpec files each provision at its carrier and answers with the default rows' unification. Readers moved: eq_derive (spoken_for -> EqualityProvisions::speak_for, equality_signatures, equality_reaching_no_eq, written_spec_of), load::EqProviders::of, sort_domain_derive and type_value_derive already; HandWrittenTypeValue names the provider; provisions_about and provision_carriers_of_spec deleted. Row b1 driven: a call filling at Colour answers 1, 3 backed out. b2 guard passes either way. wi_tv0pa rows green. Left-out binding of a one-type-var spec kept at the provider (kernel-language.md §5.2 as it stands); read as decision 3's ? it gave about 150 closure errors on a refused program, so decision 3 lands with stage 2 (WI-20261122-CXR5B). Undeclared bootstrap specs (no-stdlib KB) read at the provider. Gate 12528 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1. Seen, not fixed: a Hash-only witness does not speak for its carrier's equality.
 
