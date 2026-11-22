@@ -1,6 +1,6 @@
 # The sort carrier and the operation carrier
 
-## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), with an amendment to the approved §5.4 wording proposed. Open: that amendment's approval, decision 6, and the scope. For WI-20261121-JE2MT.
+## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), and an amendment to §5.4's wording, approved by the user. Open: decision 6 and the scope. For WI-20261121-JE2MT.
 
 The MODEL is the type system's own, so this corrects the implementation to it. Proposal 074
 §1.2 (decided): "a spec may have several carriers … a value typed at the spec is the
@@ -402,7 +402,7 @@ corrected to describe the set, as 074 §1.2 has it:
    by the type expected AT THE CALL, and any type-var of the spec by a bracket or a
    `requires` in scope. Whatever the call leaves unfixed, in the operation carrier or not,
    is read off the provisions at what it fixes. The call is refused in two cases only:
-   - it fixes no type-var at all, even with one provision (d9);
+   - it fixes no type-var at all and names no provider, even with one provision (d9);
    - the provisions at what it fixes disagree on a type-var it leaves unfixed (b8, d3).
 
    Then the substituted sort is written at the call. One provider and several are held to
@@ -475,14 +475,13 @@ corrected to describe the set, as 074 §1.2 has it:
    loads clean and fails when it runs, which is exactly what §5.4 exists to refuse. It is
    a defect of today, independent of the single parameter, and it is a stage 2 row.
 
-   **Proposed amendment to the approved wording, for the user's approval** (the wording
-   below was approved before this was found). In the first refusal, after "it fixes no
-   type-var of `S` at all", add "and names no provider". Before "Whether one provider or
-   several", add: "A bracket naming a provider (`Dflt.dflt[Dflt = W1]()`) fixes that
-   provider's provisions, and what the call leaves unfixed is read off them. A spec with
-   no type-vars (`Greeter.greet()`) is fixed only that way, or by a `requires`."
+   **Amendment, approved by the user 2026-11-22**, and merged into the wording below. A
+   bracket naming a provider fixes that provider's provisions. The first refusal reads "and
+   names no provider". With it the decision also says "`Self` mentions them all", which
+   writes decision 4 into the rule. So d11 answers 1, and d12 answers 7, where today it
+   loads and then fails at run.
 
-   **Wording for §5.4, approved by the user 2026-11-22.** It goes into `kernel-language.md`
+   **Wording for §5.4, approved by the user 2026-11-22, with its amendment.** It goes into `kernel-language.md`
    with the stage that implements decision 1 (stage 2), so that the spec never describes
    behaviour the implementation does not have yet. It replaces the case's first part, up to
    "the call's receiver"; the paragraph after it ("A rule written in a sort that requires
@@ -491,16 +490,18 @@ corrected to describe the set, as 074 §1.2 has it:
    > - At the call, in an operation body or a rule body, of a body-less member `op` of a
    >   spec `S` whose substituted sort the call does not fix. The **operation carrier** of
    >   `op` is the type-vars of `S` its signature mentions, in a parameter or in the result,
-   >   directly or inside an application (`m: M[A]`). The call fixes what it can of them: a
-   >   parameter's by the argument, the result's by the type expected at the call itself
-   >   (not one a later use of its value expects), and any type-var of `S` by a bracket or a
-   >   `requires` in scope. Whatever the call leaves unfixed, in the operation carrier or
+   >   directly or inside an application (`m: M[A]`); `Self` mentions them all. The call
+   >   fixes what it can of them: a parameter's by the argument, the result's by the type
+   >   expected at the call itself (not one a later use of its value expects), and any
+   >   type-var of `S` by a bracket or a `requires` in scope. Whatever the call leaves unfixed, in the operation carrier or
    >   not, is read off the provisions at what it fixes, as `Iterable.find(xs)` reads
    >   `Element` off `List`'s and `let x = Coll.first(foo)` reads `Elem` off the one
-   >   provision at `C = Foo`. Whether one provider or several provide `S`, the call is
-   >   refused when:
-   >   - it fixes no type-var of `S` at all: `let x = Dflt.dflt()`, with nothing expected,
-   >     even where one provision exists;
+   >   provision at `C = Foo`. A bracket naming a provider (`Dflt.dflt[Dflt = W1]()`) fixes
+   >   that provider's provisions, and what the call leaves unfixed is read off them. A spec
+   >   with no type-vars (`Greeter.greet()`) is fixed only that way, or by a `requires`.
+   >   Whether one provider or several provide `S`, the call is refused when:
+   >   - it fixes no type-var of `S` at all and names no provider: `let x = Dflt.dflt()`,
+   >     with nothing expected, even where one provision exists;
    >   - the provisions at what it fixes give a type-var it leaves unfixed different types:
    >     `Conv.tag("km")` over `Meters` and `Feet` at `B = String`, whether or not `Conv`
    >     declares `conv`; `let x = Coll.first(foo)` over provisions at `C = Foo` that
@@ -652,7 +653,7 @@ move to stage 2's ticket.
     in both orders.
   - Decision 5's `?c` table holds, `Stream`'s row included.
   - b5–b8, d5 and d7–d10 answer as decision 1's table says; d1–d4 and d6 as they do today.
-  - d11 answers 1, and d12 is refused at load or answers 7, as the amendment is decided.
+  - d11 answers 1, and d12 answers 7 (the approved amendment); d13 stays refused.
   - e1–e5 answer as decision 4's table says, and e5's bound `joinTwo` loads.
   - `VectorSpace` declared `F` first still reads `Vec3`'s provision as its own.
   - c1 answers 42, or its cause is named.
@@ -744,3 +745,6 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   - The d8/d9 asymmetry has its reason stated.
   - §7 lists d8–d13, e1–e5, decision 5's shapes, and the X readers' message.
   - The default index's key under a compound `?c` is noted as stage 2's to choose.
+- **2026-11-22, the amendment to §5.4's wording approved by the user**, merged into the
+  approved wording: a bracket naming a provider fixes its provisions; the first refusal
+  reads "and names no provider"; "`Self` mentions them all" (decision 4).
