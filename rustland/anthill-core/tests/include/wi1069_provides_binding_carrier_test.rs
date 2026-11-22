@@ -190,10 +190,11 @@ fn a_provides_clause_binding_a_foreign_carrier_records_a_witness() {
     let mut kb = crate::common::load_kb_with(&witness_program(ns, "provides Desc[T = Leaf]"));
     assert_eq!(
         desc_rows(&mut kb),
-        vec!["LeafDesc | Desc | Leaf".to_string()],
+        vec!["LeafDesc | Desc | Desc[T = Leaf]".to_string()],
         "the provider comes from the enclosing scope and the CARRIER from the \
          clause's binding — a `provides` clause naming another carrier is a witness, \
-         not a provision mis-filed under its writer"
+         not a provision mis-filed under its writer (WI-20261122-CXR5B: the carrier is \
+         the spec at the binding)"
     );
     // The negative half, and it lives HERE rather than beside the self-provision so
     // that the control stays pure: `Leaf` writes no provision in this program, so a
@@ -218,7 +219,7 @@ fn a_self_provision_is_still_read_as_self() {
     let mut kb = crate::common::load_kb_with(&self_program(ns));
     assert_eq!(
         desc_rows(&mut kb),
-        vec!["Leaf | Desc | Leaf".to_string()],
+        vec!["Leaf | Desc | Desc[T = Leaf]".to_string()],
         "a binding naming the enclosing sort is the SELF provision — the reader must \
          distinguish the two, not report every binding as a foreign carrier"
     );
@@ -248,9 +249,9 @@ fn the_provides_spelling_records_the_witness() {
         crate::common::load_kb_with(&witness_program("test.wi1069.sp", "provides Desc[T = Leaf]"));
     assert_eq!(
         desc_rows(&mut kb),
-        vec!["LeafDesc | Desc | Leaf".to_string()],
+        vec!["LeafDesc | Desc | Desc[T = Leaf]".to_string()],
         "the clause is written in `LeafDesc` and its binding names `Leaf`: the relation \
-         must answer BOTH — provider `LeafDesc`, carrier `Leaf`"
+         must answer BOTH — provider `LeafDesc`, carrier `Desc[T = Leaf]`"
     );
 }
 

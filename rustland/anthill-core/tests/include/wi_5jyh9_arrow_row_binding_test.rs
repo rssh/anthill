@@ -508,8 +508,9 @@ fn default_marks_at_arrows_compare_rows() {
         &refusal("w5jyh9.defaults_overlap", &overlapping),
         &[
             "overlapping defaults",
-            "'Int64 -> Int64 @ {",
-            "'Int64 -> Int64'",
+            // WI-20261122-CXR5B: the carrier is the spec at its binding.
+            "'Apply[F = Int64 -> Int64 @ {",
+            "'Apply[F = Int64 -> Int64]'",
         ],
         "default marks at `@ {R}` and at the pure arrow",
     );

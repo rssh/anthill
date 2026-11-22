@@ -67,6 +67,14 @@ use crate::wi860_default_provider_relations_test::relation_rows;
 /// what (c) adopts). They move together only under a change to `spec_carrier_param`; a
 /// widening to "receives on" flips the `Bag` half to the provider and, per WI-1076's
 /// measurement, refuses `a_spec_with_both_a_carrier_param_and_a_self_receiver_keeps_its_binding`.
+///
+/// WI-20261122-CXR5B MOVED THE `Bag` HALF, and not by that widening: WHERE A PROVISION IS no
+/// longer reads `spec_carrier_param` (`docs/design/spec-carrier-set.md`, decision 5). `Bag`
+/// takes a `Self` value, so it is self-representing, its values are its providers', and the
+/// provision is at the provider, `IntBag`, as `Feeder`'s is. The pair now says the rule from the
+/// other side: what an operation's parameter list mentions beside `Self` does not move it. The
+/// mixed-shape row keeps loading and running (decision 8). `spec_carrier_param` still answers
+/// which argument a call dispatches on, until that ticket's later steps.
 #[test]
 fn a_spec_that_accepts_its_own_element_files_the_provision_at_the_element() {
     let src = r#"namespace test.wi1077.accepts
@@ -102,10 +110,9 @@ end
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
         carrier_rows(&mut kb, "Bag"),
-        vec!["IntBag | Bag | Int64".to_string()],
-        "`insert(s: Bag, x: T)` TAKES the element, and `spec_carrier_param` cannot tell that \
-         from receiving on a carrier — so `T` answers and the provision files at `Int64`. \
-         WI-1077 option (c): this is the documented rule",
+        vec!["IntBag | Bag | IntBag".to_string()],
+        "`insert(s: Bag, x: T)` takes a `Self` value, so `Bag` is self-representing and its \
+         provision is at its provider, whatever else `insert` takes (WI-20261122-CXR5B)",
     );
     assert_eq!(
         carrier_rows(&mut kb, "Feeder"),

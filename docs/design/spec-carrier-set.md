@@ -391,6 +391,10 @@ corrected to describe the set, as 074 §1.2 has it:
   the carrier is read off the operations … The rule as implemented …", with the
   sole-parameter sentence (around 1476–1491); `ProvisionNamesNoCarrier` (around 1495);
   "Where a spec genuinely has no carrier parameter, a witness for it cannot exist" (around 1570).
+  **Done with stage 2's first step** (the user, 2026-11-22): a provision's carrier and whose
+  it is are stated for both classes, and a paragraph says which readers still read one
+  parameter, to be rewritten again when dispatch moves. `ProvisionNamesNoCarrier` keeps its
+  rule until decision 3 lands.
 - §5.2: a left-out parameter is `?` "the spec's carrier parameter excepted" (around 2143);
   and `Self` "in a spec it is the spec, and does not become each carrier (a spec's carrier
   parameter is what stands for the carrier)" (around 2135). The parenthesis is the single
@@ -949,3 +953,37 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   stage 2's, and asking about one that has provisions panics. The first full run found the
   bootstrap case: about 150 no-stdlib tests panicked. readers.md's rows for the
   stage 1 readers (§4's D row and the "other" row's `EqProviders::of`) are done.
+- **2026-11-22, stage 2's first step (WI-20261122-CXR5B): where a provision is, and whose.**
+  `typing::provision_carrier` is the one owner of decisions 5 and 6: a provision's carrier
+  (the spec at its bindings, or for a self-representing spec the provider at its own
+  type-vars, `List[T = T]`) and whether it is its provider's own. The reflect relations read
+  it through two builtins, `provision_carrier_of` (was `dispatch_carrier`) and
+  `own_provision_carrier_of`, and `typing.anthill` gains `own_provision`; `self_provides` and
+  the inferred rule of `default_provider` read it. 058 §3.6's index files rows per spec at the
+  carrier, partitioned by the first type-var's binding as an index key only, and a goal's
+  lookup meets a row where every type-var both bind overlaps (`goal_carrier_key` no longer
+  reads a parameter). `provision_dispatch_carrier` and `DispatchCarrier` are deleted. Over the
+  standard library the (spec, provider) default rows and the `self_provides` set are
+  unchanged, the carriers now substituted sorts, and `one_default` passes. Moved: b1, b3/b4,
+  e1, e2, e4, f1, f2 and g2's `?c` (the table of decision 5), f1's `self_provides`, the
+  `VectorSpace` shape declared `F` first, and f4, now refused at load by a new
+  `one_default` arm, `TwoOwnProviders`. The design said a `default provides` mark repairs f4,
+  and today's no-displacement refused every mark beside an inferred row, so a mark naming a
+  provider of its OWN provision is now admitted beside another own provider's inferred row
+  and answers the lookup (f4 marked at `Foo` answers 1, at `Num` 2); a mark naming a witness
+  is still refused as a displacement. Rows: `wi_cxr5b_provision_carrier_test` (8), all
+  failing with `src/` and `stdlib/` backed out. A /code-review of the step found four defects,
+  fixed with rows of their own (each failing with its fix backed out): the partition by the
+  first type-var made a type-parameter binding's row answer or collide by declaration order,
+  so a type parameter at the top of a binding now meets only itself (`bindings_meet`, the
+  old index's behaviour at every type-var); an undeclared bootstrap spec (no stdlib) read
+  its derived self-provisions as witnesses; a mark among owns took a goal from every other
+  meeting row; and an abstract goal binding took a default. Not moved yet: dispatch, the coherence
+  grouping, the supplier walk's witness filing and every other reader of §4 but the O rows
+  named in readers.md. The value-directed default lookup (`CarrierKey::Base`) still reads the
+  value's sort at the one-parameter ladder, a V reader.
+- **2026-11-22, `kernel-language.md` §5.1 reworded, asked for by the user** with stage 2's
+  first step rather than with the dispatch step. It states the carrier of both classes and
+  "provides for itself" (decisions 5, 6, 8), names the readers that still read one parameter
+  and where they part from the carrier (`Eq`, `SortDomain`, `Monad`; §3 B), and calls WI-1077's
+  "takes" rule the reading of that one parameter, which this ticket retires.

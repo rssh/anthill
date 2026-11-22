@@ -73,8 +73,8 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 | kb/load.rs:47999 | try_body_tvar_guard | or_sole | S | in a guard naming several head tvars, which one is the carrier |
 | kb/load.rs:48117 | try_body_tvar_guard | or_sole | S | which written binding is the carrier column of the guard's requirement |
 | kb/load.rs:48172 | try_body_tvar_guard | sop | K | dictionary spec ⇒ a `HeadMember` use, checked by `check_rule_sort_uses` |
-| kb/defaults.rs:730 | dispatch_carrier | pdc | O | where a provision dispatches, to file 058 §3.6 default rows |
-| kb/resolve.rs:9794 | builtin_dispatch_carrier | pdc | O | the `dispatch_carrier` builtin behind `default_provider` / `self_provides` |
+| kb/defaults.rs:730 | dispatch_carrier | pdc | O | where a provision dispatches, to file 058 §3.6 default rows — **done** (CXR5B step 1: `provision_carrier`; the function is deleted) |
+| kb/resolve.rs:9794 | builtin_dispatch_carrier | pdc | O | the `dispatch_carrier` builtin behind `default_provider` / `self_provides` — **done** (CXR5B step 1: `provision_carrier_of`, `own_provision_carrier_of`) |
 | kb/typing/constructor.rs:1153 | bare_spec_arg_provision_projection | shcp | SC | a field's spec has a dictionary ⇒ skip the projection |
 | kb/typing/arg_hints.rs:44 | spec_instance_arg_hint | sop | SC | parameter typed at a dictionary spec ⇒ hint a spec application, to refuse it |
 | kb/typing/arg_hints.rs:59 | yields_spec_application | sop | SC | is a written type an application of a spec with a dictionary |
@@ -114,7 +114,7 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 | kb/typing/candidates.rs:503 | bind_carrier_the_witness_says | wdcv | S | the carrier value the named witness provides at |
 | kb/typing/candidates.rs:786 | candidates_at | or_sole | S | the column that grounds the provider's parameters in candidate matching |
 | kb/typing/candidates.rs:2764 | head_answers_at | or_sole | O | the column compared when ranking heads by specificity |
-| kb/typing/candidates.rs:2902 | goal_carrier_key | or_sole | O | the goal's key for the 058 §3.6 default lookup |
+| kb/typing/candidates.rs:2902 | goal_carrier_key | or_sole | O | the goal's key for the 058 §3.6 default lookup — **done** (CXR5B step 1: the goal's substituted sort) |
 | kb/typing/subtype.rs:817 | parameterized_compatible_view | scp | P | in a composed view, the carrier is checked against the actual itself |
 | kb/typing/subtype.rs:1088 | provision_leaves_param_open | scp | P | a left-out parameter reads as `?`, except the carrier |
 | kb/typing/subtype.rs:2571 | witness_provides_admissibly | wdc | S | witness rows at the actual type (spec standing for its providers) |

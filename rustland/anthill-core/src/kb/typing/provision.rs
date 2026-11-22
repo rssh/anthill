@@ -528,8 +528,9 @@ pub(crate) fn spec_as_its_providers<R>(
 ///
 /// WHAT EACH CALLER MAKES OF `None`, audited rather than assumed: [`witness_dispatch_carrier_value`]
 /// declines the witness kind, and the dot-call witness match declines. (058 §3.6's default
-/// rows and the `dispatch_carrier` builtin behind them read the binding on the goal's ladder
-/// instead, [`provision_dispatch_carrier`], and take a `None` there for the provider.)
+/// rows and the reflect relations behind them read no single parameter:
+/// [`provision_carrier`] is the spec at all its bindings, or the provider for a
+/// self-representing spec, WI-20261122-CXR5B.)
 /// [`requires_edge_is_carrier_preserving`] is the one that reads it differently — as
 /// "not carrier-preserving" — and that is correct for the same reason: an edge
 /// `requires SelfRepSpec[…]` has no carrier parameter to bind the receiver's carrier to,
@@ -561,9 +562,8 @@ pub(super) fn provision_carrier_binding(
 /// not at the ladder: pushing the fallback INTO `provision_carrier_binding` would move
 /// it under every one of that function's readers — the dot-call receiver probe and the
 /// witness readers of dispatch — and WI-1076 measured what happens when those read a
-/// first parameter that is not a carrier. 058 §3.6's default rows and the
-/// `dispatch_carrier` builtin read the binding on the other ladder
-/// ([`provision_dispatch_carrier`]), since the goal a default row answers is read on it.
+/// first parameter that is not a carrier. 058 §3.6's default rows read every binding
+/// ([`provision_carrier`], WI-20261122-CXR5B).
 pub(super) fn provision_binding_at_param(
     kb: &KnowledgeBase,
     carrier_param: Symbol,
@@ -602,20 +602,6 @@ pub(super) fn provision_binding_value_at_param(
     Some(val)
 }
 
-/// A provision's carrier binding at `carrier_param` when it is a STRUCTURAL type — a tuple or
-/// an arrow, a type that is no sort (`provides Apply[F = (Int64, Int64)]`).
-/// [`provision_binding_at_param`] answers `None` for it, as for a provision whose carrier is
-/// the provider itself, and the readers that tell the two apart ask this.
-pub(super) fn provision_structural_carrier(
-    kb: &KnowledgeBase,
-    carrier_param: Symbol,
-    spec_view: &Value,
-) -> Option<(Value, CarrierBucket)> {
-    let val = provision_binding_value_at_param(kb, carrier_param, spec_view)?;
-    let bucket = structural_bucket(kb, &val)?;
-    Some((val, bucket))
-}
-
 /// WI-20260913-KXNEX — A WRITTEN `provides` CLAUSE MUST NAME A CARRIER. For each
 /// clause the loader recorded, if the spec it names HAS a carrier parameter
 /// ([`spec_carrier_param`]) and the clause binds no value at that parameter, refuse.
@@ -633,7 +619,7 @@ pub(super) fn provision_structural_carrier(
 /// accepted the clause (`LiveLlm`'s `E = {External}` reached callers' rows throughout);
 /// dispatch's carrier-keyed reading needs the carrier parameter bound and found
 /// nothing. [`provision_carrier_binding`] answers `None` for both, and its own doc
-/// audits the disagreement: the `dispatch_carrier` builtin mints the PROVIDER while the
+/// audits the disagreement: the reflect builtin then minted the PROVIDER while the
 /// witness reader and the dot-call match DECLINE. This check does not reconcile those
 /// readings — it removes the shape that makes them differ for a clause an author wrote.
 ///

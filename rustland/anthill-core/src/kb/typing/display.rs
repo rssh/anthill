@@ -315,15 +315,29 @@ pub(super) fn arrow_row_shown(kb: &KnowledgeBase, ty: &Value) -> Option<String> 
     (!empty).then(|| named_child_display(kb, ty, "effects", Spelling::Meaning))
 }
 
-/// [`type_display_name`] of a provision's carrier, with the row of an arrow at its top where
-/// it holds anything ([`arrow_row_shown`]): two carriers that differ only in that row are
-/// two carriers, and printed alike they read as one.
+/// [`type_display_name`] of a provision's carrier, with the row of an arrow where it holds
+/// anything ([`arrow_row_shown`]): two carriers that differ only in that row are two carriers,
+/// and printed alike they read as one. The arrow is at the top of the carrier, or — the carrier
+/// being a substituted sort (WI-20261122-CXR5B, `Apply[F = Int64 -> Int64 @ {R}]`) — at the top
+/// of one of its bindings.
 pub(crate) fn carrier_display_name(kb: &KnowledgeBase, carrier: TermId) -> String {
-    let text = type_display_name(kb, carrier);
-    match arrow_row_shown(kb, &Value::term(carrier)) {
+    let shown = |v: &Value, text: String| match arrow_row_shown(kb, v) {
         Some(row) => format!("{text} @ {row}"),
         None => text,
+    };
+    let whole = Value::term(carrier);
+    if let Some((head, bindings)) = carrier_view_parts(kb, &whole) {
+        if bindings.iter().any(|(_, b)| arrow_row_shown(kb, b).is_some()) {
+            let parts: Vec<String> = bindings
+                .iter()
+                .map(|(k, b)| {
+                    format!("{} = {}", short_name_of(kb.local_name_of(*k)), shown(b, type_display_name_value(kb, b)))
+                })
+                .collect();
+            return format!("{}[{}]", kb.local_name_of(head), parts.join(", "));
+        }
     }
+    shown(&whole, type_display_name(kb, carrier))
 }
 
 /// WI-872 — the sort symbols a type MENTIONS, at any depth.

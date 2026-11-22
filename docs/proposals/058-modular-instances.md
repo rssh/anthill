@@ -88,8 +88,10 @@ Whether silence may pick is **not a property of the spec** — `Monoid[Int64]` h
 entity DefaultProvider(spec: Symbol, provider: Symbol)
 
 rule default_provider(?S, ?C, ?W) :- DefaultProvider(spec: ?S, provider: ?W), …
-rule default_provider(?S, ?C, ?C) :- self_provides(?C, ?S)      -- the inference rule
+rule default_provider(?S, ?C, ?P) :- own_provision(?P, ?S, ?C)  -- the inference rule
 ```
+
+*Note (WI-20261122-CXR5B, [`spec-carrier-set.md`](../design/spec-carrier-set.md) decisions 5 and 6).* The rule is unchanged; its **carrier is the provision's substituted sort**, the type of the values the provision is for: the spec at the provision's bindings for a spec with a dictionary (`Set provides Eq[T = Self]` is at `Eq[T = Set]`), the provider at its own type-vars for a self-representing one (`List provides Stream[T = T, E = {}]` is at `List[T = T]`). A provision is **its provider's own** where the provider is the head of that carrier or of one of its bindings, every binding counting. The rows below that read the carrier as one parameter's binding — "which provision is the carrier's own depends on the spec's shape", and "accepts, not receives on" — describe the single parameter these relations no longer read. Under several type-vars two providers can each own one carrier (`Num provides Coll[C = Foo, Elem = Self]` beside `Foo provides Coll[C = Self, Elem = Num]`); `one_default` refuses the pair until one is marked `default provides`, and the mark answers there.
 
 `one_default` — *any two answers for one carrier name one provider* — is a **load check**, not a constraint written here: it compares rows at carriers that OVERLAP rather than at carriers that are equal, which is a question about the row set and about term overlap that an equality goal over two answers cannot ask.
 

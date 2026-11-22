@@ -2863,9 +2863,9 @@ pub(super) fn witness_dispatch_carrier(
 ///
 /// A `pub(crate)` door onto [`unwrap_spec_view_value`] rather than a fifth decode of the
 /// `SortView(base, …bindings)` shape — the builtin behind
-/// `anthill.reflect.typing.dispatch_carrier` needs the spec sort to ask the classifier
-/// anything, and deriving it any other way would be a second reading of what a spec view
-/// is. (Only the BASE is taken here, which is the half `unwrap_spec_view_value` reads
+/// `anthill.reflect.typing.provision_carrier_of` needs the spec sort to ask
+/// [`provision_carrier`] anything, and deriving it any other way would be a second reading
+/// of what a spec view is. (Only the BASE is taken here, which is the half `unwrap_spec_view_value` reads
 /// identically on both carriers; the BINDINGS are not — see
 /// [`provision_carrier_binding`].)
 pub(crate) fn spec_view_base(kb: &KnowledgeBase, spec_view: &Value) -> Option<Symbol> {
@@ -2874,10 +2874,10 @@ pub(crate) fn spec_view_base(kb: &KnowledgeBase, spec_view: &Value) -> Option<Sy
 
 /// WI-860 — THE OWNER of the witness criterion, over any carrier.
 ///
-/// [`witness_dispatch_carrier`] is its term-side entry point; [`provision_dispatch_carrier`],
-/// read by the `dispatch_carrier` builtin and by 058 §3.6's default rows, asks the same
-/// criterion ([`witness_at_param`]) at the parameter a goal's carrier is read at, and is the
-/// reason the criterion is read over any carrier at all. A `SortProvidesInfo` fact's `spec` field reads as a
+/// [`witness_dispatch_carrier`] is its term-side entry point. It reads the single carrier
+/// parameter, for dispatch, the coherence grouping and the supplier walk; where a provision
+/// IS and whether it is its provider's own is [`provision_carrier`]'s, which 058 §3.6's
+/// default rows and the reflect relations read (WI-20261122-CXR5B). A `SortProvidesInfo` fact's `spec` field reads as a
 /// `TermId` through `fact_head_named_args` (the LOAD path) and as a `Value::Node`
 /// OCCURRENCE when the resolver matches the same fact against a goal (the SLD path), so a
 /// classifier reachable only from a `TermId` is reachable only from half its callers.
@@ -2908,62 +2908,6 @@ fn witness_at_param(
     let carrier_canon = kb.canonical_sort_sym(base);
     // Provider IS the carrier ⇒ a fact / normal self-provider, not a witness.
     (kb.canonical_sort_sym(provider) != carrier_canon).then_some((view, carrier_canon))
-}
-
-/// Where a provision's dictionary DISPATCHES — the question 058 §3.6's defaults ask of every
-/// provision, and the `dispatch_carrier` builtin behind the `default_provider` relation answers.
-/// The witness criterion ([`witness_at_param`]) tells a witness at another SORT from the rest;
-/// of the rest, a carrier binding that is a tuple or an arrow is a witness too, at a type with no
-/// sort to key it by ([`provision_structural_carrier`]), and only what remains is the provider
-/// itself. Read as the provider, a mark on a provision at `F = (Int64, Int64)` was filed as a
-/// default at carrier `P1` — a row no goal asks for — and arbitrated nothing.
-pub(crate) enum DispatchCarrier {
-    /// The provider is the carrier: a self-provision, an instance fact, a bare provision. A
-    /// binding to the provider's own type parameter (`sort AnyS { sort E = ?  provides Show[T =
-    /// E] }`) is not one: that provision is at every type, and is read as a witness at the
-    /// parameter, which no goal names.
-    Provider,
-    /// A witness at another sort: the carrier as written, and its canonical base —
-    /// `sort ListOrd provides Ord[T = List[T = E]]` is `(List[T = E], List)`. The base alone is
-    /// the right key for every DISPATCH reader, a dispatch being decided by the value's sort,
-    /// but not for whether two default rows collide: `List[T = E]` beside `List[T = Int64]`
-    /// is one family and two rows that overlap, `List[T = Int64]` beside `List[T = String]`
-    /// one family and two disjoint rows.
-    Sort(Value, Symbol),
-    /// A witness at a tuple or an arrow: the carrier as written, and the bucket its head
-    /// files it under.
-    Structural(Value, CarrierBucket),
-}
-
-/// The [`DispatchCarrier`] of one provision.
-///
-/// The carrier parameter is read on the ladder a goal's carrier is read on
-/// ([`spec_carrier_param_or_sole`], as `goal_carrier_key` does): a row is filed where the
-/// goal it answers looks. On [`spec_carrier_param`] alone a spec whose operations receive on
-/// no parameter (`sort Tag { sort T = ?  operation name() -> Int64 }`) had no carrier
-/// parameter here and one at the goal, so a mark on `provides Tag[T = Box[T = Int64]]` was
-/// filed at its provider and `Tag.name[T = Box[T = Int64]]()` beside a second provider was
-/// a tie. Only the defaults read this; the witness readers of dispatch keep their own
-/// ladder ([`provision_binding_at_param`] says why).
-pub(crate) fn provision_dispatch_carrier(
-    kb: &KnowledgeBase,
-    spec: Symbol,
-    provider: Symbol,
-    spec_view: &Value,
-) -> DispatchCarrier {
-    if !view_is_sort_view(kb, spec_view) {
-        return DispatchCarrier::Provider;
-    }
-    let Some(param) = spec_carrier_param_or_sole(kb, spec) else {
-        return DispatchCarrier::Provider;
-    };
-    if let Some((view, base)) = witness_at_param(kb, param, provider, spec_view) {
-        return DispatchCarrier::Sort(view, base);
-    }
-    match provision_structural_carrier(kb, param, spec_view) {
-        Some((view, bucket)) => DispatchCarrier::Structural(view, bucket),
-        None => DispatchCarrier::Provider,
-    }
 }
 
 /// WI-860 — one `anthill.reflect.SortProvidesInfo` fact as 058 §3.6's defaults substrate
@@ -3121,10 +3065,10 @@ fn rows_overlap(kb: &KnowledgeBase, a: &Value, b: &Value) -> bool {
     }
 }
 
-/// The bucket 058 §3.6's default rows are filed under, and a goal's carrier is looked up in:
-/// the carrier's base sort, or — for a carrier that is no sort — its structural head, a tuple
-/// or an arrow ([`DispatchCarrier::Structural`]). Within a bucket [`carrier_views_overlap`]
-/// decides; the bucket only keeps it from comparing carriers of two families.
+/// The bucket of a carrier view: its base sort, or — for a carrier that is no sort — its
+/// structural head, a tuple or an arrow. 058 §3.6's default rows of a spec are partitioned by
+/// it ([`default_row_key`]); within a bucket [`carrier_views_overlap`] decides, the bucket only
+/// keeping it from comparing carriers of two families.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum CarrierBucket {
     Sort(Symbol),

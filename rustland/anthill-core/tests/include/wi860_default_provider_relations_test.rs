@@ -228,7 +228,7 @@ fn a_carriers_own_provision_is_its_inferred_default() {
     );
     assert_eq!(
         index_rows_for(&kb, "test.wi860.own.Leaf"),
-        vec!["Desc | Leaf | Leaf (inferred from the carrier's own provision)".to_string()],
+        vec!["Desc | Desc[T = Leaf] | Leaf (inferred from the carrier's own provision)".to_string()],
         "one carrier, one own provision, ONE row — and INFERRED, which is the half a \
          no-displacement diagnostic names and the half a DECLARED mark on the same \
          carrier would also satisfy every other assertion here"
@@ -267,7 +267,7 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     assert!(
-        relation_rows(&mut kb, "default_provider", 3).contains(&"Desc | Leaf | Twig".to_string()),
+        relation_rows(&mut kb, "default_provider", 3).contains(&"Desc | Desc[T = Leaf] | Twig".to_string()),
         "the mark names (Desc, Twig) and the relation must supply the CARRIER `Leaf` \
          from Twig's own provision: {:?}",
         relation_rows(&mut kb, "default_provider", 3)
@@ -277,7 +277,7 @@ end
     );
     assert_eq!(
         index_rows_for(&kb, "test.wi860.declared.Leaf"),
-        vec!["Desc | Leaf | Twig (declared)".to_string()],
+        vec!["Desc | Desc[T = Leaf] | Twig (declared)".to_string()],
         "the row is keyed at the CARRIER `Leaf` and names the marked PROVIDER `Twig`"
     );
 }
@@ -318,7 +318,7 @@ end
     let errs = load_errors(src);
     assert!(
         errs.iter().any(|e| {
-            e.contains("ambiguous default: carrier 'Leaf' has 2 default providers")
+            e.contains("ambiguous default: carrier 'Desc[T = Leaf]' has 2 default providers")
                 && e.contains("test.wi860.two.Twig")
                 && e.contains("test.wi860.two.Branch")
                 && e.contains(
@@ -361,7 +361,7 @@ fn marking_a_rival_against_a_self_providing_carrier_is_refused() {
     let errs = load_errors(&program("test.wi860.displace", rival));
     assert!(
         errs.iter().any(|e| {
-            e.contains("default displaced: carrier 'Leaf' provides")
+            e.contains("default displaced: carrier 'Desc[T = Leaf]' provides")
                 && e.contains("test.wi860.displace.Rival")
                 && e.contains("inferred from the carrier's own provision")
                 && e.contains("fill silence, never overwrite speech")
@@ -431,8 +431,8 @@ fn two_disjoint_ground_defaults_coexist() {
     assert_eq!(
         rows,
         vec![
-            "Desc | Box[T = Int64] | Ground (declared)".to_string(),
-            "Desc | Box[T = String] | Param (declared)".to_string(),
+            "Desc | Desc[T = Box[T = Int64]] | Ground (declared)".to_string(),
+            "Desc | Desc[T = Box[T = String]] | Param (declared)".to_string(),
         ],
         "both rows key the same carrier BASE — which is exactly why the check cannot"
     );
@@ -556,7 +556,7 @@ end
     let mut kb = crate::common::load_kb_with(src);
     let rows = relation_rows(&mut kb, "default_provider", 3);
     assert!(
-        rows.contains(&"Desc | Box[T = E] | BoxDesc".to_string()),
+        rows.contains(&"Desc | Desc[T = Box[T = E]] | BoxDesc".to_string()),
         "the row must key the carrier the provision WROTE — `Box[T = E]`, not `Box`: {:?}",
         rows.iter()
             .filter(|r| r.contains("Box"))
@@ -564,7 +564,7 @@ end
     );
     assert_eq!(
         index_rows_for(&kb, "test.wi860.conditional.Box"),
-        vec!["Desc | Box[T = E] | BoxDesc (declared)".to_string()],
+        vec!["Desc | Desc[T = Box[T = E]] | BoxDesc (declared)".to_string()],
         "one provision, one row, at the carrier the CLAUSE wrote — vacuously inert while \
          no rival exists"
     );
@@ -574,7 +574,7 @@ end
     // relation's occurrence-carried carrier is checked against the index's term-carried
     // one.
     assert!(
-        index_rows(&kb).contains(&"Desc | Box[T = E] | BoxDesc".to_string()),
+        index_rows(&kb).contains(&"Desc | Desc[T = Box[T = E]] | BoxDesc".to_string()),
         "the index must render the parametric carrier the same way the relation does: {:?}",
         index_rows(&kb)
     );
@@ -730,7 +730,7 @@ end
     let errs = load_errors(&displacing);
     assert!(
         errs.iter()
-            .any(|e| e.contains("default displaced: carrier 'Leaf' provides")),
+            .any(|e| e.contains("default displaced: carrier 'Desc[T = Leaf]' provides")),
         "the memberless carrier's inferred row must still refuse a displacing mark, with \
          the DISPLACEMENT wording: {errs:?}"
     );

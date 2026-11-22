@@ -172,8 +172,9 @@ fn a_carrier_parameterized_spec_still_reads_its_binding() {
     let mut kb = crate::common::load_kb_with(BOTH_SHAPES);
     assert_eq!(
         carrier_rows(&mut kb, "Holder"),
-        vec!["Box | Holder | Box".to_string()],
-        "`C = Box` is a carrier-parameter binding and must still be read as one"
+        vec!["Box | Holder | Holder[C = Box, Element = Int64]".to_string()],
+        "`C = Box` is a binding of the carrier, the spec at its bindings \
+         (WI-20261122-CXR5B), and `Box` heads it"
     );
     assert!(
         relation_rows(&mut kb, "self_provides", 2).contains(&"Box | Holder".to_string()),
@@ -215,7 +216,7 @@ end
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
         carrier_rows(&mut kb, "Holder"),
-        vec!["BoxHolder | Holder | Box".to_string()],
+        vec!["BoxHolder | Holder | Holder[C = Box, Element = Int64]".to_string()],
         "a witness for a carrier-parameterized spec keeps its provider/carrier split"
     );
     assert!(
@@ -242,17 +243,19 @@ fn the_stdlib_stream_provisions_read_their_provider() {
     assert_eq!(
         carrier_rows(&mut kb, "Stream"),
         vec![
-            "FilteredStream | Stream | FilteredStream".to_string(),
-            "FiniteStream | Stream | FiniteStream".to_string(),
-            "List | Stream | List".to_string(),
-            "LogicalStream | Stream | LogicalStream".to_string(),
-            "MappedStream | Stream | MappedStream".to_string(),
+            // WI-20261122-CXR5B (decision 5): a self-representing spec's provision is at
+            // the PROVIDER at its own type-vars, its `Self`.
+            "FilteredStream | Stream | FilteredStream[Source = Source, T = T, SourceEffects = SourceEffects, PredicateEffects = PredicateEffects]".to_string(),
+            "FiniteStream | Stream | FiniteStream[T = T, E = E]".to_string(),
+            "List | Stream | List[T = T]".to_string(),
+            "LogicalStream | Stream | LogicalStream[T = T, E = E]".to_string(),
+            "MappedStream | Stream | MappedStream[Source = Source, SourceElement = SourceElement, T = T, SourceEffects = SourceEffects, TransformEffects = TransformEffects]".to_string(),
             // WI-1109: `Relation provides LogicalStream[T = T, E = E]` and
             // `LogicalStream provides Stream[T = T, E = E]` are both IDENTITY
             // forwardings, so `derive_forwarded_provisions` materializes the row that
             // was already true transitively — `sort_provides(Relation, Stream)`
             // answered true before it. A truthful row, not a new claim.
-            "Relation | Stream | Relation".to_string(),
+            "Relation | Stream | Relation[T = T, E = E]".to_string(),
         ],
         "`Stream` is self-representing (`splitFirst(s: Stream)`), so each carrier that \
          declares it IS a stream must record ITSELF — before the fix every row here \
@@ -260,7 +263,7 @@ fn the_stdlib_stream_provisions_read_their_provider() {
     );
     assert_eq!(
         carrier_rows(&mut kb, "FiniteStream"),
-        vec!["List | FiniteStream | List".to_string()],
+        vec!["List | FiniteStream | List[T = T]".to_string()],
     );
     let selves = relation_rows(&mut kb, "self_provides", 2);
     for row in [
@@ -312,7 +315,7 @@ fn the_producer_argument_case_is_closed_by_its_own_type_parameter() {
     );
     assert_eq!(
         carrier_rows(&mut kb, "LogicalStream"),
-        vec!["Relation | LogicalStream | Relation".to_string()],
+        vec!["Relation | LogicalStream | Relation[T = T, E = E]".to_string()],
         "`pure[A](x: A)` takes the OPERATION's parameter, not the sort's, so \
          `LogicalStream` has no carrier parameter and `Relation` is its own carrier"
     );
@@ -430,16 +433,12 @@ end
 /// as the old positional read discarded it. Not a regression — the positional read gave
 /// the same answer — but the shipped rule must not be described as if it did not.
 ///
-/// WI-1077 DECIDED THIS IS THE RULE, not a residue awaiting a fix (option (c), user
-/// 2026-08-11): the carrier parameter stays INFERRED, "takes as a parameter" is the
-/// question asked, and no surface is added to say otherwise. The verdict below is
-/// therefore permanent rather than provisional — an earlier version of this row said
-/// "change this row when WI-1077 lands", and what landed keeps it. Its sibling face — a
-/// spec that RECEIVES on its own sort and also accepts its element — is driven by
-/// `wi1077_accepts_vs_receives_test`, which had no coverage at all until that ticket.
-///
-/// Passes with the ticket backed out. It is here to keep the documented rule and the
-/// implemented one from drifting apart, which is the failure this file exists to record.
+/// WI-1077 DECIDED THIS WAS THE RULE (option (c), user 2026-08-11): the carrier parameter
+/// stayed INFERRED, "takes as a parameter" the question asked. WI-20261122-CXR5B
+/// (`docs/design/spec-carrier-set.md`, decisions 4 and 5) retires it for WHERE A PROVISION
+/// IS: the carrier is the spec at ALL its bindings, `Holder[Element = Int64, C = Box]`, and
+/// no binding is discarded whichever is declared first. The single parameter still answers
+/// which argument a call dispatches on until that ticket's later steps move those readers.
 #[test]
 fn an_accepted_element_declared_first_still_wins_over_the_carrier_param() {
     let src = r#"namespace test.wi1076.accepts
@@ -467,12 +466,9 @@ end
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
         carrier_rows(&mut kb, "Holder"),
-        vec!["BoxHolder | Holder | Int64".to_string()],
-        "THE RULE (WI-1077 option (c)): `has(c: C, e: Element)` merely ACCEPTS the \
-         element, but `spec_carrier_param` cannot tell that from receiving on it, so the \
-         earlier-declared `Element` answers and `C = Box` is discarded. Inferred by \
-         design — the repair for an UNINTENDED reuse is the declaration, as \
-         `LogicalStream.pure` was repaired"
+        vec!["BoxHolder | Holder | Holder[Element = Int64, C = Box]".to_string()],
+        "the carrier is the spec at both bindings, in declaration order — neither \
+         `Element = Int64` nor `C = Box` is discarded (WI-20261122-CXR5B)"
     );
 }
 
@@ -543,6 +539,11 @@ end
 ///
 /// Fails under `spec_is_self_representing`; passes under the shipped predicate and
 /// passes with the whole ticket backed out.
+///
+/// WI-20261122-CXR5B (decision 8 of `docs/design/spec-carrier-set.md`): such a spec IS
+/// self-representing — `peek(c: C)` is `peek(c: Self.C)` beside `joinTwo(a: Self, …)` — so
+/// the provision is at the PROVIDER, `BoxHolder`, and `C = Box` is read off it. The call
+/// below still reaches `BoxHolder`'s member: dispatch reads `C`'s argument as before.
 #[test]
 fn a_spec_with_both_a_carrier_param_and_a_self_receiver_keeps_its_binding() {
     let src = r#"namespace test.wi1076.mixed
@@ -572,10 +573,9 @@ end
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
         carrier_rows(&mut kb, "Holder"),
-        vec!["BoxHolder | Holder | Box".to_string()],
-        "`peek(c: C)` receives on `C`, so `C` is a real carrier parameter and the \
-         explicit `C = Box` binding decides — a self-receiving sibling operation does \
-         not repeal it"
+        vec!["BoxHolder | Holder | BoxHolder".to_string()],
+        "`Holder` takes a `Self` value (`joinTwo`), so it is self-representing and its \
+         provision is at its provider (decision 8)"
     );
     match crate::common::interp_for(src)
         .call("test.wi1076.mixed.probe", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)

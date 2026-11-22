@@ -1346,17 +1346,45 @@ entry opens: adding a clause to a type whose declaration one does not own.
 **A `provides` clause names its PROVIDER by WHERE it is written, and its CARRIER
 by its bindings** — two questions, and the provision records both (WI-1069). The
 provider is the enclosing sort, or a secondary entry at that sort's address; it
-is whose member set becomes the dictionary. The carrier is the value bound to the
-spec's **carrier parameter** (which parameter that is, the next paragraph
-settles), and it is what the provision dispatches at. Where the two coincide the
-clause is an ordinary
-self-provision (`sort Set provides Eq[T = Set]`). Where they differ it is a
-**witness** — `sort ListOrd provides Ord[T = List[T = E]]` says `ListOrd`
-supplies the `Ord` dictionary *for* `List` — which is the shape proposal 058
-§3.6's defaults, `DefaultProvider` and witness dispatch are all built on. One
-owner decides this for every reader (`provision_carrier_binding` /
-`witness_dispatch_carrier_value`), so the load checks, the coherence grouping and
-dispatch cannot disagree about what a witness is.
+is whose member set becomes the dictionary. The **carrier** is what `Self` denotes
+for the values the provision is for (§5.2), a substituted sort, and which one
+depends on whether such a value is a dictionary (WI-20261122-CXR5B,
+[`spec-carrier-set.md`](design/spec-carrier-set.md)):
+
+- For a spec **with a dictionary** — no operation of it takes a value of type `Self`
+  — the carrier is the SPEC at the provision's bindings of all its type-vars:
+  `sort Set provides Eq[T = Self]` is at `Eq[T = Set]`, and `sort MyBag provides
+  Bag2[T = Int64, C = Self]` is at `Bag2[T = Int64, C = MyBag]` whichever of `T` and
+  `C` is declared first. An operation binding (`eq = setEq`) is no part of it.
+- For a **self-representing** spec — some operation of it takes a value of type
+  `Self`, whatever else it takes — the values are the provider's, and the carrier is
+  the PROVIDER at its own type-vars: `sort List provides Stream[T = T, E = {}]` is at
+  `List[T = T]`, and the spec's type-vars are read off it (`Stream.T` is `List`'s
+  `T`, `E` is `{}`).
+
+A provision is its **provider's own** where the provider is the head of its carrier —
+every provision of a self-representing spec — or the head of one of the carrier's
+bindings, every binding counting: `Set`'s and `MyBag`'s above, and `Num provides
+Coll[C = Foo, Elem = Self]`. Otherwise it is a **witness** — `sort ListOrd provides
+Ord[T = List[T = E]]` is at `Ord[T = List[T = E]]`, which `ListOrd` heads no part of:
+`ListOrd` supplies the `Ord` dictionary *for* `List` — which is the shape proposal 058
+§3.6's defaults, `DefaultProvider` and witness dispatch are all built on. A
+self-representing spec has no witness. One owner decides both questions
+(`typing::provision_carrier`), and the reflect relations (`provision_carrier`,
+`own_provision`, `self_provides`, `default_provider`) and 058 §3.6's default rows read
+it, so they cannot disagree about where a provision is or whose it is.
+
+**Dispatch still reads one parameter.** Which argument of a call selects the
+provision, the coherence grouping, the supply route a witness's members are filed
+under, the member checks and the refusal of a provision naming no carrier (below)
+read ONE type-var of the spec, the one read off its operations (below), not the
+carrier. The two agree where an operation takes the one type-var a spec declares.
+They part where none does (`Eq`, `SortDomain`, `Monad`): these readers then see no
+parameter and read a witness as its provider's own, so a `Monad` witness at another
+sort is refused at its call. And for a spec of several type-vars, a call that fixes
+one and leaves another to the expected type takes the provision declared first (the
+design's §3 B). Moving these readers to the type-vars an operation's signature
+mentions is WI-20261122-CXR5B's.
 
 A witness supplies a requirement, conditions and all. `MappedStreamFinite provides
 FiniteCollection[C = MappedStream[…], …]` under its own `requires FiniteCollection[C =
@@ -1382,8 +1410,9 @@ composition answers the subtype question: where `Walk` and `Mid` receive on them
 `Mid provides Walk[Element = Item]` and `Deep provides Mid[Item = D]`, a `Deep[D = Row]`
 is a `Walk[Element = Row]`.
 
-In a composed provision the spec's carrier parameter is the providing sort's own type.
-`Stream provides Iterable[C = Self, …]` binds the carrier parameter to `Stream` itself, and
+In a composed provision the binding of the parameter the spec's operations receive on is
+the providing sort's own type. `Stream provides Iterable[C = Self, …]` binds `C` to
+`Stream` itself, and
 composing that through `List provides Stream` substitutes the intermediate's parameters
 and leaves the self-reference standing. `C` is what `Iterable.iterator(c: C)` receives,
 and on a `List` that is the list, so a requirement written `Iterable[C = List[T = Row]]`
@@ -1457,9 +1486,9 @@ operation combine(a: E, b: E) … }`) is a forwarding by shape and *is* a dictio
 because it carries the operations. A **self-representing** target is a thing rather than
 a constraint, so `LogicalStream provides Stream[T = T, E = E]` is the membership claim "a
 LogicalStream is a Stream" and a call of `Stream.splitFirst` on a `Relation` is answered
-through it. And a target that *does* name a carrier parameter (the next
-paragraph settles which) must have it among the forwarded ones — a row forwarding only
-the element parameters says nothing about the carrier and converts nothing.
+through it. And a target with a parameter a call dispatches on (the next paragraph
+settles which) must have it among the forwarded ones — a row forwarding only the
+element parameters says nothing about the carrier and converts nothing.
 
 **The forwarding need not be name-for-name** (WI-1111). `provides Sp[X = A]` renames and
 `provides Sp[X = B, Y = A]` permutes; both say exactly what `provides Sp[X = X]` says,
@@ -1473,28 +1502,27 @@ two conversions deep (`Top provides Mid[T = T]`, `Mid provides Low[T = T]`) mate
 goal, because `Top` already holds a `Low` dictionary inside its `Mid` slot, and the
 tower's real carriers get their own derived rows in the same pass.
 
-**Which parameter is the carrier is read off the operations** (WI-1076), because
-nothing in the surface language says: no keyword declares a sort to be a spec, or
-a parameter to be its carrier. The rule as implemented is *the first declared type
-parameter that some declared operation takes as a parameter* —
-`Iterable.iterator(c: C)` makes `C` the carrier, and a provision's binding for it
-is what that provision dispatches at. A spec **none** of whose operations takes any
-of its type parameters has no carrier parameter, and its provisions record **the
-provider** as their carrier: `Stream`'s operations all receive on `Stream` itself
-and its `T` appears only in return and callback types, so `sort List provides
-Stream[T, {}]` records `List`, and `List` `self_provides` `Stream`. One such spec
-is read otherwise where a provision binds its parameter: a spec with exactly one type
-parameter, none of whose operations takes the spec itself. A binding of that parameter
-is the only way a provision or a call can say which type it is at, so it is what the
-provision records as its carrier. Under `sort Tag { sort T = ?  operation name() ->
-Int64 }`, `sort P1 provides Tag[T = Box[T = Int64]]` is a provision for `Box[T =
-Int64]`, and a `default` on it answers `Tag.name[T = Box[T = Int64]]()`. A provision
-that leaves `T` unbound (`provides Tag`) records its provider, as above, and the rule
-below does not ask it to bind `T`.
+**Which parameter dispatch reads is read off the operations** (WI-1076), because
+nothing in the surface language says: no keyword declares a sort to be a spec. The
+rule as implemented is *the first declared type parameter that some declared
+operation takes as a parameter* — `Iterable.iterator(c: C)` makes it `C`, and a
+value-directed call reads its argument there. It is the one parameter the readers
+named in the paragraph on dispatch above still read; where a provision IS, its
+carrier, reads every binding. A spec **none** of whose operations takes any of its
+type parameters has no such parameter. A self-representing one dispatches on its
+receiver's own sort: `Stream`'s operations all receive on `Stream` itself and its `T`
+appears only in return and callback types, so `sort List provides Stream[T, {}]` is at
+`List[T = T]`, and `List` `self_provides` `Stream`. A spec with a dictionary has its
+provisions at their carriers all the same, and a call says which by a bracket or a
+binding: under `sort Tag { sort T = ?  operation name() -> Int64 }`, `sort P1 provides
+Tag[T = Box[T = Int64]]` is at `Tag[T = Box[T = Int64]]`, and a `default` on it answers
+`Tag.name[T = Box[T = Int64]]()`. A provision that leaves the one type-var of such a spec
+unbound (`provides Tag`) is at its provider, `Tag[T = P1]`, and the rule below does not
+ask it to bind `T`; a type-var left out of a spec of several is any.
 
-**A written `provides` clause over a spec that HAS a carrier parameter must BIND
+**A written `provides` clause over a spec that HAS a parameter dispatch reads must BIND
 it** (WI-20260913-KXNEX), and one that does not is a **load error**. By the rule
-two paragraphs up such a clause names no carrier at all, and the consequence was
+above such a clause names no carrier dispatch can read, and the consequence was
 silent: `sort LiveLlm { operation complete(self: LiveLlm, …); provides Llm[E =
 {External}] }` loaded clean, and `llm.complete(p)` on a `LiveLlm` value failed
 `OperationBodyMissing` at the first call — against a sort that implements the
@@ -1508,9 +1536,9 @@ DEFAULT of the carrier parameter to the enclosing sort was weighed and rejected,
 because a provision that dispatches somewhere the author did not write is the
 same silence in the other direction.
 
-Three shapes stay legal and each for its own reason: a spec with **no** carrier
-parameter — the paragraph above — whose bare provision records its provider
-(`sort GithubForge provides Forge`); a **witness**, which binds the carrier
+Three shapes stay legal and each for its own reason: a spec with **no** such
+parameter — the paragraph above — whose bare provision is at its provider
+(`sort GithubForge provides Forge`, `Forge` taking a `Self` value); a **witness**, which binds the carrier
 explicitly and is the very thing the rule demands; and a carrier written as a view
 of the provider's **own type parameter** (`provides Ord[T = List[T = E]]`), which
 is a binding an author wrote, so the question is whether the parameter is bound at
@@ -1520,25 +1548,28 @@ not asked. Enforced by `check_provision_names_carrier`, over the loader's regist
 of written clauses rather than the provision relation, so the rule cannot drift
 into the rows the loader itself derives.
 
-**"Takes" is the rule, not an approximation of one** (WI-1077). A narrower reading is
-imaginable — whether an operation **receives on** a parameter rather than merely
-**accepting** it — and the two part company in two shapes: a spec that takes its own
-element somewhere (`Set.insert(s: Set, x: T)`, `Map.put(m: Map, key: K, value: V)`), and
-a carrier-parameterized spec that declares its element *first* and accepts it
-(`sort Holder { sort Element = ?; sort C = ?; operation has(c: C, e: Element) }`), where
-the explicit `C = …` binding is discarded. In both, the earlier-declared *element*
-answers and the provision is filed at it.
+**"Takes" is the rule, not an approximation of one** (WI-1077), for the parameter
+dispatch reads. A narrower reading is imaginable — whether an operation **receives
+on** a parameter rather than merely **accepting** it — and the two part company in two
+shapes: a spec that takes its own element somewhere (`Set.insert(s: Set, x: T)`,
+`Map.put(m: Map, key: K, value: V)`), and a spec that declares its element *first* and
+accepts it (`sort Holder { sort Element = ?; sort C = ?; operation has(c: C, e:
+Element) }`). In both, the earlier-declared *element* answers, and the readers of that
+one parameter file the provision at it. Where the provision IS does not move with it:
+`Holder`'s carrier binds both (`Holder[Element = Int64, C = Box]`), and `Set` and `Map`,
+taking `Self` values, are self-representing, their provisions at their providers.
 
-That is the language's answer and not a pending fix. Making it narrower requires the
-surface to *say* which parameter is the carrier — a marker (`sort C = ? carrier`) or a
-`spec` keyword — and neither is being added; inferring it from a wider operation shape
-was tried and **refuses a program that loads**, because a spec may declare both a carrier
-parameter and a self-receiving operation, and gating on self-representation throws its
-explicit binding away. So where the reuse is *accidental*, the repair is the
-**declaration**: `LogicalStream.pure` reused the sort's element for a value it merely
+No new surface narrows it: a marker (`sort C = ? carrier`) or a `spec` keyword would say
+which parameter is the carrier, and neither is being added; inferring it from a wider
+operation shape was tried and **refuses a program that loads**, because a spec may
+declare both a carrier parameter and a self-receiving operation, and gating on
+self-representation threw its explicit binding away. What retires the one parameter is
+WI-20261122-CXR5B: a call reading the type-vars its operation's signature mentions, as
+a provision's carrier already reads all of them. Until then, where the reuse is
+*accidental*, the repair is the **declaration**: `LogicalStream.pure` reused the sort's element for a value it merely
 lifts and now takes its own (`pure[A](x: A) -> LogicalStream[A, {}]`). Where it is
-*intended* — `insert` really does take the sort's element — the filing at the element is
-what the rule says.
+*intended* — `insert` really does take the sort's element — the dispatch readers' filing
+at the element is what the rule says.
 
 **An operation that lifts a value must relate its result to its ARGUMENT**, not to
 the sort's parameter, and where one does not the repair is the declaration rather
@@ -1567,16 +1598,15 @@ name and nothing has fixed the slot, there is nothing left to unify with, and th
 alternative is what the name takes (§5.4): `let xs = List.empty()` is a
 `List[T = Nothing]`.
 
-Where a spec genuinely has no carrier parameter, **a witness for it cannot
-exist**: dispatch is directed by the receiver value's own sort, there being no
-parameter position that could name a carrier, so a sort claiming such a spec is
-claiming to *be* one. Taking the first parameter unconditionally filed seven stdlib
-provisions at the type variable `T` and left the defaults substrate (§3.6) with no
-inferred row for any of them, while provider admissibility — which joined on
-`SortProvidesInfo(sort_ref:)`, the provider, not the dispatch carrier — kept
-working, which is why it stayed silent. (That join is what the rule above now
-supplements: admissibility still asks the provider-keyed question first and falls
-back to the dispatch carrier, so a witness is reachable from a value position too.)
+For a self-representing spec **a witness cannot exist**: its provision's carrier is its
+provider, and dispatch is directed by the receiver value's own sort, so a sort claiming
+such a spec is claiming to *be* one. Taking the first parameter unconditionally once
+filed seven stdlib provisions at the type variable `T` and left the defaults substrate
+(§3.6) with no inferred row for any of them, while provider admissibility — which joined
+on `SortProvidesInfo(sort_ref:)`, the provider, not the dispatch carrier — kept working,
+which is why it stayed silent. (Admissibility still asks the provider-keyed question
+first and falls back to the dispatch carrier, so a witness is reachable from a value
+position too.)
 
 **`provides` IS THE ONE SPELLING OF A PROVISION, AND A `fact` IS AN ORDINARY FACT**
 (WI-20260917-S8JYF, completing 058 §4's retirement at both levels). A provision names
@@ -6220,7 +6250,7 @@ operation typeOnly() -> Int64 = probeAt(Tagger[C = B], b(k: 0))                 
 
 A member that backs a spec operation and types its receiver by such a spec takes an instance, where the spec passes the carrier, and is refused (§8.7).
 
-The reflect `provides()` rule in `typing.anthill` is provider-keyed — it joins on `SortProvidesInfo(sort_ref:)` — so it answers only for a self-providing carrier; the carrier's own question has a separate reflect spelling, `provision_carrier`, built on the `dispatch_carrier` builtin.
+The reflect `provides()` rule in `typing.anthill` is provider-keyed — it joins on `SortProvidesInfo(sort_ref:)` — so it answers only for a self-providing carrier; the carrier's own question has a separate reflect spelling, `provision_carrier`, built on the `provision_carrier_of` builtin.
 
 ### 8.3 Rule Evaluation
 

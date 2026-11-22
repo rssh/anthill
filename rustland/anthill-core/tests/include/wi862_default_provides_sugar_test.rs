@@ -294,7 +294,7 @@ fn the_inline_mark_is_a_declared_row_at_the_provisions_carrier() {
     let kb = crate::common::load_kb_with(&src);
     assert_eq!(
         index_rows_for(&kb, "wi862.row.Leaf"),
-        vec!["Desc | Leaf | Rival (declared)".to_string()],
+        vec!["Desc | Desc[T = Leaf] | Rival (declared)".to_string()],
         "`default provides Desc[T = Leaf]` in `Rival` must file the DECLARED row at \
          `Leaf`, the carrier its own provision names"
     );
@@ -321,7 +321,7 @@ fn the_two_spellings_of_one_mark_are_one_row() {
     let kb = crate::common::load_kb_with(&src);
     assert_eq!(
         index_rows_for(&kb, "wi862.both.Leaf"),
-        vec!["Desc | Leaf | Rival (declared)".to_string()],
+        vec!["Desc | Desc[T = Leaf] | Rival (declared)".to_string()],
         "the inline and by-reference spellings of ONE mark must collapse to one row — \
          two rows here would be `one_default`'s collision, i.e. the sugar refusing the \
          program it is sugar for"
@@ -422,7 +422,7 @@ end
     let kb = crate::common::load_kb_with(&src);
     assert_eq!(
         index_rows_for(&kb, &format!("{ns}.Wrap")),
-        vec!["Desc | Wrap[A = E] | WrapDesc (declared)".to_string()],
+        vec!["Desc | Desc[T = Wrap[A = E]] | WrapDesc (declared)".to_string()],
         "the modifier must survive the conditions tail and file the row at the written \
          carrier `Wrap[A = E]`, not at a bare `Wrap` and not at nothing"
     );

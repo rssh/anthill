@@ -267,10 +267,14 @@ pub enum BuiltinTag {
     /// functor as a nullary Fn (canonical sort-name shape) from
     /// instantiation term.
     ExtractSort,
-    /// WI-860 — `anthill.reflect.typing.dispatch_carrier(?sort_ref, ?spec, ?result)`:
-    /// the carrier a provision's dictionary DISPATCHES AT, as a type term. See
-    /// [`SearchStream::builtin_dispatch_carrier`].
-    DispatchCarrier,
+    /// WI-860, WI-20261122-CXR5B — `anthill.reflect.typing.provision_carrier_of(?sort_ref,
+    /// ?spec, ?result)`: a provision's CARRIER, the substituted sort its values are of. See
+    /// [`KnowledgeBase::builtin_provision_carrier_of`].
+    ProvisionCarrierOf,
+    /// WI-20261122-CXR5B — `anthill.reflect.typing.own_provision_carrier_of(?sort_ref, ?spec,
+    /// ?result)`: the same carrier, where the provision is its provider's OWN (decision 6), and
+    /// no answer for a witness.
+    OwnProvisionCarrierOf,
     /// `anthill.kernel.not(goal)` — negation-as-failure.
     Not,
     /// WI-20261121-G8E02 — `anthill.reflect.SLDProof.of(goal, ?proof)`: the proof the search
@@ -7734,7 +7738,12 @@ impl KnowledgeBase {
             BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(goal, answer_subst),
             BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
-            BuiltinTag::DispatchCarrier => self.builtin_dispatch_carrier(goal, answer_subst),
+            BuiltinTag::ProvisionCarrierOf => {
+                self.builtin_provision_carrier_of(goal, answer_subst, false)
+            }
+            BuiltinTag::OwnProvisionCarrierOf => {
+                self.builtin_provision_carrier_of(goal, answer_subst, true)
+            }
             // WI-20260919-HXGXF — the tag exists for its LOAD-TIME effect (backing the
             // body-less spec op); there is no SLD answer to give. A rule body carries no
             // requirement dictionaries, and the dictionary is the only thing that names
@@ -9739,33 +9748,27 @@ impl KnowledgeBase {
         }
     }
 
-    /// WI-860 (proposal 058 §3.6) —
-    /// `anthill.reflect.typing.dispatch_carrier(?sort_ref, ?spec, ?result)`: given one
-    /// `SortProvidesInfo` provision, bind `?result` to the carrier that provision's
-    /// dictionary DISPATCHES AT.
+    /// WI-860 (proposal 058 §3.6), WI-20261122-CXR5B (decision 5) —
+    /// `anthill.reflect.typing.provision_carrier_of(?sort_ref, ?spec, ?result)`: given one
+    /// `SortProvidesInfo` provision, bind `?result` to the provision's CARRIER, the substituted
+    /// sort its values are of ([`super::typing::provision_carrier`], the one owner, which 058
+    /// §3.6's default rows read as well). `sort Set provides Eq[T = Self]` answers
+    /// `Eq[T = Set]`; `sort ListOrd provides Ord[T = List[T = E]]` answers `Ord[T = List[T = E]]`;
+    /// `List provides Stream[T = T, E = {}]`, a self-representing spec, answers `List[T = T]`.
+    /// With `own` (`own_provision_carrier_of`) it answers only where the provision is its
+    /// provider's own (decision 6) and fails for a witness.
     ///
-    /// `sort ListOrd provides Ord[T = List[T = E]]` answers `List[T = E]`; a
-    /// carrier's own `provides Desc[T = Leaf]`, a bare `provides Desc`, an
-    /// own-param-bound `provides Desc[T = OwnParam]` and a namespace-level instance fact
-    /// all answer the PROVIDER — which is what makes `self_provides` writable in anthill
-    /// as "the answer IS the provider" rather than as a second copy of the criterion.
-    ///
-    /// THE ONE OWNER of that criterion is [`super::typing::provision_dispatch_carrier`] — the
-    /// witness criterion ([`super::typing::witness_dispatch_carrier_value`], shared with
-    /// `provision_supplier` and the WI-838/859 coherence grouping) and a witness at a tuple or
-    /// an arrow — read by `defaults::build_default_provider_index` (058 §3.6's rows) as well. A builtin
-    /// rather than a loader-emitted fact for exactly that reason: a derived fact would be
-    /// a SECOND materialization of a relation this KB can already answer, and keeping two
-    /// derivations of one criterion in step by hand is the shape WI-838 was built out of.
+    /// A builtin rather than a loader-emitted fact: a derived fact would be a SECOND
+    /// materialization of a relation this KB can already answer, and keeping two derivations of
+    /// one criterion in step by hand is the shape WI-838 was built out of.
     ///
     /// Delays if either input is unbound — the intended use joins it AFTER
-    /// `SortProvidesInfo(sort_ref: ?P, spec: ?S)`, which binds both. Fails (rather than
-    /// delaying) on a spec view whose base sort declares no type parameters, since such a
-    /// spec has no carrier param to read and no provision of it dispatches anywhere.
-    fn builtin_dispatch_carrier<V: TermView>(
+    /// `SortProvidesInfo(sort_ref: ?P, spec: ?S)`, which binds both.
+    fn builtin_provision_carrier_of<V: TermView>(
         &mut self,
         goal: &V,
         subst: &Substitution,
+        own: bool,
     ) -> BuiltinResult {
         if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 3) {
             return BuiltinResult::Failure;
@@ -9780,37 +9783,27 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 2), subst);
-        // Both inputs are read CARRIER-NEUTRALLY, and that is not a stylistic choice: a
-        // `SortProvidesInfo` fact matched by the resolver hands its `spec` field back as
-        // an OCCURRENCE (`Value::Node`), not as the `TermId` the same field reads as
-        // through `fact_head_named_args` at load. A `Value::Term` gate here compiled,
-        // loaded and answered NOTHING — MEASURED, 93 provisions in, zero rows out.
+        // Both inputs are read CARRIER-NEUTRALLY: a `SortProvidesInfo` fact matched by the
+        // resolver hands its `spec` field back as an OCCURRENCE (`Value::Node`), not as the
+        // `TermId` the same field reads as through `fact_head_named_args` at load. A
+        // `Value::Term` gate here once compiled, loaded and answered NOTHING — MEASURED, 93
+        // provisions in, zero rows out. The view is lowered to the term carrier the owner reads,
+        // as the default rows lower it; a view with no term form is a provision the loader
+        // refused where it is written, and is no row.
         let Some(provider) = provider_val.head(self).functor_sym() else {
             return BuiltinResult::Failure;
         };
         let Some(spec_sort) = super::typing::spec_view_base(self, &spec_val) else {
             return BuiltinResult::Failure;
         };
-        let carrier = match super::typing::provision_dispatch_carrier(
-            self, spec_sort, provider, &spec_val,
-        ) {
-            // A WITNESS — the carrier is the view it named, kept AS WRITTEN so a
-            // conditional provision's `List[T = E]` stays distinguishable from a ground
-            // `List[T = Int64]` (058 §3.6's `one_default` turns on exactly that), and in
-            // the carrier it arrived on rather than flattened through the term store. A
-            // tuple or an arrow is one too, and its view is the whole answer: there is no
-            // sort name for `self_provides` to compare.
-            super::typing::DispatchCarrier::Sort(view, _)
-            | super::typing::DispatchCarrier::Structural(view, _) => view,
-            // The carrier IS the provider. Minted through `make_name_term_from_sym`, the
-            // same shape `extract_sort_ref` hands back — so the anthill rule can ask
-            // "is this answer the provider?" by comparing two normalized names rather
-            // than by comparing a stored `sort_ref` against a synthesized term.
-            super::typing::DispatchCarrier::Provider => {
-                Value::term(self.make_name_term_from_sym(provider))
-            }
+        let Ok(spec_view) = crate::kb::node_occurrence::value_to_term(self, &spec_val) else {
+            return BuiltinResult::Failure;
         };
-        self.finish_result_value(target, carrier)
+        let carrier = super::typing::provision_carrier(self, spec_sort, provider, spec_view);
+        if own && !carrier.own {
+            return BuiltinResult::Failure;
+        }
+        self.finish_result_value(target, Value::term(carrier.term))
     }
 
     /// WI-352 — `anthill.reflect.feed.provenance(?place, ?result)`: the place

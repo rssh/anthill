@@ -96,24 +96,28 @@ namespace anthill.reflect.typing
     :- ProvidesConditionInfo(sort_ref: ?A, provided: ?S_inst, condition: ?C_inst)
 
   -- ================================================================
-  -- dispatch_carrier: the carrier a provision dispatches AT (058 §3.6)
+  -- provision_carrier_of: a provision's CARRIER (058 §3.6; spec-carrier-set decision 5)
   -- ================================================================
   -- Builtin: given a provision's `sort_ref` and its spec view, yields the
-  -- carrier that provision's dictionary dispatches at, as a type term.
-  --   sort ListOrd provides Ord[T = List[T = E]]   ->  List[T = E]
-  --   sort PairApp provides Apply[F = (Int64, Int64)] ->  (Int64, Int64)
-  --   sort Leaf    provides Desc[T = Leaf]             ->  Leaf
-  --   sort Leaf    provides Desc                       ->  Leaf
-  --   fact Desc[T = Leaf, describe = f]                ->  Leaf
-  -- A provision whose carrier IS its provider therefore answers the provider,
-  -- which is what lets `self_provides` below be a comparison rather than a
-  -- second copy of the criterion. A carrier that is a tuple or an arrow has no
-  -- sort name, and is answered as written. One owner in the implementation
-  -- (`provision_dispatch_carrier`). It reads the carrier parameter as a call's
-  -- carrier is read, so for a spec whose operations receive on no parameter
-  -- its one parameter is the carrier; dispatch and the coherence grouping read
-  -- the parameter some operation receives on, and for such a spec find none.
-  operation dispatch_carrier(sort_ref: Term, spec: Term) -> Term
+  -- provision's carrier, the type of the values the provision is for, as a
+  -- substituted sort. For a spec with a dictionary (no operation takes a value
+  -- of type `Self`) it is the SPEC at the provision's bindings:
+  --   sort Set     provides Eq[T = Self]                  ->  Eq[T = Set]
+  --   sort ListOrd provides Ord[T = List[T = E]]          ->  Ord[T = List[T = E]]
+  --   sort MyBag   provides Bag2[T = Int64, C = Self]     ->  Bag2[T = Int64, C = MyBag]
+  --   sort Leaf    provides Desc                          ->  Desc[T = Leaf]
+  -- For a SELF-REPRESENTING spec it is the PROVIDER at its own type-vars, the
+  -- spec's type-vars being read off it:
+  --   sort List    provides Stream[T = T, E = {}]         ->  List[T = T]
+  -- One owner in the implementation (`typing::provision_carrier`), which the
+  -- default rows read as well.
+  operation provision_carrier_of(sort_ref: Term, spec: Term) -> Term
+
+  -- own_provision_carrier_of: the same carrier, answered only where the
+  -- provision is its provider's OWN (decision 6): the provider is the head of
+  -- the carrier (every provision of a self-representing spec) or the head of
+  -- one of its bindings, every binding counting. A witness has no answer.
+  operation own_provision_carrier_of(sort_ref: Term, spec: Term) -> Term
 
   -- ================================================================
   -- Defaults (proposal 058 §3.6)
@@ -138,28 +142,34 @@ namespace anthill.reflect.typing
   -- `fact Covariant(sort: List, param: T)` rides.
   entity DefaultProvider(spec: Symbol, provider: Symbol)
 
-  -- provision_carrier(P, S, C): sort P provides spec S at dispatch carrier C.
+  -- provision_carrier(P, S, C): sort P provides spec S at carrier C, the
+  -- substituted sort the provision's values are of.
   -- The join every rule below reads, so "which carrier" has one spelling.
   rule provision_carrier(?P, ?S, ?C)
     :- SortProvidesInfo(sort_ref: ?P_ref, spec: ?S_inst),
        extract_sort_ref(?P_ref, ?P),
        extract_sort_ref(?S_inst, ?S),
-       dispatch_carrier(?P_ref, ?S_inst, ?C)
+       provision_carrier_of(?P_ref, ?S_inst, ?C)
 
-  -- self_provides(C, S): carrier C is its own provider of spec S.
-  -- Written as "the dispatch carrier's base IS the provider" — both sides come
-  -- back from extract_sort_ref, so the comparison is between two normalized
-  -- sort names and never between two spellings of one.
+  -- own_provision(P, S, C): P's provision of S at carrier C is P's own, not a
+  -- witness's.
+  rule own_provision(?P, ?S, ?C)
+    :- SortProvidesInfo(sort_ref: ?P_ref, spec: ?S_inst),
+       extract_sort_ref(?P_ref, ?P),
+       extract_sort_ref(?S_inst, ?S),
+       own_provision_carrier_of(?P_ref, ?S_inst, ?C)
+
+  -- self_provides(P, S): P provides spec S for itself, at some carrier.
   --
-  -- Deliberately NOT gated on C owning a member of S: a carrier whose spec ops
+  -- Deliberately NOT gated on P owning a member of S: a carrier whose spec ops
   -- all have default bodies supplies a perfectly good dictionary made of those
   -- defaults, and a default row that appeared and vanished as members were
   -- added would not mean "this carrier's own instance".
-  rule self_provides(?C, ?S)
-    :- provision_carrier(?C, ?S, ?C_inst),
-       extract_sort_ref(?C_inst, ?C)
+  rule self_provides(?P, ?S)
+    :- own_provision(?P, ?S, ?)
 
-  -- default_provider(S, C, W): silence at spec S on carrier C takes provider W.
+  -- default_provider(S, C, W): silence at spec S on carrier C takes provider W,
+  -- C being a substituted sort as `provision_carrier` answers it.
   -- DECLARED union INFERRED; consumers read THIS, never the entity, so the
   -- inference layer and the declared rows stay one relation.
   -- The mark's two fields are NORMALIZED through extract_sort_ref before the join:
@@ -173,13 +183,20 @@ namespace anthill.reflect.typing
        extract_sort_ref(?W_ref, ?W),
        provision_carrier(?W, ?S, ?C)
 
-  -- The inference rule: the carrier's own provision is its default. This is
-  -- what lets the shipped library carry defaults with no edits — and what makes
-  -- NO-DISPLACEMENT derived rather than stated, since a rival marked for a
-  -- self-providing carrier then collides with this row under `one_default`.
-  rule default_provider(?S, ?C, ?C)
-    :- self_provides(?C, ?S)
+  -- The inference rule: a provider's own provision is its default at its
+  -- carrier. This is what lets the shipped library carry defaults with no
+  -- edits — and what makes NO-DISPLACEMENT derived rather than stated, since a
+  -- rival marked at a carrier its own provider provides then collides with
+  -- this row under `one_default`.
+  rule default_provider(?S, ?C, ?P)
+    :- own_provision(?P, ?S, ?C)
 
+  -- One exception, the repair of two providers each OWN at one carrier (a spec
+  -- of several type-vars: `Num provides Coll[C = Foo, Elem = Self]` beside `Foo
+  -- provides Coll[C = Self, Elem = Num]`): a mark on one of them stands beside
+  -- the other's inferred row, so this relation answers both there, and the
+  -- index's lookup takes the mark (`kb/defaults.rs`).
+  --
   -- `one_default` — any two answers for one carrier coincide — is a LOAD check
   -- (`kb/defaults.rs`), not a constraint here, because it compares rows at
   -- UNIFIABLE carriers: `List[T = E]` beside `List[T = Int64]` is two rows at

@@ -2859,56 +2859,40 @@ pub(super) fn default_among_candidates(
     .map(|j| tied[j])
 }
 
-/// WI-861 — the CARRIER a [`SortGoal`] names, as 058 §3.6's rows are keyed.
+/// WI-861 — the CARRIER a [`SortGoal`] names, as 058 §3.6's rows are keyed: the goal's
+/// SUBSTITUTED SORT, its bindings of the spec's type-vars (WI-20261122-CXR5B, decision 5 of
+/// `docs/design/spec-carrier-set.md`). A row answers where every type-var the goal and the row
+/// both bind overlaps ([`carrier_meets_goal`]), so a spec of several type-vars is told apart by
+/// all of them, and no single parameter is read.
 ///
-/// Read off the spec's carrier PARAMETER through [`spec_carrier_param_or_sole`] —
-/// WI-1102's ONE owner of "which type parameter of `spec` the carrier goes in" — and
-/// then through the same [`binding_for_param`] rule every other binding lookup in this
-/// file runs.
+/// It DECLINES in two shapes, as it did when it read one parameter:
+/// - a SELF-REPRESENTING spec (WI-1076), whose dispatch is directed by the receiver value: its
+///   rows are at the providers, and there is no default "any `Stream`" for a goal to take;
+/// - a goal that binds no type-var of the spec to a carrier — every binding absent or a TYPE
+///   PARAMETER (`Ord[T = E]` inside a generic body). A default for "any carrier" is not a thing
+///   058 §3.6 can express: the abstract goal resolves through the caller's own `requires` slot,
+///   not through a default. A goal binding SOME type-var to a carrier is keyed, and a type
+///   parameter at another meets no row's sort there ([`bindings_meet`]), only a row leaving
+///   that type-var out.
 ///
-/// WI-20260916-8WRJC — IT USED TO ASK RUNG 1 ALONE ([`spec_carrier_param`], "the param
-/// some declared OPERATION receives on"), AND THAT CONFLATED TWO DIFFERENT `None`s. A
-/// spec declaring `sort T = ?` whose operations are all NULLARY has a carrier parameter
-/// and no operation mentioning it, so rung 1 answered `None` and the default rung was
-/// declined outright — 058 §3.2 rung 2a never asked, and two providers of one instance
-/// tied with their own default (the self-providing carrier) never consulted. MEASURED:
-/// that program reported `two providers answer …` where the SAME program with one
-/// DEFAULTED, uncalled carrier-bearing op added to the spec answers the default. One op
-/// declaration decided whether a default existed, which is not what a default means.
-/// Rung 2 (a SOLE type parameter) is gated on [`spec_is_self_representing`] inside
-/// `spec_carrier_param_or_sole`, which is what keeps WI-1076's other `None` — the
-/// element-not-carrier shape, seven stdlib provisions — out of this answer. `Label` is
-/// [`BindingKeyMatch::for_bases`]' verdict by construction: both sides are `goal.
-/// spec_sort`'s own parameters, and the two producers key them differently (a canonical
-/// `Ord.T` against a written bare `T`), which is exactly what identity-then-label exists
-/// for.
-///
-/// [`SortGoal::carrier`] is deliberately NOT a second source. It is WI-350's
-/// SELF-RECEIVER discriminator, set only for specs whose carrier is not a binding — the
-/// self-representing shape both rungs answer `None` for — and there
-/// `collect_provides_candidates` has already narrowed every candidate to that one sort,
-/// so a surviving tie is one provider reached twice and no default separates it (see
+/// [`SortGoal::carrier`] is deliberately NOT a second source. It is WI-350's SELF-RECEIVER
+/// discriminator, set only for the self-representing shape, and there
+/// `collect_provides_candidates` has already narrowed every candidate to that one sort, so a
+/// surviving tie is one provider reached twice and no default separates it (see
 /// [`crate::kb::defaults::default_among`]'s "exactly one, not the first").
-///
-/// A binding that names a TYPE PARAMETER rather than a sort (`Ord[T = E]` inside a
-/// generic body) yields no carrier: [`carrier_view_parts`] answers on the `Ref`, but
-/// [`is_type_param_value`] is what says the name denotes no carrier, and a default for
-/// "any carrier" is not a thing 058 §3.6 can express — the abstract goal resolves through
-/// the caller's own `requires` slot, not through a default.
 fn goal_carrier_key<'g>(
     kb: &KnowledgeBase,
     goal: &'g SortGoal,
 ) -> Option<crate::kb::defaults::CarrierKey<'g>> {
-    let param = spec_carrier_param_or_sole(kb, goal.spec_sort)?;
-    let view = binding_for_param(kb, &goal.bindings, param, BindingKeyMatch::Label)?;
-    if is_type_param_view(kb, view) {
+    let spec = kb.canonical_sort_sym(goal.spec_sort);
+    if spec_is_self_representing(kb, spec) {
         return None;
     }
-    // The WRITTEN view alone: `X[Y]` and `X[Z]` are different carriers and this is what
-    // says so. Its base is the index's bucket key and is derived at the lookup
-    // ([`crate::kb::defaults::CarrierKey`]), never carried alongside where the two could
-    // disagree.
-    Some(crate::kb::defaults::CarrierKey::View(view))
+    let fixes_a_carrier = sort_carrier(kb, spec).type_vars.iter().any(|&tv| {
+        binding_for_param(kb, &goal.bindings, tv, BindingKeyMatch::Label)
+            .is_some_and(|b| !is_type_param_view(kb, b))
+    });
+    fixes_a_carrier.then_some(crate::kb::defaults::CarrierKey::Goal(&goal.bindings))
 }
 
 /// Build subgoals for a chosen conditional candidate by substituting

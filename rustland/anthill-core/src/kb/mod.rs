@@ -14189,11 +14189,15 @@ impl KnowledgeBase {
             "anthill.reflect.typing.extract_sort_ref",
             BuiltinTag::ExtractSort,
         );
-        // WI-860 (058 §3.6) — the provision classifier behind `self_provides` /
-        // `default_provider`.
+        // WI-860 (058 §3.6), WI-20261122-CXR5B — a provision's carrier, behind
+        // `provision_carrier`, `own_provision`, `self_provides` and `default_provider`.
         self.register_builtin_tag(
-            "anthill.reflect.typing.dispatch_carrier",
-            BuiltinTag::DispatchCarrier,
+            "anthill.reflect.typing.provision_carrier_of",
+            BuiltinTag::ProvisionCarrierOf,
+        );
+        self.register_builtin_tag(
+            "anthill.reflect.typing.own_provision_carrier_of",
+            BuiltinTag::OwnProvisionCarrierOf,
         );
         self.register_builtin_tag(
             "anthill.reflect.resolve_sort_instantiation_param",

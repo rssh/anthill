@@ -19,6 +19,12 @@
 //! `(a: Int64, b: Int64) -> Int64` and `(x: Int64, y: Int64) -> Int64` coexist, and a call at
 //! `(Int64, Int64) -> Int64`, served by both, takes neither.
 //!
+//! SINCE WI-20261122-CXR5B the classifier named below, `provision_dispatch_carrier`, and its
+//! `provision_structural_carrier` are gone: `typing::provision_carrier` puts a provision at the
+//! spec at its bindings (`Apply[F = (Int64, Int64)]`), a tuple or an arrow binding making it a
+//! witness, and the index partitions a spec's rows by that binding's head. The back-out
+//! measurements below are of the tree they were taken on.
+//!
 //! EVERY ROW DRIVES WHAT IT CLAIMS: an admitted program RUNS and its value says which provider
 //! answered (`P1` 10, `P2` 30); a refusal is asserted by the words that name it.
 //!
@@ -174,7 +180,8 @@ fn two_defaults_at_one_tuple_or_arrow_are_a_load_error() {
                 &load_errors_of(&src),
                 &[
                     "ambiguous default",
-                    &format!("carrier '{shown}'"),
+                    // WI-20261122-CXR5B: the carrier is the spec at its binding.
+                    &format!("carrier 'Apply[F = {shown}]'"),
                     "P1' at carrier",
                     "P2' at carrier",
                 ],
@@ -234,7 +241,7 @@ fn the_mark_at_a_sort_answers_as_before() {
         let src = program(&format!("wi9hkjv.sort_both_{}", call.is_some()), &shape);
         assert_refused_naming(
             &load_errors_of(&src),
-            &["ambiguous default", "carrier 'Box[T = Int64]'"],
+            &["ambiguous default", "carrier 'Apply[F = Box[T = Int64]]'"],
             &format!("two marks at one sort, a call: {}", call.is_some()),
         );
     }
@@ -359,7 +366,7 @@ fn the_relation_and_the_index_hold_the_row_at_the_tuple() {
     assert_rows_of(
         &program("wi9hkjv.rows", &shape),
         "Apply",
-        "Apply | (_1: Int64, _2: Int64) | P1",
+        "Apply | Apply[F = (_1: Int64, _2: Int64)] | P1",
     );
 }
 
@@ -451,13 +458,13 @@ fn a_default_for_a_spec_receiving_on_no_parameter_answers_the_call() {
         let ns = format!("wi9hkjv.tag_{tag}");
         let src = tag_program(&ns, above, ("default ", ""), carrier);
         assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(10), "{tag}");
-        assert_rows_of(&src, "Tag", &format!("Tag | {shown} | P1"));
+        assert_rows_of(&src, "Tag", &format!("Tag | Tag[T = {shown}] | P1"));
         let src = tag_program(&format!("{ns}_both"), above, ("default ", "default "), carrier);
         assert_refused_naming(
             &load_errors_of(&src),
             &[
                 "ambiguous default",
-                &format!("carrier '{shown}'"),
+                &format!("carrier 'Tag[T = {shown}]'"),
                 "P1' at carrier",
                 "P2' at carrier",
             ],

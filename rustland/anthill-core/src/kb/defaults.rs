@@ -38,9 +38,10 @@
 //! not built on `provider_coherence_candidates`): the coherence grouping carries
 //! POLICY — an op-less spec's provision is dropped, a concrete provider reshapes the
 //! witness leg — while a default is about WHICH PROVISION SILENCE TAKES and has none of
-//! that. The policy-free classifier is [`typing::provision_dispatch_carrier`] over
-//! [`typing::all_provisions`], which is what both this module and the
-//! `anthill.reflect.typing.dispatch_carrier` builtin behind the anthill rules call.
+//! that. The policy-free owner is [`typing::provision_carrier`] (where a provision is, and
+//! whether it is its provider's own) over [`typing::all_provisions`], which is what both
+//! this module and the `anthill.reflect.typing.provision_carrier_of` /
+//! `own_provision_carrier_of` builtins behind the anthill rules call.
 //!
 //! THE FORK WI-859 LEFT FOR THIS PHASE, decided here: *does a carrier that owns no
 //! member self-provide at all?* YES. `self_provides` is a relation over PROVISIONS —
@@ -81,14 +82,24 @@ pub enum DefaultCollision {
     /// beside a parametric one for one family. Neither is redundant, and the repair is
     /// not "delete a duplicate" but "these two must not both apply".
     OverlappingCarriers,
+    /// WI-20261122-CXR5B — two INFERRED rows: two providers each provide the spec FOR
+    /// THEMSELVES at carriers in common (decision 6 of `docs/design/spec-carrier-set.md`,
+    /// every binding counting: `Num provides Coll[C = Foo, Elem = Self]` beside `Foo provides
+    /// Coll[C = Self, Elem = Num]`). Neither is a rival displacing the other, so the repair is
+    /// a mark choosing one: `default provides` on it.
+    TwoOwnProviders,
 }
 
 impl DefaultCollision {
     /// The ONE decision site, asked by the check rather than reasoned out at the message.
     fn of(a: &DefaultRow, b: &DefaultRow, same_carrier: bool) -> Self {
-        if a.origin == DefaultOrigin::Inferred || b.origin == DefaultOrigin::Inferred {
-            // Two INFERRED rows cannot collide: an inferred row's provider IS its carrier
-            // base, so equal bases force equal providers and the pair never reaches here.
+        let inferred = |r: &DefaultRow| r.origin == DefaultOrigin::Inferred;
+        if inferred(a) && inferred(b) {
+            // Possible only for a spec of several type-vars: two providers each heading a
+            // binding of carriers that unify. A spec of one type-var cannot give two: each
+            // own provision binds it to its provider, and two providers are two sorts.
+            DefaultCollision::TwoOwnProviders
+        } else if inferred(a) || inferred(b) {
             DefaultCollision::Displaced
         } else if same_carrier {
             DefaultCollision::SameCarrier
@@ -137,6 +148,14 @@ pub(crate) fn ambiguous_default_message(
              defaults are NOT layered by specificity (there is no such rung: 058 §3.2 ranks \
              candidates, never defaults). Give the two marks disjoint carriers, or delete one",
             spec, rows
+        ),
+        DefaultCollision::TwoOwnProviders => format!(
+            "two own defaults: '{}' is provided at carrier '{}' by two providers each for \
+             ITSELF — each is the head of one of the carrier's bindings, so each provision is \
+             its provider's own and its default. The rows are {}. A call there that names no \
+             provider would have two answers: mark the one silence takes `default provides`, \
+             or select a provider at the call sites with a `[{} = <provider>]` bracket",
+            spec, carrier, rows, short
         ),
     }
 }
@@ -211,18 +230,19 @@ impl DefaultOrigin {
 pub struct DefaultRow {
     /// The spec, canonical.
     pub(crate) spec: Symbol,
-    /// The carrier as WRITTEN — `List[T = E]` for a conditional witness, a bare sort
-    /// name for a self-provider. Kept as the view (not just its base) because
-    /// `one_default` compares rows at unifiable carriers; see
-    /// [`typing::carrier_views_overlap`].
+    /// The provision's CARRIER, the substituted sort its values are of
+    /// ([`typing::provision_carrier`], WI-20261122-CXR5B decision 5): `Desc[T = Leaf]` for a
+    /// sort's own provision, `Ord[T = List[T = E]]` for a conditional witness, `List[T = T]`
+    /// for a provider of a self-representing spec. Kept as the whole term because
+    /// `one_default` compares rows at unifiable carriers ([`typing::carrier_views_overlap`]),
+    /// every type-var of the spec at once.
     pub(crate) carrier: TermId,
-    /// The bucket the row is filed under: the carrier view's base sort, canonical — the key
-    /// every DISPATCH reader uses, and so the key rung 2a (WI-861) asks this index with — or,
-    /// for a carrier that is no sort, its structural head ([`typing::CarrierBucket`]).
-    pub(crate) bucket: typing::CarrierBucket,
-    /// The provider, canonical. The `bucket`'s sort for every INFERRED row — and
-    /// also for a DECLARED mark naming a self-provider, which is why the origin is
-    /// stored rather than derived from that equality.
+    /// The row's partition key in its spec's rows ([`typing::default_row_key`]), an index key
+    /// only; `None` for a row every lookup of the spec reads.
+    pub(crate) key: Option<typing::CarrierBucket>,
+    /// The provider, canonical. A sort the `carrier` names for every INFERRED row (decision
+    /// 6) — and also for a DECLARED mark naming a provider of its own provision, which is why
+    /// the origin is stored rather than derived.
     pub(crate) provider: Symbol,
     /// WI-20260919-HXGXF — the provider's NAME TERM, so the probe can render it through
     /// the same walk it renders [`Self::carrier`] with.
@@ -236,10 +256,17 @@ pub struct DefaultRow {
     /// out of hundreds, reporting a disagreement that was only ever in the rendering.
     pub(crate) provider_name: TermId,
     pub(crate) origin: DefaultOrigin,
+    /// Is the provision behind the row its provider's OWN (decision 6)? Every inferred row's
+    /// is; a declared mark's is where it marks a provider of its own provision, and is not
+    /// where it marks a witness. A declared own row is a choice among owns, which `one_default`
+    /// admits beside another own provider's inferred row and the lookup takes over it.
+    pub(crate) own: bool,
 }
 
-/// WI-860 — the materialized `default_provider` relation: 058 §3.6's rows, bucketed by
-/// canonical carrier BASE, or by a structural carrier's head ([`typing::CarrierBucket`]).
+/// WI-860 — the materialized `default_provider` relation: 058 §3.6's rows, filed by SPEC and,
+/// within a spec, partitioned by [`typing::default_row_key`] (WI-20261122-CXR5B: a row is at a
+/// substituted sort, and a spec's rows were bucketed by the one sort its carrier parameter
+/// bound, which a spec of several type-vars does not say).
 ///
 /// Built once per load, after every `SortProvidesInfo` fact is asserted, and read by a
 /// hash lookup — the [`super::load::EqDispatchIndex`] arrangement, and for the same
@@ -254,21 +281,50 @@ pub struct DefaultRow {
 /// derivations of one relation drifting apart.
 #[derive(Default, Debug, Clone)]
 pub struct DefaultProviderIndex {
-    by_bucket: HashMap<typing::CarrierBucket, Vec<DefaultRow>>,
+    by_spec: HashMap<Symbol, SpecDefaults>,
+}
+
+/// One spec's default rows, in the order they were derived (declared rows first, then
+/// inferred), with their partition.
+#[derive(Default, Debug, Clone)]
+struct SpecDefaults {
+    rows: Vec<DefaultRow>,
+    /// Row indices by [`DefaultRow::key`], in row order.
+    by_key: HashMap<typing::CarrierBucket, Vec<usize>>,
+    /// The rows with no key, in row order: every lookup reads them.
+    open: Vec<usize>,
+}
+
+impl SpecDefaults {
+    fn push(&mut self, row: DefaultRow) {
+        let at = self.rows.len();
+        match row.key {
+            Some(k) => self.by_key.entry(k).or_default().push(at),
+            None => self.open.push(at),
+        }
+        self.rows.push(row);
+    }
+
+    /// The rows a lookup whose key is `key` reads: that key's and the open ones, or every row
+    /// where the asker has no key. Rows at DISJOINT carriers coexist, so a reader filters what
+    /// this answers rather than take the first.
+    fn reads(&self, key: Option<typing::CarrierBucket>) -> Vec<&DefaultRow> {
+        match key {
+            None => self.rows.iter().collect(),
+            Some(k) => {
+                let mut at: Vec<usize> = self.by_key.get(&k).cloned().unwrap_or_default();
+                at.extend(self.open.iter().copied());
+                at.sort_unstable();
+                at.into_iter().map(|i| &self.rows[i]).collect()
+            }
+        }
+    }
 }
 
 impl DefaultProviderIndex {
-    /// Every default row in one bucket, in the order they were derived (declared rows
-    /// first, then inferred). Rows at DISJOINT carriers of one bucket coexist, so the answer
-    /// is a list, and a consumer written against a KB whose errors were discarded sees an
-    /// ambiguity instead of a silently-picked first.
-    pub(crate) fn rows_in(&self, bucket: typing::CarrierBucket) -> &[DefaultRow] {
-        self.by_bucket.get(&bucket).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-
-    /// Every row, bucket order unspecified.
+    /// Every row, spec order unspecified.
     pub(crate) fn rows(&self) -> impl Iterator<Item = &DefaultRow> {
-        self.by_bucket.values().flatten()
+        self.by_spec.values().flat_map(|s| s.rows.iter())
     }
 
     /// THE PROBE — every row as `"spec | carrier | provider"`, sorted, using the LOCAL
@@ -286,17 +342,21 @@ impl DefaultProviderIndex {
         out
     }
 
-    /// [`Self::rendered_rows`] for ONE carrier, WITH each row's origin — the half a
-    /// no-displacement diagnostic prints, and the half that says whether a row was
-    /// inferred from the carrier's own provision or written by hand.
+    /// [`Self::rendered_rows`] for the rows whose carrier names ONE sort — as its head or as
+    /// the head of one of its bindings ([`typing::carrier_names_sort`]) — WITH each row's
+    /// origin: the half a no-displacement diagnostic prints, and the half that says whether a
+    /// row was inferred from the provider's own provision or written by hand. Sorted.
     pub fn rendered_rows_for_carrier(&self, kb: &KnowledgeBase, carrier_qn: &str) -> Vec<String> {
         let Some(sym) = kb.try_resolve_symbol(carrier_qn) else {
             return Vec::new();
         };
-        self.rows_in(typing::CarrierBucket::Sort(kb.canonical_sort_sym(sym)))
-            .iter()
+        let mut out: Vec<String> = self
+            .rows()
+            .filter(|r| typing::carrier_names_sort(kb, r.carrier, sym))
             .map(|r| render_row(kb, r, true))
-            .collect()
+            .collect();
+        out.sort();
+        out
     }
 }
 
@@ -327,13 +387,14 @@ fn render_row(kb: &KnowledgeBase, r: &DefaultRow, with_origin: bool) -> String {
 /// [`DefaultProviderIndex`] BUCKET KEY, and it is derived here rather than supplied.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CarrierKey<'a> {
-    /// The carrier AS WRITTEN — what the provision tie in [`typing::resolve_inner`] has,
-    /// since the goal carries its own bindings. **This is the arm that can tell `X[Y]`
-    /// from `X[Z]`**: rows are per APPLICATION, so `List[T = Int64]` and `List[T =
-    /// String]` are two rows sharing one bucket, and only [`typing::carrier_views_overlap`]
-    /// separates them. On the carrier the goal's binding rides — a carrier that holds a
-    /// value is an occurrence, and is compared with a row's stored view through the view.
-    View(&'a crate::eval::value::Value),
+    /// The goal's SUBSTITUTED SORT, its bindings of the spec's type-vars — what the provision
+    /// tie in [`typing::resolve_inner`] has, since the goal carries its own bindings. **This
+    /// is the arm that can tell `X[Y]` from `X[Z]`**: rows are per substituted sort, so
+    /// `Ord[T = List[T = Int64]]` and `Ord[T = List[T = String]]` are two rows, and only the
+    /// overlap of every binding ([`typing::carrier_meets_goal`]) separates them. On the carrier
+    /// each binding rides — a carrier that holds a value is an occurrence, and is compared with
+    /// a row's stored term through the view.
+    Goal(&'a [(Symbol, crate::eval::value::Value)]),
     /// Only the runtime carrier SORT is known — a VALUE-DIRECTED tie, where the receiver
     /// is a `Value::List` naming `List` and carrying no element type.
     ///
@@ -364,25 +425,58 @@ pub(crate) fn default_provider_for(
     carrier: CarrierKey<'_>,
 ) -> Option<Symbol> {
     let index = kb.default_provider_index()?;
-    // The BUCKET KEY is derived, never supplied — see [`CarrierKey`]. `None` for a view
-    // that is no carrier, which is the same decline the rung takes for a carrier it cannot
-    // name at all. A tuple or an arrow keys its head's bucket, and the overlap below is what
-    // tells two of them apart.
-    let (bucket, view) = match carrier {
-        CarrierKey::View(v) => (typing::carrier_view_bucket(kb, v)?, Some(v)),
-        CarrierKey::Base(s) => (typing::CarrierBucket::Sort(kb.canonical_sort_sym(s)), None),
-    };
     let spec_canon = kb.canonical_sort_sym(spec);
+    let Some(rows) = index.by_spec.get(&spec_canon) else {
+        return None;
+    };
+    // The partition key is derived, never supplied — see [`CarrierKey`] — and only narrows
+    // which rows are read: the filter is what answers.
+    enum At<'b> {
+        Goal(&'b [(Symbol, crate::eval::value::Value)]),
+        Value(typing::ValueSortAt, Symbol),
+    }
+    let (key, at) = match carrier {
+        CarrierKey::Goal(bindings) => (typing::goal_row_key(kb, spec_canon, bindings), At::Goal(bindings)),
+        CarrierKey::Base(s) => {
+            let pos = typing::value_sort_at(kb, spec_canon)?;
+            let sort_key = Some(typing::CarrierBucket::Sort(kb.canonical_sort_sym(s)));
+            let key = match &pos {
+                typing::ValueSortAt::CarrierHead => sort_key,
+                // The partition is by the FIRST type-var's binding; the value's sort keys it only
+                // where that is the type-var the value is at.
+                typing::ValueSortAt::Binding(p) => sort_key.filter(|_| {
+                    typing::sort_carrier(kb, spec_canon).type_vars.first() == Some(p)
+                }),
+            };
+            (key, At::Value(pos, s))
+        }
+    };
+    let meeting: Vec<&DefaultRow> = rows
+        .reads(key)
+        .into_iter()
+        .filter(|row| match &at {
+            At::Goal(bindings) => typing::carrier_meets_goal(kb, spec_canon, row.carrier, bindings),
+            At::Value(pos, s) => typing::carrier_at_value_sort(kb, row.carrier, pos, *s),
+        })
+        .collect();
+    // A DECLARED OWN row is a mark choosing among providers each own at its carrier, which
+    // `one_default` admits beside the others' inferred rows ([`DefaultCollision::
+    // TwoOwnProviders`]'s repair): an inferred row of another provider at a carrier one such
+    // mark meets yields to it. Every other row stays, so a mark does not settle a tie with a
+    // rival it does not meet, nor with another mark.
+    let marks: Vec<&DefaultRow> = meeting
+        .iter()
+        .copied()
+        .filter(|r| r.own && r.origin == DefaultOrigin::Declared)
+        .collect();
+    let answering = meeting.into_iter().filter(|r| {
+        r.origin != DefaultOrigin::Inferred
+            || !marks
+                .iter()
+                .any(|m| m.provider != r.provider && typing::carriers_meet(kb, m.carrier, r.carrier))
+    });
     let mut answer: Option<Symbol> = None;
-    for row in index.rows_in(bucket) {
-        if row.spec != spec_canon {
-            continue;
-        }
-        if let Some(v) = view {
-            if !typing::carrier_views_overlap(kb, &crate::kb::term_view::TermIdView(row.carrier), v) {
-                continue;
-            }
-        }
+    for row in answering {
         match answer {
             None => answer = Some(row.provider),
             // Rows are stored with a canonical provider, so this is an id compare.
@@ -466,12 +560,15 @@ pub fn build_default_provider_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             let spec_view =
                 crate::kb::node_occurrence::value_to_term(kb, &p.spec_view).ok()?;
             let provider = kb.canonical_sort_sym(p.provider);
+            let spec = kb.canonical_sort_sym(p.spec);
+            let carrier = typing::provision_carrier(kb, p.spec, provider, spec_view);
             Some(Provision {
                 provider,
                 provider_name: kb.make_name_term_from_sym(provider),
-                spec: kb.canonical_sort_sym(p.spec),
-                spec_decl: p.spec,
-                spec_view,
+                spec,
+                key: typing::default_row_key(kb, spec, carrier.term),
+                carrier: carrier.term,
+                own: carrier.own,
             })
         })
         .collect();
@@ -479,11 +576,11 @@ pub fn build_default_provider_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 
     let (rows, row_errors) = derive_rows(kb, &provisions, &declared);
     errors.extend(row_errors);
-    let mut by_bucket: HashMap<typing::CarrierBucket, Vec<DefaultRow>> = HashMap::new();
+    let mut by_spec: HashMap<Symbol, SpecDefaults> = HashMap::new();
     for row in rows {
-        by_bucket.entry(row.bucket).or_default().push(row);
+        by_spec.entry(row.spec).or_default().push(row);
     }
-    kb.set_default_provider_index(DefaultProviderIndex { by_bucket });
+    kb.set_default_provider_index(DefaultProviderIndex { by_spec });
     errors
 }
 
@@ -515,16 +612,16 @@ pub(crate) fn seed_default_provider_index(kb: &mut KnowledgeBase) {
     let _discarded = build_default_provider_index(kb);
 }
 
-/// One provision as this pass needs it: canonical keys for comparison, the provider's
-/// minted name term for the carrier-keyed case, and the spec AS DECLARED for the
-/// classifier — which reads the spec's type parameters and so must be asked with the
-/// symbol the declaration registered, not a canonical alias of it.
+/// One provision as this pass needs it: canonical keys for comparison, the provider's minted
+/// name term for rendering, and where the provision is ([`typing::provision_carrier`]): its
+/// carrier, that carrier's partition key, and whether it is the provider's own.
 struct Provision {
     provider: Symbol,
     provider_name: TermId,
     spec: Symbol,
-    spec_decl: Symbol,
-    spec_view: TermId,
+    carrier: TermId,
+    key: Option<typing::CarrierBucket>,
+    own: bool,
 }
 
 /// The row derivation proper.
@@ -548,7 +645,7 @@ fn derive_rows(
         // same typo one refusal over. It is load-bearing rather than merely helpful: the
         // row's CARRIER is derived from the provider's own provision, so without this a
         // mistyped mark would name no carrier and the row would silently vanish.
-        let carriers = carriers_provided_by(kb, provisions, spec, provider);
+        let carriers = carriers_provided_by(provisions, spec, provider);
         if carriers.is_empty() {
             errors.push(LoadError::DefaultProviderDoesNotProvide {
                 spec: kb.qualified_name_of(spec).to_string(),
@@ -584,27 +681,30 @@ fn derive_rows(
             );
             continue;
         };
-        for (carrier, bucket) in carriers {
+        for (carrier, key, own) in carriers {
             push_row(
                 &mut rows,
                 DefaultRow {
                     spec,
                     carrier,
-                    bucket,
+                    key,
                     provider,
                     provider_name,
                     origin: DefaultOrigin::Declared,
+                    own,
                 },
             );
         }
     }
 
     // ── The INFERRED rows ────────────────────────────────────────────────────
-    // "The carrier's own provision is its default" (058 §3.6) — the clause that lets the
-    // shipped standard library carry defaults with no edits at all.
+    // "The provider's own provision is its default" (058 §3.6) — the clause that lets the
+    // shipped standard library carry defaults with no edits at all. OWN is decision 6 of
+    // `docs/design/spec-carrier-set.md`: the provider is the head of the carrier or of one of
+    // its bindings, every binding counting.
     for p in provisions {
-        if !matches!(dispatch_carrier(kb, p), typing::DispatchCarrier::Provider) {
-            // A WITNESS: its carrier is some other sort, a tuple or an arrow, so it is a
+        if !p.own {
+            // A WITNESS: its carrier names some other sort, a tuple or an arrow, so it is a
             // rival that may be MARKED default, never one that is inferred to be.
             continue;
         }
@@ -612,11 +712,12 @@ fn derive_rows(
             &mut rows,
             DefaultRow {
                 spec: p.spec,
-                carrier: p.provider_name,
-                bucket: typing::CarrierBucket::Sort(p.provider),
+                carrier: p.carrier,
+                key: p.key,
                 provider: p.provider,
                 provider_name: p.provider_name,
                 origin: DefaultOrigin::Inferred,
+                own: true,
             },
         );
     }
@@ -724,56 +825,31 @@ pub(crate) fn derived_default_provider_message(head: &str) -> String {
     )
 }
 
-/// Where one provision's dictionary dispatches ([`typing::provision_dispatch_carrier`]), read off
-/// its term-carried spec view.
-fn dispatch_carrier(kb: &KnowledgeBase, p: &Provision) -> typing::DispatchCarrier {
-    typing::provision_dispatch_carrier(kb, p.spec_decl, p.provider, &crate::eval::value::Value::term(p.spec_view))
-}
-
-/// The carriers `provider`'s own provisions of `spec` name — `(view, bucket)`.
+/// The carriers `provider`'s own provisions of `spec` are at — `(carrier, partition key)`.
 ///
 /// This is where 058 §3.6's "the carrier is DERIVED from the provider's provision"
 /// lives, and it is the whole reason conditionality composes for free: marking `ListOrd`
-/// default yields a row at `List[T = E]`, the exact carrier its provision claims, so a
-/// conditional provision contributes a default at precisely the applications where the
+/// default yields a row at `Ord[T = List[T = E]]`, the exact carrier its provision claims, so
+/// a conditional provision contributes a default at precisely the applications where the
 /// provision itself holds.
 fn carriers_provided_by(
-    kb: &KnowledgeBase,
     provisions: &[Provision],
     spec: Symbol,
     provider: Symbol,
-) -> Vec<(TermId, typing::CarrierBucket)> {
-    let mut out: Vec<(TermId, typing::CarrierBucket)> = Vec::new();
+) -> Vec<(TermId, Option<typing::CarrierBucket>, bool)> {
+    let mut out: Vec<(TermId, Option<typing::CarrierBucket>, bool)> = Vec::new();
     for p in provisions {
         if p.spec != spec || p.provider != provider {
             continue;
         }
-        // `Provider` ⇒ the provider IS the carrier, i.e. the mark names a SELF-PROVIDER.
-        // That row is inferred anyway, and marking it explicitly is not an error — it is
-        // the same row said twice, which `push_row` collapses (so a DECLARED row may
-        // carry the provider's own bucket too, which is why the origin is stored rather
-        // than derived from that equality). A witness at a tuple or an arrow keys its
-        // carrier as written, under its head: read as the provider, its mark was filed at
-        // carrier `P1` and arbitrated nothing.
-        let (view, bucket) = match dispatch_carrier(kb, p) {
-            typing::DispatchCarrier::Sort(view, base) => (view, typing::CarrierBucket::Sort(base)),
-            typing::DispatchCarrier::Structural(view, bucket) => (view, bucket),
-            typing::DispatchCarrier::Provider => (
-                crate::eval::value::Value::term(p.provider_name),
-                typing::CarrierBucket::Sort(p.provider),
-            ),
-        };
-        // A term-carried spec view has term-carried children, so the carrier comes back on
-        // the term carrier; anything else is a decode that invented a carrier.
-        let crate::eval::value::Value::Term { id, .. } = view else {
-            panic!("carriers_provided_by: a term-carried spec view yielded a non-term carrier {view:?}");
-        };
-        let entry = (id, bucket);
-        // Two applications of one provider stay two carriers (`Console provides Effect`
-        // ×3, and equally `Box[T = E]` beside `Box[T = Int64]`); only the identical
-        // carrier collapses — see [`push_row`] for why this is identity and not overlap.
-        if !out.iter().any(|&(v, _)| v == entry.0) {
-            out.push(entry);
+        // A mark naming a provider of its own provision is the inferred row said twice, which
+        // `push_row` collapses — so a DECLARED row may stand at an own carrier too, which is why
+        // the origin is stored rather than derived. Two carriers of one provider stay two
+        // (`Console provides Effect` ×3, and equally `Box[T = E]` beside `Box[T = Int64]`); only
+        // the identical carrier collapses — see [`push_row`] for why this is identity and not
+        // overlap.
+        if !out.iter().any(|&(c, _, _)| c == p.carrier) {
+            out.push((p.carrier, p.key, p.own));
         }
     }
     out
@@ -787,10 +863,10 @@ fn carriers_provided_by(
 /// silent dispatch — a tier the ladder does not have. So the pair is refused rather than
 /// the question inherited.
 ///
-/// The cheap `(spec, bucket)` gate first, so the structural walk runs only for rows of ONE
-/// family: overlap requires a shared base — or, for a tuple or an arrow, a shared head — so a
-/// differing bucket is a decided `false` two compares in. The pairwise walk itself stays flat — at the ~90 rows the
-/// stdlib contributes, bucketing costs as many key comparisons as it saves.
+/// The cheap `(spec, key)` gate first, so the structural walk runs only for rows that can share
+/// a carrier: two rows at one carrier bind the spec's first type-var to one bucket, or one of
+/// them leaves it open ([`typing::default_row_key`]), so a differing key is a decided `false`
+/// two compares in. The pairwise walk itself stays flat.
 ///
 /// Each colliding PAIR is reported once and the list is sorted, so a program with two of
 /// them reports the same two on every load — the rows are walked in fact order, which is
@@ -807,14 +883,24 @@ fn check_one_default(kb: &KnowledgeBase, rows: &[DefaultRow]) -> Vec<LoadError> 
     let mut collisions: Vec<(&DefaultRow, &DefaultRow)> = Vec::new();
     for (i, a) in rows.iter().enumerate() {
         for b in &rows[i + 1..] {
-            if (a.spec, a.bucket) != (b.spec, b.bucket) || a.provider == b.provider {
+            let keys_meet = match (a.key, b.key) {
+                (Some(x), Some(y)) => x == y,
+                _ => true,
+            };
+            if a.spec != b.spec || !keys_meet || a.provider == b.provider {
                 continue;
             }
-            if typing::carrier_views_overlap(
-                kb,
-                &crate::kb::term_view::TermIdView(a.carrier),
-                &crate::kb::term_view::TermIdView(b.carrier),
-            ) {
+            // A mark choosing among providers each own at the carrier: the marked provider's
+            // own provision beside another's inferred row (decision 6). The lookup takes the
+            // mark ([`default_provider_for`]); a mark naming a WITNESS beside an own row is still
+            // a displacement, refused below.
+            let chooses_among_owns = |d: &DefaultRow, i: &DefaultRow| {
+                d.origin == DefaultOrigin::Declared && d.own && i.origin == DefaultOrigin::Inferred
+            };
+            if chooses_among_owns(a, b) || chooses_among_owns(b, a) {
+                continue;
+            }
+            if typing::carriers_meet(kb, a.carrier, b.carrier) {
                 collisions.push((a, b));
             }
         }
@@ -845,4 +931,103 @@ fn check_one_default(kb: &KnowledgeBase, rows: &[DefaultRow]) -> Vec<LoadError> 
             }
         })
         .collect()
+}
+
+/// WI-20261122-CXR5B — the lookup itself, at goals no call reaches yet: until a call's expected
+/// type and the bindings it leaves open move (the ticket's later steps), a goal binding one
+/// type-var of two is built only here.
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+    use crate::eval::value::Value;
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+    }
+
+    /// `Coll[C, Elem]` declared in the order given, `Foo`, and `decls`.
+    fn program(ns: &str, first: &str, second: &str, decls: &str) -> String {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64}}
+  sort Coll
+    sort {first} = ?
+    sort {second} = ?
+    operation first(c: C) -> Elem
+  end
+  sort Foo
+    entity foo
+  end
+{decls}
+end
+"#
+        )
+    }
+
+    /// What silence takes at `Coll[…]` bound as `at` gives, each `(type-var, sort)` by name.
+    fn default_at(kb: &mut KnowledgeBase, ns: &str, at: &[(&str, &str)]) -> Option<String> {
+        let spec = sym(kb, &format!("{ns}.Coll"));
+        let bindings: Vec<(Symbol, Value)> = at
+            .iter()
+            .map(|(tv, sort)| {
+                let s = sym(kb, sort);
+                (sym(kb, &format!("{ns}.Coll.{tv}")), Value::term(kb.make_sort_ref(s)))
+            })
+            .collect();
+        default_provider_for(kb, spec, CarrierKey::Goal(&bindings))
+            .map(|p| kb.local_name_of(p).to_string())
+    }
+
+    /// A mark on a provider's OWN provision answers at its carrier, and a mark on a WITNESS at a
+    /// carrier disjoint from it answers at its own; a goal meeting both (`Coll[C = Foo]`, `Elem`
+    /// open) is the tie it was, the two marks being two answers. Before the review's fix the
+    /// own mark took that goal too, every other meeting row dropped.
+    #[test]
+    fn an_own_mark_settles_only_the_rows_it_meets() {
+        let ns = "cxr5b.marks";
+        let src = program(
+            ns,
+            "C",
+            "Elem",
+            "  sort Num\n    entity num(v: Int64)\n    \
+             default provides Coll[C = Foo, Elem = Self, first = Num.firstOf]\n    \
+             operation firstOf(c: Foo) -> Num = num(v: 2)\n  end\n  \
+             sort W\n    default provides Coll[C = Foo, Elem = Int64]\n    \
+             operation first(c: Foo) -> Int64 = 1\n  end",
+        );
+        let mut kb = crate::kb::test_support::load_stdlib(Some(&src));
+        let foo = format!("{ns}.Foo");
+        let num = format!("{ns}.Num");
+        assert_eq!(default_at(&mut kb, ns, &[("C", &foo), ("Elem", &num)]).as_deref(), Some("Num"));
+        assert_eq!(
+            default_at(&mut kb, ns, &[("C", &foo), ("Elem", "anthill.prelude.Int64")]).as_deref(),
+            Some("W")
+        );
+        assert_eq!(default_at(&mut kb, ns, &[("C", &foo)]), None, "two marks meet `Coll[C = Foo]`");
+    }
+
+    /// A mark on a provision at a TYPE PARAMETER (`AnyC provides Coll[C = E, Elem = Int64]`, at
+    /// every `C`) is no default at a sort, in either declaration order. Before the review's fix
+    /// it answered `Coll[C = Foo, Elem = Int64]` with `Elem` declared first — the rows were then
+    /// partitioned by `Elem`'s binding, and the overlap read `E` as any — and not with `C` first.
+    #[test]
+    fn a_mark_at_a_type_parameter_answers_no_sort_in_either_order() {
+        for (ns, first, second) in [("cxr5b.anyc", "C", "Elem"), ("cxr5b.anye", "Elem", "C")] {
+            let src = program(
+                ns,
+                first,
+                second,
+                "  sort AnyC\n    sort E = ?\n    default provides Coll[C = E, Elem = Int64]\n    \
+                 operation first(c: E) -> Int64 = 1\n  end",
+            );
+            let mut kb = crate::kb::test_support::load_stdlib(Some(&src));
+            let foo = format!("{ns}.Foo");
+            assert_eq!(
+                default_at(&mut kb, ns, &[("C", &foo), ("Elem", "anthill.prelude.Int64")]),
+                None,
+                "{ns}"
+            );
+        }
+    }
 }
