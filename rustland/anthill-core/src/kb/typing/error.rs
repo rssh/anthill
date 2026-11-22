@@ -2204,10 +2204,14 @@ impl TypeError {
                 let quote = |xs: &mut dyn Iterator<Item = String>| {
                     xs.map(|x| format!("`{x}`")).collect::<Vec<_>>().join(" and ")
                 };
+                // One provider writing the provisions that disagree (WI-20261122-CXR5B, d5 of
+                // `docs/design/spec-carrier-set.md`) is one subject.
+                let provide = if providers.len() == 1 { "provides" } else { "provide" };
+                let twice = if providers.len() == 1 { " more than once" } else { "" };
                 format!(
                     "a call of `{}` that names no instance of `{}`: it leaves {} open, and {} \
-                     provide `{1}` at what it fixes, naming different types for it. Write the \
-                     instance: `{suggestion}`",
+                     {provide} `{1}`{twice} at what it fixes, naming different types for it. Write \
+                     the instance: `{suggestion}`",
                     kb.qualified_name_of(*op),
                     kb.qualified_name_of(*spec),
                     quote(&mut open.iter().cloned()),

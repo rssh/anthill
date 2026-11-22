@@ -130,6 +130,136 @@ pub(crate) fn provision_carrier(
     ProvisionCarrier { term: kb.make_parameterized_type(base, &bindings), own }
 }
 
+/// WI-20261122-CXR5B — WHICH APPLICATION of a spec one provider's provision is: the identity
+/// two provisions by ONE provider share when they are one carrier ([`provision_carrier`], read
+/// without building its term), and what a resolved instance is asked as ([`Self::of_bindings`]).
+///
+/// For a spec with a dictionary, the provision's binding of EVERY type-var of the sort carrier,
+/// in declaration order, `None` where it leaves one out: `WB provides Coll[C = Foo, Elem =
+/// Int64]` and `Coll[C = Foo, Elem = String]` are two applications, two carriers, two
+/// dictionaries, and a call tells them apart by what it fixes (decision 1). They were one
+/// application, read at the single carrier parameter (`C = Foo`), so the provider was refused
+/// three times at load (d5 of `docs/design/spec-carrier-set.md`): its suppliers of `first` a tie,
+/// its two instance facts ambiguous, and its `Elem` "bound two ways".
+///
+/// For a SELF-REPRESENTING spec, nothing: every provision of one provider is at ONE carrier, the
+/// provider at its own type-vars, and the spec's type-vars are `Self`'s projections read off it.
+/// Two provisions of it by one provider that bind a type-var apart are two readings of `Self.C`
+/// on one carrier, which the load refuses (decision 7, §8.7), as it refuses two op bindings
+/// there.
+#[derive(Clone, Debug)]
+pub(crate) struct SpecApplication {
+    bindings: SmallVec<[Option<Value>; 2]>,
+    /// Every provision of the spec is at its provider: a self-representing spec, or a name with
+    /// no declaration (the bootstrap `Eq` of a KB with no stdlib), as [`provision_carrier`] reads
+    /// them. `bindings` is then empty.
+    at_provider: bool,
+}
+
+impl SpecApplication {
+    /// The application the provision whose spec view is `spec_view` is.
+    pub(crate) fn of_view(kb: &KnowledgeBase, spec: Symbol, spec_view: &Value) -> Self {
+        let binds = view_is_sort_view(kb, spec_view);
+        Self::read(kb, spec, |tv| binds.then(|| provision_binding_value_at_param(kb, tv, spec_view)).flatten())
+    }
+
+    /// The application an instance of `spec` is FOR, its bindings of the spec in hand — a
+    /// resolved instance tree's head ([`tree_application`]). Each type-var is read by its label.
+    pub(crate) fn of_bindings(kb: &KnowledgeBase, spec: Symbol, bindings: &[(Symbol, Value)]) -> Self {
+        Self::read(kb, spec, |tv| {
+            let short = short_name_of(kb.local_name_of(tv));
+            bindings
+                .iter()
+                .find(|(p, _)| *p == tv || short_name_of(kb.local_name_of(*p)) == short)
+                .map(|(_, v)| v.clone())
+        })
+    }
+
+    fn read(kb: &KnowledgeBase, spec: Symbol, binding_of: impl Fn(Symbol) -> Option<Value>) -> Self {
+        let canon = kb.canonical_sort_sym(spec);
+        if kb.sort_kind(canon).is_none() || spec_is_self_representing(kb, canon) {
+            return SpecApplication { bindings: SmallVec::new(), at_provider: true };
+        }
+        SpecApplication {
+            bindings: sort_carrier(kb, canon).type_vars.iter().map(|&tv| binding_of(tv)).collect(),
+            at_provider: false,
+        }
+    }
+
+    /// Is a provision `provider` writes at this application its provider's OWN (decision 6, as
+    /// [`provision_carrier`] decides it): every provision at its provider, a left-out binding of
+    /// a spec of one type-var (which reads as the provider), or `provider` the head of one of
+    /// its bindings. Otherwise the provision is a witness.
+    pub(crate) fn is_own_of(&self, kb: &KnowledgeBase, provider: Symbol) -> bool {
+        self.at_provider
+            || matches!(self.bindings.as_slice(), [None])
+            || self.bindings.iter().flatten().any(|b| composed_self_reference(kb, provider, b))
+    }
+
+    /// Are two OWN provisions of `provider` ([`Self::is_own_of`]) at one carrier of the
+    /// provider's own: alike at every type-var whose binding `provider` heads, and heading the
+    /// same type-vars. What [`check_provision_binding_agreement`] buckets a provider's own
+    /// provisions by. `C provides Iter[Carrier = C, Element = Int64]` beside `[Carrier = C,
+    /// Element = String]` are at one (`Carrier = C`), and the readers of `C`'s one view of
+    /// `Iter` would take the first `Element`; `Box provides Show[T = Box[E = Int64]]` beside
+    /// `Show[T = Box[E = String]]` are at two, as the bucket at the first type-var read them.
+    pub(crate) fn same_own_carrier(&self, kb: &KnowledgeBase, other: &SpecApplication, provider: Symbol) -> bool {
+        if self.at_provider || other.at_provider {
+            return self.at_provider == other.at_provider;
+        }
+        fn headed<'v>(kb: &KnowledgeBase, provider: Symbol, b: &'v Option<Value>) -> Option<&'v Value> {
+            b.as_ref().filter(|b| composed_self_reference(kb, provider, *b))
+        }
+        self.bindings.len() == other.bindings.len()
+            && self.bindings.iter().zip(&other.bindings).all(|(a, b)| match (a, b) {
+                (None, None) => true,
+                (None, Some(_)) | (Some(_), None) => false,
+                (Some(_), Some(_)) => match (headed(kb, provider, a), headed(kb, provider, b)) {
+                    (Some(x), Some(y)) => provision_bindings_agree(kb, x, y),
+                    (None, None) => true,
+                    _ => false,
+                },
+            })
+    }
+
+    /// Are two applications of ONE spec the same: each type-var bound alike by both
+    /// ([`provision_bindings_agree`], conservative — two spellings of one parameterized type
+    /// read as two), or left out by both.
+    pub(crate) fn same(&self, kb: &KnowledgeBase, other: &SpecApplication) -> bool {
+        self.at_provider == other.at_provider
+            && self.bindings.len() == other.bindings.len()
+            && self.bindings.iter().zip(&other.bindings).all(|pair| match pair {
+                (Some(a), Some(b)) => provision_bindings_agree(kb, a, b),
+                (None, None) => true,
+                _ => false,
+            })
+    }
+
+    /// Does it bind any type-var? One that binds none names no application to be asked for.
+    pub(crate) fn binds_any(&self) -> bool {
+        self.bindings.iter().any(Option::is_some)
+    }
+
+    /// The application as a diagnostic writes it, `spec[C = Foo, Elem = Int64]`, or `None`
+    /// where it binds nothing or the spec is not known.
+    pub(crate) fn display_of(&self, kb: &KnowledgeBase, spec: Option<Symbol>) -> Option<String> {
+        let spec = spec?;
+        if !self.binds_any() {
+            return None;
+        }
+        let canon = kb.canonical_sort_sym(spec);
+        let written: Vec<String> = sort_carrier(kb, canon)
+            .type_vars
+            .iter()
+            .zip(&self.bindings)
+            .filter_map(|(tv, b)| {
+                b.as_ref().map(|b| format!("{} = {}", short_name_of(kb.local_name_of(*tv)), declared_type_display(kb, b)))
+            })
+            .collect();
+        Some(format!("{}[{}]", kb.qualified_name_of(canon), written.join(", ")))
+    }
+}
+
 /// Does `carrier`, a provision's carrier ([`provision_carrier`]), name `sort` — as its head,
 /// or as the head of one of its bindings? The question decision 6 asks of a provision's
 /// provider, asked of any sort: what a probe of the default rows "at one sort" lists.

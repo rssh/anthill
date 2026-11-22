@@ -307,6 +307,8 @@ result or requirement in scope". So its own example has `A` as the carrier of
 | d8 | b8 with `W2` deleted: ONE provider, `let x = Coll.first(foo)` | runs (`Elem` read off the one provision) |
 | d9 | a1 with `let x = Dflt.dflt()`: one witness, nothing expected | refused: "missing `requires Dflt[T = …]`" |
 | d10 | d1 with `let x = Dflt.dflt()` then `to_string(x)` | refused: "ambiguous dispatch … the call selects none" |
+| d14 | ONE witness `WT` binding `tag` at two sorts of a one-type-var spec (`Tag[T = Foo, tag = WT.tagFoo]`, `Tag[T = Bar, tag = WT.tagBar]`); `Tag.tag(foo) + Tag.tag(bar)` | refused at load: "2 distinct instance facts provide `Tag` for carrier `WT`" (measured on `757d23229`) |
+| d15 | d5 with `Foo` writing both provisions for ITSELF (`Coll[C = Self, Elem = Int64, first = Foo.f1]` and `…[C = Self, Elem = String, …]`) | refused at load: "conflicting provisions … binding `Elem`", and `first` |
 
 The expected type already fixes a type-var (d1, d2), and the rule's refusal works (d3, d4).
 b5–b8 break the rule even as written: the provisions at `C = Foo` give `Elem` different
@@ -459,14 +461,16 @@ corrected to describe the set, as 074 §1.2 has it:
    | b6 | refused, type mismatch | 1 |
    | b7 | refused, type mismatch | two |
    | b8 | runs, first declared | refused; the substituted sort is written at the call (`Coll[Elem = Int64].first(foo)`) |
-   | d5 | refused at load | loads; its calls answer as b5–b8 |
+   | d5 | refused at load | loads; its calls answer as b5–b8 (a witness; the provider's own two provisions, d15, stay refused until the P readers move) |
    | d7 | refused | 1 |
    | d8: one provider, `let x = Coll.first(foo)` | runs | runs (`Elem` read off the one provision) |
    | d9: one witness, `let x = Dflt.dflt()` | refused, "missing `requires Dflt[T = …]`" | refused (it fixes nothing) |
    | d10: two witnesses, `let x = Dflt.dflt()` then `to_string(x)` | refused, ambiguous | refused (the expected type is at the call) |
    | d1, d2, d3, d4, d6 | 1, two, refused, 2, 1 | unchanged |
 
-   **d5 is refused by three checks today, and all three move for it to load:**
+   **d5 is refused by three checks today, and all three move for it to load** (done by stage
+   2's third step, History; d14, one witness binding an operation at two sorts of `Tag`, moved
+   with it, to 21; d15, the provider's OWN two provisions, stays refused, see there):
    - "ambiguous dispatch of `Coll.first` on carrier `Foo`: 2 implementations are supplied
      for that carrier". This is the supplier tie, keyed by the single carrier parameter.
    - "ambiguous instance: 2 distinct instance facts provide `Coll` for carrier `WB`". This
@@ -1016,3 +1020,34 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   concrete-provider bracket, whose §5.4 paragraph is to be reworded for the user), the
   untyped eval path, and the witness classification behind c1. §5.4's approved wording lands
   with d5, since it says "whether one provider or several".
+- **2026-11-22, stage 2's third step (WI-20261122-CXR5B): one provider and several are held
+  alike** (decision 1's d5, decision 7). A provider's provisions of a spec were grouped by their
+  binding of the single carrier parameter in three places, which d5's three refusals were: the
+  suppliers a dictionary of the provider answers (`spec_op_suppliers_of_provider`, told the
+  application by `tree_application`), the instance-fact leg of the coherence grouping, and
+  `check_provision_binding_agreement`, which bucketed by the FIRST type-var declared. Each now
+  reads `typing::SpecApplication`, a provision's binding of every type-var, compared without
+  building the carrier's term; for a self-representing spec it is one application per provider
+  (decision 7), so e3 and e5 stay refused and now name `C` bound two ways. Two instance facts of
+  a coherence group are ambiguous only at one application. A bracket naming a provider whose own
+  standing provisions disagree on what the call leaves free is refused as two providers' are
+  (`Coll.first[Coll = WB](foo)` with nothing expected ran the first written). Moved: d5 → 1 (its
+  `String` call → two, `Coll[Elem = String]` → two, b8's call refused naming `WB` with a repair
+  that runs), d14 → 21, and a provider's own provisions it heads apart with operation bindings
+  (`Box provides Show[T = Box[E = Int64], show = …]` beside `[T = Box[E = String], …]`) → 21.
+  Kept refused, by name: a provider's OWN provisions of a spec with a dictionary that agree
+  where the provider heads a binding and bind another type-var apart (d15, and `wi842`/
+  `wi_n3w68`'s `C provides Iter[Carrier = C, …]` pins), bucketed by the bindings the provider
+  heads (`SpecApplication::same_own_carrier`; a first cut put every own provision in one bucket
+  and refused the same pair without operation bindings, which loaded before — found by
+  /code-review): the ~20 readers of a value's sort's one view of a spec
+  (`provider_spec_view_bindings`) merge them and keep the first binding, so admitting them would
+  let the order written decide; they are the P readers, and the refusal goes with them.
+  `kernel-language.md` §5.4 takes the approved wording, §8.7's "One carrier declaring one spec
+  twice" says what is still refused and why, and §5.1's paragraph on the readers still on one
+  parameter is brought up to date. Rows: `wi_cxr5b_one_provider_test` (6), 5 failing with `src/`
+  at `757d23229` and the own-provision control passing; each of the three groupings backed out
+  alone fails d5's row, and the named-provider half alone the bracket row. Not moved yet: c3/g4,
+  the untyped eval path, the witness classification behind c1 (and the call-site tie of e3/e5
+  still renders its suppliers as witness routes, `provision_supplier`'s), decision 3, the P/M/K/X
+  readers, and §5.2, §8.3.

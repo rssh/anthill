@@ -2128,11 +2128,18 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         //
         //   (0, ≥1, *)  ADMIT — every candidate nameable (058 tier 3)
         //   (1,  0, 1)  ADMIT — may be ONE dictionary, see the helper above
-        //   (≥2, *, *)  AmbiguousInstanceFact
-        //   (1, ≥1, *)  MixedProviderKinds (whose message names the fact and the
+        //   (≥2, *, *)  AmbiguousInstanceFact, where two of the facts are at ONE application
+        //   (≥1, ≥1, *) MixedProviderKinds (whose message names the fact and the
         //               witnesses; a self-provider in that group goes unnamed)
         //
         // NO VERDICT CHANGED by adding the kind — it changes what is SEEN.
+        //
+        // WI-20261122-CXR5B — facts at DIFFERENT applications are no ambiguity: a fact group
+        // is keyed at its provider, and one provider's `Coll[C = Foo, Elem = Int64, first =
+        // f1]` beside `Coll[C = Foo, Elem = String, first = f2]` is two carriers, two
+        // dictionaries a call tells apart by what it fixes (decision 1 of
+        // `docs/design/spec-carrier-set.md`, d5). A self-representing spec is one
+        // application per provider (decision 7), so its two facts stay refused here.
         //
         // THE SPACE IS TILED, which is what keeps the NEXT kind from defaulting to
         // ADMIT the way WI-838's did. Reaching here means f ≥ 1 (else every candidate
@@ -2145,15 +2152,19 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         // rather than the count.
         let spec_qn = kb.qualified_name_of(*spec).to_string();
         let carrier_qn = kb.qualified_name_of(*carrier).to_string();
-        let facts = candidates
+        let fact_applications: SmallVec<[&SpecApplication; 2]> = candidates
             .iter()
-            .filter(|c| matches!(c, Provider::Fact(_)))
-            .count();
+            .filter_map(|c| match c {
+                Provider::Fact { at, .. } => Some(at),
+                Provider::Witness(_) | Provider::SelfProvider(_) => None,
+            })
+            .collect();
+        let facts = fact_applications.len();
         let witnesses: Vec<String> = candidates
             .iter()
             .filter_map(|c| match c {
                 Provider::Witness(w) => Some(kb.qualified_name_of(*w).to_string()),
-                Provider::Fact(_) | Provider::SelfProvider(_) => None,
+                Provider::Fact { .. } | Provider::SelfProvider(_) => None,
             })
             .collect();
         debug_assert!(
@@ -2162,11 +2173,17 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
              named by neither diagnostic — an unenumerated composition, which is how \
              WI-838's blind spot was built. Candidates: {candidates:?}"
         );
-        if facts > 1 {
+        // The most facts at one application.
+        let at_one_application = fact_applications
+            .iter()
+            .map(|a| fact_applications.iter().filter(|b| a.same(kb, b)).count())
+            .max()
+            .unwrap_or(0);
+        if at_one_application > 1 {
             errors.push(LoadError::AmbiguousInstanceFact {
                 carrier: carrier_qn.clone(),
                 spec: spec_qn.clone(),
-                count: facts,
+                count: at_one_application,
             });
         }
         // WI-838 — the MIXED pair. The witness leg still RECORDS into the grouping
@@ -2339,7 +2356,7 @@ pub fn provider_coherence_candidates(
             g.candidates
                 .iter()
                 .map(|c| match c {
-                    Provider::Fact(_) => "fact".to_string(),
+                    Provider::Fact { .. } => "fact".to_string(),
                     Provider::Witness(w) => format!("witness:{}", kb.qualified_name_of(*w)),
                     Provider::SelfProvider(c) => format!("self:{}", kb.qualified_name_of(*c)),
                 })
@@ -2418,10 +2435,13 @@ fn provider_coherence_groups_with(
             record(
                 spec_canon,
                 kb.canonical_sort_sym(p.carrier),
-                Provider::Fact(match kb.value_fact_dedup_key(&p.spec_view) {
-                    Some(application) => InstanceIdentity::Application(application),
-                    None => InstanceIdentity::OwnFact(p.rid),
-                }),
+                Provider::Fact {
+                    identity: match kb.value_fact_dedup_key(&p.spec_view) {
+                        Some(application) => InstanceIdentity::Application(application),
+                        None => InstanceIdentity::OwnFact(p.rid),
+                    },
+                    at: SpecApplication::of_view(kb, p.spec, &p.spec_view),
+                },
             );
         }
         // The OP-LESS SPEC exemption, shared by kinds 2 and 3: a spec that declares
@@ -2551,8 +2571,8 @@ fn provider_coherence_groups_with(
 fn fact_beside_self_provider_is_one_carrier(candidates: &[Provider]) -> bool {
     matches!(
         candidates,
-        [Provider::Fact(_), Provider::SelfProvider(_)]
-            | [Provider::SelfProvider(_), Provider::Fact(_)]
+        [Provider::Fact { .. }, Provider::SelfProvider(_)]
+            | [Provider::SelfProvider(_), Provider::Fact { .. }]
     )
 }
 
@@ -2573,9 +2593,31 @@ fn fact_beside_self_provider_is_one_carrier(candidates: &[Provider]) -> bool {
 /// spec MANY times at different APPLICATIONS: `sort Console` holds
 /// `provides Effect[T = ConsoleOutput]`, `[T = ConsoleError]` and `[T = ConsoleInput]`
 /// (console.anthill:35-37), three genuine instances that differ in the spec's CARRIER
-/// PARAM. So provisions are bucketed by that param's binding first, and only a
+/// PARAM. So provisions are bucketed by their application first, and only a
 /// disagreement WITHIN one bucket — same application, two answers for another param —
-/// is a conflict. (The Console shape leaves this reader under-determined in a way
+/// is a conflict.
+///
+/// WI-20261122-CXR5B — a WITNESS's provisions (decision 6: the provider heads none of the
+/// bindings) are bucketed by their binding of EVERY type-var ([`SpecApplication`]), so within
+/// a bucket only an operation binding can disagree. They were bucketed by the first type
+/// parameter's binding, so `WB provides Coll[C = Foo, Elem = Int64, first = f1]` beside `Coll[C
+/// = Foo, Elem = String, first = f2]` — two carriers, which a call tells apart by what it
+/// fixes (decision 1 of `docs/design/spec-carrier-set.md`, d5) — was refused as binding `Elem`
+/// and `first` two ways, and with `Elem` declared first it would have passed.
+///
+/// A provider's OWN provisions of a spec are bucketed by the bindings the provider HEADS
+/// ([`SpecApplication::same_own_carrier`]). For a self-representing spec that is one bucket: all
+/// are at the provider, so two that bind a type-var apart are two readings of `Self.C` on one
+/// carrier (decision 7). For a spec with a dictionary, two that agree where the provider heads
+/// a binding and disagree elsewhere are two carriers by the model, but
+/// [`provider_spec_view_bindings`] — what its ~20 readers ask a value's own sort for, one view
+/// per (provider, spec) — merges them and keeps the first binding, so admitted, `C provides
+/// Iter[Carrier = C, Element = Int64]` beside `[…, Element = String]` would mean whichever was
+/// written first. Refused until those readers are told the application (the P readers of the
+/// design's §4, WI-20261122-CXR5B). Own provisions the provider heads apart (`Box provides
+/// Show[T = Box[E = Int64]]` beside `[T = Box[E = String]]`) are two buckets, as they were at
+/// the first type-var — a first cut that put every own provision in one bucket refused them
+/// (found by /code-review). (The Console shape leaves this reader under-determined in a way
 /// this ticket does not fix: asked for `Console`'s view of `Effect` it still answers
 /// the first of three. That is not §4.9's defect — no op binding is being selected,
 /// and MEASURED, no consumer asks — but it is the reason this reader cannot simply
@@ -2595,7 +2637,7 @@ pub(super) fn check_provision_binding_agreement(
     // diagnostic lists the conflicting types the way the author wrote them.
     let mut groups: Vec<(
         (Symbol, Symbol),
-        SmallVec<[SmallVec<[(Symbol, Value); 2]>; 2]>,
+        SmallVec<[(SpecApplication, SmallVec<[(Symbol, Value); 2]>); 2]>,
     )> = Vec::new();
     for p in provisions {
         let Some((base, bindings)) = unwrap_spec_view_value(kb, &p.spec_view) else {
@@ -2605,9 +2647,10 @@ pub(super) fn check_provision_binding_agreement(
             kb.canonical_sort_sym(p.carrier),
             kb.canonical_sort_sym(base),
         );
+        let app = SpecApplication::of_view(kb, base, &p.spec_view);
         match groups.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, views)) => views.push(bindings),
-            None => groups.push((key, SmallVec::from_elem(bindings, 1))),
+            Some((_, views)) => views.push((app, bindings)),
+            None => groups.push((key, SmallVec::from_elem((app, bindings), 1))),
         }
     }
     let mut errors = Vec::new();
@@ -2615,33 +2658,22 @@ pub(super) fn check_provision_binding_agreement(
         if views.len() < 2 {
             continue;
         }
-        // The spec's CARRIER PARAM — its first type parameter, the same one
-        // [`provision_carrier_sort`] reads to decide what a provision applies to.
-        // A spec with no type params leaves every provision in one bucket, which is
-        // right: they name one application by having no application to differ in.
-        let carrier_param = sort_type_params_as_pairs(kb, *spec)
-            .first()
-            .map(|(sym, _)| short_name_of(kb.local_name_of(*sym)));
-        let binding_of = |view: &'_ SmallVec<[(Symbol, Value); 2]>, short: &str| {
-            view.iter()
-                .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
-                .map(|(_, v)| v.clone())
-        };
-        // Bucket by the carrier-param binding: one bucket per APPLICATION.
-        let mut buckets: Vec<(
-            Option<Value>,
-            SmallVec<[&SmallVec<[(Symbol, Value); 2]>; 2]>,
-        )> = Vec::new();
-        for view in views {
-            let app = carrier_param.and_then(|c| binding_of(view, c));
-            let slot = buckets.iter_mut().find(|(a, _)| match (a, &app) {
-                (Some(x), Some(y)) => provision_bindings_agree(kb, x, y),
-                (None, None) => true,
+        // One bucket per APPLICATION of a witness's provisions ([`SpecApplication`]), and per
+        // carrier of the provider's own (`same_own_carrier`). A spec with no type params leaves
+        // every provision in one bucket, which is right: they name one application by having no
+        // application to differ in.
+        let mut buckets: Vec<((bool, &SpecApplication), SmallVec<[&SmallVec<[(Symbol, Value); 2]>; 2]>)> =
+            Vec::new();
+        for (app, view) in views {
+            let key = (app.is_own_of(kb, *carrier), app);
+            let slot = buckets.iter_mut().find(|((own, a), _)| match (*own, key.0) {
+                (false, false) => a.same(kb, app),
+                (true, true) => a.same_own_carrier(kb, app, *carrier),
                 _ => false,
             });
             match slot {
                 Some((_, vs)) => vs.push(view),
-                None => buckets.push((app, SmallVec::from_elem(view, 1))),
+                None => buckets.push((key, SmallVec::from_elem(view, 1))),
             }
         }
         for (_, bucket) in &buckets {
@@ -2769,12 +2801,20 @@ pub(super) enum InstanceIdentity {
 /// WI-838 / WI-859 — what supplies the dictionary for one `(spec, carrier)`. The
 /// three kinds are compared by DIFFERENT identities, which is why the coherence
 /// grouping holds this enum rather than a bare symbol.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum Provider {
     /// WI-431 INSTANCE FACT — `fact Spec[T = Carrier, op = boundOp]`. It has NO
     /// NAME, so its identity is the full canonical application (the WI-419 / §5.4
     /// rule): see [`InstanceIdentity`].
-    Fact(InstanceIdentity),
+    ///
+    /// WI-20261122-CXR5B — `at` is the application of the spec it is, its binding of every
+    /// type-var ([`SpecApplication`]): two facts of one provider are ambiguous only at ONE
+    /// application, one carrier with two dictionaries. Not part of its identity, which the
+    /// view already decides.
+    Fact {
+        identity: InstanceIdentity,
+        at: SpecApplication,
+    },
     /// WI-450 WITNESS SORT — `sort W provides Spec[T = Carrier]`, whose impls are
     /// W's own members. Two witnesses for one application share ONE hash-consed
     /// `spec_view` (the ops are not in the view), so identity is the provider SORT.
@@ -2797,6 +2837,19 @@ pub(super) enum Provider {
     SelfProvider(Symbol),
 }
 
+/// A candidate is one candidate by its identity alone: a fact's application is read off the
+/// view its identity is, so it adds nothing to the comparison.
+impl PartialEq for Provider {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Provider::Fact { identity: a, .. }, Provider::Fact { identity: b, .. }) => a == b,
+            (Provider::Witness(a), Provider::Witness(b)) => a == b,
+            (Provider::SelfProvider(a), Provider::SelfProvider(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 impl Provider {
     /// WI-843 (058 §4.1 / §4.3) — can a use site SPELL this candidate?
     ///
@@ -2816,7 +2869,7 @@ impl Provider {
         match self {
             // An instance fact has no name at all. Naming them (`fact AddM: Monoid[…]`)
             // is a possible later increment and explicitly out of scope (§4.3).
-            Provider::Fact(_) => false,
+            Provider::Fact { .. } => false,
             // A witness sort's name IS the value a bracket binds.
             Provider::Witness(_) => true,
             // A self-provider is spelled by the CARRIER's own name — `[Spec = Leaf]`

@@ -1378,12 +1378,14 @@ pub(crate) enum ProviderSupply {
 
 /// One application a provider provides a spec at, with what it supplies there.
 pub(crate) struct ProvisionApplication {
-    /// The sort the application is about, canonical — the base of `binding`.
+    /// The sort the application is about, canonical: its binding at the spec's single carrier
+    /// parameter, or the provider ([`row_about`]) — the sort a supplier's route is read against,
+    /// a W reader of `docs/design/spec-carrier-set.md` §4 still on that parameter.
     pub(crate) about: Symbol,
-    /// What the provision binds to the spec's carrier parameter or sole one, which is the
-    /// application's identity: `Box[E = Int64]` and `Box[E = String]` are two. `None` for a
-    /// provision binding none there.
-    pub(crate) binding: Option<Value>,
+    /// The application's identity, its binding of every type-var ([`SpecApplication`]):
+    /// `Box[E = Int64]` and `Box[E = String]` are two, and so are `Coll[C = Foo, Elem = Int64]`
+    /// and `Coll[C = Foo, Elem = String]`.
+    pub(crate) application: SpecApplication,
     pub(crate) suppliers: SmallVec<[SpecOpSupplier; 2]>,
 }
 
@@ -1400,16 +1402,20 @@ pub(crate) struct ProvisionApplication {
 /// reached through another it provides, `Int64` for `PartialOrd` through `Ord`) answers for
 /// itself, by route 1.
 ///
-/// GROUPED BY THE APPLICATION A PROVISION IS ABOUT — what it binds to the spec's carrier
-/// parameter or its sole one ([`same_application`]), with its sort ([`row_about`]) — and not by
-/// [`provision_supplier`]'s carrier: for a spec no operation of which
-/// receives on its parameter — `Desc { operation name() }` — that is the provider for every
-/// provision, the carrier-as-artifact limit of WI-450. A witness may provide one spec at
-/// several sorts (`sort W provides Holds[T = Int64]` and `Holds[T = Money]`), each provision
-/// binding the operation its own way; pooled, a dictionary at `A` ran the binding written for
-/// `B` (found by /code-review), and grouped by the base sort alone, one at `Box[E = String]`
-/// answered at `Box[E = Int64]` (found by the second). A spec with several parameters and
-/// none it receives on still reads as one application.
+/// GROUPED BY THE APPLICATION A PROVISION IS — its binding of every type-var of the spec
+/// ([`SpecApplication`]), with its sort ([`row_about`]) — and not by [`provision_supplier`]'s
+/// carrier: for a spec no operation of which receives on its parameter — `Desc { operation
+/// name() }` — that is the provider for every provision, the carrier-as-artifact limit of
+/// WI-450. A witness may provide one spec at several sorts (`sort W provides Holds[T = Int64]`
+/// and `Holds[T = Money]`), each provision binding the operation its own way; pooled, a
+/// dictionary at `A` ran the binding written for `B` (found by /code-review), and grouped by
+/// the base sort alone, one at `Box[E = String]` answered at `Box[E = Int64]` (found by the
+/// second). WI-20261122-CXR5B: grouped by the binding of the single carrier parameter, one
+/// provider's `Coll[C = Foo, Elem = Int64, first = f1]` beside `Coll[C = Foo, Elem = String,
+/// first = f2]` was one application supplying `first` twice, a tie refused at every call; it is
+/// two, and the instance a call resolves names which (decision 1 of
+/// `docs/design/spec-carrier-set.md`, its d5). A self-representing spec is one application per
+/// provider (decision 7).
 pub(crate) fn spec_op_suppliers_of_provider(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
@@ -1421,6 +1427,7 @@ pub(crate) fn spec_op_suppliers_of_provider(
     let provider_canon = kb.canonical_sort_sym(provider);
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
+    let self_representing = spec_is_self_representing(kb, spec_canon);
     let own_target = carrier_own_op(kb, provider, spec_op, op_short_sym).filter(|&t| runnable(t));
     let seed = |about: Symbol| -> SmallVec<[SpecOpSupplier; 2]> {
         own_target
@@ -1440,17 +1447,19 @@ pub(crate) fn spec_op_suppliers_of_provider(
         if kb.canonical_sort_sym(row.spec_base) != spec_canon {
             continue;
         }
-        let about = row_about(kb, carrier_param, &row);
-        let binding = application_binding(kb, carrier_param, &row.spec_view);
+        // A self-representing spec's provision is about its provider, whatever it binds
+        // (decision 8): one application per provider, as [`SpecApplication`] reads it.
+        let about = if self_representing { provider_canon } else { row_about(kb, carrier_param, &row) };
+        let application = SpecApplication::of_view(kb, spec_sort, &row.spec_view);
         let at = match applications
             .iter()
-            .position(|a| a.about == about && same_application(kb, &a.binding, &binding))
+            .position(|a| a.about == about && a.application.same(kb, &application))
         {
             Some(at) => at,
             None => {
                 applications.push(ProvisionApplication {
                     about,
-                    binding,
+                    application,
                     suppliers: seed(about),
                 });
                 applications.len() - 1
@@ -1465,7 +1474,7 @@ pub(crate) fn spec_op_suppliers_of_provider(
     if applications.is_empty() {
         applications.push(ProvisionApplication {
             about: provider_canon,
-            binding: None,
+            application: SpecApplication::of_bindings(kb, spec_sort, &[]),
             suppliers: seed(provider_canon),
         });
     }
@@ -1488,19 +1497,6 @@ pub(crate) fn spec_op_suppliers_of_provider(
     }
 }
 
-/// What a provision binds to the spec's carrier parameter or sole one (`carrier_param`), which
-/// is the application it is: [`spec_op_suppliers_of_provider`]'s grouping, and
-/// [`merged_provision_bindings`]'.
-fn application_binding(
-    kb: &KnowledgeBase,
-    carrier_param: Option<Symbol>,
-    spec_view: &Value,
-) -> Option<Value> {
-    carrier_param
-        .filter(|_| view_is_sort_view(kb, spec_view))
-        .and_then(|param| provision_binding_value_at_param(kb, param, spec_view))
-}
-
 /// WI-20261025-7K84M — the bindings of `provider`'s one VIEW of `spec_sort` at the application
 /// the provision `row` is (§8.7, *One carrier declaring one spec twice*: provisions that agree
 /// are merged into one view): `row`'s own first, then those of every other provision of the
@@ -1518,32 +1514,16 @@ pub(super) fn merged_provision_bindings(
 ) -> SmallVec<[(Symbol, Value); 2]> {
     let mut out = provision_bindings(kb, spec_view);
     let spec_canon = kb.canonical_sort_sym(spec_sort);
-    let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
-    let at = application_binding(kb, carrier_param, spec_view);
+    let at = SpecApplication::of_view(kb, spec_sort, spec_view);
     for other in provides_rows_of_provider(kb, provider) {
         if other.rid != row
             && kb.canonical_sort_sym(other.spec_base) == spec_canon
-            && same_application(
-                kb,
-                &application_binding(kb, carrier_param, &other.spec_view),
-                &at,
-            )
+            && SpecApplication::of_view(kb, spec_sort, &other.spec_view).same(kb, &at)
         {
             out.extend(provision_bindings(kb, &other.spec_view));
         }
     }
     out
-}
-
-/// Are two provisions' bindings at the carrier parameter ONE application? By
-/// [`provision_bindings_agree`], the comparator `check_provision_binding_agreement` buckets
-/// applications with — conservative, so two spellings of one parameterized type read as two.
-pub(crate) fn same_application(kb: &KnowledgeBase, a: &Option<Value>, b: &Option<Value>) -> bool {
-    match (a, b) {
-        (Some(x), Some(y)) => provision_bindings_agree(kb, x, y),
-        (None, None) => true,
-        _ => false,
-    }
 }
 
 /// WI-652 — op symbols that have an EQUATIONAL definition `op(args) = rhs`

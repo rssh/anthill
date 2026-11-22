@@ -87,7 +87,7 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 | kb/typing/dict.rs:4849 | unprovided_spec_at_former | or_sole | X | the parameter name in the repair `[{param} = …]` |
 | kb/typing/forms.rs:1558 | generalize_at_binding | or_sole | S | where a generalized requirement is keyed to the ∀-bound carrier |
 | kb/typing/forms.rs:1601 | generalize_at_binding | or_sole | S | the same, for per-use instances moved back into a type |
-| kb/typing/call_class.rs:1410 | tree_application | or_sole | S | the application a resolved instance tree is for |
+| kb/typing/call_class.rs:1410 | tree_application | or_sole | S | the application a resolved instance tree is for — **done** (CXR5B step 3: `SpecApplication::of_bindings`) |
 | kb/typing/call_class.rs:1940 | dispatch_to_the_clause | ohscp | V | no carrier argument ⇒ the instance comes from the sort's `requires` |
 | kb/typing/slots.rs:990 | seed_provider_receiver | shcp | SC | a receiver-named provider is a carrier, not a dictionary spec |
 | kb/typing/slots.rs:991 | seed_provider_receiver | scp | S | bind the callee's carrier to a receiver named as a provider (`A.viaDefault()`) |
@@ -172,8 +172,8 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 | kb/typing/provision.rs:813 | check_rule_sort_uses | scp | K | the carrier the member must name: its own inline ladder (below) |
 | kb/typing/provision.rs:865 | parameter_spec_written_as_type | sop | K | a dictionary spec written as a value type is refused |
 | kb/typing/provision.rs:1314 | provision_supplier | wdc | W | witness vs fact/own supply route of one provision |
-| kb/typing/provision.rs:1501 | spec_op_suppliers_of_provider | or_sole | W | Own vs Witness route, grouped by application |
-| kb/typing/provision.rs:1599 | merged_provision_bindings | or_sole | P | merge the bindings of same-application provisions |
+| kb/typing/provision.rs:1501 | spec_op_suppliers_of_provider | or_sole | W | Own vs Witness route, grouped by application — **grouping done** (CXR5B step 3: by `SpecApplication`, every type-var; a self-representing spec at its provider). The route's `about` still reads the single parameter for a spec with a dictionary |
+| kb/typing/provision.rs:1599 | merged_provision_bindings | or_sole | P | merge the bindings of same-application provisions — **done** (CXR5B step 3: `SpecApplication`) |
 | kb/typing/provision.rs:2490 | write_left_out_params | scp | P | σ: every left-out parameter except the carrier becomes a fresh `?` |
 
 ## Ladders that are not one of the three named functions
@@ -188,3 +188,12 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 - `registered_effect_kinds` (signature.rs:5877): `Effect`'s `T` binding, by label.
 - apply.rs:4172: scp first, then every parameter in turn.
 - rule_requirements.rs:3774: or_sole only when the spec has two or more parameters.
+
+## Readers outside the named functions, moved by CXR5B
+
+- `check_provision_binding_agreement` (coherence.rs) bucketed a provider's provisions by the
+  binding of the spec's FIRST declared type-var. Step 3: a witness's provisions by
+  `SpecApplication`, the provider's own in one bucket (decision 7, and the P readers'
+  one view per provider).
+- The instance-fact leg of `provider_coherence_groups_with`: two facts of a group are
+  ambiguous only at one `SpecApplication` (step 3).

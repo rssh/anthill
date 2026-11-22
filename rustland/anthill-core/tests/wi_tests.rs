@@ -2352,6 +2352,8 @@ mod wi_je2mt_provision_at_its_carrier_test;
 mod wi_cxr5b_provision_carrier_test;
 #[path = "include/wi_cxr5b_call_fixes_test.rs"]
 mod wi_cxr5b_call_fixes_test;
+#[path = "include/wi_cxr5b_one_provider_test.rs"]
+mod wi_cxr5b_one_provider_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;

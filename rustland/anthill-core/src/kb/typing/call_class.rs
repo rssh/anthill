@@ -985,7 +985,8 @@ pub(crate) fn per_application_supply(
 ) -> String {
     let op_qn = kb.qualified_name_of(spec_op);
     let short = short_name_of(op_qn);
-    let spec = impl_parent_of_op(kb, spec_op).map_or(op_qn, |s| kb.qualified_name_of(s));
+    let spec_sym = impl_parent_of_op(kb, spec_op);
+    let spec = spec_sym.map_or(op_qn, |s| kb.qualified_name_of(s));
     let each: Vec<String> = applications
         .iter()
         .map(|app| {
@@ -995,16 +996,16 @@ pub(crate) fn per_application_supply(
                 render_suppliers(kb, &app.suppliers, short).join(" and ")
             };
             let at = app
-                .binding
-                .as_ref()
-                .map_or_else(|| kb.qualified_name_of(app.about).to_string(), |b| declared_type_display(kb, b));
+                .application
+                .display_of(kb, spec_sym)
+                .unwrap_or_else(|| kb.qualified_name_of(app.about).to_string());
             format!("at `{at}`, {what}")
         })
         .collect();
     format!(
-        "`{p}` provides `{spec}` at {n} sorts and supplies `{short}` differently at them \
-         ({}), and a dictionary names its provider, not the sort it is for. Supply `{short}` \
-         alike at every sort `{p}` provides `{spec}` at, or as a member of `{p}`",
+        "`{p}` provides `{spec}` at {n} applications and supplies `{short}` differently at them \
+         ({}), and a dictionary names its provider, not the application it is for. Supply \
+         `{short}` alike at every application of `{spec}` `{p}` provides, or as a member of `{p}`",
         each.join("; "),
         p = kb.qualified_name_of(provider),
         n = applications.len(),
@@ -1194,7 +1195,7 @@ pub(crate) fn resolve_op_target_at(
     kb: &KnowledgeBase,
     impl_sym: Symbol,
     spec_op: Symbol,
-    application: Option<&Value>,
+    application: Option<&SpecApplication>,
 ) -> Result<Symbol, ProviderSupplyRefusal> {
     if answered_by_its_dictionary(kb, spec_op) {
         return Ok(spec_op);
@@ -1262,11 +1263,10 @@ pub(crate) fn resolve_op_target_at(
     let (carrier, suppliers) = match supply {
         ProviderSupply::Uniform { carrier, suppliers } => (carrier, suppliers),
         ProviderSupply::PerApplication(mut applications) => {
-            let asked = application.cloned();
-            match application.and_then(|_| {
+            match application.and_then(|asked| {
                 applications
                     .iter()
-                    .position(|a| a.binding.is_some() && same_application(kb, &a.binding, &asked))
+                    .position(|a| a.application.binds_any() && a.application.same(kb, asked))
             }) {
                 Some(at) => {
                     let app = applications.swap_remove(at);
@@ -1398,21 +1398,21 @@ pub(crate) fn instance_supplier_tie(
     subs.iter().find_map(|sub| instance_supplier_tie(kb, sub))
 }
 
-/// WI-20261025-ZAWX9 — the application an instance `tree` is FOR: its head's binding at the
-/// spec's carrier parameter or sole one, which is what [`resolve_op_target_at`] is told.
-/// `None` for a tree that binds none there, and for one read from scope.
-pub(crate) fn tree_application(kb: &KnowledgeBase, tree: &ResolvedRequiresNode) -> Option<Value> {
+/// WI-20261025-ZAWX9 — the application an instance `tree` is FOR: its head's binding of every
+/// type-var of the spec ([`SpecApplication::of_bindings`]), which is what
+/// [`resolve_op_target_at`] is told. `None` for one read from scope.
+///
+/// WI-20261122-CXR5B: it was the head's binding at the spec's single carrier parameter, which
+/// the suppliers were grouped by too, so one provider's two provisions at `C = Foo` that differ
+/// in `Elem` were one application, and a call that fixed `Elem` had no way to say which
+/// (decision 1 of `docs/design/spec-carrier-set.md`, its d5).
+pub(crate) fn tree_application(kb: &KnowledgeBase, tree: &ResolvedRequiresNode) -> Option<SpecApplication> {
     let (ResolvedRequiresNode::Leaf { bindings, .. } | ResolvedRequiresNode::Conditional { bindings, .. }) =
         tree
     else {
         return None;
     };
-    let param = spec_carrier_param_or_sole(kb, tree.spec_sort())?;
-    let short = short_name_of(kb.local_name_of(param));
-    bindings
-        .iter()
-        .find(|(p, _)| *p == param || short_name_of(kb.local_name_of(*p)) == short)
-        .map(|(_, value)| value.clone())
+    Some(SpecApplication::of_bindings(kb, tree.spec_sort(), bindings))
 }
 
 /// WI-20261025-ZAWX9 — the spec operation that `member`, an own member of `provider`, backs

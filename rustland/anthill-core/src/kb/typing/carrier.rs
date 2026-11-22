@@ -629,7 +629,14 @@ pub(super) fn select_provision_at_carrier(
             open.push(p);
         }
     }
-    let covered = named.is_some()
+    // A bracket naming a provider fixes its provisions (§5.4), and covers the call when they
+    // agree on what it leaves free. Two of its own that disagree there are refused as two
+    // providers' are: one provider writing `Coll[C = Foo, Elem = Int64]` and `Coll[C = Foo,
+    // Elem = String]`, named by `Coll.first[Coll = WB](foo)` with nothing expected
+    // (WI-20261122-CXR5B, d5 of `docs/design/spec-carrier-set.md`) — it ran the first written.
+    // A named provider that is not among them is the pin's own refusal, which names it.
+    let named_stands = named.is_some_and(|w| standing.iter().any(|(p, _)| kb.canonical_sort_sym(*p) == w));
+    let covered = (named.is_some() && !named_stands)
         || env.enclosing_requires().iter().any(|r| {
             same_sort_canonical(kb, r.required_sort, spec_sort)
                 && view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, &spec_view_bindings_value(kb, &r.spec))
