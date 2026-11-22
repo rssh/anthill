@@ -72,3 +72,5 @@ echo "=== g2: default_provider rows of Src"
   'anthill.reflect.typing.default_provider(?s, ?c, ?w)' 2>&1 | grep -E "\?s = Src\b"
 run g3-self-returning-call-names-no-provider.anthill
 run g4-self-returning-call-names-a-concrete-provider.anthill
+run g5-provider-member-called-directly.anthill
+run g6-self-result-expected-type.anthill

@@ -1,6 +1,6 @@
 # The sort carrier and the operation carrier
 
-## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), and an amendment to §5.4's wording, approved by the user. Decision 6 decided the same day, reopened by a fourth review, and decided again: every binding counts (rule 1). A fifth review the same day found two cases decision 5's correction left open. §1's table was then reworked with the user from `Self`'s definition, decision 5 confirmed against it, and decisions 7 (refused at load) and 8 (a spec with both shapes is self-representing) follow from it. No decision is open. That review also had decision 5 corrected with the user: for a self-representing spec the carrier is the provider at its own type-vars (`List[T = T]`). Scope decided the same day: JE2MT is stage 1, and stage 2 is WI-20261122-CXR5B (§5). For WI-20261121-JE2MT.
+## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decision 3 and §5's scope corrected, decision 5 added and decided (the reflect relation's carrier is the substituted sort) (History, at the end). Second review the same day: decision 1's rule restated, so it no longer refuses d8, which runs today; the vocabulary of sort carrier and operation carrier taken from the user. §5.4's wording approved by the user the same day. Decision 4 measured and decided the same day (the sort carrier is all the type-vars, `Self` being the spec at all of them). Third review the same day: a call that names its provider (d11–d13), and an amendment to §5.4's wording, approved by the user. Decision 6 decided the same day, reopened by a fourth review, and decided again: every binding counts (rule 1). A fifth review the same day found two cases decision 5's correction left open. §1's table was then reworked with the user from `Self`'s definition, decision 5 confirmed against it, and decisions 7 (refused at load) and 8 (a spec with both shapes is self-representing) follow from it. No decision is open. A sixth review the same day: a second amendment to §5.4's wording, approved by the user (a `Self` value or a `Self` result's expected type fixes the provider), and c3 folded into WI-20261122-CXR5B. That review also had decision 5 corrected with the user: for a self-representing spec the carrier is the provider at its own type-vars (`List[T = T]`). Scope decided the same day: JE2MT is stage 1, and stage 2 is WI-20261122-CXR5B (§5). For WI-20261121-JE2MT.
 
 The MODEL is the type system's own, so this corrects the implementation to it. Proposal 074
 §1.2 (decided): "a spec may have several carriers … a value typed at the spec is the
@@ -69,7 +69,7 @@ value of type `Self` exists.
 | **a type-var `Self.T`** | the provision's binding | read off the provider: `Stream.T` is `List`'s `T`, `E` is `{}` |
 | **one provider, two provisions differing in a type-var** | two carriers; admitted, and decision 1 picks per call | one carrier with two readings of `Self.C`; refused at load (decision 7) |
 | **provides for itself** | its sort is the head of a binding (decision 6) | always, the provider being the carrier's head; a witness cannot exist |
-| **a call with no `Self` value** | decision 1 reads the rest off the provisions at what it fixes | the same; with several providers it is refused until the provider is written (g3): there is no default "any `Stream`" |
+| **a call with no `Self` value** | decision 1 reads the rest off the provisions at what it fixes | the same; with several providers it is refused until the provider is written (g3): there is no default "any `Stream`". Written in a bracket where it has no constructors; where it has, by calling its own member (`Src.next(Ones.make())`, g5), the bracket being refused today (g4, c3) |
 | **default rows keyed by** | the carrier: the spec's substituted sort | the carrier: the provider, so different providers never collide (decision 5) |
 | **examples** | `Eq`, `Coll`, `Dflt`, `NonEq`, `Convert` | `Stream`, `Src`, `Holder` |
 
@@ -281,7 +281,8 @@ takes `F` too, so with `F` declared first `Vec3`'s provision would read as a wit
 | c2 | control: `Box` providing `Monad[M = Self]` with the same members | 42 | |
 | c3 | two data sorts each `provides Dflt[T = Int64]` | refused, and no bracket is accepted: "each is a CONCRETE provider, where … the VALUE decides" | the bracket rule asks whether the provider has constructors (`is_value_directed_provider`, dispatch.rs:426), not which parameter is the carrier. Known since wi822 (`TieRepair::ValueDirected`) |
 
-c3 is a separate defect. Neither c1 nor c3 is filed.
+c3 is a separate defect. It became central with decision 8, and the user folded it into
+WI-20261122-CXR5B as a row (§7). c1 is a stage 2 row as well.
 
 ### D. What a call fixes: the probes behind decision 1
 
@@ -319,7 +320,7 @@ From [readers.md](spec-carrier-set/readers.md), 114 sites:
 | question | sites | under the model |
 |---|---|---|
 | D: add a provision unless one is written | 4 | is a written provision at a carrier that unifies with the one to be added (decision 5) |
-| S: select the provision a goal asks for | 39 | the goal's substituted sort: all its bindings, for a dictionary spec |
+| S: select the provision a goal asks for | 39 | for a spec with a dictionary, the goal's substituted sort: all its bindings. For a self-representing spec, a value at a `Self` parameter picks the provider; otherwise decision 1 reads the provisions at the type-vars the call fixes (decision 8) |
 | V: which argument fixes the substituted sort | 17 | the operation carrier (decision 1): the type-vars its signature mentions, directly or in an application. L6 reads a set, but of the parameters only and of a bare type-var only |
 | P: projection, left-out bindings | 12 | a binding of the carrier set, read by name; "except the carrier" becomes a decision, §6 |
 | K: a refusal decided by the parameter | 10 | per refusal (§6 for `ProvisionNamesNoCarrier`) |
@@ -423,7 +424,8 @@ corrected to describe the set, as 074 §1.2 has it:
    - the provisions at what it fixes disagree on a type-var it leaves unfixed (b8, d3).
 
    Then the substituted sort is written at the call. One provider and several are held to
-   the same rule, for every spec (decision 4 removed the self-representing exception).
+   the same rule, for every spec, except where decision 7 refuses one provider's two
+   provisions of a self-representing spec at load.
 
    **Why a call that fixes nothing is refused even with one provision (d9), while one that
    fixes something reads the rest off it (d8).** A call that fixes no type-var is open in
@@ -498,7 +500,7 @@ corrected to describe the set, as 074 §1.2 has it:
    writes decision 4 into the rule. So d11 answers 1, and d12 answers 7, where today it
    loads and then fails at run.
 
-   **Wording for §5.4, approved by the user 2026-11-22, with its amendment.** It goes into `kernel-language.md`
+   **Wording for §5.4, approved by the user 2026-11-22, with its two amendments.** It goes into `kernel-language.md`
    with the stage that implements decision 1 (stage 2), so that the spec never describes
    behaviour the implementation does not have yet. It replaces the case's first part, up to
    "the call's receiver"; the paragraph after it ("A rule written in a sort that requires
@@ -510,7 +512,10 @@ corrected to describe the set, as 074 §1.2 has it:
    >   directly or inside an application (`m: M[A]`); `Self` mentions them all. The call
    >   fixes what it can of them: a parameter's by the argument, the result's by the type
    >   expected at the call itself (not one a later use of its value expects), and any
-   >   type-var of `S` by a bracket or a `requires` in scope. Whatever the call leaves unfixed, in the operation carrier or
+   >   type-var of `S` by a bracket or a `requires` in scope. For a self-representing spec,
+   >   a value at a parameter typed `Self` fixes the provision's carrier, the provider whose
+   >   value it is, and so does the type expected at a result typed `Self`. Whatever the call
+   >   leaves unfixed, in the operation carrier or
    >   not, is read off the provisions at what it fixes, as `Iterable.find(xs)` reads
    >   `Element` off `List`'s and `let x = Coll.first(foo)` reads `Elem` off the one
    >   provision at `C = Foo`. A bracket naming a provider (`Dflt.dflt[Dflt = W1]()`) fixes
@@ -528,6 +533,21 @@ corrected to describe the set, as 074 §1.2 has it:
    >   `Coll[Elem = Int64].first(foo)`) or a `requires` on the operation; in a rule body, on
    >   the call's receiver. Two providers at the same substituted sort are not this case: a
    >   bracket naming the provider, or a default, chooses between them (§8.7).
+
+   **Second amendment, approved by the user 2026-11-22, and merged into the wording above**
+   (the sixth review, finding 1; measured on `d97883d1d`). The wording above does not say that a `Self` value fixes the
+   provider. By it alone, `Src.next(ones)` (g2) is two providers, `Ones` and `Twos`, at the
+   same substituted sort `Src[T = T]`, which its last sentence sends to a bracket or a
+   default. After "and any type-var of `S` by a bracket or a `requires` in scope", it adds:
+
+   > For a self-representing spec, a value at a parameter typed `Self` fixes the
+   > provision's carrier, the provider whose value it is, and so does the type expected at
+   > a result typed `Self`.
+
+   g2 keeps answering 12. g6 (`let o: Ones = Src.make[T = Int64]()`) is refused as
+   ambiguous today, and would answer 1. Naming the provider in a bracket (`[Src = Ones]`)
+   is refused today where it has constructors (g4); that is the c3 defect, which this
+   wording does not decide. It is a row of WI-20261122-CXR5B (§7).
 2. **A written provision that overlaps the one a derivation would add without covering
    it** (`Eq[T = Box[T = Int64]]` against the derived `Eq[T = Box[T = T]]`). Today `Box`
    gets no derived equality at all. Decided: keep that (any overlap skips). §8.3's "Closed
@@ -589,7 +609,8 @@ corrected to describe the set, as 074 §1.2 has it:
 
    Consequences, each written where it applies:
    - §1's table is now about the class, not the carrier.
-   - Decision 1's self-representing exception is removed.
+   - Decision 1's self-representing exception was removed here. Decision 7 later restored
+     it, from §1's table.
    - Decision 5's `?c` for `Stream` was first rewritten to `Stream[T = T, E = {}]` here. The
      fourth review showed that this collides, and the user corrected it to `List[T = T]`, the
      provider at its own type-vars (decision 5).
@@ -732,7 +753,9 @@ corrected to describe the set, as 074 §1.2 has it:
    e1 (2) and e2 (9) answer as today: `peek(box)` fixes `Self.C = Box`, and decision 1
    finds the one provision with `C = Box`. Several providers at the same `C` are refused at
    the call until the provider is written, as g3 is: there is no default "any `Holder` at
-   `C = Box`". A `default provides` mark cannot settle that tie, because its row is keyed
+   `C = Box`". Where the providers have constructors, the provider cannot be written in a
+   bracket today (g4, c3). The repair that works today is to call the provider's own
+   member: `Src.next(Ones.make())` answers 1 (g5, measured on `d97883d1d`). A `default provides` mark cannot settle that tie, because its row is keyed
    by the provider. The alternative, provider-keyed rows for the `Self`-taking operations
    and spec-keyed rows for the rest (two per provision), was not taken.
 
@@ -759,6 +782,11 @@ The stage 1 rows are JE2MT's; the stage 2 rows are WI-20261122-CXR5B's.
     provision, since e5 is refused by decision 7 anyway.
   - `VectorSpace` declared `F` first still reads `Vec3`'s provision as its own.
   - c1 answers 42, or its cause is named.
+  - g6 (`let o: Ones = Src.make[T = Int64]()`) answers 1: the type expected at a `Self`
+    result fixes the provider (§5.4's second amendment). g5 keeps answering 1.
+  - c3, folded in by the user: a provider with constructors may be named in a bracket where
+    no value at the call decides. c3 and g4 then answer, and §5.4's concrete-provider
+    paragraph is reworded for the user's approval.
   - The diagnostics the X readers print ("Write the instance: …") use the substituted sort.
   - f1, f2 and f4 answer as decision 6's table says: f4 is refused at load until one
     provision is marked `default provides`.
@@ -891,3 +919,17 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   confirmed against it, `?c` being the provision's carrier. Decisions 7 and 8 are recorded
   as following from it: refused at load, and a spec with both shapes is self-representing,
   `peek(c: C)` being `peek(c: Self.C)`.
+- **2026-11-22, sixth review from the other session** (anthill-6d), on `d97883d1d`. Taken
+  from it:
+  - The two sentences saying decision 4 removed the self-representing exception are
+    corrected; decision 7 restores it.
+  - §4's S row now covers the self-representing class.
+  - The repair that works today where a provider has constructors is named: calling its
+    own member, `Src.next(Ones.make())` answers 1 (g5, measured here).
+  - A second amendment to §5.4's wording, "a `Self` value fixes the provider", is proposed
+    for the user. g6 was measured here with it: an expected type at a `Self` result is not
+    used today.
+  - c3, now central for self-representing specs with concrete providers, is for the user
+    to file or fold into WI-20261122-CXR5B.
+- **2026-11-22, the user approved both**: the second amendment, merged into §5.4's wording,
+  and c3 as a row of WI-20261122-CXR5B.

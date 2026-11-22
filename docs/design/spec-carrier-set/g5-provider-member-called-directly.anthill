@@ -1,0 +1,37 @@
+namespace carrier_set.g5
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  sort Src
+    sort T = ?
+    operation next(s: Self) -> Int64
+    operation make() -> Self
+  end
+
+  sort Ones
+    sort T = ?
+    entity ones
+    provides Src[T = T]
+    operation next(s: Ones) -> Int64 = 1
+    operation make() -> Self = ones
+  end
+
+  sort Twos
+    sort T = ?
+    entity twos
+    provides Src[T = T]
+    operation next(s: Twos) -> Int64 = 2
+    operation make() -> Self = twos
+  end
+
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(Src.next(Ones.make())))
+      0
+  end
+end
