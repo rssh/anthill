@@ -20,6 +20,7 @@
 //! reports when the change under it is backed out, and which of them pass either
 //! way BY DESIGN (they guard the losing direction and must never have been red).
 
+use anthill_core::kb::ClauseLabel;
 use std::rc::Rc;
 
 
@@ -397,9 +398,18 @@ fn a_leaf_child_stores_one_fact_whichever_carrier_it_rides() {
                 ClauseKind::Fact,
                 domain,
                 None,
+                ClauseLabel::Runtime,
             );
             let via_term =
-                kb.assert_fact_carrier(f, vec![twin], vec![], ClauseKind::Fact, domain, None);
+                kb.assert_fact_carrier(
+                    f,
+                    vec![twin],
+                    vec![],
+                    ClauseKind::Fact,
+                    domain,
+                    None,
+                    ClauseLabel::Runtime,
+                );
             via_carrier != via_term
                 || !matches!(kb.rule_head_value(via_carrier), Value::Term { .. })
         })
@@ -434,6 +444,7 @@ fn a_compound_child_still_takes_the_value_fact_carrier() {
         ClauseKind::Fact,
         domain,
         None,
+        ClauseLabel::Runtime,
     );
     assert!(
         matches!(kb.rule_head_value(rid), Value::Entity { .. }),

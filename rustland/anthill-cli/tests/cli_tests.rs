@@ -89,6 +89,8 @@ mod wi_zw6n5_lf1_scaffold_test;
 mod wi754_unknown_functor_test;
 #[path = "include/wi_drgcp_query_answer_spelling_test.rs"]
 mod wi_drgcp_query_answer_spelling_test;
+#[path = "include/wi_g8e02_sld_proof_query_test.rs"]
+mod wi_g8e02_sld_proof_query_test;
 
 #[path = "include/wi767_query_resolve_default_test.rs"]
 mod wi767_query_resolve_default_test;

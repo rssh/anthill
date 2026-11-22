@@ -1664,21 +1664,25 @@ impl KnowledgeBase {
         // WI-1028 — the rule's DOMAIN is the top-level scope's owner. This used to
         // mint that scope's name term only to project back to its own functor.
         let global_domain = self.global_scope().owner();
+        // Labeled `<op_qn>__defeq` (debuggability), a label minted for this clause in the
+        // scope `op` is declared in (WI-20261121-G8E02, `derived_label`). It was a symbol
+        // of `<global>` named by its last segment, where two operations of one name in two
+        // scopes took ONE symbol, and the second's rule the first's label.
+        let owner = self
+            .symbols
+            .declaring_scope(op)
+            .expect("a bodied operation is declared in a scope")
+            .owner();
+        let defeq_local = format!("{}__defeq", self.local_name_of(op));
+        let label_sym = self.derived_label(owner, &defeq_local);
         let rid = self.assert_rule_debruijn_with_nodes(
             head,
             vec![body_node],
             rule_sort,
             global_domain,
             None,
+            super::ClauseLabel::Derived(label_sym),
         );
-
-        // Stable QN `<op_qn>__defeq` (idempotency + debuggability).
-        let op_qn = self.qualified_name_of(op).to_string();
-        let defeq_qn = format!("{op_qn}__defeq");
-        let short = defeq_qn.rsplit('.').next().unwrap_or(&defeq_qn).to_string();
-        let global_scope = self.global_scope();
-        let label_sym = self.define_symbol(&short, &defeq_qn, SymbolKind::Rule, global_scope);
-        self.set_rule_label(rid, label_sym);
         Some(rid)
     }
 

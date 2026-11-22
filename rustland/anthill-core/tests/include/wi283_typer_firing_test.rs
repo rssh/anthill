@@ -10,6 +10,7 @@
 //! shared firing helpers themselves are also covered by `simp_rewrite`'s
 //! unit tests over the bare occurrence representation.
 
+use anthill_core::kb::ClauseLabel;
 use std::rc::Rc;
 
 use anthill_core::intern::Symbol;
@@ -70,7 +71,7 @@ fn assert_add_zero(kb: &mut KnowledgeBase) -> Symbol {
     });
     let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
-    kb.assert_fact(eq_head, sort, domain, Some(meta));
+    kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
     add
 }
 
@@ -111,7 +112,7 @@ fn assert_add_comm(kb: &mut KnowledgeBase) -> Symbol {
     });
     let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
-    kb.assert_fact(eq_head, sort, domain, Some(meta));
+    kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
     add
 }
 

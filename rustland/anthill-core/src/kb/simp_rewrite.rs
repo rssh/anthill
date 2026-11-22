@@ -2529,6 +2529,7 @@ pub(super) fn reassemble(
 
 #[cfg(test)]
 mod tests {
+    use crate::kb::ClauseLabel;
     use super::*;
     use crate::kb::node_occurrence::{NodeKind, OccurrenceOrigin};
     use crate::kb::term::{Literal, Var};
@@ -2582,7 +2583,7 @@ mod tests {
         let (eq_head, meta, add) = build_add_zero(kb);
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        kb.assert_fact(eq_head, sort, domain, Some(meta));
+        kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
         add
     }
 
@@ -2594,7 +2595,14 @@ mod tests {
         let (eq_head, meta, add) = build_add_zero(kb);
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
         add
     }
 
@@ -2638,7 +2646,7 @@ mod tests {
         };
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let rid = kb.assert_fact_value(head, sort, domain, None);
+        let rid = kb.assert_fact_value(head, sort, domain, None, ClauseLabel::Runtime);
 
         // The stored head is a value carrier (not a `Term`), so the term-only
         // `fact_head_term` skip reads `None`…
@@ -2685,7 +2693,14 @@ mod tests {
         });
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        kb.assert_rule_debruijn_with_nodes(unify_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            unify_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         assert!(
             has_simp_equations(&mut kb),
@@ -2910,7 +2925,7 @@ mod tests {
                 named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
             })
         };
-        kb.assert_fact(eq_head, sort, domain, Some(meta));
+        kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
 
         let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
         let body = NodeOccurrence::new_expr(

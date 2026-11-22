@@ -213,10 +213,14 @@ fn two_requirements_of_one_scope_are_each_their_own() {
 
 /// THE WARNING IS OF THE LAWS THAT ARE NOT LOWERED, counted against what the requirement
 /// gives and named: `WeakOrd` at `Int64` gives ten — its nine and `Eq`'s — and at a
-/// concrete carrier none is lowered (a law is asserted of a carrier's own sort). Nine of
-/// the ten are cited by a label — six of them generated (WI-20261121-MVQP8) — and the
-/// constraint is counted. At the scope's
-/// own parameter all ten lower, and nothing is said.
+/// concrete carrier none is lowered (a law is asserted of a carrier's own sort). All ten
+/// are cited by a label — six of them generated (WI-20261121-MVQP8), and the constraint's
+/// on its clause since WI-20261121-G8E02, where it was counted — each at the line it is
+/// written on, the constraint at its own. At the scope's own parameter all ten lower, and
+/// nothing is said.
+///
+/// BACKED OUT (the constraint's row records no item span): FAILS — `compare_congruent`
+/// named with no site; this file's other ten rows pass (MEASURED 2026-11-22).
 #[test]
 fn the_warning_counts_the_laws_left_out_and_names_them() {
     let out = prove_dry_run(
@@ -241,9 +245,10 @@ fn the_warning_counts_the_laws_left_out_and_names_them() {
              anthill.prelude.WeakOrd.min-NCX312X9 at anthill/prelude/ordered.anthill:161:5, \
              anthill.prelude.WeakOrd.compare_antisym at anthill/prelude/ordered.anthill:167:22, \
              anthill.prelude.WeakOrd.compare_refl at anthill/prelude/ordered.anthill:169:19, \
-             anthill.prelude.Eq.eq_refl at anthill/prelude/eq.anthill:81:17, 1 constraint ("
+             anthill.prelude.WeakOrd.compare_congruent at anthill/prelude/ordered.anthill:200:3, \
+             anthill.prelude.Eq.eq_refl at anthill/prelude/eq.anthill:81:17 ("
         ),
-        "ten laws, all left out, three named: {warning}"
+        "ten laws, all left out, all named: {warning}"
     );
     assert_eq!(laws_of(&out, "test.bvg8m.woi.Scope.r"), Vec::<&str>::new(), "{}", out.stdout);
 

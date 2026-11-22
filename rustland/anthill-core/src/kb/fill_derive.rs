@@ -71,7 +71,7 @@ use crate::intern::Symbol;
 use crate::kb::load::{DomainJob, LoadError};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::term_view::{TermView, ViewHead, ViewItem};
-use crate::kb::{ClauseKind, KnowledgeBase, SymbolKind};
+use crate::kb::{ClauseKind, ClauseLabel, KnowledgeBase, SymbolKind};
 
 /// The marker a derived `fill` clause spells "the `k`-th sub-dictionary of `?self`" with —
 /// `__domain_sub(?self, k)` — evaluated by `apply_domain` when it reads its dictionary
@@ -408,8 +408,16 @@ fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
             .declaring_scope(sort)
             .map(|s| s.owner())
             .unwrap_or(sort);
-        let rid =
-            kb.assert_rule_debruijn_with_nodes(head, body_nodes, ClauseKind::Rule, domain, None);
+        // WI-20261121-G8E02 — the primitive's one clause, labeled by the relation it is
+        // the clause of (`Int64.domain`), which names it alone.
+        let rid = kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            ClauseKind::Rule,
+            domain,
+            None,
+            ClauseLabel::Derived(fill),
+        );
         kb.install_rule_type_bounds(rid, &[(x_var, crate::eval::value::Value::term(self_type))]);
         kb.record_sort_domain(
             sort,
@@ -738,12 +746,18 @@ fn emit_fill_clauses(
         body.extend(fills);
         let head = pos_fn(kb, entry.fill, &[ctor_term]);
         let body_nodes = kb.term_body_to_nodes(&body);
+        // WI-20261121-G8E02 — a case is labeled by the domain and its constructor,
+        // `<Sort>.domain-<ctor>`: the derivation makes one clause of `fill` per
+        // constructor, and the constructor is what tells them apart.
+        let case_label = format!("domain-{}", kb.local_name_of(ctor));
+        let case_label = kb.derived_label(c.job.sort, &case_label);
         let rid = kb.assert_rule_debruijn_with_nodes(
             head,
             body_nodes,
             ClauseKind::Rule,
             c.job.domain,
             None,
+            ClauseLabel::Derived(case_label),
         );
         kb.set_rule_head_span(rid, c.job.span);
     }
@@ -776,8 +790,16 @@ fn emit_value_face(
     body.push(pos_fn(kb, syms.apply, &[evidence, x]));
     let head = pos_fn(kb, face, &[x]);
     let body_nodes = kb.term_body_to_nodes(&body);
-    let rid =
-        kb.assert_rule_debruijn_with_nodes(head, body_nodes, ClauseKind::Rule, c.job.domain, None);
+    // WI-20261121-G8E02 — the face's one clause is labeled by the face, `<Sort>.domain`,
+    // which names it alone ([`value_face_symbol`] answers only a relation with no clause).
+    let rid = kb.assert_rule_debruijn_with_nodes(
+        head,
+        body_nodes,
+        ClauseKind::Rule,
+        c.job.domain,
+        None,
+        ClauseLabel::Derived(face),
+    );
     kb.install_rule_type_bounds(rid, &[(x_var, crate::eval::value::Value::term(c.self_type))]);
     kb.set_rule_head_span(rid, c.job.span);
     kb.record_domain_value_face(face, c.job.sort);

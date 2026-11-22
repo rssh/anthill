@@ -25,6 +25,7 @@ pub mod reflect_reader;
 pub(crate) mod region;
 pub mod req_insertion;
 pub mod resolve;
+pub(crate) mod sld_proof;
 pub mod simp_rewrite;
 pub mod subst;
 /// Unified KnowledgeBase — hash-consed terms, facts, indexes, sort lattice.
@@ -54,6 +55,11 @@ use crate::intern::{Decl, ResolveResult, ScopeId, Symbol, SymbolDef, SymbolKind,
 /// The entity a call held as data stands in (proposal 068 §1.3): `quoted(term: add(1, 2))` is
 /// the code `add(1, 2)`, which nothing that reads it runs.
 pub(crate) const QUOTED_ENTITY: &str = "anthill.reflect.quoted";
+
+/// WI-20261121-G8E02 — the builtin relations the stdlib declares in a sort's scope, bound by
+/// [`KnowledgeBase::resolve_builtins`] once the stdlib's names are defined.
+const SORT_SCOPED_BUILTIN_RELATIONS: &[(&str, BuiltinTag)] =
+    &[("anthill.reflect.SLDProof.of", BuiltinTag::SldProofOf)];
 use crate::parse::desugar_target as dt;
 use crate::span::{SourceRegistry, SourceSpan};
 use discrim::SubstTree;
@@ -389,6 +395,41 @@ pub enum ClauseOrigin {
     Derived,
 }
 
+/// WI-20261121-G8E02 — WHERE A STORED CLAUSE'S LABEL COMES FROM. Every entry point that
+/// stores a clause takes one, so no site stores a clause without saying, and the compiler
+/// finds every site (proposal 075 §6, *Labels for derived clauses*; kernel-language.md
+/// §4.1: every clause the loader stores has a label).
+///
+/// A clause stored again — a fact that dedups onto one already labeled — keeps the label
+/// it has, whatever this one says: a clause has one citation label (WI-20261121-MVQP8).
+/// [`ClauseOrigin`] is a different question and is not decided here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ClauseLabel {
+    /// The clause is written in source: the label it was written with, or the one the
+    /// converter generated from its text (WI-20261121-MVQP8). Several clauses may share
+    /// one — the heads of a rule written with several.
+    Written(Symbol),
+    /// The loader derives the clause, and names it by its derivation: an induction
+    /// principle's one clause by the principle (`IntList.induction`), a sort domain's case
+    /// by the domain and the constructor (`IntList.domain-i_cons`, minted for it by
+    /// `KnowledgeBase::derived_label`). It names that one clause: the store refuses it,
+    /// loudly, for a clause while it labels another.
+    Derived(Symbol),
+    /// The loader derives a bodyless clause its derivation does not name — a reflect row,
+    /// a provision, a flow edge — ABOUT the declaration this names: it is labeled by what
+    /// it stores, as a written fact is (WI-20261121-MVQP8), the predicate's name (an
+    /// equation's subject's), `-` and a hash of the stored head, and the label is a name
+    /// under that declaration (`anthill.prelude.List.SortInfo-K3M9Q2XA`), as every derived
+    /// label is a name of what derived it — never one of `<global>`, where a clause's
+    /// domain can be. Two different such clauses have two different labels; one stored
+    /// twice is one clause.
+    Content(Symbol),
+    /// Asserted while a program runs — a `KB` operation, a store's rows read back, a
+    /// guard's probe: not the loader's, and stored with no label (proposal 075 §7,
+    /// question 2).
+    Runtime,
+}
+
 /// The runtime's accounts of what it could not do, raised on the `Error` channel: a
 /// program matches them and raises a caught one again, and does not construct one — a
 /// construction of one in a program is refused at load (kernel-language.md §5.3). So the
@@ -499,12 +540,14 @@ struct RuleEntry {
     /// `var_{shared_arity}..var_{arity-1}` (the step-introduced new
     /// vars) get emitted as declare-consts.
     shared_arity: u32,
-    /// Citation handle for labeled rules. Indexed under
+    /// Citation handle. Indexed under
     /// `rules_by_label` so `rule_id_by_qn` resolves a rule by its
     /// label even when the head's functor differs from the label
     /// (e.g. `rule simple_lemma: gte(?x, 3.0) :- ...` — head functor
-    /// is `gte`, label is `simple_lemma`). `None` for unlabeled rules
-    /// (they remain reachable through `rules_by_functor` on the head).
+    /// is `gte`, label is `simple_lemma`). Set by the store from the
+    /// [`ClauseLabel`] the clause was asserted with: every clause the loader
+    /// stores has one (WI-20261121-G8E02), and `None` is a clause asserted
+    /// while a program runs (reachable through `rules_by_functor` on the head).
     label: Option<Symbol>,
     /// WI-582 — typed rule-pattern bounds: `(debruijn_index, bound_type)` pairs
     /// from explicit `?x: T` head annotations. Each entry says "the variable at
@@ -558,6 +601,16 @@ struct RuleEntry {
     /// the loader right after assert (see `set_rule_head_span`), read by the
     /// typing.rs head-error paths.
     head_span: Option<crate::span::SourceSpan>,
+    /// WI-20261121-G8E02 — where the ITEM that wrote this clause is written, for a clause
+    /// whose head is not that text: a `constraint`'s reflection row, `Constraint(…)`, which
+    /// the loader builds around what the source wrote. A message that names a clause by its
+    /// label says where it is written (WI-20261121-MVQP8), and for this clause this is that
+    /// place ([`KnowledgeBase::rule_written_site`]). Kept apart from `head_span`, which says
+    /// the head IS source text and so puts a fact under the typer's construction check
+    /// (`check_fact_constructions`) — which refuses the row of a quantified constraint: its
+    /// `LogicalQuery` holds a quantifier's variable as its name, a string, where the field is
+    /// a `Symbol` (MEASURED: 43 rows of `wi_tests` refused).
+    item_span: Option<crate::span::SourceSpan>,
     /// WI-20260903-FCZ3N — an EQUATION'S RHS AS THE AUTHOR WROTE IT, De Bruijn-closed
     /// beside `head` and `body_nodes`. `None` for every clause that is not a bodyless
     /// equation, and for one whose head no source text produced.
@@ -638,12 +691,15 @@ impl ProgramClause {
 /// One law of a spec, as [`KnowledgeBase::spec_laws`] reads it.
 #[derive(Clone, Debug)]
 pub struct SpecLaw {
-    /// The name the law is cited by: written (`rule eq_refl: …`), or the one generated for
-    /// a clause written without (`gt-PMMH12JG`, WI-20261121-MVQP8). `None` for a
-    /// constraint's clause, whose label is the constraint's and not on it.
+    /// The name the law is cited by: written (`rule eq_refl: …`, `constraint
+    /// compare_congruent: …`), or the one generated for a clause written without
+    /// (`gt-PMMH12JG`, WI-20261121-MVQP8). Every clause the loader stores has one
+    /// (WI-20261121-G8E02) — a constraint's clause carries the constraint's, which it did
+    /// not before — so `None` is a clause asserted at run time, which no law is.
     pub label: Option<Symbol>,
     /// Where the law is written, so a message that names it can say where to find it — a
-    /// generated label names no line. `None` for a clause the loader derived.
+    /// generated label names no line ([`KnowledgeBase::rule_written_site`]: a constraint's
+    /// is the constraint's). `None` for a clause the loader derived.
     pub site: Option<crate::span::SourceSpan>,
     /// Whether its head is an equation — `lhs <=> rhs`, or a guarded `lhs = rhs :- g`.
     pub is_equation: bool,
@@ -1369,6 +1425,11 @@ pub struct KnowledgeBase {
     rules_by_functor: HashMap<Symbol, Vec<RuleId>>,
     by_domain: HashMap<Symbol, Vec<RuleId>>,
     rules_by_label: HashMap<Symbol, Vec<RuleId>>,
+    /// WI-20261121-G8E02 — every symbol [`Self::derived_label`] minted: the loader's names
+    /// for the clauses it derives, which no source declared. What a reader of the names a
+    /// load introduced leaves out (`KB.layer_symbols`), as `KB.layer_clauses` leaves out
+    /// the derived clauses themselves. MONOTONE, as the symbol table's definitions are.
+    derived_labels: HashSet<Symbol>,
     /// Rule slots allocated when the last load finished: a `RuleId` below it was
     /// produced by loading source, one at or above it was asserted afterwards — a
     /// defining rule synthesized at proof time (WI-669/687), a structured-proof
@@ -3236,6 +3297,7 @@ impl KnowledgeBase {
             rules_by_functor: HashMap::new(),
             bodied_rule_counts: HashMap::new(),
             rules_by_label: HashMap::new(),
+            derived_labels: HashSet::new(),
             loaded_rule_frontier: None,
             by_domain: HashMap::new(),
             sort_entities: HashMap::new(),
@@ -4365,6 +4427,22 @@ impl KnowledgeBase {
         self.rules[id.index()].head_span.get_or_insert(span);
     }
 
+    /// WI-20261121-G8E02 — record where the item that wrote the clause `id` is written, for
+    /// a clause whose head is not that text: a `constraint`'s reflection row
+    /// (`RuleEntry::item_span` says why it is not the head span). First-write-wins, as
+    /// [`Self::set_rule_head_span`].
+    pub(crate) fn set_rule_item_span(&mut self, id: RuleId, span: crate::span::SourceSpan) {
+        self.rules[id.index()].item_span.get_or_insert(span);
+    }
+
+    /// Where the clause `id` is written, for a message that names it (WI-20261121-MVQP8):
+    /// its head's span, or the span of the item that wrote it for a clause whose head is not
+    /// source text (a `constraint`'s row). `None` for a clause the loader derived.
+    pub fn rule_written_site(&self, id: RuleId) -> Option<crate::span::SourceSpan> {
+        let entry = &self.rules[id.index()];
+        entry.head_span.or(entry.item_span)
+    }
+
     /// WI-5XBBQ — record that this clause was WRITTEN IN THE SOURCE. See
     /// [`ClauseOrigin`] for why the loader has to say so and what reads it.
     ///
@@ -5261,7 +5339,8 @@ impl KnowledgeBase {
     /// Rules whose vars must close to De Bruijn go through
     /// [`Self::assert_rule_debruijn_with_nodes`] (synthesized / hand-built) or
     /// the loader's native occurrence build; this entry asserts the head + body
-    /// as given (ground facts, or callers that closed vars themselves).
+    /// as given (ground facts, or callers that closed vars themselves). `label`
+    /// says where the clause's citation label comes from ([`ClauseLabel`]).
     pub fn assert_rule(
         &mut self,
         head: TermId,
@@ -5269,9 +5348,10 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
         let body_nodes = self.term_body_to_nodes(&body);
-        self.assert_rule_nodes(head, body_nodes, clause_kind, domain, meta)
+        self.assert_rule_nodes(head, body_nodes, clause_kind, domain, meta, label)
     }
 
     /// Materialize a term body into the rule's occurrence body (WI-246/WI-372) —
@@ -5299,7 +5379,7 @@ impl KnowledgeBase {
     /// native occurrences, then close to De Bruijn via
     /// [`Self::finalize_rule_debruijn_nodes`] before landing here. Sets
     /// `arity`/`shared_arity`/`globals` to their ground-fact defaults; De Bruijn
-    /// callers overwrite them.
+    /// callers overwrite them. Labels the clause as `label` says ([`Self::label_clause`]).
     pub fn assert_rule_nodes(
         &mut self,
         head: impl Into<crate::eval::value::Value>,
@@ -5307,6 +5387,7 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
         // WI-373: the head is carrier-agnostic — a `Value::Term` for the
         // universal hash-consed case, or a `Value::Node`/`Entity` for a value
@@ -5347,7 +5428,177 @@ impl KnowledgeBase {
                     .or_insert(rule_id);
             }
         }
+        self.label_clause(rule_id, label);
         rule_id
+    }
+
+    /// WI-20261121-G8E02 — give the clause `id` just stored its label, as `label` says:
+    /// the one place a clause takes a label, so every entry point that stores one passes
+    /// through here with the [`ClauseLabel`] its caller had to state.
+    ///
+    /// A clause that already has a label keeps it — a fact stored again, deduped onto a
+    /// clause that has one: a clause has one citation label, the first
+    /// (WI-20261121-MVQP8's rule for a fact written twice). A label the loader gives a
+    /// clause it derives names that clause alone: one minted for it
+    /// ([`Self::derived_label`]) is its own, and one that is a predicate's name — an
+    /// induction principle's, a domain's value face — names the derivation's one clause,
+    /// which the derivation stores once. Asked for a clause while it labels another, it is
+    /// a loader defect, refused here rather than merged into a citation two clauses answer.
+    fn label_clause(&mut self, id: RuleId, label: ClauseLabel) {
+        if self.rules[id.index()].label.is_some() {
+            return;
+        }
+        let sym = match label {
+            ClauseLabel::Runtime => return,
+            ClauseLabel::Written(sym) => sym,
+            ClauseLabel::Derived(sym) => {
+                if let Some(other) = self.another_clause_labeled(sym, id) {
+                    panic!(
+                        "WI-20261121-G8E02: the loader labels the clause it derives `{}` and \
+                         that label is the label of another clause ({other:?}, beside {id:?}) \
+                         — a derived label names exactly one clause",
+                        self.qualified_name_of(sym),
+                    );
+                }
+                sym
+            }
+            ClauseLabel::Content(about) => self.content_label(id, about),
+        };
+        self.set_rule_label(id, sym);
+    }
+
+    /// WI-20261121-G8E02 — does `label` label a live clause? For a derivation whose one
+    /// clause is stored once: asked again, it finds the clause there.
+    pub(crate) fn has_clause_labeled(&self, label: Symbol) -> bool {
+        self.rules_by_label
+            .get(&label)
+            .is_some_and(|ids| ids.iter().any(|&rid| self.is_rule_alive(rid)))
+    }
+
+    /// A live clause other than `id` that `label` labels.
+    fn another_clause_labeled(&self, label: Symbol, id: RuleId) -> Option<RuleId> {
+        self.rules_by_label
+            .get(&label)
+            .and_then(|ids| ids.iter().copied().find(|&o| o != id && self.is_rule_alive(o)))
+    }
+
+    /// WI-20261121-G8E02 — a label for a clause the loader derives, named `owner.local`
+    /// (`derived_label(IntList, "domain-i_cons")` is `….IntList.domain-i_cons`): a
+    /// [`SymbolKind::Rule`] of `owner`'s scope, and a FRESH one at every call, so the
+    /// label names the one clause it is minted for.
+    ///
+    /// LISTED NOWHERE ([`crate::intern::SymbolTable::define_unlisted`]): no local of the
+    /// scope and no entry of the qualified-name table, so no name resolves to it, and the
+    /// clause is reached by it through its symbol (`rules_by_label`). Each listing was
+    /// MEASURED wrong — a local made the label a MEMBER of the declaration it is about (a
+    /// type alias's `SortAlias` row: the alias "declared both as a type alias and with
+    /// members of its own", `wi_rmzqz_host_block_rule_label_test`, `typing::owns_members`),
+    /// and a qualified name per derived clause doubled the table
+    /// [`Self::sort_has_constructors`] reads whole (the standard library's typer, 193 → 287
+    /// ms). And a declaration the source writes under the same name keeps it: the label
+    /// takes nothing from the table, so it cannot capture a name.
+    pub(crate) fn derived_label(&mut self, owner: Symbol, local: &str) -> Symbol {
+        let scope = self.symbols.scope_id(owner);
+        let qualified = if scope == self.symbols.global_scope() {
+            local.to_owned()
+        } else {
+            format!("{}.{local}", self.qualified_name_of(owner))
+        };
+        let sym = self.symbols.define_unlisted(local, &qualified, SymbolKind::Rule, scope);
+        self.derived_labels.insert(sym);
+        sym
+    }
+
+    /// WI-20261121-G8E02 — is `sym` a label the loader minted for a clause it derives
+    /// ([`Self::derived_label`])? Such a name is the loader's bookkeeping: no source
+    /// declared it.
+    pub fn is_derived_label(&self, sym: Symbol) -> bool {
+        self.derived_labels.contains(&sym)
+    }
+
+    /// WI-20261121-G8E02 — [`ClauseLabel::Content`]'s label for the bodyless clause `id`,
+    /// derived about `about`: `<about>.<name>-<HASH>`, `<name>` the last segment of the
+    /// predicate its head states (an equation's subject's, as WI-20261121-MVQP8 names a
+    /// written equation; the clause kind's where the head names none) and `<HASH>` the
+    /// [`crate::parse::LABEL_HASH_CHARS`]-character digest of the clause's kind, its
+    /// domain and its stored head — what a clause is ([`Self::assert_fact`]'s dedup key) —
+    /// each variable numbered by its first occurrence. The digest reads qualified names,
+    /// never a symbol's or a variable's number, so a row has the same name in every load
+    /// that stores it.
+    ///
+    /// The label is the clause's own symbol whatever its name: two clauses that store one
+    /// thing up to their variables are two — an abstract sort's `SortInfo` holds a fresh
+    /// variable for its definition, and a sort declared again beside the first stores a
+    /// second row the first does not dedup (MEASURED, `guardians_test`'s redeclaration
+    /// row) — and have two labels, of one name.
+    fn content_label(&mut self, id: RuleId, about: Symbol) -> Symbol {
+        let entry = &self.rules[id.index()];
+        assert!(
+            entry.body_nodes.is_empty(),
+            "WI-20261121-G8E02: a content label is for a bodyless clause; a bodied one the \
+             loader derives is named by its derivation (`ClauseLabel::Derived`)",
+        );
+        let (head, kind, domain) = (entry.head.clone(), entry.clause_kind, entry.domain);
+        let named = match term_view::TermView::head(&head, self) {
+            term_view::ViewHead::Functor { functor, .. } if self.has_equational_head(id) => {
+                term_view::TermView::pos_arg(&head, self, 0)
+                    .and_then(|subject| term_view::TermView::head(&subject, self).functor_sym())
+                    .or(Some(functor))
+            }
+            term_view::ViewHead::Functor { functor, .. } => Some(functor),
+            _ => None,
+        };
+        let name = named
+            .and_then(|sym| {
+                self.local_name_of(sym)
+                    .rsplit('.')
+                    .find(|segment| !segment.is_empty())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| kind.as_str().to_ascii_lowercase());
+        use std::fmt::Write as _;
+        use term_view::StructToken as T;
+        let key = term_view::goal_fingerprint(self, &head, &subst::Substitution::new());
+        let mut canonical = format!("{} {}", kind.as_str(), self.qualified_name_of(domain));
+        let mut vars: Vec<Var> = Vec::new();
+        for token in key.tokens() {
+            let _ = match token {
+                T::Open(f, pos, named) => {
+                    write!(canonical, " ({}/{pos}/{named}", self.qualified_name_of(*f))
+                }
+                T::NamedKey(k) => write!(canonical, " :{}", self.local_name_of(*k)),
+                T::Const(lit) => write!(canonical, " #{lit:?}"),
+                T::Ref(s) => write!(canonical, " @{}", self.qualified_name_of(*s)),
+                T::Ident(s) => write!(canonical, " ~{}", self.local_name_of(*s)),
+                T::Var(v) => {
+                    let n = vars.iter().position(|seen| seen == v).unwrap_or_else(|| {
+                        vars.push(*v);
+                        vars.len() - 1
+                    });
+                    write!(canonical, " ?{n}")
+                }
+                T::Bottom => write!(canonical, " ⊥"),
+                T::Opaque => write!(canonical, " !"),
+            };
+        }
+        let hash =
+            crate::eval::builtins::digest_base32(&canonical, crate::parse::LABEL_HASH_CHARS);
+        self.derived_label(about, &format!("{name}-{hash}"))
+    }
+
+    /// WI-20261121-G8E02 — the label of the row that replaces the clause `id`, a row stored
+    /// again in a new form (its bindings completed, a verdict written): the provenance the
+    /// row it replaces had. A row the loader stored is the loader's again, labeled by what
+    /// it now stores under the name its label was under; a row a program asserted while it
+    /// ran has no label, and neither has its replacement.
+    pub(crate) fn label_of_replacement(&self, id: RuleId) -> ClauseLabel {
+        let Some(label) = self.rule_label(id) else {
+            return ClauseLabel::Runtime;
+        };
+        let Some(scope) = self.symbols.declaring_scope(label) else {
+            panic!("WI-20261121-G8E02: label {label:?} is declared in no scope");
+        };
+        ClauseLabel::Content(scope.owner())
     }
 
     /// Store a value head + occurrence body as a `RuleEntry` and index it
@@ -5486,6 +5737,7 @@ impl KnowledgeBase {
             // WI-458: filled by the loader via `set_rule_head_span` once it has
             // this rule's RuleId; a synthesized head keeps `None`.
             head_span: None,
+            item_span: None,
             // WI-472: set by `assert_fact_value` after this push, for a deduped
             // Node/Entity fact head. Every other head (rule, un-deduped, or a
             // `Value::Term` fact whose key is the head itself) leaves it `None`.
@@ -5770,6 +6022,7 @@ impl KnowledgeBase {
         trigger_sort: Symbol,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> Option<RuleId> {
         let guard_indices: Vec<usize> = self
             .guards_by_sort
@@ -5778,12 +6031,12 @@ impl KnowledgeBase {
             .unwrap_or_default();
 
         if guard_indices.is_empty() {
-            return Some(self.assert_fact(term, clause_kind, domain, meta));
+            return Some(self.assert_fact(term, clause_kind, domain, meta, label));
         }
 
         // General path: insert tentatively, check guards, retract on failure.
         // Carrier-agnostic: the guard is read through `TermView` (WI-023).
-        let rule_id = self.assert_fact(term, clause_kind, domain, meta);
+        let rule_id = self.assert_fact(term, clause_kind, domain, meta, label);
 
         for &idx in &guard_indices {
             let query = self.guards[idx].query.clone();
@@ -6138,6 +6391,7 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
         // WI-233: O(1) ground-fact dedup. Pre-WI-233 this was a linear
         // scan over every clause sharing the sort, which approached O(N²) total work
@@ -6154,9 +6408,10 @@ impl KnowledgeBase {
         if let Some(rid) =
             live_dedup_hit(&self.fact_dedup, &self.rules, &(term, clause_kind, domain))
         {
+            self.label_clause(rid, label);
             return rid;
         }
-        self.assert_rule(term, vec![], clause_kind, domain, meta)
+        self.assert_rule(term, vec![], clause_kind, domain, meta, label)
     }
 
     /// WI-20260821-6WVJB — a predicate's or an operation's fact head with its NAMED
@@ -6218,10 +6473,11 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
         use crate::eval::value::Value;
         if let Value::Term { id: t, .. } = head {
-            return self.assert_fact(t, clause_kind, domain, meta);
+            return self.assert_fact(t, clause_kind, domain, meta, label);
         }
         if let Some(key) = self.value_fact_dedup_key(&head) {
             // Built once and MOVED through both uses: a probe that misses hands its
@@ -6230,6 +6486,7 @@ impl KnowledgeBase {
             // `RuleEntry` field go (WI-815; see `retract`).
             let map_key = (key, clause_kind, domain);
             if let Some(rid) = live_dedup_hit(&self.value_fact_dedup, &self.rules, &map_key) {
+                self.label_clause(rid, label);
                 return rid;
             }
             // Miss (or the keyed entry is stale-retracted): store + re-key. Use
@@ -6237,11 +6494,14 @@ impl KnowledgeBase {
             // fresh live RuleId.
             let rid = self.push_value_head_entry(head, Vec::new(), clause_kind, domain, meta);
             self.value_fact_dedup.insert(map_key, rid);
+            self.label_clause(rid, label);
             return rid;
         }
         // No usable key (an `Opaque`-bearing head): store without dedup, as
         // before — a dedup-miss, never unsound (WI-348 Phase B).
-        self.push_value_head_entry(head, Vec::new(), clause_kind, domain, meta)
+        let rid = self.push_value_head_entry(head, Vec::new(), clause_kind, domain, meta);
+        self.label_clause(rid, label);
+        rid
     }
 
     /// WI-472/WI-815: the `value_fact_dedup` key for a `Node`/`Entity`-carrier
@@ -6330,6 +6590,7 @@ impl KnowledgeBase {
     /// value fact via [`Self::assert_fact_value`]. Collapses the
     /// build-Term-or-Entity choice the sort-relation producers (`SortAlias` /
     /// `SortRequiresInfo` / `SortProvidesInfo`) otherwise repeat.
+    #[allow(clippy::too_many_arguments)]
     pub fn assert_fact_carrier(
         &mut self,
         functor: Symbol,
@@ -6338,6 +6599,7 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
         use crate::eval::value::Value;
         // One source of the carrier decision, shared with [`Self::reify`]: the
@@ -6345,8 +6607,10 @@ impl KnowledgeBase {
         // a `Value::Node`-bearing one as a `Value::Entity` value fact. Routing on
         // the assembled carrier keeps the two paths from ever disagreeing.
         match self.fn_value(functor, pos, named) {
-            Value::Term { id: term, .. } => self.assert_fact(term, clause_kind, domain, meta),
-            head => self.assert_fact_value(head, clause_kind, domain, meta),
+            Value::Term { id: term, .. } => {
+                self.assert_fact(term, clause_kind, domain, meta, label)
+            }
+            head => self.assert_fact_value(head, clause_kind, domain, meta, label),
         }
     }
 
@@ -7134,6 +7398,11 @@ impl KnowledgeBase {
                     slot(1, false, SlotReading::Proved),
                 ])
             }
+            // WI-20261121-G8E02 — `SLDProof.of(goal, ?p)`: the goal is a goal, read and checked
+            // as one, never computed as a value; the proof after it is data.
+            (Some(BuiltinTag::SldProofOf), 2) => {
+                SmallVec::from_elem(slot(0, false, SlotReading::Proved), 1)
+            }
             // A goal riding in its citation marker (WI-20261102-ATVC1): the goal is proved,
             // the relation and the dictionaries after it are data.
             (Some(BuiltinTag::WithinRequirements), n) if n >= 2 => {
@@ -7736,30 +8005,36 @@ impl KnowledgeBase {
 
     /// [`Self::assert_fact`] for a loader metadata fact (WI-630) — see the
     /// module-level note. Debug-only head tripwires, then delegate.
+    ///
+    /// A metadata fact is a row the loader derives ABOUT a declaration, `about`, and its
+    /// label is [`ClauseLabel::Content`] under it (WI-20261121-G8E02): what the three
+    /// metadata entry points take in place of a label.
     pub fn assert_metadata_fact(
         &mut self,
         term: TermId,
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        about: Symbol,
     ) -> RuleId {
         #[cfg(debug_assertions)]
         {
             self.check_metadata_head(self.head_functor(term));
             self.check_metadata_slots_of_term(term);
         }
-        let rid = self.assert_fact(term, clause_kind, domain, meta);
+        let rid = self.assert_fact(term, clause_kind, domain, meta, ClauseLabel::Content(about));
         self.note_metadata_fact_presented(rid);
         rid
     }
 
-    /// [`Self::assert_fact_value`] for a loader metadata fact (WI-630).
+    /// [`Self::assert_fact_value`] for a loader metadata fact (WI-630), about `about`.
     pub fn assert_metadata_fact_value(
         &mut self,
         head: crate::eval::value::Value,
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        about: Symbol,
     ) -> RuleId {
         #[cfg(debug_assertions)]
         {
@@ -7788,12 +8063,14 @@ impl KnowledgeBase {
                 _ => {}
             }
         }
-        let rid = self.assert_fact_value(head, clause_kind, domain, meta);
+        let rid =
+            self.assert_fact_value(head, clause_kind, domain, meta, ClauseLabel::Content(about));
         self.note_metadata_fact_presented(rid);
         rid
     }
 
-    /// [`Self::assert_fact_carrier`] for a loader metadata fact (WI-630).
+    /// [`Self::assert_fact_carrier`] for a loader metadata fact (WI-630), about `about`.
+    #[allow(clippy::too_many_arguments)]
     pub fn assert_metadata_fact_carrier(
         &mut self,
         functor: Symbol,
@@ -7802,6 +8079,7 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        about: Symbol,
     ) -> RuleId {
         #[cfg(debug_assertions)]
         {
@@ -7809,7 +8087,15 @@ impl KnowledgeBase {
             let labels: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
             self.check_metadata_slots(functor, pos.len(), &labels);
         }
-        let rid = self.assert_fact_carrier(functor, pos, named, clause_kind, domain, meta);
+        let rid = self.assert_fact_carrier(
+            functor,
+            pos,
+            named,
+            clause_kind,
+            domain,
+            meta,
+            ClauseLabel::Content(about),
+        );
         self.note_metadata_fact_presented(rid);
         rid
     }
@@ -8432,7 +8718,7 @@ impl KnowledgeBase {
                 };
                 is_law.then(|| SpecLaw {
                     label: self.rule_label(rid),
-                    site: self.rule_head_span(rid),
+                    site: self.rule_written_site(rid),
                     is_equation,
                     clause: self.program_clause(rid),
                 })
@@ -10325,8 +10611,17 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
-        self.assert_rule_debruijn_with_bound_vars(head, body_nodes, &[], clause_kind, domain, meta)
+        self.assert_rule_debruijn_with_bound_vars(
+            head,
+            body_nodes,
+            &[],
+            clause_kind,
+            domain,
+            meta,
+            label,
+        )
     }
 
     /// WI-20260911-5G28A — [`Self::assert_rule_debruijn_with_nodes`] admitting a
@@ -10355,6 +10650,7 @@ impl KnowledgeBase {
     /// The extra vars go in AFTER the head's and the body's, so a rule with no bound
     /// variables (every rule in the corpus before this ticket) collects the identical
     /// list and is byte-identical through this path.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn assert_rule_debruijn_with_bound_vars(
         &mut self,
         head: impl Into<crate::eval::value::Value>,
@@ -10363,6 +10659,7 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
         let head = head.into();
         let mut vars = Vec::new();
@@ -10376,7 +10673,16 @@ impl KnowledgeBase {
                 vars.push(v);
             }
         }
-        self.finalize_rule_debruijn_nodes(head, body_nodes, vars, 0, clause_kind, domain, meta)
+        self.finalize_rule_debruijn_nodes(
+            head,
+            body_nodes,
+            vars,
+            0,
+            clause_kind,
+            domain,
+            meta,
+            label,
+        )
     }
 
     /// WI-635: collect a stored fact/rule head's `Var::Global`s carrier-agnostically
@@ -10548,6 +10854,7 @@ impl KnowledgeBase {
     /// single rule-DeBruijn-closure path (`assert_rule_debruijn_with_nodes` and
     /// its shared-frame twin both land here).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn finalize_rule_debruijn_nodes(
         &mut self,
         head: impl Into<crate::eval::value::Value>,
@@ -10557,6 +10864,7 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
         let head = head.into();
         let arity = vars.len() as u32;
@@ -10575,7 +10883,7 @@ impl KnowledgeBase {
             }
             (new_head, out)
         };
-        let rule_id = self.assert_rule_nodes(db_head, db_nodes, clause_kind, domain, meta);
+        let rule_id = self.assert_rule_nodes(db_head, db_nodes, clause_kind, domain, meta, label);
         let entry = &mut self.rules[rule_id.index()];
         entry.arity = arity;
         entry.shared_arity = shared_arity;
@@ -11075,8 +11383,9 @@ impl KnowledgeBase {
             .collect()
     }
 
-    /// Citation handle for labeled rules. `None` for unlabeled rules
-    /// (those resolve via `rules_by_functor` on the head).
+    /// The clause's citation label. Every clause the loader stores has one
+    /// (WI-20261121-G8E02, [`ClauseLabel`]); `None` is a clause asserted while a program
+    /// runs, which resolves through `rules_by_functor` on its head.
     pub fn rule_label(&self, id: RuleId) -> Option<Symbol> {
         self.rules[id.index()].label
     }
@@ -11087,7 +11396,10 @@ impl KnowledgeBase {
     /// head-as-conclusion encoding). Idempotent re-tagging with the
     /// same label is allowed; a different label is a programming bug
     /// and panics.
-    pub fn set_rule_label(&mut self, id: RuleId, label: Symbol) {
+    ///
+    /// PRIVATE since WI-20261121-G8E02: a clause takes its label where it is stored, from
+    /// the [`ClauseLabel`] its caller states ([`Self::label_clause`]), and nowhere else.
+    fn set_rule_label(&mut self, id: RuleId, label: Symbol) {
         let entry = &mut self.rules[id.index()];
         match entry.label {
             Some(existing) if existing == label => return,
@@ -11110,6 +11422,7 @@ impl KnowledgeBase {
     /// step's cited-rule lift. The shared-frame twin of
     /// [`Self::assert_rule_debruijn_with_nodes`]; a term-bodied caller converts
     /// once via [`Self::term_body_to_nodes`].
+    #[allow(clippy::too_many_arguments)]
     pub fn assert_rule_debruijn_with_nodes_in_frame(
         &mut self,
         head: impl Into<crate::eval::value::Value>,
@@ -11118,6 +11431,7 @@ impl KnowledgeBase {
         clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
+        label: ClauseLabel,
     ) -> RuleId {
         // `term_to_debruijn` / `node_to_debruijn` map positions in reverse (last
         // entry → DeBruijn 0). Parent's seed must stay at the TAIL so its shared
@@ -11150,6 +11464,7 @@ impl KnowledgeBase {
             clause_kind,
             domain,
             meta,
+            label,
         )
     }
 
@@ -14074,6 +14389,14 @@ impl KnowledgeBase {
         self.builtins = self.remapped_to_defined_symbols(builtins);
         let primitives = std::mem::take(&mut self.spec_op_primitives);
         self.spec_op_primitives = self.remapped_to_defined_symbols(primitives);
+        // WI-20261121-G8E02 — a builtin relation declared in a SORT's scope cannot be minted at
+        // bootstrap, where only the namespaces exist (`bootstrap_symbol`): it is bound here, to
+        // the symbol the stdlib's declaration defined, once the names are.
+        for (qualified, tag) in SORT_SCOPED_BUILTIN_RELATIONS {
+            if let Some(&sym) = self.symbols.by_qualified_name.get(*qualified) {
+                self.register_builtin_tag_sym(sym, *tag);
+            }
+        }
         // WI-627: a builtin's canonical symbol may have been remapped above;
         // re-sync the equality-connective cache to the final symbols.
         self.cache_connective_syms();
@@ -14495,7 +14818,7 @@ mod tests {
             pos_args: SmallVec::from_slice(&[one, one]),
             named_args: SmallVec::new(),
         });
-        let rid = kb.assert_fact(head, ClauseKind::Fact, domain, None);
+        let rid = kb.assert_fact(head, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
         assert!(
             !kb.is_equation(rid),
             "a bare `eq`-NAMED head is not the canonical equality connective"
@@ -14732,7 +15055,7 @@ mod tests {
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
         };
 
-        let rid = kb.assert_fact_value(head, sort, domain, None);
+        let rid = kb.assert_fact_value(head, sort, domain, None, ClauseLabel::Runtime);
 
         // Indexed by top-level functor (via the head's TermView).
         assert_eq!(kb.rules_by_functor(f_sym), vec![rid]);
@@ -14808,7 +15131,7 @@ mod tests {
             },
         };
 
-        let rid = kb.assert_fact_value(head, sort, domain, None);
+        let rid = kb.assert_fact_value(head, sort, domain, None, ClauseLabel::Runtime);
 
         // Query f(alpha: ?x, beta: ?y).
         let xv = kb.fresh_var(c_sym);
@@ -14871,7 +15194,7 @@ mod tests {
             pos: Rc::from(vec![Value::Node(Rc::clone(&denoted_occ))]),
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
         };
-        kb.assert_fact_value(head, sort, domain, None);
+        kb.assert_fact_value(head, sort, domain, None, ClauseLabel::Runtime);
 
         // SEARCH via the full resolver (not `kb.query`): vf(?x).
         let xv = kb.fresh_var(c_sym);
@@ -14970,7 +15293,7 @@ mod tests {
                 pos: Rc::from(vec![Value::Node(occ)]),
                 named: Rc::from(Vec::<(Symbol, Value)>::new()),
             };
-            kb.assert_fact_value(head, sort, domain, None);
+            kb.assert_fact_value(head, sort, domain, None, ClauseLabel::Runtime);
         }
 
         // Query vf(?x): both facts match, two distinct Node answers.
@@ -15057,8 +15380,8 @@ mod tests {
                 );
             }
         }
-        let r1 = kb.assert_fact_value(h1a, sort, domain, None);
-        let r2 = kb.assert_fact_value(h1b, sort, domain, None);
+        let r1 = kb.assert_fact_value(h1a, sort, domain, None, ClauseLabel::Runtime);
+        let r2 = kb.assert_fact_value(h1b, sort, domain, None, ClauseLabel::Runtime);
         assert_eq!(
             r1, r2,
             "structurally-identical Entity heads must dedup to one RuleEntry"
@@ -15068,7 +15391,7 @@ mod tests {
         //     the invariant `value_fact_dedup_keeps_distinct_node_answers` guards
         //     at the query level, here at the RuleId level.
         let h2 = entity_head(&mut kb, "c2");
-        let r3 = kb.assert_fact_value(h2, sort, domain, None);
+        let r3 = kb.assert_fact_value(h2, sort, domain, None, ClauseLabel::Runtime);
         assert_ne!(r1, r3, "a structurally-distinct Entity head must NOT dedup");
 
         // (3) assert / retract / re-assert. After retract the dedup entry is removed
@@ -15076,14 +15399,14 @@ mod tests {
         //     RuleId (mirrors the Term-head re-assert-after-retract behavior)…
         kb.retract(r1);
         let h3 = entity_head(&mut kb, "c1");
-        let r4 = kb.assert_fact_value(h3, sort, domain, None);
+        let r4 = kb.assert_fact_value(h3, sort, domain, None, ClauseLabel::Runtime);
         assert_ne!(
             r1, r4,
             "re-assert after retract allocates a fresh RuleEntry"
         );
         // …and re-asserting that revived head once more dedups to it.
         let h4 = entity_head(&mut kb, "c1");
-        let r5 = kb.assert_fact_value(h4, sort, domain, None);
+        let r5 = kb.assert_fact_value(h4, sort, domain, None, ClauseLabel::Runtime);
         assert_eq!(r4, r5, "re-assert after revival dedups to the live RuleId");
 
         // (4) A BARE `Node` head (a `denoted(c)` directly, no Entity wrapper) dedups
@@ -15093,8 +15416,8 @@ mod tests {
         let n1 = Value::Node(kb.make_denoted_occ_ref(c, span, None));
         let n2 = Value::Node(kb.make_denoted_occ_ref(c, span, None));
         let sort2 = ClauseKind::Fact;
-        let b1 = kb.assert_fact_value(n1, sort2, domain, None);
-        let b2 = kb.assert_fact_value(n2, sort2, domain, None);
+        let b1 = kb.assert_fact_value(n1, sort2, domain, None, ClauseLabel::Runtime);
+        let b2 = kb.assert_fact_value(n2, sort2, domain, None, ClauseLabel::Runtime);
         assert_eq!(b1, b2, "structurally-identical bare Node heads dedup");
     }
 
@@ -15316,9 +15639,9 @@ mod tests {
         let hg1 = wi815_head(&mut kb, g_sym, 1, false);
         let hg1b = wi815_head(&mut kb, g_sym, 1, false);
         let hg2 = wi815_head(&mut kb, g_sym, 2, false);
-        let p1 = kb.assert_fact_value(hg1, kind, domain, None);
-        let p2 = kb.assert_fact_value(hg1b, kind, domain, None);
-        let p3 = kb.assert_fact_value(hg2, kind, domain, None);
+        let p1 = kb.assert_fact_value(hg1, kind, domain, None, ClauseLabel::Runtime);
+        let p2 = kb.assert_fact_value(hg1b, kind, domain, None, ClauseLabel::Runtime);
+        let p3 = kb.assert_fact_value(hg2, kind, domain, None, ClauseLabel::Runtime);
         assert_eq!(p1, p2, "identical keyable heads still dedup");
         assert_ne!(p1, p3, "and distinct ones still do not");
     }
@@ -15374,8 +15697,8 @@ mod tests {
             term_view::goal_fingerprint(&kb, &h2, &sigma),
             "component order is identity for an ordered product — the keys must differ",
         );
-        let r1 = kb.assert_fact_value(h1, kind, domain, None);
-        let r2 = kb.assert_fact_value(h2, kind, domain, None);
+        let r1 = kb.assert_fact_value(h1, kind, domain, None, ClauseLabel::Runtime);
+        let r2 = kb.assert_fact_value(h2, kind, domain, None, ClauseLabel::Runtime);
         assert_ne!(r1, r2, "two distinct tuples must stay TWO facts, not one");
 
         // …while a NON-ordered-product functor still sorts, so the two carriers of
@@ -15411,8 +15734,8 @@ mod tests {
             !kg1.is_opaque_free(),
             "a repeated label makes the key unusable"
         );
-        let q1 = kb.assert_fact_value(g1, kind, domain, None);
-        let q2 = kb.assert_fact_value(g2, kind, domain, None);
+        let q1 = kb.assert_fact_value(g1, kind, domain, None, ClauseLabel::Runtime);
+        let q2 = kb.assert_fact_value(g2, kind, domain, None, ClauseLabel::Runtime);
         assert_ne!(
             q1, q2,
             "duplicate-label heads must not collapse into one fact"
@@ -15642,7 +15965,13 @@ mod tests {
             pos_args: SmallVec::from_elem(foo_ref, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact_value(Value::Term { id: head }, ClauseKind::Fact, domain, None);
+        kb.assert_fact_value(
+            Value::Term { id: head },
+            ClauseKind::Fact,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         let config = resolve::ResolveConfig::default();
         let query = |sym: Symbol| Value::Entity {
@@ -15736,8 +16065,14 @@ mod tests {
         });
         let value_head = wi815_head(&mut kb, f, 1, false);
 
-        let r_term = kb.assert_fact_value(Value::Term { id: term_head }, kind, domain, None);
-        let r_value = kb.assert_fact_value(value_head, kind, domain, None);
+        let r_term = kb.assert_fact_value(
+            Value::Term { id: term_head },
+            kind,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
+        let r_value = kb.assert_fact_value(value_head, kind, domain, None, ClauseLabel::Runtime);
         assert_ne!(
             r_term, r_value,
             "the carriers key different spaces, so this is TWO facts — if this ever \
@@ -15746,9 +16081,15 @@ mod tests {
 
         // …and each still dedups WITHIN its own space, so the split is a split and
         // not a broken index.
-        let r_term2 = kb.assert_fact_value(Value::Term { id: term_head }, kind, domain, None);
+        let r_term2 = kb.assert_fact_value(
+            Value::Term { id: term_head },
+            kind,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
         let vh2 = wi815_head(&mut kb, f, 1, false);
-        let r_value2 = kb.assert_fact_value(vh2, kind, domain, None);
+        let r_value2 = kb.assert_fact_value(vh2, kind, domain, None, ClauseLabel::Runtime);
         assert_eq!(r_term, r_term2, "Term heads still dedup among themselves");
         assert_eq!(
             r_value, r_value2,
@@ -15790,7 +16131,7 @@ mod tests {
         let f_sym = kb.intern("vf815panic");
         let domain = kb.intern("test");
         let head = wi815_head(&mut kb, f_sym, 1, true);
-        kb.assert_fact_value(head, ClauseKind::Fact, domain, None);
+        kb.assert_fact_value(head, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
     }
 
     /// WI-922: this was `entity_of_query_includes_children`, and its first half
@@ -15956,7 +16297,7 @@ mod tests {
         });
         let body_nodes = kb.term_body_to_nodes(&[cond_goal]);
 
-        let rid = kb.assert_rule_nodes(head, body_nodes, sort, domain, None);
+        let rid = kb.assert_rule_nodes(head, body_nodes, sort, domain, None, ClauseLabel::Runtime);
 
         match kb.rule_head_value(rid) {
             Value::Entity { functor, pos, .. } => {
@@ -16020,7 +16361,7 @@ mod tests {
         let body_nodes = kb.term_body_to_nodes(&[cond_goal]);
 
         // Indexes without panicking (the De Bruijn var routes to a var-edge)...
-        let rid = kb.assert_rule_nodes(head, body_nodes, sort, domain, None);
+        let rid = kb.assert_rule_nodes(head, body_nodes, sort, domain, None, ClauseLabel::Runtime);
 
         // ...and the head is discoverable by a query on its functor.
         let yv = kb.fresh_var(vf);
@@ -16081,7 +16422,14 @@ mod tests {
         let body_nodes = kb.term_body_to_nodes(&[thing_x]);
 
         // Closure: collect the var inside the Node + close to De Bruijn + index.
-        let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        let rid = kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
         assert_eq!(
             kb.rule_arity(rid),
             1,
@@ -16139,7 +16487,7 @@ mod tests {
             pos_args: SmallVec::from_elem(active, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(thing_active, sort, domain, None);
+        kb.assert_fact(thing_active, sort, domain, None, ClauseLabel::Runtime);
 
         // Rule vf(g(?x)) :- thing(?x), head g(?x) carried as a Value::Node.
         let xv = kb.fresh_var(vf);
@@ -16161,7 +16509,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[thing_x]);
-        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         let config = ResolveConfig::default();
 
@@ -16337,7 +16692,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
-        let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        let rid = kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
         assert_eq!(kb.rule_arity(rid), 1, "?x is the rule's one head var");
 
         // tree_subst: synthetic entry (DeBruijn 0 → scalar 5) as a NON-Term Value.
@@ -16394,7 +16756,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
-        let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        let rid = kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         let entity = Value::Entity {
             functor: mk,
@@ -16464,7 +16833,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
-        let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        let rid = kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         let relation = Value::Relation {
             query: Rc::new(Value::Unit),
@@ -16521,7 +16897,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(marker_t, sort, domain, None);
+        kb.assert_fact(marker_t, sort, domain, None, ClauseLabel::Runtime);
         let av = kb.fresh_var(pr);
         let at = kb.alloc(Term::Var(Var::Global(av)));
         let bv = kb.fresh_var(pr);
@@ -16532,7 +16908,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[marker_t]);
-        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         let under_mk = |child: Value| Value::Entity {
             functor: mk,
@@ -16568,7 +16951,7 @@ mod tests {
         let domain = kb.intern("d");
         let term = kb.alloc(Term::Const(Literal::Int(42)));
 
-        let fid = kb.assert_fact(term, sort, domain, None);
+        let fid = kb.assert_fact(term, sort, domain, None, ClauseLabel::Runtime);
         // WI-922: probes `by_domain`, not the retired `by_sort`. A `Const` head
         // has no functor, so `rules_by_functor` never held this fact — the domain
         // index is the one retract must be shown to maintain for it.
@@ -17291,8 +17674,8 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        kb.assert_fact(fact1, fact_sort, domain, None);
-        kb.assert_fact(fact2, fact_sort, domain, None);
+        kb.assert_fact(fact1, fact_sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(fact2, fact_sort, domain, None, ClauseLabel::Runtime);
 
         // Query: parent(?x, "bob") — should find only fact1
         let x_sym = kb.intern("x");
@@ -17337,8 +17720,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[bob, charlie]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(fact1, fact_sort, domain, None);
-        kb.assert_fact(fact2, fact_sort, domain, None);
+        kb.assert_fact(fact1, fact_sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(fact2, fact_sort, domain, None, ClauseLabel::Runtime);
 
         // Goal `parent(?x, "bob")` built as a term, then materialized to an
         // occurrence and queried as a `Value::Node` — must match fact1 only,
@@ -17408,7 +17791,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let rid = kb.assert_rule(head, vec![b1, b2], rule_sort, domain, None);
+        let rid = kb.assert_rule(head, vec![b1, b2], rule_sort, domain, None, ClauseLabel::Runtime);
 
         // body should have two atoms
         assert_eq!(kb.rule_body_nodes(rid).len(), 2);
@@ -17433,7 +17816,7 @@ mod tests {
             pos_args: SmallVec::from_elem(v1, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(fact_term, sort, domain, None);
+        kb.assert_fact(fact_term, sort, domain, None, ClauseLabel::Runtime);
 
         // Assert a rule f(?x) :- g(?x)
         let x_sym = kb.intern("x");
@@ -17450,7 +17833,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(rule_head, vec![body_lit], sort, domain, None);
+        kb.assert_rule(rule_head, vec![body_lit], sort, domain, None, ClauseLabel::Runtime);
 
         // candidate selection should find both
         let q_sym = kb.intern("q");
@@ -17544,7 +17927,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let rid = kb.assert_rule(head, vec![body_lit], sort, domain, None);
+        let rid = kb.assert_rule(head, vec![body_lit], sort, domain, None, ClauseLabel::Runtime);
         assert_eq!(kb.rule_count(), 1);
 
         kb.retract(rid);
@@ -17653,7 +18036,7 @@ mod wi518_occurrence_guard_resolution_tests {
             pos_args: SmallVec::from_slice(&[from_t, to_t]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(fact, ClauseKind::Fact, domain, None)
+        kb.assert_fact(fact, ClauseKind::Fact, domain, None, ClauseLabel::Runtime)
     }
 
     /// The spike: a `no edge(?p, ?p)` guard whose condition is an OCCURRENCE leaf
@@ -17734,7 +18117,14 @@ mod wi518_occurrence_guard_resolution_tests {
             pos_args: SmallVec::from_slice(&[n1, n1]),
             named_args: SmallVec::new(),
         });
-        let rid = kb.assert_checked(self_loop, ClauseKind::Fact, trigger_sort, domain, None);
+        let rid = kb.assert_checked(
+            self_loop,
+            ClauseKind::Fact,
+            trigger_sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
         assert!(
             rid.is_none(),
             "asserting a self-loop under `no edge(?p, ?p)` must be rejected (None), not panic",
@@ -17783,7 +18173,7 @@ mod wi518_occurrence_guard_resolution_tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(flag_fact, sort, domain, None);
+        kb.assert_fact(flag_fact, sort, domain, None, ClauseLabel::Runtime);
 
         let no_q = lq_ctor(&mut kb, "no_q");
         let condition = kb.intern("condition");
@@ -17882,7 +18272,7 @@ mod wi628_guard_truncation_tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body], ClauseKind::Rule, domain, None);
+        kb.assert_rule(head, vec![body], ClauseKind::Rule, domain, None, ClauseLabel::Runtime);
     }
 
     /// A `Value::Term` leaf `functor(atom)` where `atom` is a nullary name term.
@@ -18288,14 +18678,14 @@ end
             // The tree and unify: a fact over the type is not found by the instance, nor
             // the reverse, and a variable binds the type itself.
             let fact = unary(&mut kb, held, face_ref);
-            let rid = kb.assert_fact(fact, ClauseKind::Fact, domain, None);
+            let rid = kb.assert_fact(fact, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
             let by_instance = unary(&mut kb, held, c_ref);
             assert!(kb.resolve(&[by_instance], &config).is_empty(), "{qn}: the instance does not find the type");
             let by_type = unary(&mut kb, held, face_ref);
             assert_eq!(kb.resolve(&[by_type], &config).len(), 1, "{qn}: the type finds itself");
             kb.retract(rid);
             let fact = unary(&mut kb, held, c_ref);
-            let rid = kb.assert_fact(fact, ClauseKind::Fact, domain, None);
+            let rid = kb.assert_fact(fact, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
             let by_type = unary(&mut kb, held, face_ref);
             assert!(kb.resolve(&[by_type], &config).is_empty(), "{qn}: the type does not find the instance");
             kb.retract(rid);
@@ -18313,7 +18703,7 @@ end
             named_args: SmallVec::from_elem((x, int64_ref), 1),
         });
         let fact = unary(&mut kb, held, ty);
-        kb.assert_fact(fact, ClauseKind::Fact, domain, None);
+        kb.assert_fact(fact, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
         let v = kb.fresh_var(x);
         let vt = kb.alloc(Term::Var(Var::Global(v)));
         let pattern = kb.alloc(Term::Fn {

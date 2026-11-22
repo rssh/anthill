@@ -110,6 +110,7 @@
 //! `ListLiteral(elements: …)` is neither of the two answers here and must match
 //! neither).
 
+use anthill_core::kb::ClauseLabel;
 use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::{ClauseKind, KnowledgeBase};
 use anthill_core::persistence::file_store::{FileConvention, FileStore};
@@ -565,7 +566,7 @@ fn a_persisted_literal_is_still_retractable() {
             pos_args: SmallVec::from_elem(arg, 1),
             named_args: SmallVec::new(),
         });
-        (head, kb.assert_fact(head, sort, domain, None))
+        (head, kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime))
     };
     let (flat_head, flat_id) = mk(&mut kb, "held_flat", flat);
     let (spine_head, spine_id) = mk(&mut kb, "held_spine", spine);

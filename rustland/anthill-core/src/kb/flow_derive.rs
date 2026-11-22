@@ -54,7 +54,7 @@ use smallvec::SmallVec;
 use crate::intern::{Symbol, SymbolKind};
 use crate::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence, Pattern};
 use crate::kb::term::{Term, TermId};
-use crate::kb::ClauseKind;
+use crate::kb::{ClauseKind, ClauseLabel};
 use crate::kb::KnowledgeBase;
 
 /// Feed kind — the `FlowKind` precision knob (046). v1 derives `Direct` /
@@ -72,11 +72,13 @@ struct Origin {
     src: Symbol,
 }
 
-/// A derived edge over places (asserted as a `flow(kind, from, to)` fact).
+/// A derived edge over places (asserted as a `flow(kind, from, to)` fact), of the operation
+/// `op` whose body it is derived from — the declaration its fact is labeled under.
 struct Edge {
     kind: Fk,
     from: Symbol,
     to: Symbol,
+    op: Symbol,
 }
 
 /// WI-352 entry point: derive + assert `flow` facts for every operation body,
@@ -87,7 +89,8 @@ pub fn run(kb: &mut KnowledgeBase) {
         kb.op_bodies_iter().map(|(s, b)| (s, b.clone())).collect();
 
     let mut edges: Vec<Edge> = Vec::new();
-    let mut traced: Vec<Symbol> = Vec::new();
+    // Each traced place with the operation it is a place of.
+    let mut traced: Vec<(Symbol, Symbol)> = Vec::new();
     for (op_sym, body) in &bodies {
         derive_op(kb, *op_sym, body, &mut edges, &mut traced);
     }
@@ -141,17 +144,18 @@ pub fn run(kb: &mut KnowledgeBase) {
             named_args: named,
         });
         // assert_fact dedups by (term, sort, domain); hash-consing makes equal
-        // edges the same TermId, so re-analysed duplicates collapse here.
-        kb.assert_fact(fact, sort, domain, None);
+        // edges the same TermId, so re-analysed duplicates collapse here. Labeled under
+        // the operation whose body it is derived from (WI-20261121-G8E02).
+        kb.assert_fact(fact, sort, domain, None, ClauseLabel::Content(e.op));
     }
-    for place in traced {
+    for (place, op) in traced {
         let to_term = kb.alloc(Term::Ref(place));
         let fact = kb.alloc(Term::Fn {
             functor: traced_functor,
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_elem((to_f, to_term), 1),
         });
-        kb.assert_fact(fact, sort, domain, None);
+        kb.assert_fact(fact, sort, domain, None, ClauseLabel::Content(op));
     }
 }
 
@@ -160,7 +164,7 @@ fn derive_op(
     op_sym: Symbol,
     body: &Rc<NodeOccurrence>,
     edges: &mut Vec<Edge>,
-    traced: &mut Vec<Symbol>,
+    traced: &mut Vec<(Symbol, Symbol)>,
 ) {
     let op_places: Vec<Symbol> = kb.symbols.arg_places(op_sym).to_vec();
     // The classifier's own lookup (kind-checked), so the two agree on the target.
@@ -209,14 +213,15 @@ fn derive_op(
                     .arg_places(p)
                     .iter()
                     .copied()
-                    .filter(|q| !untraced.contains(q)),
+                    .filter(|q| !untraced.contains(q))
+                    .map(|q| (q, op_sym)),
             );
         }
     }
     // `traced(result)` is read only beside a callback's place; an op with no
     // callback has no such label to classify.
     if has_callback && !untraced.contains(&result) {
-        traced.push(result);
+        traced.push((result, op_sym));
     }
 }
 
@@ -260,7 +265,8 @@ impl<'a> Deriver<'a> {
         // Skip self-loops (`xs -> xs`, `f -> f`): harmless for reachability and
         // not part of the declared form.
         if from != to {
-            self.edges.push(Edge { kind, from, to });
+            let op = self.op_sym;
+            self.edges.push(Edge { kind, from, to, op });
         }
     }
 

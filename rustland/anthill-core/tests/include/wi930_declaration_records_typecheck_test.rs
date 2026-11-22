@@ -56,6 +56,7 @@
 //!     const's `Ref` (measured): the loader folds a const before any slot reads it, so
 //!     the predicate does not exclude one.
 
+use anthill_core::kb::ClauseLabel;
 use crate::common::{load_errors_of, load_kb_with, load_stdlib_kb_untyped, query_unary};
 use anthill_core::eval::Value;
 use anthill_core::kb::term::{Literal, Term};
@@ -255,7 +256,7 @@ fn a_value_headed_fact_is_held_to_its_term_fields() {
         // `n` on a value: what makes the head a value head.
         named: vec![(s, Value::term(not_a_name)), (n, Value::Int(3))].into(),
     };
-    kb.assert_fact_value(head, ClauseKind::Fact, domain, None);
+    kb.assert_fact_value(head, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
     let errs = type_check_sorts_typed(&mut kb, result.loaded());
     let refused: Vec<(String, String, String)> = errs
         .iter()

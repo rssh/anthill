@@ -13,6 +13,7 @@
 //! Acceptance (ticket): identical TermView head/keys/children for both
 //! carriers; indexing one carrier and querying with the other matches.
 
+use anthill_core::kb::ClauseLabel;
 use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
@@ -152,7 +153,7 @@ fn dotapply_cross_carrier_discrim_match() {
     let domain = kb.intern("test");
     let one = kb.alloc(Term::Const(Literal::Int(1)));
     let term = dot_term(&mut kb, one);
-    kb.assert_fact(term, fact_sort, domain, None);
+    kb.assert_fact(term, fact_sort, domain, None, ClauseLabel::Runtime);
 
     // Index the TERM carrier, query with the OCCURRENCE carrier: must match.
     let node = Value::Node(dot_occ(&mut kb, occ(Expr::Const(Literal::Int(1)))));
@@ -188,7 +189,7 @@ fn dotapply_occurrence_goal_var_binds_through_args_list() {
     let domain = kb.intern("test");
     let one = kb.alloc(Term::Const(Literal::Int(1)));
     let term = dot_term(&mut kb, one);
-    kb.assert_fact(term, fact_sort, domain, None);
+    kb.assert_fact(term, fact_sort, domain, None, ClauseLabel::Runtime);
 
     let x = kb.intern("x");
     let vid = kb.fresh_var(x);

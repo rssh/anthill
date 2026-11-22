@@ -1378,6 +1378,7 @@ mod p4_tests {
     //! WI-342 P4-A — carrier-agnostic structural unification of a
     //! `Value`-carried `parameterized` (the denoted-bearing effect label),
     //! standalone (not yet inside a row — that's P4-B).
+    use crate::kb::ClauseLabel;
     use super::super::unify_types;
     use crate::kb::load::register_prelude;
     use crate::kb::node_occurrence::{NodeOccurrence, TypeChild};
@@ -1600,6 +1601,7 @@ mod p4_tests {
             sort_sort,
             global_domain,
             None,
+            ClauseLabel::Runtime,
         );
         let vid = type_param_vid_in_sort(&kb, box_sym, box_t)
             .expect("Box.T resolves to its canonical param VarId");
@@ -2402,6 +2404,7 @@ mod wi617_canonical_provider_match_tests {
     //! The load pipeline canonicalizes at the producer (WI-581), so this divergent
     //! interning is not reproducible through a source-level load — the test injects
     //! it directly, which is the level at which the gap is observable.
+    use crate::kb::ClauseLabel;
     use super::super::{carrier_is_abstract_spec, provides_rids_by_spec, spec_has_any_providers};
     use crate::intern::SymbolKind;
     use crate::kb::term::Term;
@@ -2460,7 +2463,7 @@ mod wi617_canonical_provider_match_tests {
         });
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        kb.assert_fact(head, sort, domain, None);
+        kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
 
         // Query with the canonical symbol. Pre-fix `view_base_sym == spec_sort`
         // (S_alt == S_canon) is false; the canonical comparison is true.
@@ -2547,7 +2550,7 @@ mod wi617_canonical_provider_match_tests {
             named_args: SmallVec::from_slice(&[(spec_key, spec_ref)]),
         });
         let domain = kb.intern("test");
-        let first = kb.assert_fact(head, ClauseKind::Fact, domain, None);
+        let first = kb.assert_fact(head, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
         assert!(
             spec_has_any_providers(&kb, written),
             "premise: the row is found under the symbol it was written with",
@@ -2571,7 +2574,13 @@ mod wi617_canonical_provider_match_tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(spec_key, declared_ref)]),
         });
-        let second = kb.assert_fact(second_head, ClauseKind::Fact, domain, None);
+        let second = kb.assert_fact(
+            second_head,
+            ClauseKind::Fact,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
         assert_ne!(first, second, "premise: two rows");
         assert_eq!(
             provides_rids_by_spec(&kb, declared),
@@ -2667,6 +2676,7 @@ mod wi617_canonical_provider_match_tests {
             ClauseKind::Fact,
             domain,
             None,
+            ClauseLabel::Runtime,
         );
         assert!(
             spec_has_any_providers(&kb, spec),
@@ -5218,6 +5228,7 @@ mod wi_ank4x_agreement_control_tests {
 /// review, not by the corpus.
 #[cfg(test)]
 mod wi1112_requires_index_tests {
+    use crate::kb::ClauseLabel;
     use super::super::{build_requires_index, direct_requires};
     use crate::eval::value::Value;
     use crate::kb::node_occurrence::{Expr, NodeOccurrence};
@@ -5403,6 +5414,7 @@ end
             ClauseKind::Requirement,
             domain,
             None,
+            ClauseLabel::Runtime,
         );
 
         fresh_with_index(&mut kb);
@@ -5466,6 +5478,7 @@ end
             ClauseKind::Requirement,
             domain,
             None,
+            ClauseLabel::Runtime,
         );
 
         // What every producer of this relation owes, and all it owes.
@@ -6920,6 +6933,7 @@ mod part_c_bare_var_collection_test {
 /// WI-20260902-VNWAW's headline, where `:- flag` proved nothing.
 #[cfg(test)]
 mod wi_1qvwa_op_info_index_tests {
+    use crate::kb::ClauseLabel;
     use crate::eval::value::Value;
     use crate::intern::Symbol;
     use crate::kb::node_occurrence::Expr;
@@ -7126,7 +7140,7 @@ end
         let op_info = kb.resolve_symbol("anthill.reflect.OperationInfo");
         let domain = kb.intern("test.q1vwa.guard");
         let head = kb.alloc(Term::Ref(op_info));
-        kb.assert_fact(head, ClauseKind::Fact, domain, None);
+        kb.assert_fact(head, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
     }
 
     /// THE STALE-INDEX GUARD, AT THE DOOR THAT OPENS IT. A second `load_all` into a live KB
@@ -7211,6 +7225,7 @@ end
 /// argued.
 #[cfg(test)]
 mod e3dc5_condition_index_tests {
+    use crate::kb::ClauseLabel;
     use super::super::{
         conditioned_provision_pairs, impl_sorts_providing_spec, provision_conditions,
         provision_conditions_scanned, ProvisionConditions,
@@ -7543,6 +7558,7 @@ end
             ClauseKind::Requirement,
             plain,
             None,
+            ClauseLabel::Runtime,
         );
         assert!(
             kb.fact_head_named_args(rid).is_none(),

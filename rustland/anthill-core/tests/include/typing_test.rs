@@ -1343,7 +1343,7 @@ fn wi630_metadata_fact_headed_by_user_functor_is_rejected() {
     });
     let entity_sort = kb.intern("Entity");
     let global = kb.global_scope().owner();
-    kb.assert_metadata_fact(bad_head, ClauseKind::Fact, global, None);
+    kb.assert_metadata_fact(bad_head, ClauseKind::Fact, global, None, edge_sym);
 }
 
 // ── Universal type variable tests ────────────────────────────────

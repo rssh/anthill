@@ -1,6 +1,7 @@
 /// Integration tests for the persistence module.
 ///
 /// Tests: term printer round-trips, FileStore persist/flush/retract, full KB round-trip.
+use anthill_core::kb::ClauseLabel;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::{KnowledgeBase, RuleId};
@@ -311,7 +312,7 @@ fn full_round_trip() {
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(t_sym, int_term)]),
     });
-    let fid1 = kb1.assert_fact(eq_fact, fact_sort, domain, None);
+    let fid1 = kb1.assert_fact(eq_fact, fact_sort, domain, None, ClauseLabel::Runtime);
 
     // fact parent("alice", "bob")
     let parent_sym = kb1.intern("parent");
@@ -322,7 +323,7 @@ fn full_round_trip() {
         pos_args: SmallVec::from_slice(&[alice, bob]),
         named_args: SmallVec::new(),
     });
-    let fid2 = kb1.assert_fact(parent_fact, fact_sort, domain, None);
+    let fid2 = kb1.assert_fact(parent_fact, fact_sort, domain, None, ClauseLabel::Runtime);
 
     // Step 2: Persist facts to FileStore
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
@@ -427,9 +428,9 @@ fn retract_drops_fact_block_from_disk() {
     let foo = kb.make_name_term("Foo");
     let bar = kb.make_name_term("Bar");
     let baz = kb.make_name_term("Baz");
-    let foo_id = kb.assert_fact(foo, sort, domain, None);
-    let bar_id = kb.assert_fact(bar, sort, domain, None);
-    let _baz_id = kb.assert_fact(baz, sort, domain, None);
+    let foo_id = kb.assert_fact(foo, sort, domain, None, ClauseLabel::Runtime);
+    let bar_id = kb.assert_fact(bar, sort, domain, None, ClauseLabel::Runtime);
+    let _baz_id = kb.assert_fact(baz, sort, domain, None, ClauseLabel::Runtime);
 
     store
         .persist(&kb, kb.fact_term(foo_id), sort, domain, None)
@@ -485,7 +486,7 @@ fn retract_then_persist_replaces_in_place() {
         pos_args: SmallVec::new(),
         named_args: named_open,
     });
-    let open_id = kb.assert_fact(wi_open, sort, domain, None);
+    let open_id = kb.assert_fact(wi_open, sort, domain, None, ClauseLabel::Runtime);
 
     store
         .persist(&kb, kb.fact_term(open_id), sort, domain, None)
@@ -510,7 +511,7 @@ fn retract_then_persist_replaces_in_place() {
         pos_args: SmallVec::new(),
         named_args: named_claimed,
     });
-    let claimed_id = kb.assert_fact(wi_claimed, sort, domain, None);
+    let claimed_id = kb.assert_fact(wi_claimed, sort, domain, None, ClauseLabel::Runtime);
     store
         .persist(&kb, kb.fact_term(claimed_id), sort, domain, None)
         .unwrap();
@@ -578,8 +579,8 @@ fn flush_is_idempotent_after_retract() {
     let domain = kb.intern("test");
     let foo = kb.make_name_term("Foo");
     let bar = kb.make_name_term("Bar");
-    let _foo_id = kb.assert_fact(foo, sort, domain, None);
-    let bar_id = kb.assert_fact(bar, sort, domain, None);
+    let _foo_id = kb.assert_fact(foo, sort, domain, None, ClauseLabel::Runtime);
+    let bar_id = kb.assert_fact(bar, sort, domain, None, ClauseLabel::Runtime);
 
     store.persist(&kb, foo, sort, domain, None).unwrap();
     store.persist(&kb, bar, sort, domain, None).unwrap();

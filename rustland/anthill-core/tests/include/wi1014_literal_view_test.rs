@@ -21,6 +21,7 @@
 //! literals compare equal and two distinct ones do not; the TupleLit ordering
 //! question is decided and tested; head arity and `named_keys` cannot disagree.
 
+use anthill_core::kb::ClauseLabel;
 use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
@@ -175,7 +176,7 @@ fn set_literal_cross_carrier_discrim_match() {
     let mut kb = stdlib_kb();
     let domain = kb.intern("test");
     let term = set_term(&mut kb, 1);
-    kb.assert_fact(term, ClauseKind::Fact, domain, None);
+    kb.assert_fact(term, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
 
     let node = Value::Node(set_occ(1));
     assert_eq!(

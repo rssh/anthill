@@ -24,6 +24,7 @@
 //!     satellite at BUFFER time instead of at flush passes until a move happens
 //!     first in the same flush.
 
+use anthill_core::kb::ClauseLabel;
 use std::path::PathBuf;
 
 use anthill_core::kb::load::{self, NullResolver};
@@ -704,7 +705,7 @@ fn retracting_a_row_the_store_never_saw_is_loud() {
     let open = f.open();
     let orphan = f.item("WI-77", "never seeded", open);
     let domain = f.kb.intern("test.wi1114");
-    let rule = f.kb.assert_fact(orphan, ClauseKind::Fact, domain, None);
+    let rule = f.kb.assert_fact(orphan, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
     let err = f
         .store
         .retract(&f.kb, rule)

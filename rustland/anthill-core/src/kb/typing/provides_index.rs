@@ -2036,6 +2036,7 @@ fn assert_forwarded_conditions(kb: &mut KnowledgeBase, row: &ForwardedRow, view:
                 crate::kb::ClauseKind::Requirement,
                 row.carrier,
                 None,
+                crate::kb::ClauseLabel::Content(row.carrier),
             );
         }
         kb.record_provides_clause(row.carrier, row.target, view.clone(), conditions.clone(), None);
@@ -2101,6 +2102,7 @@ fn assert_forwarded_provides(
         crate::kb::ClauseKind::Requirement,
         carrier,
         None,
+        crate::kb::ClauseLabel::Content(carrier),
     );
     (rid, spec_view)
 }

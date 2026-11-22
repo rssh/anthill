@@ -1,4 +1,5 @@
 /// Shared test utilities for anthill-core integration tests.
+use anthill_core::kb::ClauseLabel;
 use std::path::PathBuf;
 
 /// WI-605/WI-618: the marker phrase of both bare-arrow lambda-typo
@@ -3142,7 +3143,14 @@ pub fn one_goal_carrier_fixture(
                 )
             })
             .collect();
-        kb.assert_rule_debruijn_with_nodes(Value::term(head), body, ClauseKind::Rule, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            Value::term(head),
+            body,
+            ClauseKind::Rule,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
     }
 
     let q = {

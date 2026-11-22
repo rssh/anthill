@@ -2352,6 +2352,12 @@ impl GoalKey {
         self.0.iter().all(Self::token_bears_payload)
     }
 
+    /// The tokens, in walk order — for a reader that renders the structure rather than
+    /// comparing it (a derived clause's content label, `KnowledgeBase::label_clause`).
+    pub(crate) fn tokens(&self) -> &[StructToken] {
+        &self.0
+    }
+
     /// True when this key may safely index the resolver's per-query cache. Two
     /// conditions, both restoring exactly what the former hash-consed `TermId`
     /// cache key guaranteed:

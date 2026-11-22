@@ -74,7 +74,7 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 use crate::kb::term::Term;
 use crate::kb::term_view::{TermView, ViewHead};
-use crate::kb::ClauseKind;
+use crate::kb::{ClauseKind, ClauseLabel};
 use crate::kb::KnowledgeBase;
 use crate::kb::RuleId;
 
@@ -1164,6 +1164,7 @@ fn record_derived_conditions(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symb
                 ClauseKind::Requirement,
                 carrier,
                 None,
+                ClauseLabel::Content(carrier),
             );
         }
     }
@@ -1994,6 +1995,7 @@ pub(crate) fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Sym
         provides_sort,
         carrier, // domain = the carrier
         None,
+        ClauseLabel::Content(carrier),
     )
 }
 

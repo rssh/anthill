@@ -77,6 +77,7 @@
 //! `wi_p85z7_paren_less_nullary_head_test::a_bare_equation_subject_mints_…` on its
 //! `bare` arm. Nothing here sees it.
 
+use anthill_core::kb::ClauseLabel;
 use anthill_core::eval::Value;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::{ClauseKind, KnowledgeBase};
@@ -371,7 +372,7 @@ fn a_hand_written_nullary_fact_is_retractable_by_its_bare_key() {
 
     // The KB's own term for the name — built the ordinary way, i.e. through the canon.
     let p = kb.make_name_term("pczj");
-    let p_id = kb.assert_fact(p, sort, domain, None);
+    let p_id = kb.assert_fact(p, sort, domain, None, ClauseLabel::Runtime);
 
     store.retract(&kb, p_id).unwrap();
     kb.retract(p_id);

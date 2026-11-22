@@ -708,6 +708,49 @@ namespace anthill.reflect
     entity steps(max_steps: Int64)
   end
 
+  -- The proof the SLD search makes, given back as a value (WI-20261121-G8E02; proposal 075;
+  -- kernel-language §8.3, "The proof of a goal"). `SLDProof.of(goal, ?p)` takes a goal `g` or
+  -- a negation `!g`: for `g`, one answer per proof of `g`, binding `g`'s variables as the
+  -- query `g` does; for `!g`, the proof of `!g` the search finds — its refutation of `g` —
+  -- and no other. It is decided as `!g` is, and runs on the asking search's fuel.
+  --
+  -- A goal in a proof is written with its values filled in, a call inside it quoted as a
+  -- `Term` field holds one (§8.3). A clause is named by its label (§4.1); `none` where the
+  -- structure is no clause — a `forall` or `some` instance, a side of `|` — and for a fact a
+  -- program asserted while running.
+  enum SLDProof
+    import anthill.prelude.{List, Option}
+    -- The relation itself, answered by the resolver. Its first argument is a GOAL position, as
+    -- a negation's is: `SLDProof.of(good(6), ?p)` reads `good(6)` as a goal, never as a value.
+    rule of(?goal, ?proof)
+
+    -- The goal holds by `clause`; `body` proves each of its body goals, in order.
+    entity by_clause(goal: Term, clause: Option[T = Symbol], body: List[T = SLDProof])
+    -- A builtin that holds: `6 > 5`, `?r <=> 3`.
+    entity by_builtin(goal: Term)
+    -- A goal answered by an assumption of an enclosing discharge (an induction hypothesis).
+    entity by_assumption(goal: Term)
+    -- A goal the search left unchecked: the answer is conditional on it.
+    entity residual(goal: Term)
+    -- The goal has no proof: for each clause whose head matches it, on each branch, the
+    -- body goal the branch failed at. `[]` where no clause's head matches.
+    entity refuted(goal: Term, steps: List[T = Step])
+    -- A builtin that fails: `1 > 5`.
+    entity builtin_false(goal: Term)
+    -- A discharge `(forall(?x…), A -: C)`: its fresh constants (as `FreshConstant`s), `A`
+    -- with them filled in, and `C`'s proof where the discharge holds, its refutation where
+    -- it fails.
+    entity by_discharge(goal: Term, fresh: List[T = Term], assumed: List[T = Term], proof: SLDProof)
+  end
+
+  -- In the clause `clause`, the body goal `failing` fails, and `because` proves `!failing`:
+  -- a refutation, a `builtin_false`, or — where `failing` is a negation `!q` — `q`'s proof.
+  entity Step(clause: Option[T = Symbol], failing: Term, because: SLDProof)
+
+  -- A fresh constant a discharge took for one of its binders, held as data in a proof: inside
+  -- the discharge it is a rigid variable, which must not escape it.
+  entity FreshConstant(name: String, id: Int64)
+
   -- The storage of the in-memory knowledge base: the pool (proposal 037 §2) that
   -- every KB value `kb()` and `loaded` hand out is connected to, since a layer is
   -- applied in place over the ambient knowledge base. Nothing writes it directly

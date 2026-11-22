@@ -75,6 +75,7 @@
 //! fact in the first row, which refuses either way — the control that the spelling decides the
 //! verdict, which is why the quote must carry it.
 
+use anthill_core::kb::ClauseLabel;
 use crate::common::load_errors_of;
 
 /// The label lattice, with `Untrusted` reached through an alias so the label rides an
@@ -261,7 +262,7 @@ fn a_persisted_constructor_type_is_found_by_its_retract_key() {
             pos_args: smallvec::SmallVec::from_elem(arg, 1),
             named_args: smallvec::SmallVec::new(),
         });
-        (head, kb.assert_fact(head, ClauseKind::Fact, domain, None))
+        (head, kb.assert_fact(head, ClauseKind::Fact, domain, None, ClauseLabel::Runtime))
     };
     let (held, held_id) = fact(&mut kb, "held_type");
     let (kept, _) = fact(&mut kb, "kept_type");

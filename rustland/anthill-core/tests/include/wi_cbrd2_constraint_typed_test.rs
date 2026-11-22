@@ -31,6 +31,7 @@
 //! [`a_constraint_at_a_type_nothing_fixes_is_refused_as_its_clause`] passes either way by
 //! design: the constraint's clause is typed as a headless rule's body, and refused there.
 
+use anthill_core::kb::ClauseLabel;
 use std::rc::Rc;
 
 use anthill_core::eval::Value;
@@ -253,5 +254,7 @@ fn a_refused_guard_rejects_the_fact_it_cannot_check() {
     let trigger = *kb.guard_trigger_sorts(cid).first().expect("`Bag.src` triggers the guard");
     let fact = term_of(&mut kb, &format!("{ns}.Bag.src(x: {ns}.Leaf.leaf(v: 0))"));
     let domain = kb.try_resolve_symbol(ns).expect("the namespace");
-    assert_eq!(kb.assert_checked(fact, ClauseKind::Fact, trigger, domain, None), None);
+    let stored =
+        kb.assert_checked(fact, ClauseKind::Fact, trigger, domain, None, ClauseLabel::Runtime);
+    assert_eq!(stored, None);
 }

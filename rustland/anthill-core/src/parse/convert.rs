@@ -37,8 +37,9 @@ enum ClausePart<'t> {
     Token(&'static str),
 }
 
-/// The width of a generated label's content hash, in base-32 characters (40 bits).
-const LABEL_HASH_CHARS: u32 = 8;
+/// The width of a generated label's content hash, in base-32 characters (40 bits) — a
+/// written clause's and a derived one's alike (`kb::ClauseLabel::Content`, WI-20261121-G8E02).
+pub(crate) const LABEL_HASH_CHARS: u32 = 8;
 
 /// The goal a constraint's generated label is named after: a denial's first invariant
 /// goal, a quantified form's innermost consequent's first goal; `None` for an

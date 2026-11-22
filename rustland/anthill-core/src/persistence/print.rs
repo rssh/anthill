@@ -2175,6 +2175,7 @@ pub fn print_fact_omitting<V: PrintView + ?Sized>(
 
 #[cfg(test)]
 mod tests {
+    use crate::kb::ClauseLabel;
     use super::*;
     use crate::kb::term::Literal;
     use ordered_float::OrderedFloat;
@@ -2218,7 +2219,7 @@ mod tests {
             pos_args: SmallVec::from_elem(one, 1),
             named_args: SmallVec::new(),
         });
-        let rid = kb.assert_fact(head, crate::kb::ClauseKind::Fact, d, None);
+        let rid = kb.assert_fact(head, crate::kb::ClauseKind::Fact, d, None, ClauseLabel::Runtime);
         let v = Value::Entity {
             functor: f,
             pos: vec![Value::FactRef(crate::kb::extent::FactRef::resident(rid))].into(),

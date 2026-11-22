@@ -1,4 +1,5 @@
 /// Integration tests for term serialization (TOML/JSON ↔ KB terms).
+use anthill_core::kb::ClauseLabel;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::load;
 use anthill_core::kb::term::{Literal, Term, TermId};
@@ -423,7 +424,7 @@ fn assert_project_fact(kb: &mut KnowledgeBase, domain: Symbol) -> anthill_core::
     });
 
     let sort = ClauseKind::Fact;
-    kb.assert_fact(term, sort, domain, None)
+    kb.assert_fact(term, sort, domain, None, ClauseLabel::Runtime)
 }
 
 #[test]
@@ -757,7 +758,7 @@ end
     });
     let sort = ClauseKind::Fact;
     let domain = kb.intern("d");
-    let rid = kb.assert_fact(box_term, sort, domain, None);
+    let rid = kb.assert_fact(box_term, sort, domain, None, ClauseLabel::Runtime);
 
     let err = term_ser::serialize_json(&kb, "test.Box", &[rid])
         .expect_err("some(none()) must error loudly, not silently collapse");
@@ -820,7 +821,7 @@ end
     });
     let sort = ClauseKind::Fact;
     let domain = kb.intern("d");
-    let rid = kb.assert_fact(holder_term, sort, domain, None);
+    let rid = kb.assert_fact(holder_term, sort, domain, None, ClauseLabel::Runtime);
 
     let json = term_ser::serialize_json(&kb, "test.Holder", &[rid]).expect("serialize");
     assert!(

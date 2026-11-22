@@ -15,6 +15,7 @@
 //! `value_to_term`), so a runtime positional entity lowers to the SAME named
 //! shape the loader produces.
 
+use anthill_core::kb::ClauseLabel;
 use anthill_core::eval::value::Value;
 use anthill_core::eval::Interpreter;
 use anthill_core::kb::resolve::ResolveConfig;
@@ -110,7 +111,7 @@ fn persisted_positional_entity_matches_named_pattern() {
     let t = kb.alloc_from_value(&v).expect("lower positional entity");
     let sort = ClauseKind::Fact;
     let domain = kb.intern("test.wi500");
-    kb.assert_fact(t, sort, domain, None);
+    kb.assert_fact(t, sort, domain, None, ClauseLabel::Runtime);
     assert_eq!(
         resolve_verified_at(&mut kb, "now"),
         1,
@@ -133,7 +134,7 @@ fn op_body_positional_ctor_persisted_matches() {
     let domain = interp.kb_mut().intern("test.wi500");
     interp
         .kb_mut()
-        .assert_fact(t, ClauseKind::Fact, domain, None);
+        .assert_fact(t, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
     assert_eq!(
         resolve_verified_at(interp.kb_mut(), "now"),
         1,

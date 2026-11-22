@@ -36,6 +36,7 @@
 //! Nothing in the corpus separates as a result, because `field_access` supplies the
 //! projected name TWICE (WI-759) and the positional copy already distinguished them.
 
+use anthill_core::kb::ClauseLabel;
 use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
@@ -195,8 +196,8 @@ fn bracket_distinct_fact_heads_do_not_over_dedup() {
     let b = Value::Node(call(f, Rc::clone(&x), ta_str));
     let a_again = Value::Node(call(f, Rc::clone(&x), ta_int));
 
-    let ra = kb.assert_fact_value(a, ClauseKind::Fact, domain, None);
-    let rb = kb.assert_fact_value(b, ClauseKind::Fact, domain, None);
+    let ra = kb.assert_fact_value(a, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
+    let rb = kb.assert_fact_value(b, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
     assert_ne!(
         ra, rb,
         "two bracket-distinct fact heads are two facts, not one"
@@ -205,7 +206,7 @@ fn bracket_distinct_fact_heads_do_not_over_dedup() {
     // The CONTROL for the same mechanism: dedup still works. Re-asserting a
     // structurally identical head collapses, so the assertion above measures
     // injectivity and not a dedup that stopped working.
-    let ra2 = kb.assert_fact_value(a_again, ClauseKind::Fact, domain, None);
+    let ra2 = kb.assert_fact_value(a_again, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
     assert_eq!(ra, ra2, "an identical head still dedups to one RuleId");
 }
 
@@ -255,7 +256,7 @@ fn a_bracket_survives_the_term_round_trip() {
     // Cross-carrier DISCRIM agreement, the property `discrim-query-is-the-unifier`
     // makes a correctness question: index the term, query with the occurrence.
     let domain = kb.intern("wi1013_iso");
-    kb.assert_fact(term_a, ClauseKind::Fact, domain, None);
+    kb.assert_fact(term_a, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
     assert_eq!(
         kb.browse_program_clauses_matching(&Value::Node(Rc::clone(&occ_a)))
             .len(),

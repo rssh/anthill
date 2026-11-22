@@ -951,6 +951,7 @@ impl Copier {
             type_params,
             head_vars,
             head_span,
+            item_span,
             rhs_node,
             origin,
         } = rule;
@@ -970,6 +971,7 @@ impl Copier {
             type_params: plain(type_params),
             head_vars: plain(head_vars),
             head_span: plain(head_span),
+            item_span: plain(item_span),
             rhs_node: rhs_node.as_ref().map(|rhs| self.node(rhs)),
             origin: plain(origin),
         }
@@ -1117,6 +1119,7 @@ impl KnowledgeBase {
             rules_by_functor: plain(&self.rules_by_functor),
             by_domain: plain(&self.by_domain),
             rules_by_label: plain(&self.rules_by_label),
+            derived_labels: plain(&self.derived_labels),
             loaded_rule_frontier: plain(&self.loaded_rule_frontier),
             bodied_rule_counts: plain(&self.bodied_rule_counts),
             sort_entities: plain(&self.sort_entities),

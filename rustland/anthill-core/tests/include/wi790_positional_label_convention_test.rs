@@ -11,6 +11,7 @@
 //! consequences — what a store actually contains, what reading it back yields,
 //! and what the two recognizers whose behaviour changed now decide.
 
+use anthill_core::kb::ClauseLabel;
 use anthill_core::intern::{positional_label, positional_label_index, Symbol};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
@@ -59,7 +60,7 @@ fn assert_mixed_fact(kb: &mut KnowledgeBase) -> anthill_core::kb::RuleId {
     });
     let sort = ClauseKind::Fact;
     let domain = kb.intern("wi790_domain");
-    kb.assert_fact(term, sort, domain, None)
+    kb.assert_fact(term, sort, domain, None, ClauseLabel::Runtime)
 }
 
 fn serialize_mixed_fact(kb: &mut KnowledgeBase) -> String {

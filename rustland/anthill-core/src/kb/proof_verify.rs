@@ -213,8 +213,11 @@ pub fn set_proof_result(kb: &mut KnowledgeBase, rid: RuleId, verdict: VerdictWri
     // Build the new head BEFORE retracting so its shared subterms (rule,
     // strategy, body, …) are incref'd and survive the old fact's release.
     let new_head = kb.make_entity_term(functor, SmallVec::new(), named);
+    // The record with its verdict written, labeled as the one it replaces was
+    // (WI-20261121-G8E02).
+    let label = kb.label_of_replacement(rid);
     kb.retract(rid);
-    kb.assert_fact(new_head, sort, domain, None);
+    kb.assert_fact(new_head, sort, domain, None, label);
     wrote_result
 }
 

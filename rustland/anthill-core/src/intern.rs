@@ -1639,6 +1639,33 @@ impl SymbolTable {
         self.set_canonical(name, sym);
     }
 
+    /// WI-20261121-G8E02 — define a resolved symbol LISTED NOWHERE: it has its names and
+    /// its declaring scope, and is neither a local of the scope nor in
+    /// [`Self::by_qualified_name`], so no name resolves to it and it is reached only by
+    /// the symbol itself — a fresh one at every call. What the label of a clause the loader
+    /// derives is (`KnowledgeBase::derived_label`): a name of the loader's own, of which a
+    /// load mints thousands, and the qualified-name table is read whole by
+    /// `KnowledgeBase::sort_has_constructors` — a name there per derived clause took the
+    /// standard library's typer from 193 to 287 ms (MEASURED, 2026-11-21).
+    pub(crate) fn define_unlisted(
+        &mut self,
+        local_name: &str,
+        qualified_name: &str,
+        kind: SymbolKind,
+        scope: ScopeId,
+    ) -> Symbol {
+        let sym = Symbol(self.defs.len() as u32);
+        self.defs.push(SymbolDef::Resolved {
+            local_name: local_name.to_owned(),
+            qualified_name: qualified_name.to_owned(),
+            kinds: KindSet::of(kind),
+            written: kind,
+            scope,
+            arg_places: None,
+        });
+        sym
+    }
+
     /// Define a resolved symbol addressable ONLY by its qualified name — it is
     /// intentionally NOT inserted into any scope's `locals`, so scope-aware
     /// resolution (`resolve_in_scope`) never surfaces it as a candidate.

@@ -14,6 +14,7 @@
 //! carries a `Value::Node` binding — and assert the round-trip; a ground control
 //! pins that the term path is byte-identical (spec stays a `Value::Term`).
 
+use anthill_core::kb::ClauseLabel;
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
@@ -87,6 +88,7 @@ fn assert_requires_fact(kb: &mut KnowledgeBase, denoted: bool) -> (Symbol, Symbo
         req_sort,
         domain,
         None,
+        ClauseLabel::Runtime,
     );
     (carrier, foo)
 }
@@ -201,6 +203,7 @@ end
         req_sort,
         domain,
         None,
+        ClauseLabel::Runtime,
     );
 
     kb.invalidate_requires_chain_cache();

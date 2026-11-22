@@ -4106,6 +4106,13 @@ fn expect_innermost_layer(
 /// UNRESOLVED SYMBOLS ARE SKIPPED. A load interns strings that name nothing — a
 /// positional field label, a parse-time short name that never resolved — and they
 /// have no qualified name for a policy to read or a diagnostic to print.
+///
+/// SO ARE THE LABELS THE LOADER GIVES THE CLAUSES IT DERIVES (WI-20261121-G8E02,
+/// `KnowledgeBase::is_derived_label`): `<Sort>.SortInfo-K3M9Q2XA` is the loader's name for
+/// its own row, which no source declared — the symbol half of what `layer_clauses` leaves
+/// out by `ClauseOrigin`. And a later load derives clauses about EARLIER declarations
+/// (the flow facts of the library's operations are re-derived at every load, MEASURED), so
+/// the label of one is a name under a declaration the layer did not write.
 fn kb_layer_symbols(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [kb_arg] = expect_args::<1>("KB.layer_symbols", args)?;
     let handle = expect_innermost_layer(interp, &kb_arg, "layer_symbols")?;
@@ -4119,7 +4126,7 @@ fn kb_layer_symbols(interp: &mut Interpreter, args: &[Value]) -> Result<Value, E
     let mut rows: Vec<(crate::intern::Symbol, bool, bool)> = Vec::new();
     for raw in mark..interp.kb.symbols.symbol_count() {
         let sym = crate::intern::Symbol::from_raw(raw);
-        if !interp.kb.symbols.is_resolved(sym) {
+        if !interp.kb.symbols.is_resolved(sym) || interp.kb.is_derived_label(sym) {
             continue;
         }
         rows.push((sym, true, declared_set.contains(&sym)));

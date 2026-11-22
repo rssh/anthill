@@ -160,8 +160,9 @@ fn a_law_is_a_rule_or_a_constraint_written_in_the_spec() {
     of_measured.retain(|law| !law.contains(" rule "));
     of_measured.sort();
     // A fact is cited by its generated label, as the `rule` spelling of it is; a
-    // constraint's label is not on its clause, written or generated.
-    assert_eq!(of_measured, ["- constraint clause", "gte-# fact equation"]);
+    // constraint by its own, which is on its clause since WI-20261121-G8E02 (it was on
+    // none, `- constraint clause`).
+    assert_eq!(of_measured, ["gte-# fact equation", "weight_sane constraint clause"]);
 
     // A sort that requires a spec has none of the spec's laws for its own.
     assert_eq!(laws(&kb, "test.bvg8m.laws.Scope"), Vec::<String>::new());
@@ -187,8 +188,22 @@ fn the_librarys_laws_are_not_its_default_bodies() {
     assert_eq!(
         count_and_labels(&kb, &prelude("WeakOrd")),
         // Six of the equations are written without a label and are cited by the one
-        // generated for each (WI-20261121-MVQP8).
-        (9, labels(&["gt-#", "lt-#", "gte-#", "lte-#", "max-#", "min-#", "compare_antisym", "compare_refl"]))
+        // generated for each (WI-20261121-MVQP8); the constraint by its own, on its
+        // clause since WI-20261121-G8E02.
+        (
+            9,
+            labels(&[
+                "gt-#",
+                "lt-#",
+                "gte-#",
+                "lte-#",
+                "max-#",
+                "min-#",
+                "compare_antisym",
+                "compare_refl",
+                "compare_congruent",
+            ])
+        )
     );
     assert_eq!(count_and_labels(&kb, &prelude("PartialEq")), (0, labels(&[])));
     assert_eq!(count_and_labels(&kb, &prelude("Eq")), (1, labels(&["eq_refl"])));

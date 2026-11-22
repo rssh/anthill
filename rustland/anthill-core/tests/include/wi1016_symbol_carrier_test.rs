@@ -12,6 +12,7 @@
 //! What each test here would look like if the change under it were backed out is
 //! stated at the test, MEASURED, not predicted.
 
+use anthill_core::kb::ClauseLabel;
 use smallvec::SmallVec;
 
 use anthill_core::eval::{Interpreter, Value};
@@ -170,6 +171,7 @@ fn a_symbolref_child_stores_one_fact_not_two() {
         ClauseKind::Fact,
         domain,
         None,
+        ClauseLabel::Runtime,
     );
     let ref_tid = kb.alloc(Term::Ref(payload));
     let via_interned = kb.assert_fact_carrier(
@@ -179,6 +181,7 @@ fn a_symbolref_child_stores_one_fact_not_two() {
         ClauseKind::Fact,
         domain,
         None,
+        ClauseLabel::Runtime,
     );
 
     assert_eq!(
@@ -296,7 +299,7 @@ fn add_term_route(kb: &mut KnowledgeBase, answer: Symbol) {
         pos_args: SmallVec::from_elem(answer_ref, 1),
         named_args: SmallVec::new(),
     });
-    kb.assert_fact(fact, ClauseKind::Fact, domain, None);
+    kb.assert_fact(fact, ClauseKind::Fact, domain, None, ClauseLabel::Runtime);
 }
 
 /// The KB for [`a_symbolref_binding_does_not_disable_answer_dedup`]: the

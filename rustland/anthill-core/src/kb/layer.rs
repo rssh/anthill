@@ -403,6 +403,10 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // store above never rolls back and the counter never reissues its variable, so a
         // rigid a layer minted stays a type no provision names after the discard.
         ranking_rigids: _,
+        // WI-20261121-G8E02 — which symbols are labels the loader minted for the clauses
+        // it derives: a fact about a symbol, and the symbol table's definitions never roll
+        // back, so neither does what is known of them.
+        derived_labels: _,
 
         // ── SCOPED: every field to the NEXT HEADER is in `kb_scoped_fields!` ─
         rules: _,

@@ -9,6 +9,7 @@
 //! core. Also covers `<=>`-headed empty-body rules being recognized as
 //! equations (`is_equation`) and fired by the resolver's `apply_eq_rules`.
 
+use anthill_core::kb::ClauseLabel;
 use anthill_core::eval::value::Value;
 use anthill_core::kb::load::{self, LoadError};
 use anthill_core::kb::resolve::{ReduceFaults, ResolveConfig, TermUnification};
@@ -206,7 +207,7 @@ fn unify_headed_fact_is_recognized_as_equation() {
         pos_args: SmallVec::from_slice(&[a, b]),
         named_args: SmallVec::new(),
     });
-    let rid = kb.assert_fact(head, sort, domain, None);
+    let rid = kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
     assert!(
         kb.is_equation(rid),
         "a `unify`-headed empty-body 2-arg rule is an equation"
@@ -246,7 +247,7 @@ fn unify_headed_equation_fires_in_apply_eq_rules() {
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
     });
-    kb.assert_fact(head, sort, domain, Some(meta));
+    kb.assert_fact(head, sort, domain, Some(meta), ClauseLabel::Runtime);
     let simplified = kb.simplify(one);
     assert_eq!(
         kb.get_term(simplified),

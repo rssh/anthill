@@ -18,6 +18,7 @@
 //! lambda compare equal and two distinct source lambdas do not; the effect on
 //! discrim candidate sets and `GoalKey` dedup is measured.
 
+use anthill_core::kb::ClauseLabel;
 use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
@@ -301,7 +302,7 @@ fn lambda_cross_carrier_discrim_match() {
     let domain = kb.intern("test");
     let b = kb.intern("b#1");
     let term = lambda_term(&mut kb, b);
-    kb.assert_fact(term, fact_sort, domain, None);
+    kb.assert_fact(term, fact_sort, domain, None, ClauseLabel::Runtime);
 
     let node = Value::Node(lambda_occ(b));
     assert_eq!(

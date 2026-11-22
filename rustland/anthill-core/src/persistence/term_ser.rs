@@ -391,7 +391,9 @@ fn load_section(
     for entry in entries {
         match load_entry(kb, entry, functor, &fields, entity_name) {
             Ok(term) => {
-                kb.assert_fact(term, clause_kind, domain, None);
+                // A data file's rows are a program's, read back: not the loader's, and
+                // unlabeled (WI-20261121-G8E02).
+                kb.assert_fact(term, clause_kind, domain, None, crate::kb::ClauseLabel::Runtime);
                 count += 1;
             }
             Err(e) => errors.push(e),

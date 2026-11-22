@@ -1076,15 +1076,16 @@ fn synthesize_step_rule(
         .unwrap_or_default();
 
     let body_nodes = kb.term_body_to_nodes(&body_terms);
-    let rid = kb.assert_rule_debruijn_with_nodes_in_frame(
+    // The step is labeled by the name the proof writes for it.
+    kb.assert_rule_debruijn_with_nodes_in_frame(
         head_term,
         body_nodes,
         &parent_globals,
         rule_sort,
         global_domain,
         None,
+        anthill_core::kb::ClauseLabel::Written(label_sym),
     );
-    kb.set_rule_label(rid, label_sym);
 }
 
 /// Phase-b dispatch for a structured proof body (proposal 031).
@@ -1986,11 +1987,11 @@ struct RequirementLaws {
 }
 
 /// The laws of one spec as the warning lists them, every clause accounted for: one
-/// that can be cited by its name — the label it was written with, or the predicate a
-/// rule with no label is of, as `using` cites either — and the rest by kind and count.
-/// An equation written without a label has no name; neither has a `constraint`, whose
-/// name is a declaration's and is not on the stored clause. A name that several
-/// clauses go by (a rule written with several heads is a clause a head) says how many.
+/// that can be cited by its name — the label it was written with or the converter
+/// generated for it (WI-20261121-MVQP8), which a `constraint`'s clause carries too since
+/// WI-20261121-G8E02 — and the rest by kind and count, which is no clause the loader
+/// stores today. A name that several clauses go by (a rule written with several heads is
+/// a clause a head) says how many.
 fn law_names(kb: &KnowledgeBase, laws: &[SpecLaw]) -> String {
     let head_functor = |law: &SpecLaw| match &law.clause.head {
         Value::Term { id, .. } => match kb.get_term(*id) {
@@ -3090,11 +3091,15 @@ mod s8cyd_implicit_cite_tests {
     /// for, a name once. Seven clauses: a labelled equation; a rule of two heads, which
     /// is two clauses under one label; a rule with no label, named by its predicate as
     /// `using` cites it; two equations with no label, one of them written `fact`; and a
-    /// constraint, whose own name is not on its clause.
+    /// constraint, named by its own label, which its clause carries since
+    /// WI-20261121-G8E02 (it was counted, `1 constraint`, while the clause had none), at
+    /// the constraint's site (`KnowledgeBase::rule_written_site`).
     ///
     /// BACKED OUT (a label printed for each clause that has it, the rest counted "with
     /// no citation label", as the first cut did): FAILS — `two_heads` twice, and four
-    /// of the seven with no word of what they are.
+    /// of the seven with no word of what they are. BACKED OUT (the constraint's row records
+    /// no item span, `Loader::store_denial_constraint_fact`): FAILS — the constraint named
+    /// with no site (MEASURED 2026-11-22).
     #[test]
     fn the_laws_are_named_once_and_the_rest_counted_by_kind() {
         let kb = load_with_source("kinds", KINDS);
@@ -3120,7 +3125,8 @@ mod s8cyd_implicit_cite_tests {
              t.bvg8m.kinds.Measured.two_heads (2 clauses) at src.anthill:12:29, \
              t.bvg8m.kinds.Measured.positive-R745DSH5 at src.anthill:13:18, \
              t.bvg8m.kinds.Measured.weight-HM62G7DD at src.anthill:14:18, \
-             t.bvg8m.kinds.Measured.gte-W89J5Z1P at src.anthill:15:18, 1 constraint"
+             t.bvg8m.kinds.Measured.gte-W89J5Z1P at src.anthill:15:18, \
+             t.bvg8m.kinds.Measured.weight_sane at src.anthill:16:13"
         );
     }
 }

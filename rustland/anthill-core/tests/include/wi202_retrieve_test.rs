@@ -1,5 +1,6 @@
 //! IndexedFileStore primary-key index + QueryableStore::retrieve.
 
+use anthill_core::kb::ClauseLabel;
 use std::path::PathBuf;
 
 use anthill_core::kb::term::{Literal, Term, TermId};
@@ -32,7 +33,7 @@ fn make_wi(kb: &mut KnowledgeBase, id_str: &str, status_name: &str) -> (TermId, 
     });
     let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
-    let rid = kb.assert_fact(head, sort, domain, None);
+    let rid = kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
     (head, rid)
 }
 

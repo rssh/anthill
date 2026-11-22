@@ -222,5 +222,5 @@ fn a_metadata_head_that_disagrees_with_its_declaration_is_refused() {
         named_args: SmallVec::from_slice(&[(sort_ref, leaf), (spec, leaf)]),
     });
     let domain = kb.intern("probe");
-    kb.assert_metadata_fact(head, ClauseKind::Fact, domain, None);
+    kb.assert_metadata_fact(head, ClauseKind::Fact, domain, None, functor);
 }

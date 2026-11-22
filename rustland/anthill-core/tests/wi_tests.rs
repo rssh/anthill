@@ -1825,6 +1825,11 @@ mod wi_dqd5w_spec_op_relational_view_test;
 mod wi_vfakk_declaration_description_test;
 #[path = "include/wi_mvqp8_generated_label_test.rs"]
 mod wi_mvqp8_generated_label_test;
+#[path = "include/wi_g8e02_derived_labels_test.rs"]
+mod wi_g8e02_derived_labels_test;
+
+#[path = "include/wi_g8e02_sld_proof_test.rs"]
+mod wi_g8e02_sld_proof_test;
 
 #[path = "include/wi_nx4fd_functional_relation_row_param_test.rs"]
 mod wi_nx4fd_functional_relation_row_param_test;

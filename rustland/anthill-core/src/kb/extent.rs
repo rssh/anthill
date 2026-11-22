@@ -37,7 +37,7 @@ use crate::eval::value::Value;
 use crate::intern::{Contested, ResolveResult, Symbol};
 use crate::kb::term::{Var, VarId};
 use crate::kb::term_view::{views_structurally_equal, TermView};
-use crate::kb::ClauseKind;
+use crate::kb::{ClauseKind, ClauseLabel};
 use crate::persistence::{Monotonicity, Store};
 
 use super::{KnowledgeBase, RuleId};
@@ -864,7 +864,7 @@ impl KnowledgeBase {
         // WI-922: a resident row is a FACT; `sort` is its guard trigger sort and
         // its domain, and is no longer also its clause kind.
         Ok(self
-            .assert_checked(term, ClauseKind::Fact, sort, sort, None)
+            .assert_checked(term, ClauseKind::Fact, sort, sort, None, ClauseLabel::Runtime)
             .map(|rule| StoredRow {
                 row,
                 reference: FactRef::resident(rule),
@@ -1170,7 +1170,7 @@ impl KnowledgeBase {
         let term = crate::kb::node_occurrence::value_to_term(self, &row)
             .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
         let (clause_kind, domain) = self.resident_fact_keys(functor);
-        let rule = self.assert_fact(term, clause_kind, domain, None);
+        let rule = self.assert_fact(term, clause_kind, domain, None, ClauseLabel::Runtime);
         Ok(StoredRow {
             row,
             reference: FactRef::resident(rule),
@@ -1276,7 +1276,7 @@ impl KnowledgeBase {
         // persist must not leave coverage claiming a home that took nothing.
         self.extents
             .record_mirror_coverage(functor, mirror_key.to_owned());
-        let rule = self.assert_fact(term, clause_kind, domain, None);
+        let rule = self.assert_fact(term, clause_kind, domain, None, ClauseLabel::Runtime);
         Ok(StoredRow {
             row,
             reference: FactRef::resident_mirrored(rule, mirror_key.to_owned()),
@@ -1342,7 +1342,8 @@ impl KnowledgeBase {
                 outcome.map_err(|e| ExtentError::Backend(e.to_string()))?;
             }
             self.retract(rule);
-            let replacement = self.assert_fact(term, clause_kind, domain, None);
+            let replacement =
+                self.assert_fact(term, clause_kind, domain, None, ClauseLabel::Runtime);
             let reference = match mirror_key {
                 Some(key) => FactRef::resident_mirrored(replacement, key),
                 None => FactRef::resident(replacement),
@@ -2945,7 +2946,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: [(id_field, id_t), (tag_field, tag_t)].into(),
         });
-        kb.assert_fact(head, sort, domain, None);
+        kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
     }
 
     #[test]
@@ -3029,7 +3030,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body], sort, domain, None);
+        kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
 
         let err = kb.read_facts(f, &[], BodiedRulePolicy::Refuse).unwrap_err();
         match err {
@@ -3122,7 +3123,7 @@ mod tests {
                 pos_args: SmallVec::new(),
                 named_args: SmallVec::from_slice(&[(a, at), (b, bt), (c, ct)]),
             });
-            kb.assert_fact(head, sort, domain, None);
+            kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
         };
         // Two rows share a=1 (so the a-selection has two matches, each with distinct
         // b,c wildcards); one row has a=2.
@@ -3186,7 +3187,7 @@ mod tests {
                 pos_args: SmallVec::from_elem(var_x, 1),
                 named_args: SmallVec::new(),
             });
-            kb.assert_rule(head, vec![body], sort, domain, None)
+            kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime)
         };
         let r1 = mk_rule(&mut kb);
         assert!(kb.has_bodied_rule(f));
@@ -3233,7 +3234,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body], sort, domain, None);
+        kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
 
         // A selection that matches the fact (id = 1) still refuses, because the gate
         // is functor-wide, not selection-scoped.
@@ -3416,7 +3417,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body], sort, domain, None);
+        kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
     }
 
     /// Assert a nullary ground fact `f()` — a guard that succeeds.
@@ -3428,7 +3429,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(head, sort, domain, None);
+        kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
     }
 
     /// The sorted `id` ints of a set of resolved rows (each a reified
@@ -3565,7 +3566,7 @@ mod tests {
         });
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        kb.assert_fact(head, sort, domain, None);
+        kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
 
         let rows = kb.read_facts_resolved(f, &[]).expect("resolves");
         assert_eq!(

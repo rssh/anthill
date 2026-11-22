@@ -22,7 +22,7 @@ use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{TermIdView, TermView, ViewHead};
 use super::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
-use super::{const_value, ClauseKind, GuardSource, KnowledgeBase, SortKind};
+use super::{const_value, ClauseKind, ClauseLabel, GuardSource, KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::{
     absolute_path_target, positional_label, positional_label_index, Contested, ImportOrigin, ResolveResult,
@@ -21035,7 +21035,8 @@ fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
             named_args: named,
         });
         kb.retract(rid);
-        kb.assert_metadata_fact(fact_term, clause_kind, domain, meta);
+        // The sort's SortInfo, merged: a row about the sort its `name` names.
+        kb.assert_metadata_fact(fact_term, clause_kind, domain, meta, sort_sym);
         // WI-1076 — THE ONE PLACE A SORT'S OPERATION LIST CHANGES AFTER LOAD, so it is
         // the one place `spec_carrier_param`'s memo can go stale. That answer is derived
         // from the operations this pass just rewrote: a secondary entry adding an
@@ -21400,8 +21401,10 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         let sort = kb.rule_clause_kind(rid);
         let domain = kb.rule_domain(rid);
         let meta = kb.rule_meta(rid);
+        let label = kb.label_of_replacement(rid);
         kb.retract(rid);
-        let new_rid = kb.assert_fact_carrier(requires_sym, Vec::new(), new_named, sort, domain, meta);
+        let new_rid =
+            kb.assert_fact_carrier(requires_sym, Vec::new(), new_named, sort, domain, meta, label);
         kb.mark_requires_resolved(new_rid);
         // WI-20260901-EA6KS — and THIS is where the clause this batch presented
         // ends up. `rid` was minted by `Loader::load_requires_decl` moments ago
@@ -21488,7 +21491,9 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
 
     let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
     let requires_rids = kb.rules_by_functor(requires_info_sym);
-    let mut new_records: Vec<TermId> = Vec::new();
+    // Each record with the declaration it is about: the one the row it is derived from
+    // is about (WI-20261121-G8E02).
+    let mut new_records: Vec<(TermId, Symbol)> = Vec::new();
 
     for rid in requires_rids {
         if !kb.is_fact(rid) {
@@ -21506,10 +21511,10 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
             continue;
         };
 
-        let scope_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
-            Some(q) => q,
-            None => continue,
+        let Some(requirer) = sort_ref_symbol(kb, sort_ref_tid) else {
+            continue;
         };
+        let scope_qn = kb.qualified_name_of(requirer).to_owned();
         let se = match qualified_spec_text(kb, &spec) {
             Some(s) => s,
             None => continue,
@@ -21570,7 +21575,7 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
                 (parametric_context_arg, nil_term),
             ]),
         });
-        new_records.push(record_term);
+        new_records.push((record_term, requirer));
     }
 
     if new_records.is_empty() {
@@ -21579,8 +21584,8 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
     // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
     let record_kind = ClauseKind::Fact;
     let global_domain = kb.global_scope().owner();
-    for rec in new_records {
-        kb.assert_metadata_fact(rec, record_kind, global_domain, None);
+    for (rec, about) in new_records {
+        kb.assert_metadata_fact(rec, record_kind, global_domain, None, about);
     }
 }
 
@@ -21653,7 +21658,9 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
 
     let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
     let sort_info_rids = kb.rules_by_functor(sort_info_sym);
-    let mut new_records: Vec<TermId> = Vec::new();
+    // Each record with the declaration it is about: the one the row it is derived from
+    // is about (WI-20261121-G8E02).
+    let mut new_records: Vec<(TermId, Symbol)> = Vec::new();
 
     for rid in sort_info_rids {
         if !kb.is_fact(rid) {
@@ -21671,10 +21678,12 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
         if !sort_info_is_inductive(kb, &named) {
             continue;
         }
-        let sort_qn = match sort_info_qn(kb, &named) {
-            Some(q) => q,
-            None => continue,
+        let Some(sort) = super::typing::get_named_arg(kb, &named, "name")
+            .and_then(|name| sort_ref_symbol(kb, name))
+        else {
+            continue;
         };
+        let sort_qn = kb.qualified_name_of(sort).to_owned();
         let rule_qn_text = format!("{sort_qn}.induction");
         if existing_rule_qns.contains(&rule_qn_text) {
             continue;
@@ -21730,7 +21739,7 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
                 (parametric_context_arg, nil_term),
             ]),
         });
-        new_records.push(record_term);
+        new_records.push((record_term, sort));
     }
 
     if new_records.is_empty() {
@@ -21739,8 +21748,8 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
     let record_kind = ClauseKind::Fact;
     let global_domain = kb.global_scope().owner();
-    for rec in new_records {
-        kb.assert_metadata_fact(rec, record_kind, global_domain, None);
+    for (rec, about) in new_records {
+        kb.assert_metadata_fact(rec, record_kind, global_domain, None, about);
     }
 }
 
@@ -21871,7 +21880,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     // `(<A-qn>.requires.<SE>, <X-qn>.provides.<PE>.<SE>)` of each record it is owed
     // — so we don't borrow-conflict with kb mutations during ProofRecord construction.
     let provides_rids = kb.rules_by_functor(provides_info_sym);
-    let mut targets: Vec<(Vec<(String, String)>, Vec<(&str, String)>)> = Vec::new();
+    let mut targets: Vec<(Vec<(String, String)>, Vec<(&str, String)>, Symbol)> = Vec::new();
     for rid in provides_rids {
         if !kb.is_fact(rid) {
             continue;
@@ -21909,10 +21918,10 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
             continue;
         };
         LAW_RECORDS_READ.with(|n| n.set(n.get() + laws.len()));
-        let x_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
-            Some(q) => q,
-            None => continue,
+        let Some(provider) = sort_ref_symbol(kb, sort_ref_tid) else {
+            continue;
         };
+        let x_qn = kb.qualified_name_of(provider).to_owned();
         // The name each of the provision's records goes by — the provision as
         // `qualified_spec_text` writes it, between who provides and the law; the ones
         // the registry does not hold are what the pass owes it. On a load that brings no
@@ -21930,12 +21939,14 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
         if missing.is_empty() {
             continue;
         }
-        targets.push((substitution, missing));
+        targets.push((substitution, missing, provider));
     }
 
-    let mut new_records: Vec<TermId> = Vec::new();
+    // Each record with the declaration it is about: the one the row it is derived from
+    // is about (WI-20261121-G8E02).
+    let mut new_records: Vec<(TermId, Symbol)> = Vec::new();
 
-    for (substitution, missing) in targets {
+    for (substitution, missing, about) in targets {
         for (parametric_qn, rule_qn_text) in missing {
             let parametric_term = kb.alloc(Term::Const(Literal::String(parametric_qn.to_owned())));
             // Build the substitution cons-list of SortBinding entities.
@@ -22009,7 +22020,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
                     (parametric_context_arg, nil_term),
                 ]),
             });
-            new_records.push(record_term);
+            new_records.push((record_term, about));
         }
     }
 
@@ -22019,8 +22030,8 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
     let record_kind = ClauseKind::Fact;
     let global_domain = kb.global_scope().owner();
-    for rec in new_records {
-        kb.assert_metadata_fact(rec, record_kind, global_domain, None);
+    for (rec, about) in new_records {
+        kb.assert_metadata_fact(rec, record_kind, global_domain, None, about);
     }
 }
 
@@ -26026,6 +26037,16 @@ pub fn meta_value(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> Option
 /// emitted ProofRecord rule QN is project-unique.
 pub fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     sort_ref_qn(kb, term).map(str::to_owned)
+}
+
+/// The symbol a sort reference names — the one [`qn_of_sort_ref`] gives the name of:
+/// what a row derived from a row about a sort is labeled under (WI-20261121-G8E02).
+fn sort_ref_symbol(kb: &KnowledgeBase, term: TermId) -> Option<Symbol> {
+    match kb.get_term(term) {
+        Term::Fn { functor, .. } => Some(*functor),
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        _ => None,
+    }
 }
 
 /// [`qn_of_sort_ref`] borrowed — for a reader that compares the name and keeps none.
@@ -45666,7 +45687,8 @@ impl<'a> Loader<'a> {
         // clause headed by a sort states an instance no goal reads, the goal being a type
         // check (`LoadError::TypeApplicationHead`, WI-20261107-FDJ0E).
         if !self.kb.has_type_reading(ns_domain) {
-            self.kb.assert_fact(ns_term, ns_sort, ns_domain, None);
+            self.kb
+                .assert_fact(ns_term, ns_sort, ns_domain, None, ClauseLabel::Content(ns_domain));
         }
 
         // Set scope to namespace for member resolution
@@ -45764,6 +45786,7 @@ impl<'a> Loader<'a> {
             sort_sort,
             domain,
             None,
+            source_sym,
         );
     }
 
@@ -46361,7 +46384,7 @@ impl<'a> Loader<'a> {
         };
         let domain = self.current_domain();
         self.kb
-            .assert_metadata_fact_value(head, ClauseKind::Sort, domain, None);
+            .assert_metadata_fact_value(head, ClauseKind::Sort, domain, None, op);
     }
 
     /// The `anthill.reflect.OperationTypeParamDefault` row of `param`'s default `default`,
@@ -46394,7 +46417,7 @@ impl<'a> Loader<'a> {
             ]),
         });
         let domain = self.current_domain();
-        self.kb.assert_metadata_fact(fact, ClauseKind::Sort, domain, None);
+        self.kb.assert_metadata_fact(fact, ClauseKind::Sort, domain, None, op);
     }
 
     /// Each of `o`'s bracket parameters' variable (`vars`, in bracket order) bound to the
@@ -46466,7 +46489,7 @@ impl<'a> Loader<'a> {
             named_args: SmallVec::from_slice(&[(param_field, param_term), (default_field, written)]),
         });
         let domain = self.current_domain();
-        self.kb.assert_metadata_fact(fact, ClauseKind::Sort, domain, None);
+        self.kb.assert_metadata_fact(fact, ClauseKind::Sort, domain, None, owner);
     }
 
     /// [`Self::record_parameter_default`] of a HIGHER-KINDED parameter (`F[T] = List`):
@@ -47004,6 +47027,14 @@ impl<'a> Loader<'a> {
 
         let canonical = self.kb.canonical_sym(induction_sym);
         self.kb.induction_axioms.insert(canonical);
+        // WI-20261121-G8E02 — the principle is ONE clause, labeled by its name: stored
+        // once. A sort declared again (refused, and the load goes on to collect the
+        // rest: `wi_4zrtg_sealed_library_test`) keeps the axiom its first declaration
+        // derived, as its domain keeps its first (`derive_sort_domains`), and so does a
+        // file presented to the KB again; neither stores a second axiom under the name.
+        if self.kb.has_clause_labeled(induction_sym) {
+            return;
+        }
         let head = self.kb.alloc(Term::Fn {
             functor: induction_sym,
             pos_args: SmallVec::from_slice(&[p_term]),
@@ -47080,8 +47111,19 @@ impl<'a> Loader<'a> {
 
         let rule_sort = ClauseKind::Rule;
         let body_nodes = self.kb.term_body_to_nodes(&body);
-        self.kb
-            .assert_rule_debruijn_with_nodes(head, body_nodes, rule_sort, parent_domain, None);
+        // WI-20261121-G8E02 — the principle's one clause is labeled by the principle: its
+        // own name, `<Sort>.induction`, which names this clause and no other (a written
+        // clause under it is refused, `check_induction_axiom_names`). Not a second symbol
+        // of the same qualified name: a name resolves to one symbol, and that one is the
+        // predicate's.
+        self.kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            rule_sort,
+            parent_domain,
+            None,
+            ClauseLabel::Derived(induction_sym),
+        );
     }
 
     /// True if `ty` is a `Simple` type whose remapped symbol equals the
@@ -47211,7 +47253,7 @@ impl<'a> Loader<'a> {
             named_args: si_args,
         });
         self.kb
-            .assert_metadata_fact(fact_term, sort_sort, parent_domain, None);
+            .assert_metadata_fact(fact_term, sort_sort, parent_domain, None, sort_functor);
     }
 
     /// Build and assert the `EntityInfo` metadata fact (with a per-field
@@ -47313,8 +47355,13 @@ impl<'a> Loader<'a> {
                     (syms.fields, fields_list),
                 ]),
             });
-            self.kb
-                .assert_metadata_fact(entity_info_fact, syms.sort_sort, domain, None);
+            self.kb.assert_metadata_fact(
+                entity_info_fact,
+                syms.sort_sort,
+                domain,
+                None,
+                ctor_functor,
+            );
         } else {
             let named: Vec<(Symbol, Value)> = vec![
                 (syms.name, Value::term(ctor_term)),
@@ -47326,7 +47373,7 @@ impl<'a> Loader<'a> {
                 named: std::rc::Rc::from(named),
             };
             self.kb
-                .assert_metadata_fact_value(head, syms.sort_sort, domain, None);
+                .assert_metadata_fact_value(head, syms.sort_sort, domain, None, ctor_functor);
         }
     }
 
@@ -47696,13 +47743,13 @@ impl<'a> Loader<'a> {
         self.create_occurrence(f.term, term);
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
-        let rule_id = self.kb.assert_fact(term, fact_kind, domain, meta);
         // A clause has one citation label. A fact that dedups onto a clause already
         // labeled — the same fact written again, or its `rule … :- true` spelling with a
-        // label of its own — keeps that one; this fact's blocks are on its label above.
-        if self.kb.rule_label(rule_id).is_none() {
-            self.kb.set_rule_label(rule_id, label);
-        }
+        // label of its own — keeps that one (`KnowledgeBase::label_clause`); this fact's
+        // blocks are on its label above.
+        let rule_id =
+            self.kb
+                .assert_fact(term, fact_kind, domain, meta, ClauseLabel::Written(label));
         // WI-20260903-FCZ3N — LAST WRITE WINS ON A DEDUP, DELIBERATELY. `assert_fact`
         // returns an EXISTING `RuleId` when `(term, clause_kind, domain)` all match, so
         // two byte-identical `fact tau() <=> 7 @[simp]` clauses in one domain become ONE
@@ -49112,6 +49159,12 @@ impl<'a> Loader<'a> {
             self.current_owner = prev_owner;
             return;
         }
+        // WI-20261121-G8E02 — every rule that stores a clause has a label, written or
+        // generated by the converter (WI-20261121-MVQP8: `rule_reading`'s `Clause`), and
+        // each of its clauses is stored with it.
+        let written_label = label_sym.expect(
+            "a rule that stores a clause has a label, written or generated by the converter",
+        );
         // Denial: head = ⊥ (labeled cites via label index; unlabeled denial is citable
         // only by pattern). Otherwise each head becomes its own rule — sharing the label
         // when there are several, and the head term IS the KB identity when there is one.
@@ -49179,10 +49232,8 @@ impl<'a> Loader<'a> {
                 rule_sort,
                 domain,
                 meta,
+                ClauseLabel::Written(written_label),
             );
-            if let Some(label) = label_sym {
-                self.kb.set_rule_label(rid, label);
-            }
             rule_rids.push(rid);
             // WI-458: key the head span on this rule's RuleId (per-occurrence),
             // not the hash-consed head TermId. A `⊥` denial head has no source
@@ -50175,7 +50226,7 @@ impl<'a> Loader<'a> {
                 pos_args: SmallVec::new(),
                 named_args,
             });
-            self.kb.assert_metadata_fact(op_info, op_sort, domain, None);
+            self.kb.assert_metadata_fact(op_info, op_sort, domain, None, functor);
         } else {
             // A `denoted`-bearing effect forces a `Value::Node` somewhere in the
             // head, which a hash-consed `Term` cannot hold → value fact.
@@ -50185,7 +50236,7 @@ impl<'a> Loader<'a> {
                 named: std::rc::Rc::from(named),
             };
             self.kb
-                .assert_metadata_fact_value(head, op_sort, domain, None);
+                .assert_metadata_fact_value(head, op_sort, domain, None, functor);
         }
 
         // Emit OperationImpl fact for operations with expression bodies. WI-305:
@@ -50222,7 +50273,7 @@ impl<'a> Loader<'a> {
                     ]),
                 });
                 self.kb
-                    .assert_metadata_fact(op_impl, impl_kind, domain, None);
+                    .assert_metadata_fact(op_impl, impl_kind, domain, None, functor);
             }
         }
 
@@ -50387,8 +50438,23 @@ impl<'a> Loader<'a> {
         // WI-922: a derived defining equation is a RULE; `PartialEq` was the sort it
         // is about, not a clause kind.
         let eq_kind = ClauseKind::Rule;
-        self.kb
-            .assert_rule_debruijn_with_nodes(head, vec![], eq_kind, domain, None);
+        // WI-20261121-G8E02 — labeled as the equation written `rule op(…) <=> body` would
+        // be: the operation's name and a hash of what the clause stores, beside the
+        // operation in the scope it is declared in.
+        let beside = self
+            .kb
+            .symbols
+            .declaring_scope(op_functor)
+            .expect("a bodied operation is declared in a scope")
+            .owner();
+        self.kb.assert_rule_debruijn_with_nodes(
+            head,
+            vec![],
+            eq_kind,
+            domain,
+            None,
+            ClauseLabel::Content(beside),
+        );
     }
 
     /// Replace `Ident(s)`/`Ref(s)` matching a parameter symbol with the
@@ -50517,7 +50583,7 @@ impl<'a> Loader<'a> {
                 // denial constraints is a separate concern with its own regression
                 // surface — the stdlib relies on them being inert today).
                 let span = SourceSpan::from_span(self.source_id, c.span);
-                self.store_denial_constraint_fact(head, guard.as_deref(), domain, span);
+                self.store_denial_constraint_fact(head, guard.as_deref(), domain, span, label_sym);
             }
             ConstraintBody::Quantified { .. } | ConstraintBody::Patterns(_) => {
                 // WI-023: the guard EVALUATOR lowers a quantifier body as a pattern
@@ -50548,7 +50614,7 @@ impl<'a> Loader<'a> {
                             site: span,
                         },
                     );
-                    self.store_logical_query_constraint_fact(lq, domain);
+                    self.store_logical_query_constraint_fact(lq, domain, span, label_sym);
                 }
             }
             ConstraintBody::Aggregation { .. } => {
@@ -50563,7 +50629,7 @@ impl<'a> Loader<'a> {
                 return;
             }
         }
-        self.assert_constraint_goal_clause(&constraint_goals, Some(label_sym), domain);
+        self.assert_constraint_goal_clause(&constraint_goals, label_sym, domain);
     }
 
     /// The goals a constraint proves, stored as a clause with the head `⊥`. A constraint
@@ -50576,19 +50642,21 @@ impl<'a> Loader<'a> {
     /// constraint — `forall ?x: C -: B` stores `⊥ :- C, B` — so it is for reading and
     /// typing only, and nothing may resolve it. The clause is derived, so a spec's laws
     /// ([`KnowledgeBase::spec_laws`]) still count the constraint once.
+    ///
+    /// WI-20261121-G8E02 — its label is derived from the constraint's, `<label>-goals`:
+    /// the constraint's own label is on its stored reflection fact, the clause the source
+    /// wrote, and a label names one clause.
     fn assert_constraint_goal_clause(
         &mut self,
         goals: &[ParseTermId],
-        label: Option<Symbol>,
+        label: Symbol,
         domain: Symbol,
     ) {
         if goals.is_empty() {
             return;
         }
         let prev_owner = self.current_owner;
-        if label.is_some() {
-            self.current_owner = label;
-        }
+        self.current_owner = Some(label);
         // The goals were converted for the guard first, which emitted their descriptions.
         let prev_descs = std::mem::replace(&mut self.descs_emitted_by_convert, true);
         // Each atom is a goal, as a rule body's is (`load_rule_inner`).
@@ -50617,6 +50685,14 @@ impl<'a> Loader<'a> {
             }
         }
         let bottom = self.kb.alloc(Term::Bottom);
+        let owner = self
+            .kb
+            .symbols
+            .declaring_scope(label)
+            .expect("a constraint's label is declared in the scope its constraint loads in")
+            .owner();
+        let goals_label = format!("{}-goals", self.kb.local_name_of(label));
+        let goals_label = self.kb.derived_label(owner, &goals_label);
         let rid = self.kb.assert_rule_debruijn_with_bound_vars(
             bottom,
             body_nodes,
@@ -50624,6 +50700,7 @@ impl<'a> Loader<'a> {
             ClauseKind::Constraint,
             domain,
             None,
+            ClauseLabel::Derived(goals_label),
         );
         if !bounds.is_empty() {
             self.kb.install_rule_type_bounds(rid, &bounds);
@@ -50638,6 +50715,7 @@ impl<'a> Loader<'a> {
         guard: Option<&[ParseTermId]>,
         domain: Symbol,
         span: SourceSpan,
+        label: Symbol,
     ) {
         let constraint_sort = ClauseKind::Constraint;
         let constraint_sym = self.kb.resolve_symbol("Constraint");
@@ -50675,16 +50753,30 @@ impl<'a> Loader<'a> {
         // It heads at the kernel meta-name `Constraint`, which no candidate program
         // can mint, so the guardians gate refuses one a loaded candidate writes — the
         // right direction: an untrusted program must not install integrity guards on
-        // the base it is being checked against.
-        let rid = self
-            .kb
-            .assert_fact(constraint_term, constraint_sort, domain, None);
+        // the base it is being checked against. The constraint's label is its clause's
+        // (WI-20261121-G8E02), and the constraint's site is where the clause is written —
+        // recorded as the ITEM's span, not as a head span: the row's head is no source text
+        // (`RuleEntry::item_span` has why the difference is load-bearing).
+        let rid = self.kb.assert_fact(
+            constraint_term,
+            constraint_sort,
+            domain,
+            None,
+            ClauseLabel::Written(label),
+        );
         self.kb.mark_source_clause(rid);
+        self.kb.set_rule_item_span(rid, span);
     }
 
     /// Store a queryable `Constraint(guard(<LogicalQuery>))` reflection fact for a
     /// guard-registered (quantified) constraint, for parity with the denial form.
-    fn store_logical_query_constraint_fact(&mut self, lq: TermId, domain: Symbol) {
+    fn store_logical_query_constraint_fact(
+        &mut self,
+        lq: TermId,
+        domain: Symbol,
+        span: SourceSpan,
+        label: Symbol,
+    ) {
         let constraint_sort = ClauseKind::Constraint;
         let constraint_sym = self.kb.resolve_symbol("Constraint");
         let guard_sym = self.kb.intern("guard");
@@ -50698,11 +50790,17 @@ impl<'a> Loader<'a> {
             pos_args: SmallVec::from_elem(guard_term, 1),
             named_args: SmallVec::new(),
         });
-        // WI-5XBBQ — source-written, for the reason at the denial form above.
-        let rid = self
-            .kb
-            .assert_fact(constraint_term, constraint_sort, domain, None);
+        // WI-5XBBQ — source-written, for the reason at the denial form above, and
+        // labeled and located as it is.
+        let rid = self.kb.assert_fact(
+            constraint_term,
+            constraint_sort,
+            domain,
+            None,
+            ClauseLabel::Written(label),
+        );
         self.kb.mark_source_clause(rid);
+        self.kb.set_rule_item_span(rid, span);
     }
 
     /// Resolve a `LogicalQuery` constructor symbol (`pattern_query`, `conjunction`,
@@ -50942,6 +51040,7 @@ impl<'a> Loader<'a> {
             requirement_sort,
             domain,
             None,
+            domain,
         );
         if let (Some(binder), Some((position, of_base))) = (&r.binder, place) {
             // The binder is already a type parameter of `domain` by now: the converter
@@ -50992,6 +51091,7 @@ impl<'a> Loader<'a> {
             ClauseKind::Fact,
             domain,
             None,
+            domain,
         );
         let at = SourceSpan::from_span(self.source_id, g.span);
         self.kb
@@ -51724,7 +51824,7 @@ impl<'a> Loader<'a> {
         });
         let record_kind = ClauseKind::Fact;
         self.kb
-            .assert_metadata_fact(record_term, record_kind, domain, None);
+            .assert_metadata_fact(record_term, record_kind, domain, None, domain);
     }
 
     /// `provides Spec[...]` inside a sort body. Emits a
@@ -51909,6 +52009,7 @@ impl<'a> Loader<'a> {
             provides_sort,
             domain,
             None,
+            domain,
         );
     }
 
@@ -52198,6 +52299,7 @@ impl<'a> Loader<'a> {
             ClauseKind::Fact,
             domain,
             None,
+            domain,
         );
     }
 
@@ -52275,6 +52377,7 @@ impl<'a> Loader<'a> {
             ClauseKind::Fact,
             domain,
             None,
+            op,
         );
     }
 
@@ -52360,6 +52463,7 @@ impl<'a> Loader<'a> {
                 ClauseKind::Requirement,
                 domain,
                 None,
+                domain,
             );
         }
         lowered
@@ -52640,7 +52744,7 @@ impl<'a> Loader<'a> {
                     ]),
                 });
                 self.kb
-                    .assert_metadata_fact(fact, om_kind, spec_domain, None);
+                    .assert_metadata_fact(fact, om_kind, spec_domain, None, spec_domain);
             }
         }
     }
@@ -52725,7 +52829,7 @@ impl<'a> Loader<'a> {
                     ]),
                 });
                 self.kb
-                    .assert_metadata_fact(fact, cm_kind, spec_domain, None);
+                    .assert_metadata_fact(fact, cm_kind, spec_domain, None, spec_domain);
             }
         }
     }
@@ -52865,7 +52969,7 @@ impl<'a> Loader<'a> {
         });
         let impl_kind = ClauseKind::Fact;
         self.kb
-            .assert_metadata_fact(impl_term, impl_kind, spec_domain, None);
+            .assert_metadata_fact(impl_term, impl_kind, spec_domain, None, spec_domain);
     }
 
     /// Convert a parsed host_type term (typically a `Term::Const(String)`
@@ -52932,7 +53036,7 @@ impl<'a> Loader<'a> {
             ]),
         });
         self.kb
-            .assert_metadata_fact(desc_fact, desc_sort, domain, None);
+            .assert_metadata_fact(desc_fact, desc_sort, domain, None, domain);
     }
 
     /// Convert a list of clauses (each a Vec<TermId>) into a cons-list.
@@ -53183,7 +53287,7 @@ impl<'a> Loader<'a> {
         });
         let parent_domain = self.kb.name_term_sym(parent);
         self.kb
-            .assert_metadata_fact(member_term, member_sort, parent_domain, None);
+            .assert_metadata_fact(member_term, member_sort, parent_domain, None, name_sym);
     }
 
     /// WI-1028 deliberately left `parent` a TERM: it fills `MemberInfo`'s `parent`
@@ -53355,7 +53459,7 @@ impl<'a> Loader<'a> {
             ]),
         });
         self.kb
-            .assert_metadata_fact(head, ClauseKind::Fact, domain, None);
+            .assert_metadata_fact(head, ClauseKind::Fact, domain, None, sym);
     }
 
     fn load_meta_block(&mut self, mb: &MetaBlock) -> TermId {

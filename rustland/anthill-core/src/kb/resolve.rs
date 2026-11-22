@@ -21,6 +21,7 @@ use super::extent::{ArgKey, QueryPattern};
 use super::node_occurrence::{self, EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode};
 use super::typing::SiblingCall;
 use super::persist_subst::BindValue;
+use super::sld_proof::{extend_path, InstanceKind, PathCell, ProofRecorder, ProofTag};
 use super::subst::{Constraint, Substitution};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{
@@ -272,6 +273,9 @@ pub enum BuiltinTag {
     DispatchCarrier,
     /// `anthill.kernel.not(goal)` — negation-as-failure.
     Not,
+    /// WI-20261121-G8E02 — `anthill.reflect.SLDProof.of(goal, ?proof)`: the proof the search
+    /// makes of `goal` (a goal or a negation). Handled in `step_init`, as `Not` is.
+    SldProofOf,
     /// `anthill.reflect.resolve_sort_instantiation_param(?spec_inst, ?param_name, ?value)` —
     /// extract a named arg value from a sort instantiation (a `SortView` spec view or a
     /// plain parameterized application) by parameter name.
@@ -1421,6 +1425,10 @@ struct ResolverFrame {
     /// keeps its occurrence), matched via `match_view_value_pattern` — parity
     /// with the already-`Value` Γ overlay, no lowering to a hash-consed term.
     assumed_facts: Vec<Value>,
+    /// WI-20261121-G8E02 — in proof mode, the instance each node took on this branch,
+    /// newest first ([`super::sld_proof::PathCell`]); `None` outside proof mode. Shared with
+    /// the frame it was copied from, so a branch's part of it goes with the branch.
+    path: Option<Rc<PathCell>>,
 }
 
 /// WI-20260926-CYNPE — one goal of a frame's resolvent, with its WAIT STATE (proposal 068
@@ -1461,6 +1469,11 @@ struct FrameGoal {
     /// through every rotation, splice and frame push, as the wait state does, so the frame
     /// has no depth of its own.
     depth: usize,
+    /// WI-20261121-G8E02 — the goal's place in the PROOF RECORD of a search in proof mode
+    /// ([`super::sld_proof`]): its node, and the attempt asking it now. [`ProofTag::NONE`]
+    /// outside proof mode. It rides with its goal as the wait state and the depth do, so a
+    /// proof follows the rule as written through every reorder.
+    proof: ProofTag,
 }
 
 impl FrameGoal {
@@ -1471,6 +1484,7 @@ impl FrameGoal {
             wait: Wait::Ready,
             clause: None,
             depth,
+            proof: ProofTag::NONE,
         }
     }
 }
@@ -1856,6 +1870,68 @@ pub struct SearchStream {
     /// `config.max_solutions` as [`Self::drain_all`] does: a query limited to `n` answers
     /// ends after the `n`th, and that end is the one asked for, not a truncation.
     answers_yielded: usize,
+    /// WI-20261121-G8E02 — the proof record of a search in PROOF MODE
+    /// ([`KnowledgeBase::resolve_lazy_goal_with_proof`]); `None` for every other search, and
+    /// then every proof hook below does nothing. The query's one goal is node 1.
+    proof: Option<Box<ProofRecorder>>,
+    /// In proof mode, what the last yielded answer's proof is read from: its branch's path
+    /// and the goals it left unchecked, by node. Taken by [`Self::drain_with_proofs`], which
+    /// builds the proof under the answer's substitution.
+    pending_proof: Option<PendingProof>,
+}
+
+/// WI-20261121-G8E02 — what an answer's proof is built from: the path of the branch that
+/// answered, and the goals it left unchecked, by node.
+struct PendingProof {
+    path: Option<Rc<PathCell>>,
+    residual: Vec<(u32, Value)>,
+}
+
+impl ProofDrain {
+    /// The verdict a negation reads ([`DrainVerdict`]), with the first definite answer's proof
+    /// and the refutation beside it.
+    fn into_verdict(
+        self,
+    ) -> (DrainVerdict, Option<Result<TermId, String>>, Option<Result<TermId, String>>) {
+        let mut definite = false;
+        let mut residual = false;
+        let mut proof = None;
+        for (sol, p) in self.answers {
+            if sol.is_definite() {
+                if !definite {
+                    proof = Some(p);
+                }
+                definite = true;
+            } else {
+                residual = true;
+            }
+        }
+        let verdict = DrainVerdict {
+            definite,
+            residual,
+            truncated: self.truncated,
+            undecided: self.undecided,
+            errors: self.errors,
+            faults: self.faults,
+            steps: self.steps,
+            out_of_fuel: self.out_of_fuel,
+        };
+        (verdict, proof, self.refutation)
+    }
+}
+
+/// WI-20261121-G8E02 — a drained search in proof mode: its answers, each with its proof (or
+/// the reason a proof could not be built), and, for a search that answered nothing and was
+/// complete, its goal's refutation.
+pub(crate) struct ProofDrain {
+    pub(crate) answers: Vec<(Solution, Result<TermId, String>)>,
+    pub(crate) refutation: Option<Result<TermId, String>>,
+    pub(crate) truncated: bool,
+    pub(crate) out_of_fuel: bool,
+    pub(crate) undecided: Option<UnknownCause>,
+    pub(crate) errors: Vec<ResolveError>,
+    pub(crate) faults: Vec<ResolveError>,
+    pub(crate) steps: u64,
 }
 
 /// WI-628 — the three-way verdict of draining a CLOSED sub-resolution (see
@@ -2289,6 +2365,108 @@ impl SearchStream {
         }
     }
 
+    /// WI-20261121-G8E02 — drain a search in PROOF MODE
+    /// ([`KnowledgeBase::resolve_lazy_goal_with_proof`]): every answer with its proof, and,
+    /// where it answered nothing and was complete, its goal's refutation. `first_definite`
+    /// stops at the first definite answer — the question a negation asks of its inner goal.
+    pub(crate) fn drain_with_proofs(mut self, kb: &mut KnowledgeBase, first_definite: bool) -> ProofDrain {
+        let mut answers: Vec<(Solution, Result<TermId, String>)> = Vec::new();
+        let mut undecided: Option<UnknownCause> = None;
+        loop {
+            if self.is_empty() {
+                break;
+            }
+            match self.step(kb) {
+                Some(StepResult::YieldSolution(sol)) => {
+                    let proof = match (self.proof.as_ref(), self.pending_proof.take()) {
+                        (Some(rec), Some(p)) => rec.positive(kb, &p.path, 1, &sol.subst, &p.residual),
+                        _ => Err("proof mode: an answer was yielded with no proof noted".to_string()),
+                    };
+                    let definite = sol.is_definite();
+                    if !definite && undecided.is_none() {
+                        undecided = sol.undecided.first().map(|(_, cause)| *cause);
+                    }
+                    answers.push((sol, proof));
+                    if definite && first_definite {
+                        break;
+                    }
+                    if self.config.max_solutions != 0 && answers.len() >= self.config.max_solutions {
+                        break;
+                    }
+                }
+                Some(StepResult::Continue) => {}
+                None => break,
+            }
+        }
+        let refutation = if answers.is_empty() && !self.truncated {
+            self.proof.as_ref().map(|rec| rec.refutation(kb, 1))
+        } else {
+            None
+        };
+        ProofDrain {
+            answers,
+            refutation,
+            truncated: self.truncated,
+            out_of_fuel: self.out_of_fuel,
+            undecided,
+            errors: self.errors.clone(),
+            faults: self.faults.clone(),
+            steps: self.stats.steps,
+        }
+    }
+
+    /// WI-20261121-G8E02 — the proof tag of the top frame's current goal, or
+    /// [`ProofTag::NONE`].
+    fn current_proof_tag(&self) -> ProofTag {
+        self.stack
+            .last()
+            .and_then(|f| f.goals.first())
+            .map_or(ProofTag::NONE, |g| g.proof)
+    }
+
+    /// WI-20261121-G8E02 — proof mode, at the point a goal is ASKED: the current goal gets an
+    /// attempt, of `goal` as it is asked, unless it has one already (a goal re-entered as a
+    /// builtin or as its clauses, or one a view rewrote in place, is the same asking).
+    fn proof_ask(&mut self, goal: &Value) {
+        let Some(rec) = self.proof.as_mut() else { return };
+        let Some(g) = self.stack.last_mut().and_then(|f| f.goals.first_mut()) else { return };
+        if g.proof.node != 0 && g.proof.attempt == 0 {
+            g.proof.attempt = rec.begin_attempt(g.proof.node, goal.clone());
+        }
+    }
+
+    /// WI-20261121-G8E02 — proof mode: the goal tagged `tag` took an instance of `kind` whose
+    /// body is the first `n` goals of the TOP frame (the frame that continues). Tags those
+    /// goals with the instance's body nodes, extends the top frame's path, and, for an
+    /// instance with no body, counts the goal proved. Nothing outside proof mode, or for a goal
+    /// with no node.
+    fn proof_took(&mut self, tag: ProofTag, kind: InstanceKind, n: usize) {
+        let Some(rec) = self.proof.as_mut() else { return };
+        if tag.node == 0 {
+            return;
+        }
+        let (inst, nodes) = rec.open(tag.attempt, kind, n);
+        let f = self
+            .stack
+            .last_mut()
+            .expect("an instance is taken on the frame that continues");
+        for (g, node) in f.goals.iter_mut().zip(nodes) {
+            g.proof = ProofTag::of(node);
+        }
+        f.path = extend_path(&f.path, tag.node, inst);
+        if n == 0 {
+            rec.proved(tag.attempt, f.goals.iter().map(|g| g.proof.node));
+        }
+    }
+
+    /// WI-20261121-G8E02 — proof mode, at a yield: the branch's path and the goals it leaves
+    /// unchecked, for [`Self::drain_with_proofs`] to build the answer's proof from.
+    fn proof_note_yield(&mut self, path: Option<Rc<PathCell>>, residual: Vec<(u32, Value)>) {
+        if self.proof.is_some() {
+            self.pending_proof = Some(PendingProof { path, residual });
+        }
+    }
+
     /// WI-628 — collect ALL solutions (up to `max_solutions`, 0 = unlimited)
     /// with a manual `step` loop, then return them and the final stats WITH
     /// `truncated` folded onto the stats. The eager front doors
@@ -2501,6 +2679,8 @@ impl SearchStream {
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
         let frame = self.stack.last().unwrap();
+        let proof_tag = frame.goals[0].proof;
+        let spliced = goals.len();
         // A SPLICE IS NO CALL (WI-20261115-0WT09): the goals that take `goals[0]`'s place — a
         // conjunction's two operands, `<=>`'s pending equations, a goal with its arguments
         // evaluated — stand where it stood, at its depth. Only opening a clause nests.
@@ -2557,8 +2737,32 @@ impl SearchStream {
         f.state = FrameState::Init {
             delay_mode: delay_mode.reset(),
         };
+        // WI-20261121-G8E02 — proof mode. Nothing left: the goal held as a builtin. ONE goal in
+        // its place — the goal with its arguments evaluated, a predicate argument applied, a
+        // pending equation — is the goal it turned into (§8.3): it stands at the same node and
+        // is asked afresh. Several: the parts the goal split into.
+        match spliced {
+            0 => self.proof_took(proof_tag, InstanceKind::Builtin, 0),
+            1 => self.proof_supersede(proof_tag),
+            n => self.proof_took(proof_tag, InstanceKind::Parts, n),
+        }
         Some(StepResult::Continue)
     }
+
+    /// WI-20261121-G8E02 — proof mode: the top frame's first goal took the place of the goal
+    /// tagged `tag` (a goal it turned into): it stands at that goal's node, to be asked afresh,
+    /// and the attempt that asked the goal it replaced is superseded, never a failure.
+    fn proof_supersede(&mut self, tag: ProofTag) {
+        let Some(rec) = self.proof.as_mut() else { return };
+        if tag.node == 0 {
+            return;
+        }
+        rec.postpone(tag.attempt);
+        if let Some(g) = self.stack.last_mut().and_then(|f| f.goals.first_mut()) {
+            g.proof = tag.unasked();
+        }
+    }
+
 
     /// Design D3 — evaluate the calls written in `goal_val`'s arguments (see the call site
     /// in [`Self::step_init`]). `None` when there is nothing to evaluate, or nothing ran
@@ -2727,7 +2931,13 @@ impl SearchStream {
                     .iter()
                     .filter_map(|g| g.wait.cause().map(|c| (g.goal.clone(), c)))
                     .collect();
-                self.stack.pop();
+                let popped = self.stack.pop().unwrap();
+                // WI-20261121-G8E02 — proof mode: the goals left unchecked are the proof's
+                // residual leaves.
+                self.proof_note_yield(
+                    popped.path,
+                    goals.iter().map(|g| (g.proof.node, g.goal.clone())).collect(),
+                );
                 let sol = Solution {
                     subst,
                     residual,
@@ -2744,7 +2954,8 @@ impl SearchStream {
                 residual: vec![],
                 undecided: vec![],
             };
-            self.stack.pop();
+            let popped = self.stack.pop().unwrap();
+            self.proof_note_yield(popped.path, Vec::new());
 
             // Answer dedup: project the solution onto the QUERY's goals (WI-FFPGD).
             // If that projection was already yielded, this proof re-derives an
@@ -2834,6 +3045,9 @@ impl SearchStream {
         // each clause it opens ([`WITHIN_REQUIREMENTS`]).
         let within: Option<Value> =
             within_requirements_inner(kb, &goal_val).map(|inner| std::mem::replace(&mut goal_val, inner));
+        // WI-20261121-G8E02 — proof mode: this asking of the goal is an attempt, of the goal as
+        // it is asked (its citation marker unwrapped).
+        self.proof_ask(&goal_val);
 
         // A goal asked of ONE waiting clause ([`FrameGoal::clause`]) goes straight to that
         // clause: its classification, its builtin, its other clauses, its hypotheses and its
@@ -2937,11 +3151,13 @@ impl SearchStream {
         // searches or a located load error, with nothing silently dead in between.
         if let ViewHead::Const(Literal::Bool(b)) = goal_val.head(kb) {
             if b {
+                let tag = self.current_proof_tag();
                 let f = self.stack.last_mut().unwrap();
                 f.goals.remove(0);
                 f.state = FrameState::Init {
                     delay_mode: delay_mode.reset(),
                 };
+                self.proof_took(tag, InstanceKind::Builtin, 0);
             } else {
                 self.stack.pop();
             }
@@ -2996,6 +3212,13 @@ impl SearchStream {
         let type_application = registered_builtin_tag.is_none()
             && matches!(goal_val.head(kb), ViewHead::Functor { functor, .. } if kb.is_type_value_head(functor));
         let registered_builtin_tag = registered_builtin_tag.or(type_application.then_some(BuiltinTag::TypeApplication));
+        // WI-20261121-G8E02 — proof mode: an attempt of a builtin that never answers failed
+        // as a builtin (`builtin_false`), not for want of a clause.
+        if registered_builtin_tag.is_some() {
+            if let Some(rec) = self.proof.as_mut() {
+                rec.mark_builtin(frame.goals[0].proof.attempt);
+            }
+        }
 
         // Every handler below reads its operands by position, so a labelled call is put in
         // its parameters' order first ([`KnowledgeBase::builtin_call_in_param_order`]) —
@@ -3147,10 +3370,12 @@ impl SearchStream {
                             return self.step_init(kb);
                         }
                         None => {
+                            let tag = f.goals[0].proof;
                             f.goals.remove(0);
                             f.state = FrameState::Init {
                                 delay_mode: delay_mode.reset(),
                             };
+                            self.proof_took(tag, InstanceKind::Builtin, 0);
                         }
                     }
                     return Some(StepResult::Continue);
@@ -3160,8 +3385,11 @@ impl SearchStream {
                 let subst = frame.subst.clone();
                 if let Some(applied) = Self::lower_ho_apply(kb, &goal_val, &subst) {
                     let f = self.stack.last_mut().unwrap();
+                    let tag = f.goals[0].proof;
                     f.goals[0].goal = applied;
                     f.state = FrameState::Init { delay_mode };
+                    // WI-20261121-G8E02 — `?P(x)` is proved as the call it makes (§8.3).
+                    self.proof_supersede(tag);
                     return Some(StepResult::Continue);
                 } else {
                     // Predicate var still unbound — fail (can't apply unbound predicate)
@@ -3250,11 +3478,13 @@ impl SearchStream {
                 let barrier = Self::resolve_cut_barrier(kb, &goal_val);
                 self.apply_cut(barrier);
                 let new_delay = delay_mode.reset();
+                let tag = self.current_proof_tag();
                 let f = self.stack.last_mut().unwrap();
                 f.goals.remove(0);
                 f.state = FrameState::Init {
                     delay_mode: new_delay,
                 };
+                self.proof_took(tag, InstanceKind::Builtin, 0);
                 return Some(StepResult::Continue);
             }
             // WI-537 (proposal 050): a Γ fact can discharge a builtin guard the
@@ -3350,6 +3580,9 @@ impl SearchStream {
             if tag == BuiltinTag::Not {
                 return self.step_naf(kb, &goal_val, depth, delay_mode);
             }
+            if tag == BuiltinTag::SldProofOf {
+                return self.step_sld_proof_of(kb, &goal_val, depth, delay_mode);
+            }
             // WI-580 (design §3.3): abstract-interpretation fallback. A `===` goal whose
             // operand is an unground, rule-less bodied op-call is expanded by case-splitting
             // the callee's body — one `Continuation` per `match` arm — instead of delaying.
@@ -3433,6 +3666,7 @@ impl SearchStream {
             match builtin_result {
                 BuiltinResult::Success => {
                     // Remove goals[0], bump depth, reset delay counter if delayed
+                    let tag = frame.goals[0].proof;
                     let new_goals = frame.goals[1..].to_vec();
                     let new_subst = frame.subst.clone();
                     let new_delay = delay_mode.reset();
@@ -3443,6 +3677,7 @@ impl SearchStream {
                     f.state = FrameState::Init {
                         delay_mode: new_delay,
                     };
+                    self.proof_took(tag, InstanceKind::Builtin, 0);
                     return Some(StepResult::Continue);
                 }
                 BuiltinResult::SuccessWithBindings(extra) => {
@@ -4111,6 +4346,8 @@ impl SearchStream {
         // rebuild. Each binder is already σ-applied (a child of the reified
         // goal); an open quantified binder is a flex `Global`.
         let mut skolem = Substitution::default();
+        // WI-20261121-G8E02 — the fresh constants, by binder name and rigid id, for a proof.
+        let mut fresh_constants: Vec<(Symbol, u32)> = Vec::new();
         for b in &binders {
             if let Some(Var::Global(vid)) = b.index_var(kb) {
                 // Skolemise each distinct binder once: duplicate binders
@@ -4119,6 +4356,7 @@ impl SearchStream {
                 // spurious contradiction on this throwaway subst (and leak a var).
                 if skolem.resolve_as_value(vid).is_none() {
                     let fresh = kb.fresh_var(vid.name());
+                    fresh_constants.push((vid.name(), fresh.raw()));
                     skolem.bind_value(kb, vid, Value::Var(Var::Rigid(fresh)));
                 }
             }
@@ -4146,6 +4384,12 @@ impl SearchStream {
         // antecedents go out of scope before the surrounding rule's remaining
         // goals run (WI-108 scoping invariant).
         let n_assumed = skolemized_antecedents.len();
+        let n_consequents = skolemized_consequents.len();
+        let proof_kind = self.proof.is_some().then(|| InstanceKind::Discharge {
+            fresh: std::mem::take(&mut fresh_constants),
+            assumed: skolemized_antecedents.clone(),
+        });
+        let proof_tag = self.current_proof_tag();
         // The consequents are OPENED for the quantifier (WI-20261115-0WT09): one deeper, and
         // the marker that ends the assumptions' scope with them.
         let below = Nesting::Opened.depth_below(depth);
@@ -4167,6 +4411,7 @@ impl SearchStream {
         let mut new_assumed = frame.assumed_facts.clone();
         new_assumed.extend(skolemized_antecedents);
         let new_subst = frame.subst.clone();
+        let proof_path = frame.path.clone();
         let new_delay = delay_mode.reset();
 
         self.stack.pop();
@@ -4177,7 +4422,11 @@ impl SearchStream {
                 delay_mode: new_delay,
             },
             assumed_facts: new_assumed,
+            path: proof_path,
         });
+        if let Some(kind) = proof_kind {
+            self.proof_took(proof_tag, kind, n_consequents);
+        }
         Some(StepResult::Continue)
     }
 
@@ -4405,9 +4654,12 @@ impl SearchStream {
                 // A quantifier's instances are OPENED for it (WI-20261115-0WT09): one deeper.
                 .map(|g| FrameGoal::ready(g, Nesting::Opened.depth_below(depth)))
                 .collect();
+            let instances = new_goals.len();
             new_goals.extend(frame.goals[1..].iter().cloned());
             let new_subst = frame.subst.clone();
             let new_assumed = frame.assumed_facts.clone();
+            let proof_tag = frame.goals[0].proof;
+            let proof_path = frame.path.clone();
             self.stack.pop();
             self.stack.push(ResolverFrame {
                 goals: new_goals,
@@ -4416,7 +4668,11 @@ impl SearchStream {
                     delay_mode: delay_mode.reset(),
                 },
                 assumed_facts: new_assumed,
+                path: proof_path,
             });
+            // WI-20261121-G8E02 — proof mode: the `forall` is proved by its instances, the
+            // parts it split into (`clause: none`).
+            self.proof_took(proof_tag, InstanceKind::Parts, instances);
             Some(StepResult::Continue)
         } else {
             // Disjunction: one Continuation candidate per element; `nil` ⇒ fail.
@@ -4469,7 +4725,7 @@ impl SearchStream {
         }
         let wait = self.suspended_on_blockers(kb, &goal, cause);
         self.rotate_first(
-            FrameGoal { goal, wait, clause: None, depth },
+            FrameGoal { goal, wait, clause: None, depth, proof: ProofTag::NONE },
             next_consecutive(&delay_mode),
         );
         Some(StepResult::Continue)
@@ -4480,10 +4736,14 @@ impl SearchStream {
     /// — or, under `definite_only`, skip it (WI-519: a floundered residual is not a
     /// definite solution).
     fn yield_sole_goal(&mut self, goal: Value, cause: Option<UnknownCause>) -> Option<StepResult> {
-        let subst = self.stack.pop().unwrap().subst;
+        let popped = self.stack.pop().unwrap();
+        let subst = popped.subst;
         if self.config.definite_only {
             return Some(StepResult::Continue);
         }
+        // WI-20261121-G8E02 — proof mode: the sole goal is the proof's residual leaf.
+        let node = popped.goals.first().map_or(0, |g| g.proof.node);
+        self.proof_note_yield(popped.path, vec![(node, goal.clone())]);
         Some(StepResult::YieldSolution(Solution {
             subst,
             undecided: cause.map(|c| vec![(goal.clone(), c)]).unwrap_or_default(),
@@ -4519,9 +4779,18 @@ impl SearchStream {
     /// it and spin (WI-629).
     ///
     /// The goal keeps its own depth (WI-20261115-0WT09): a rotation is no step deeper.
-    fn rotate_first(&mut self, goal: FrameGoal, new_consecutive: usize) {
+    fn rotate_first(&mut self, mut goal: FrameGoal, new_consecutive: usize) {
         let f = self.stack.last_mut().unwrap();
-        f.goals.remove(0);
+        let removed = f.goals.remove(0);
+        // WI-20261121-G8E02 — proof mode: the goal keeps its node behind the tail, and the
+        // attempt that asked it is POSTPONED — it did not fail; it is asked afresh on its next
+        // turn. Every rotation comes through here.
+        if goal.proof == ProofTag::NONE {
+            goal.proof = removed.proof.unasked();
+        }
+        if let Some(rec) = self.proof.as_mut() {
+            rec.postpone(removed.proof.attempt);
+        }
         f.goals.push(goal);
         f.state = FrameState::Init {
             delay_mode: DelayMode::Delayed {
@@ -5385,7 +5654,7 @@ impl SearchStream {
             }
             _ => self.suspended_on_blockers(kb, goal_val, cause),
         };
-        let goal = FrameGoal { goal: goal_val.clone(), wait, clause: None, depth };
+        let goal = FrameGoal { goal: goal_val.clone(), wait, clause: None, depth, proof: ProofTag::NONE };
         self.rotate_first(goal, next_consecutive(&delay_mode));
         Some(StepResult::Continue)
     }
@@ -5409,6 +5678,187 @@ impl SearchStream {
             Some(super::typing::MemoryAnswer::Unknown) | None => BuiltinResult::Unknown {
                 cause: UnknownCause::OpenWorldParameter,
             },
+        }
+    }
+
+    /// WI-20261121-G8E02 — `SLDProof.of(goal, ?p)` (kernel-language §8.3, "The proof of a
+    /// goal"; proposal 075). The goal's search runs in PROOF MODE, on what is left of this
+    /// search's depth and fuel, and its steps are charged back, as a negation's are.
+    ///
+    /// * For a goal `g`: one answer per proof of `g`. Each is handed back as unifications —
+    ///   `g` with its instance in the answer, `?p` with the proof — followed by the goals the
+    ///   answer left unchecked, so a conditional answer stays conditional here.
+    /// * For a negation `!g`: decided as `!g` is ([`Self::step_naf`]). It waits while `g` has
+    ///   an unbound variable; it has no answer where `g` has one; it is undecided where the
+    ///   search for `g` is; and otherwise `?p` is `g`'s refutation.
+    ///
+    /// A proof the record cannot build is a FAULT of this search, never a guess.
+    fn step_sld_proof_of(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        goal: &Value,
+        depth: usize,
+        delay_mode: DelayMode,
+    ) -> Option<StepResult> {
+        let subst = self.stack.last().unwrap().subst.clone();
+        let goals_len = self.stack.last().unwrap().goals.len();
+        let (Some(target), Some(proof_arg)) = (
+            kb.walk_arg(goal.pos_arg(kb, 0), &subst),
+            kb.walk_arg(goal.pos_arg(kb, 1), &subst),
+        ) else {
+            self.stack.pop();
+            return Some(StepResult::Continue);
+        };
+        let negated = match target.head(kb) {
+            ViewHead::Functor {
+                functor,
+                pos_arity: 1,
+                named_arity: 0,
+            } if kb.builtin_of(functor) == Some(BuiltinTag::Not) => kb.walk_arg(target.pos_arg(kb, 0), &subst),
+            _ => None,
+        };
+        let sub_config = ResolveConfig {
+            max_depth: self.config.max_depth.saturating_sub(depth),
+            max_steps: self.remaining_fuel(),
+            max_solutions: 0,
+            simplify: self.config.simplify,
+            definite_only: false,
+            gamma: self.config.gamma.clone(),
+            opaque_skolems: self.config.opaque_skolems.clone(),
+            memory: self.config.memory.clone(),
+            // One answer per PROOF: two proofs of one answer are two answers here.
+            dedup_answers: false,
+        };
+        let unify = kb.unify_functor();
+        match negated {
+            Some(inner) => {
+                // Decided as `!g` is ([`Self::step_naf`]): a memory relation by the record and an
+                // open-world reference under Γ need no gate of their own here — the search for `g`
+                // answers both as `!g`'s does (the builtin reads the record; a `var_ref` goal is
+                // `Unknown`), so its verdict is `!g`'s (`/code-review`, measured:
+                // `a_negation_under_gamma_is_decided_as_the_negation_is`).
+                if !Self::negand_is_ground(kb, &inner, &subst) {
+                    return self.delay_goal(kb, goal.clone(), None, depth, delay_mode);
+                }
+                let inner_v = kb.reify_value(&inner, &subst);
+                let drained = kb
+                    .resolve_lazy_goal_with_proof(inner_v, &sub_config)
+                    .drain_with_proofs(kb, true);
+                for err in drained.errors.iter().cloned() {
+                    self.note_error(err);
+                }
+                self.charge_sub_search(drained.steps, drained.out_of_fuel);
+                if self.out_of_fuel {
+                    for err in drained.faults.iter().cloned() {
+                        ResolveError::push_deduped(&mut self.faults, err);
+                    }
+                    return Some(StepResult::Continue);
+                }
+                if drained.answers.iter().any(|(sol, _)| sol.is_definite()) {
+                    // `g` holds: `!g` has no proof.
+                    self.stack.pop();
+                    return Some(StepResult::Continue);
+                }
+                match drained.refutation {
+                    Some(Ok(refutation)) => {
+                        let bind = kb.make_goal_value(unify, vec![proof_arg, Value::term(refutation)]);
+                        self.continue_with_goals(kb, Substitution::default(), vec![bind], depth, delay_mode)
+                    }
+                    Some(Err(message)) => {
+                        self.record_error(ResolveError { message, at: None });
+                        self.stack.pop();
+                        Some(StepResult::Continue)
+                    }
+                    None => {
+                        // Undecided, as `!g` is: a limit cut the search for `g`, or it ended
+                        // with conditional answers only.
+                        self.truncated |= drained.truncated;
+                        for err in drained.faults.iter().cloned() {
+                            ResolveError::push_deduped(&mut self.faults, err);
+                        }
+                        if self.config.definite_only {
+                            self.stack.pop();
+                            return Some(StepResult::Continue);
+                        }
+                        if goals_len == 1 {
+                            return self.yield_sole_goal(goal.clone(), drained.undecided);
+                        }
+                        let wait = self.suspended_on_blockers(kb, goal, drained.undecided);
+                        let parked = FrameGoal {
+                            goal: goal.clone(),
+                            wait,
+                            clause: None,
+                            depth,
+                            proof: ProofTag::NONE,
+                        };
+                        self.rotate_first(parked, next_consecutive(&delay_mode));
+                        Some(StepResult::Continue)
+                    }
+                }
+            }
+            None => {
+                // A goal that is still a variable is no goal yet: it waits for the binding, as a
+                // negand with an unbound variable does (`/code-review`).
+                if matches!(target.head(kb), ViewHead::Var(_)) {
+                    return self.delay_goal(kb, goal.clone(), None, depth, delay_mode);
+                }
+                let target_v = kb.reify_value(&target, &subst);
+                let drained = kb
+                    .resolve_lazy_goal_with_proof(target_v.clone(), &sub_config)
+                    .drain_with_proofs(kb, false);
+                for err in drained.errors.iter().cloned() {
+                    self.note_error(err);
+                }
+                // The search for `g` is a search this one would have made had it asked `g`
+                // itself, so its faults are this search's — always, not only when the fuel ran
+                // out: a goal whose branches fault does not fail in silence here
+                // (`/code-review`).
+                for err in drained.faults.iter().cloned() {
+                    ResolveError::push_deduped(&mut self.faults, err);
+                }
+                self.charge_sub_search(drained.steps, drained.out_of_fuel);
+                if self.out_of_fuel {
+                    return Some(StepResult::Continue);
+                }
+                // An answer is an answer; an incomplete search's end is no claim they were all.
+                self.truncated |= drained.truncated;
+                let mut candidates = Vec::with_capacity(drained.answers.len());
+                for (sol, proof) in drained.answers {
+                    let proof = match proof {
+                        Ok(p) => p,
+                        Err(message) => {
+                            self.record_error(ResolveError { message, at: None });
+                            continue;
+                        }
+                    };
+                    let instance = kb.reify_value(&target_v, &sol.subst);
+                    let mut goals = vec![
+                        kb.make_goal_value(unify, vec![target_v.clone(), instance]),
+                        kb.make_goal_value(unify, vec![proof_arg.clone(), Value::term(proof)]),
+                    ];
+                    goals.extend(sol.residual.iter().map(|r| kb.reify_value(r, &sol.subst)));
+                    candidates.push(Candidate::Continuation {
+                        goals,
+                        nesting: Nesting::Split,
+                    });
+                }
+                if candidates.is_empty() {
+                    self.stack.pop();
+                    return Some(StepResult::Continue);
+                }
+                let f = self.stack.last_mut().unwrap();
+                f.state = FrameState::ChoicePoint {
+                    delay_mode,
+                    original_goal: goal.clone(),
+                    candidates,
+                    next: 0,
+                    extent_rows: Vec::new(),
+                    extent_next: 0,
+                    waiting: Vec::new(),
+                    cut_barrier: None,
+                };
+                Some(StepResult::Continue)
+            }
         }
     }
 
@@ -5454,11 +5904,13 @@ impl SearchStream {
                         Some(StepResult::Continue)
                     }
                     super::typing::MemoryAnswer::Fails => {
+                        let tag = self.current_proof_tag();
                         let f = self.stack.last_mut().unwrap();
                         f.goals.remove(0);
                         f.state = FrameState::Init {
                             delay_mode: delay_mode.reset(),
                         };
+                        self.proof_took(tag, InstanceKind::Builtin, 0);
                         Some(StepResult::Continue)
                     }
                     super::typing::MemoryAnswer::Unknown => self.delay_goal(
@@ -5539,8 +5991,24 @@ impl SearchStream {
             // nothing, so its empty result is UNDECIDED, not a refutation of `P`;
             // folding `truncated` into the floundered branch below is what keeps
             // `not(P)` from silently succeeding on an incomplete search.
-            let sub_stream = kb.resolve_lazy_goals(vec![goal_v], &sub_config);
-            let v = sub_stream.drain_verdict(kb);
+            // WI-20261121-G8E02 — in proof mode the inner search keeps its record too: where
+            // `P` holds, its proof is why `not(P)` failed; where it is refuted, the refutation
+            // is `not(P)`'s proof.
+            let naf_tag = self.current_proof_tag();
+            let (v, inner_proof, inner_refutation) = if self.proof.is_some() {
+                let drained = kb
+                    .resolve_lazy_goal_with_proof(goal_v, &sub_config)
+                    .drain_with_proofs(kb, true);
+                let (v, proof, refutation) = drained.into_verdict();
+                for err in [&proof, &refutation].into_iter().flatten() {
+                    if let Err(message) = err {
+                        self.note_error(ResolveError { message: message.clone(), at: None });
+                    }
+                }
+                (v, proof.and_then(Result::ok), refutation.and_then(Result::ok))
+            } else {
+                (kb.resolve_lazy_goals(vec![goal_v], &sub_config).drain_verdict(kb), None, None)
+            };
             // FOLDED HERE, NOT IN A BRANCH. The first version of this fold sat inside
             // the `v.residual || v.truncated` arm, which drops every fault on the
             // `v.definite` path — and `drain_verdict` BREAKS at the first definite
@@ -5572,6 +6040,9 @@ impl SearchStream {
 
             if v.definite {
                 // P has a definite solution → P holds → not(P) FAILS — backtrack.
+                if let (Some(rec), Some(p)) = (self.proof.as_mut(), inner_proof) {
+                    rec.set_negated(naf_tag.attempt, p);
+                }
                 self.stack.pop();
                 return Some(StepResult::Continue);
             } else if v.residual || v.truncated {
@@ -5662,7 +6133,7 @@ impl SearchStream {
                     // is no step deeper since WI-20261115-0WT09, so the depth limit, which
                     // it burned before, no longer stops it — and return NO solution: the
                     // exact verdict dishonesty WI-629 fixes).
-                    let goal = FrameGoal { goal: goal.clone(), wait, clause: None, depth };
+                    let goal = FrameGoal { goal: goal.clone(), wait, clause: None, depth, proof: ProofTag::NONE };
                     self.rotate_first(goal, next_consecutive(&delay_mode));
                     return Some(StepResult::Continue);
                 }
@@ -5677,6 +6148,8 @@ impl SearchStream {
                 f.state = FrameState::Init {
                     delay_mode: new_delay,
                 };
+                let kind = inner_refutation.map_or(InstanceKind::Builtin, InstanceKind::NegationHolds);
+                self.proof_took(naf_tag, kind, 0);
                 return Some(StepResult::Continue);
             }
         }
@@ -5915,12 +6388,14 @@ impl SearchStream {
                     delay_mode: delay_mode.clone(),
                 },
                 assumed_facts: frame.assumed_facts.clone(),
+                path: frame.path.clone(),
             });
             let goal = FrameGoal {
                 goal: original_goal,
                 wait,
                 clause: Some(rid),
                 depth,
+                proof: ProofTag::NONE,
             };
             self.rotate_first(goal, next_consecutive(&delay_mode));
             return Some(StepResult::Continue);
@@ -5937,6 +6412,7 @@ impl SearchStream {
                     delay_mode: delay_mode.clone(),
                 },
                 assumed_facts: frame.assumed_facts.clone(),
+                path: frame.path.clone(),
             });
             return Some(StepResult::Continue);
         }
@@ -5949,6 +6425,7 @@ impl SearchStream {
                     delay_mode: delay_mode.clone(),
                 },
                 assumed_facts: frame.assumed_facts.clone(),
+                path: frame.path.clone(),
             });
             return Some(StepResult::Continue);
         }
@@ -5962,8 +6439,10 @@ impl SearchStream {
             let below = nesting.depth_below(frame.goals[0].depth);
             let tail = &frame.goals[1..];
             let mut new_goals: Vec<FrameGoal> = Vec::with_capacity(body.len() + tail.len());
+            let parts = body.len();
             new_goals.extend(body.into_iter().map(|g| FrameGoal::ready(g, below)));
             new_goals.extend(tail.iter().cloned());
+            let proof_tag = frame.goals[0].proof;
             self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: frame.subst.clone(),
@@ -5971,10 +6450,21 @@ impl SearchStream {
                     delay_mode: delay_mode.reset(),
                 },
                 assumed_facts: frame.assumed_facts.clone(),
+                path: frame.path.clone(),
             });
+            // WI-20261121-G8E02 — proof mode: a side of `|`, a `some`'s element, an unfolded
+            // arm: the parts the goal split into (`clause: none`).
+            self.proof_took(proof_tag, InstanceKind::Parts, parts);
             return Some(StepResult::Continue);
         }
 
+        // WI-20261121-G8E02 — proof mode: what the goal takes from this candidate.
+        let proof_kind = match &candidate {
+            Candidate::Rule(rid, _) => InstanceKind::Clause(*rid),
+            Candidate::Assumption(_) => InstanceKind::Assumption,
+            _ => InstanceKind::Row,
+        };
+        let proof_tag = self.current_proof_tag();
         // Extract components from candidate
         let (opt_rid, tree_subst) = match candidate {
             Candidate::Rule(rid, subst) => (Some(rid), subst),
@@ -6094,6 +6584,7 @@ impl SearchStream {
             let new_delay = delay_mode.reset();
             let inherited = frame.assumed_facts.clone();
             // A fact opens no goal: the tail keeps its own depths.
+            let path = frame.path.clone();
             self.stack.push(ResolverFrame {
                 goals: remaining,
                 subst: merged,
@@ -6101,7 +6592,10 @@ impl SearchStream {
                     delay_mode: new_delay,
                 },
                 assumed_facts: inherited,
+                path,
             });
+            // WI-20261121-G8E02 — proof mode: a fact, an assumption or a row, with no body.
+            self.proof_took(proof_tag, proof_kind, 0);
         } else {
             // Rule with body
             let rid = opt_rid.unwrap();
@@ -6328,7 +6822,9 @@ impl SearchStream {
                         .map(|n| FrameGoal::ready(Value::Node(n), body_depth)),
                 ),
             }
+            let body_len = new_goals.len();
             new_goals.extend(remaining);
+            let path = self.stack.last().and_then(|f| f.path.clone());
             self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: merged,
@@ -6336,7 +6832,10 @@ impl SearchStream {
                     delay_mode: new_delay,
                 },
                 assumed_facts: inherited,
+                path,
             });
+            // WI-20261121-G8E02 — proof mode: the clause, its body the goals just pushed.
+            self.proof_took(proof_tag, proof_kind, body_len);
         }
 
         Some(StepResult::Continue)
@@ -6611,6 +7110,7 @@ impl KnowledgeBase {
                 delay_mode: DelayMode::Normal,
             },
             assumed_facts: Vec::new(),
+            path: None,
         };
         SearchStream {
             stack: vec![initial_frame],
@@ -6646,7 +7146,22 @@ impl KnowledgeBase {
             errors: Vec::new(),
             faults: Vec::new(),
             answers_yielded: 0,
+            proof: None,
+            pending_proof: None,
         }
+    }
+
+    /// WI-20261121-G8E02 — [`Self::resolve_lazy_goals`] over ONE goal, in PROOF MODE: the stream
+    /// keeps the proof record ([`super::sld_proof`]), so each answer it yields has a proof
+    /// ([`SearchStream::drain_with_proofs`]) and, where it yields none and was complete, the
+    /// goal has a refutation. The search itself takes the same steps as without it.
+    pub(crate) fn resolve_lazy_goal_with_proof(&self, goal: Value, config: &ResolveConfig) -> SearchStream {
+        let mut stream = self.resolve_lazy_goals(vec![goal], config);
+        let mut rec = ProofRecorder::default();
+        let root = rec.root();
+        stream.stack[0].goals[0].proof = ProofTag::of(root);
+        stream.proof = Some(Box::new(rec));
+        stream
     }
 
     /// Resolve a list of goals using SLD resolution. Representation-neutral
@@ -7234,6 +7749,9 @@ impl KnowledgeBase {
                     .to_string(),
             )),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
+            BuiltinTag::SldProofOf => {
+                unreachable!("SldProofOf is handled in step_init, not execute_builtin")
+            }
             BuiltinTag::MemoryAlias | BuiltinTag::MemoryMaybeConnected => {
                 unreachable!("a memory relation is answered in step_init, not execute_builtin")
             }
@@ -17779,6 +18297,7 @@ pub(crate) fn is_scoping_marker(kb: &KnowledgeBase, functor: Symbol, pos_arity: 
 
 #[cfg(test)]
 mod tests {
+    use crate::kb::ClauseLabel;
     use super::*;
     use crate::intern::Symbol;
     use crate::kb::term::{Literal, Term};
@@ -17949,7 +18468,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let rid = kb.assert_fact(head, sort, domain, None);
+        let rid = kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
         assert!(kb.is_equation(rid));
     }
 
@@ -17976,7 +18495,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let rid = kb.assert_rule(head, vec![body], sort, domain, None);
+        let rid = kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
         assert!(!kb.is_equation(rid));
     }
 
@@ -17997,7 +18516,7 @@ mod tests {
             pos_args: SmallVec::from_slice(&[alice, bob]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(fact, sort, domain, None);
+        kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
 
         // Query: parent(?x, "bob")
         let x_sym = kb.intern("x");
@@ -18047,8 +18566,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[a, a]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f_ab, sort, domain, None);
-        kb.assert_fact(f_aa, sort, domain, None);
+        kb.assert_fact(f_ab, sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(f_aa, sort, domain, None, ClauseLabel::Runtime);
 
         // Query: rel(?x, ?x)
         let x_sym = kb.intern("x");
@@ -18099,8 +18618,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[bob, charlie]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f1, sort, domain, None);
-        kb.assert_fact(f2, sort, domain, None);
+        kb.assert_fact(f1, sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(f2, sort, domain, None, ClauseLabel::Runtime);
 
         // Rule: grandparent(?x, ?z) :- parent(?x, ?y), parent(?y, ?z)
         let x_sym = kb.intern("x");
@@ -18128,7 +18647,7 @@ mod tests {
             pos_args: SmallVec::from_slice(&[var_y, var_z]),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![b1, b2], sort, domain, None);
+        kb.assert_rule(head, vec![b1, b2], sort, domain, None, ClauseLabel::Runtime);
 
         // Query: grandparent(?a, ?b)
         let a_sym = kb.intern("a");
@@ -18174,8 +18693,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[bob, charlie]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f1, sort, domain, None);
-        kb.assert_fact(f2, sort, domain, None);
+        kb.assert_fact(f1, sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(f2, sort, domain, None, ClauseLabel::Runtime);
 
         // Rule 1: ancestor(?x, ?y) :- parent(?x, ?y)
         {
@@ -18196,7 +18715,7 @@ mod tests {
                 pos_args: SmallVec::from_slice(&[var_x, var_y]),
                 named_args: SmallVec::new(),
             });
-            kb.assert_rule(head, vec![body], sort, domain, None);
+            kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
         }
 
         // Rule 2: ancestor(?x, ?z) :- parent(?x, ?y), ancestor(?y, ?z)
@@ -18226,7 +18745,7 @@ mod tests {
                 pos_args: SmallVec::from_slice(&[var_y, var_z]),
                 named_args: SmallVec::new(),
             });
-            kb.assert_rule(head, vec![b1, b2], sort, domain, None);
+            kb.assert_rule(head, vec![b1, b2], sort, domain, None, ClauseLabel::Runtime);
         }
 
         // Query: ancestor("alice", ?w)
@@ -18276,8 +18795,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[alice, dogs]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f1, sort, domain, None);
-        kb.assert_fact(f2, sort, domain, None);
+        kb.assert_fact(f1, sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(f2, sort, domain, None, ClauseLabel::Runtime);
 
         // Query: likes("alice", ?what)
         let w_sym = kb.intern("what");
@@ -18308,7 +18827,7 @@ mod tests {
                 pos_args: SmallVec::from_elem(val, 1),
                 named_args: SmallVec::new(),
             });
-            kb.assert_fact(fact, sort, domain, None);
+            kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
         }
 
         let x_sym = kb.intern("x");
@@ -18349,7 +18868,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body], sort, domain, None);
+        kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
 
         let val = kb.alloc(Term::Const(Literal::Int(1)));
         let goal = kb.alloc(Term::Fn {
@@ -18397,7 +18916,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body], sort, domain, None);
+        kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
 
         // not(loop(1)) under a small depth budget so loop(1) TRUNCATES.
         let one = kb.alloc(Term::Const(Literal::Int(1)));
@@ -18501,7 +19020,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body], sort, domain, None);
+        kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
 
         let one = kb.alloc(Term::Const(Literal::Int(1)));
         let mk_not = |kb: &mut KnowledgeBase, inner_functor: Symbol| {
@@ -18607,7 +19126,7 @@ mod tests {
             pos_args: SmallVec::from_slice(&[var_a, var_b]),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(myeq_head, vec![myeq_body], sort, domain, None);
+        kb.assert_rule(myeq_head, vec![myeq_body], sort, domain, None, ClauseLabel::Runtime);
         kb.insert_eq_dispatch(box_sym, myeq);
 
         // `eq(box(1), box(2))` — two DISTINCT ground `box` operands (no reflexivity
@@ -18736,7 +19255,7 @@ mod tests {
             pos_args: SmallVec::from_slice(&[at, bt]),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body], sort, domain, None);
+        kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
 
         let truncating = kb.prove_rule_predicate(pr, vec![Value::Int(1), Value::Int(2)]);
         assert!(
@@ -18797,7 +19316,7 @@ mod tests {
             pos_args: SmallVec::from_slice(&[var_x, var_y]),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(head, vec![body_eq], sort, domain, None);
+        kb.assert_rule(head, vec![body_eq], sort, domain, None, ClauseLabel::Runtime);
         kb.insert_eq_dispatch(box_f, myeq_f);
 
         let mk_box = |kb: &mut KnowledgeBase, n: i64| {
@@ -18861,7 +19380,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(fact, sort, domain, None);
+        kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
 
         // Query for g(1) — no matching facts
         let goal = kb.alloc(Term::Fn {
@@ -18899,7 +19418,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_fact(eq_head, sort, domain, Some(meta));
+        kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
 
         // Simplify double(2) → should get 4
         let result = kb.simplify(lhs);
@@ -18935,7 +19454,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_fact(eq_head, sort, domain, Some(meta));
+        kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
 
         // Simplify negate(negate(5)) → should get 5
         let five = kb.alloc(Term::Const(Literal::Int(5)));
@@ -18983,7 +19502,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_fact(eq_head, sort, domain, Some(meta));
+        kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
 
         // Simplify f(double(3)) → f(twice(3))
         let f_sym = kb.intern("f");
@@ -19060,7 +19579,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_fact(eq_head, sort, domain, Some(meta));
+        kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
 
         // Fact: g(42)
         let val = kb.alloc(Term::Const(Literal::Int(42)));
@@ -19069,7 +19588,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(g_42, sort, domain, None);
+        kb.assert_fact(g_42, sort, domain, None, ClauseLabel::Runtime);
 
         // Query: f(42) — with simplification, f(42) → g(42), which matches the fact
         let f_42 = kb.alloc(Term::Fn {
@@ -19120,7 +19639,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         // Fact: found(7)
         let seven = kb.alloc(Term::Const(Literal::Int(7)));
@@ -19129,7 +19655,7 @@ mod tests {
             pos_args: SmallVec::from_elem(seven, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(found_7, sort, domain, None);
+        kb.assert_fact(found_7, sort, domain, None, ClauseLabel::Runtime);
 
         // Query: found(pick(?q, 99)) — simplify rewrites pick(?q, 99) → ?q.
         let q_sym = kb.intern("q");
@@ -19191,7 +19717,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         // An unrelated fact the bare-var wildcard would spuriously match.
         let one = kb.alloc(Term::Const(Literal::Int(1)));
@@ -19201,7 +19734,7 @@ mod tests {
             pos_args: SmallVec::from_elem(one, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(other_1, sort, domain, None);
+        kb.assert_fact(other_1, sort, domain, None, ClauseLabel::Runtime);
 
         // Whole-goal redex: pick(?q, 99) → ?q (bare var).
         let q_sym = kb.intern("q");
@@ -19248,7 +19781,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_fact(eq_head, sort, domain, Some(meta));
+        kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
 
         let (result, changes) = kb.apply_eq_rules(&Value::term(lhs), 100, &Substitution::new());
         assert_eq!(result.expect_term(), four);
@@ -19289,7 +19822,14 @@ mod tests {
         // arity-0 Global vars, which reify resolves directly (no bug). Tag `@[simp]`
         // (WI-292): `apply_eq_rules` fires only directional rewrites.
         let meta = simp_meta(&mut kb);
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         // simplify(pick(5, 7)) → 5  (returned Var(DeBruijn(0)) before WI-584).
         let five = kb.alloc(Term::Const(Literal::Int(5)));
@@ -19342,7 +19882,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         // Half-ground redex: sub(f(?x), f(42)) — the match links ?x = 42 → skip.
         let x_sym = kb.intern("x");
@@ -19420,7 +19967,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         let q_sym = kb.intern("q");
         let vq = kb.fresh_var(q_sym);
@@ -19496,7 +20050,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         // sub(?q, f(42)) — DB-0 is covered by both ?q (query link) and f(42)
         // (synthetic). Nonlinear constraint → skip.
@@ -19554,7 +20115,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         // Redex term: wrap(wrap(…wrap(add(7, 0))…)) at a depth the recursive walk
         // could not reach (fuel-as-depth stopped it at 100).
@@ -19645,7 +20213,14 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
         });
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         // Gate recomputes `true` on the next call: add(7, 0) → 7.
         assert_eq!(
@@ -19689,7 +20264,7 @@ mod tests {
         });
         let foo_sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        kb.assert_fact(foo_head, foo_sort, domain, None);
+        kb.assert_fact(foo_head, foo_sort, domain, None, ClauseLabel::Runtime);
         assert!(
             kb.simp_gate_cache.is_some(),
             "asserting an unrelated functor must NOT invalidate the simp gate \
@@ -19720,7 +20295,14 @@ mod tests {
             named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
         });
         let sort = ClauseKind::Fact;
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
         assert!(
             kb.simp_gate_cache.is_none(),
             "asserting an `eq` @[simp] rule DOES invalidate the gate"
@@ -19759,7 +20341,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
+        kb.assert_rule_debruijn_with_nodes(
+            eq_head,
+            vec![],
+            sort,
+            domain,
+            Some(meta),
+            ClauseLabel::Runtime,
+        );
 
         // Goal occurrence: wrap(wrap(…wrap(add(7, 0))…)) at a depth the recursive
         // walk could not survive.
@@ -19847,7 +20436,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let meta = simp_meta(&mut kb);
-        kb.assert_fact(eq_head, sort, domain, Some(meta));
+        kb.assert_fact(eq_head, sort, domain, Some(meta), ClauseLabel::Runtime);
 
         // Node goal: wrap(1) — the redex `1` is a Const LEAF child of wrap.
         let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
@@ -19905,7 +20494,7 @@ mod tests {
             pos_args: SmallVec::from_elem(hello, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f_hello, sort, domain, None);
+        kb.assert_fact(f_hello, sort, domain, None, ClauseLabel::Runtime);
 
         // Query: f(?x), anthill.reflect.nonvar(?x)
         let x_sym = kb.intern("x");
@@ -19945,7 +20534,7 @@ mod tests {
             pos_args: SmallVec::from_elem(hello, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f_hello, sort, domain, None);
+        kb.assert_fact(f_hello, sort, domain, None, ClauseLabel::Runtime);
 
         // Query: anthill.reflect.nonvar(?x), f(?x)
         let x_sym = kb.intern("x");
@@ -20008,7 +20597,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f_42, sort, domain, None);
+        kb.assert_fact(f_42, sort, domain, None, ClauseLabel::Runtime);
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -20055,7 +20644,7 @@ mod tests {
             pos_args: SmallVec::from_elem(pair_y, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f_pair, sort, domain, None);
+        kb.assert_fact(f_pair, sort, domain, None, ClauseLabel::Runtime);
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -20095,7 +20684,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(fact, sort, domain, None);
+        kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -20132,7 +20721,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val, 1),
             named_args: SmallVec::new(),
         });
-        let written = kb.assert_fact(head, sort, domain, None);
+        let written = kb.assert_fact(head, sort, domain, None, ClauseLabel::Runtime);
         kb.mark_source_clause(written);
 
         let x_sym = kb.intern("x");
@@ -20191,7 +20780,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val_42, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(is_thing_42, sort, domain, None);
+        kb.assert_fact(is_thing_42, sort, domain, None, ClauseLabel::Runtime);
 
         // Fact: bind_a(42)
         let bind_a_42 = kb.alloc(Term::Fn {
@@ -20199,7 +20788,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val_42, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(bind_a_42, sort, domain, None);
+        kb.assert_fact(bind_a_42, sort, domain, None, ClauseLabel::Runtime);
 
         // Rule: check(?x) :- nonvar(?x), is_thing(?x)
         let x_sym = kb.intern("x");
@@ -20227,6 +20816,7 @@ mod tests {
             sort,
             domain,
             None,
+            ClauseLabel::Runtime,
         );
 
         // Query: check(?a), bind_a(?a)
@@ -20270,7 +20860,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val_42, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(is_thing_42, sort, domain, None);
+        kb.assert_fact(is_thing_42, sort, domain, None, ClauseLabel::Runtime);
 
         // Rule: check(?x) :- nonvar(?x), is_thing(?x)
         let x_sym = kb.intern("x");
@@ -20298,6 +20888,7 @@ mod tests {
             sort,
             domain,
             None,
+            ClauseLabel::Runtime,
         );
 
         // Query: check(?a) alone — ?a never bound
@@ -20340,7 +20931,7 @@ mod tests {
             pos_args: SmallVec::from_elem(val_10, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(bar_10, sort, domain, None);
+        kb.assert_fact(bar_10, sort, domain, None, ClauseLabel::Runtime);
 
         // Fact: baz(10, 99)
         let val_99 = kb.alloc(Term::Const(Literal::Int(99)));
@@ -20349,7 +20940,7 @@ mod tests {
             pos_args: SmallVec::from_slice(&[val_10, val_99]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(baz_10_99, sort, domain, None);
+        kb.assert_fact(baz_10_99, sort, domain, None, ClauseLabel::Runtime);
 
         // Rule: foo(?x) :- bar(?y), nonvar(?y), baz(?y, ?x)
         let x_sym = kb.intern("x");
@@ -20385,6 +20976,7 @@ mod tests {
             sort,
             domain,
             None,
+            ClauseLabel::Runtime,
         );
 
         // Query: foo(?a) — ?y is internal, bar binds it, nonvar reorders within body
@@ -20427,8 +21019,8 @@ mod tests {
             pos_args: SmallVec::from_elem(v2, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f1, sort, domain, None);
-        kb.assert_fact(f2, sort, domain, None);
+        kb.assert_fact(f1, sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(f2, sort, domain, None, ClauseLabel::Runtime);
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -20472,7 +21064,7 @@ mod tests {
                 pos_args: SmallVec::from_elem(val, 1),
                 named_args: SmallVec::new(),
             });
-            kb.assert_fact(fact, sort, domain, None);
+            kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
         }
 
         let x_sym = kb.intern("x");
@@ -20562,8 +21154,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[bob, charlie]),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f1, sort, domain, None);
-        kb.assert_fact(f2, sort, domain, None);
+        kb.assert_fact(f1, sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(f2, sort, domain, None, ClauseLabel::Runtime);
 
         // Rule 1: ancestor(?x, ?y) :- parent(?x, ?y)
         {
@@ -20584,7 +21176,7 @@ mod tests {
                 pos_args: SmallVec::from_slice(&[var_x, var_y]),
                 named_args: SmallVec::new(),
             });
-            kb.assert_rule(head, vec![body], sort, domain, None);
+            kb.assert_rule(head, vec![body], sort, domain, None, ClauseLabel::Runtime);
         }
 
         // Rule 2: ancestor(?x, ?z) :- parent(?x, ?y), ancestor(?y, ?z)
@@ -20614,7 +21206,7 @@ mod tests {
                 pos_args: SmallVec::from_slice(&[var_y, var_z]),
                 named_args: SmallVec::new(),
             });
-            kb.assert_rule(head, vec![b1, b2], sort, domain, None);
+            kb.assert_rule(head, vec![b1, b2], sort, domain, None, ClauseLabel::Runtime);
         }
 
         // Query: ancestor("alice", ?w)
@@ -21028,7 +21620,13 @@ mod tests {
             pos_args: SmallVec::from_elem(one, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact_value(Value::Term { id: fact }, ClauseKind::Fact, domain, None);
+        kb.assert_fact_value(
+            Value::Term { id: fact },
+            ClauseKind::Fact,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         // `ho_apply(<the symbol, as a SymbolRef value>, 1)`.
         let ha_sym = kb.resolve_symbol(dt::qualified(dt::HO_APPLY));
@@ -21371,7 +21969,7 @@ mod tests {
             pos_args: SmallVec::from_elem(a, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(p_a_fact, sort, domain, None);
+        kb.assert_fact(p_a_fact, sort, domain, None, ClauseLabel::Runtime);
 
         // Query: not(p(a))
         let p_a_query = kb.alloc(Term::Fn {
@@ -21437,7 +22035,7 @@ mod tests {
             pos_args: SmallVec::from_elem(a, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f_a, sort, domain, None);
+        kb.assert_fact(f_a, sort, domain, None, ClauseLabel::Runtime);
 
         // Build goals
         let x_sym = kb.intern("x");
@@ -21500,13 +22098,13 @@ mod tests {
             pos_args: SmallVec::from_elem(a, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(p_a, sort, domain, None);
+        kb.assert_fact(p_a, sort, domain, None, ClauseLabel::Runtime);
         let f_a = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(a, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(f_a, sort, domain, None);
+        kb.assert_fact(f_a, sort, domain, None, ClauseLabel::Runtime);
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -21576,7 +22174,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[r_body]);
-        kb.assert_rule_debruijn_with_nodes(r_head, body_nodes, sort, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            r_head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         // Fact s(b); the tail goal s(a) has no match ⇒ fails.
         let b = kb.alloc(Term::Const(Literal::String("b".into())));
@@ -21586,7 +22191,7 @@ mod tests {
             pos_args: SmallVec::from_elem(b, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(s_b, sort, domain, None);
+        kb.assert_fact(s_b, sort, domain, None, ClauseLabel::Runtime);
 
         let r_call = kb.alloc(Term::Fn {
             functor: r_sym,
@@ -21629,7 +22234,7 @@ mod tests {
             pos_args: SmallVec::from_elem(a, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(p_a_fact, sort, domain, None);
+        kb.assert_fact(p_a_fact, sort, domain, None, ClauseLabel::Runtime);
 
         let p_a = kb.alloc(Term::Fn {
             functor: p_sym,
@@ -21683,7 +22288,14 @@ mod tests {
                 named_args: SmallVec::new(),
             });
             let body_nodes = kb.term_body_to_nodes(&[body]);
-            kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+            kb.assert_rule_debruijn_with_nodes(
+                head,
+                body_nodes,
+                sort,
+                domain,
+                None,
+                ClauseLabel::Runtime,
+            );
             sym
         };
         let r_sym = make_floundering_rule(&mut kb, "r", "w");
@@ -21750,7 +22362,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_y, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(r_y_head, vec![r_y_body], sort, domain, None);
+        kb.assert_rule(r_y_head, vec![r_y_body], sort, domain, None, ClauseLabel::Runtime);
 
         // Query: not(r(a))
         let r_a = kb.alloc(Term::Fn {
@@ -21815,21 +22427,21 @@ mod tests {
             pos_args: SmallVec::from_elem(a, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(thing_a, sort, domain, None);
+        kb.assert_fact(thing_a, sort, domain, None, ClauseLabel::Runtime);
 
         let thing_b = kb.alloc(Term::Fn {
             functor: thing_sym,
             pos_args: SmallVec::from_elem(b, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(thing_b, sort, domain, None);
+        kb.assert_fact(thing_b, sort, domain, None, ClauseLabel::Runtime);
 
         let dangerous_b = kb.alloc(Term::Fn {
             functor: dangerous_sym,
             pos_args: SmallVec::from_elem(b, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(dangerous_b, sort, domain, None);
+        kb.assert_fact(dangerous_b, sort, domain, None, ClauseLabel::Runtime);
 
         // Assert rule: safe(?x) :- thing(?x), not(dangerous(?x))
         let x_sym = kb.intern("x");
@@ -21857,7 +22469,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        kb.assert_rule(safe_x, vec![thing_x, not_dangerous_x], sort, domain, None);
+        kb.assert_rule(
+            safe_x,
+            vec![thing_x, not_dangerous_x],
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         // Query: safe(?q)
         let q_sym = kb.intern("q");
@@ -21911,7 +22530,7 @@ mod tests {
             pos_args: SmallVec::from_elem(zero_term, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(nat_zero, sort, domain, None);
+        kb.assert_fact(nat_zero, sort, domain, None, ClauseLabel::Runtime);
 
         // rule: nat(succ(?n)) :- nat(?n)
         let n_sym = kb.intern("n");
@@ -21932,7 +22551,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_n, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(nat_succ_n, vec![body_nat_n], sort, domain, None);
+        kb.assert_rule(nat_succ_n, vec![body_nat_n], sort, domain, None, ClauseLabel::Runtime);
 
         // query: nat(?x)
         let x_sym = kb.intern("x");
@@ -22040,9 +22659,9 @@ mod tests {
             pos_args: SmallVec::from_elem(yes, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(ca_yes, sort, domain, None);
-        kb.assert_fact(ca_no, sort, domain, None);
-        kb.assert_fact(cb_yes, sort, domain, None);
+        kb.assert_fact(ca_yes, sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(ca_no, sort, domain, None, ClauseLabel::Runtime);
+        kb.assert_fact(cb_yes, sort, domain, None, ClauseLabel::Runtime);
 
         // Rule: shared(?x) :- check_a(?x), check_b(?x)
         let x_sym = kb.intern("x");
@@ -22064,7 +22683,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[body_a, body_b]);
-        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         let config = ResolveConfig::default();
 
@@ -22123,7 +22749,7 @@ mod tests {
             pos_args: SmallVec::from_elem(state_active, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(fact, sort, domain, None);
+        kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -22193,7 +22819,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[body_l, body_r]);
-        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         // Facts
         for val in &["a", "b"] {
@@ -22203,7 +22836,7 @@ mod tests {
                 pos_args: SmallVec::from_elem(v, 1),
                 named_args: SmallVec::new(),
             });
-            kb.assert_fact(fact, sort, domain, None);
+            kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
         }
         for val in &["x", "y"] {
             let v = kb.alloc(Term::Const(Literal::String(val.to_string())));
@@ -22212,7 +22845,7 @@ mod tests {
                 pos_args: SmallVec::from_elem(v, 1),
                 named_args: SmallVec::new(),
             });
-            kb.assert_fact(fact, sort, domain, None);
+            kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
         }
 
         // Query: pair(?q)
@@ -22334,7 +22967,14 @@ mod tests {
             })
             .collect();
         let body_nodes = kb.term_body_to_nodes(&body);
-        kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         for i in 0..n {
             let fact = kb.alloc(Term::Fn {
@@ -22342,7 +22982,7 @@ mod tests {
                 pos_args: SmallVec::from_elem(vals[i], 1),
                 named_args: SmallVec::new(),
             });
-            kb.assert_fact(fact, sort, domain, None);
+            kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
         }
 
         let query = kb.alloc(Term::Fn {
@@ -22490,7 +23130,7 @@ mod tests {
                 pos_args: SmallVec::from_slice(&[s, v1, v2]),
                 named_args: SmallVec::new(),
             });
-            kb.assert_fact(fact, sort, domain, None);
+            kb.assert_fact(fact, sort, domain, None, ClauseLabel::Runtime);
         }
 
         // Rule: p(?a, ?b, ?c) :- check(?a, ?b, ?c)
@@ -22508,7 +23148,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[p_body]);
-        kb.assert_rule_debruijn_with_nodes(p_head, body_nodes, sort, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            p_head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         // Rule: f(?x) :- p(?x, ?, ?)
         let (_, vx) = named(&mut kb, "x");
@@ -22525,7 +23172,14 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[f_body]);
-        kb.assert_rule_debruijn_with_nodes(f_head, body_nodes, sort, domain, None);
+        kb.assert_rule_debruijn_with_nodes(
+            f_head,
+            body_nodes,
+            sort,
+            domain,
+            None,
+            ClauseLabel::Runtime,
+        );
 
         // Query: f(?q)
         let (_vq, var_q) = named(&mut kb, "q");

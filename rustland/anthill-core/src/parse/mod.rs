@@ -1,4 +1,5 @@
 mod convert;
+pub(crate) use convert::LABEL_HASH_CHARS;
 pub mod desugar_target;
 pub mod error;
 /// Parser — tree-sitter CST → typed parse IR.
