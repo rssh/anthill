@@ -286,7 +286,7 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
     };
     // The carriers given `PartialEq` here, for [`derived_eq_member_source`].
     let mut given: Vec<Symbol> = Vec::new();
-    let spoken_for = spoken_for(kb);
+    let spoken_for = EqualityProvisions::of(kb);
     // One symbol per canonical composite, in registration order.
     let mut seen: HashSet<Symbol> = HashSet::new();
     let all_candidates: Vec<Symbol> = c
@@ -297,7 +297,7 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
             let cs = kb.canonical_sort_sym(s);
             seen.insert(cs)
                 && !c.boundary.contains(&cs)
-                && !spoken_for.contains(&cs)
+                && !spoken_for.speak_for(kb, cs)
                 && !super::typing::sort_provides(kb, s, eq)
                 && !super::typing::sort_provides(kb, s, partial_eq)
         })
@@ -596,23 +596,26 @@ pub(crate) fn equality_reaching_no_eq(kb: &mut KnowledgeBase) -> Vec<super::load
         .filter(|&s| !compared_without_a_member(kb, s))
         .map(|s| kb.canonical_sort_sym(s))
         .collect();
+    // Each composite's provisions of `PartialEq` at its carrier (WI-20261121-JE2MT), in
+    // relation order; the composites in any order, the refusals being sorted below.
+    let provisions = super::typing::ProvisionsOfSpec::of(kb, partial_eq);
     let mut unanswered: Vec<(Symbol, Vec<(Symbol, Symbol)>)> = Vec::new();
-    for p in super::typing::provisions_about(kb, partial_eq) {
-        if !composites.contains(&p.about) || !index.candidates(kb, p.about).is_empty() {
+    for &carrier in &composites {
+        let at = provisions.at_sort(kb, carrier);
+        if at.is_empty() || !index.candidates(kb, carrier).is_empty() {
             continue;
         }
-        let provider = kb.canonical_sort_sym(p.provider);
-        let written = written_spec_of(kb, p.provider, p.row, partial_eq);
-        let at = match unanswered.iter().position(|(c, _)| *c == p.about) {
-            Some(at) => at,
-            None => {
-                unanswered.push((p.about, Vec::new()));
-                unanswered.len() - 1
+        let mut written: Vec<(Symbol, Symbol)> = Vec::new();
+        for p in at {
+            let entry = (
+                kb.canonical_sort_sym(p.provider),
+                written_spec_of(kb, p.provider, p.row, partial_eq, carrier),
+            );
+            if !written.contains(&entry) {
+                written.push(entry);
             }
-        };
-        if !unanswered[at].1.contains(&(provider, written)) {
-            unanswered[at].1.push((provider, written));
         }
+        unanswered.push((carrier, written));
     }
     let mut out: Vec<(String, Vec<(String, String)>)> = unanswered
         .into_iter()
@@ -637,11 +640,20 @@ pub(crate) fn equality_reaching_no_eq(kb: &mut KnowledgeBase) -> Vec<super::load
         .collect()
 }
 
-/// The spec `provider` WROTE for the provision row `row` of `spec`: `spec` itself, or, for a row
-/// the forwarding derived, the spec of the provision it was derived from, followed down to the
-/// written one (`Hash` → `Eq` → `PartialEq`), as deep as the forwarding derives
-/// (`derive_forwarded_provisions`' rounds).
-fn written_spec_of(kb: &KnowledgeBase, provider: Symbol, row: RuleId, spec: Symbol) -> Symbol {
+/// The spec `provider` WROTE for the provision row `row` of `spec`, at `carrier`'s carrier:
+/// `spec` itself, or, for a row the forwarding derived, the spec of the provision it was
+/// derived from, followed down to the written one (`Hash` → `Eq` → `PartialEq`), as deep as the
+/// forwarding derives (`derive_forwarded_provisions`' rounds). The source is `provider`'s
+/// provision of the origin AT THE SAME CARRIER (WI-20261121-JE2MT): the forwarding asserts its
+/// row at the source's bindings, so a provider writing `Eq` at two sorts is followed to the
+/// one this row was derived from, not to the first it wrote.
+fn written_spec_of(
+    kb: &KnowledgeBase,
+    provider: Symbol,
+    row: RuleId,
+    spec: Symbol,
+    carrier: Symbol,
+) -> Symbol {
     let provider = kb.canonical_sort_sym(provider);
     let (mut row, mut spec) = (row, spec);
     for _ in 0..8 {
@@ -649,13 +661,15 @@ fn written_spec_of(kb: &KnowledgeBase, provider: Symbol, row: RuleId, spec: Symb
             break;
         };
         spec = origin;
-        let Some(source) = super::typing::provisions_about(kb, origin)
+        let Some(source) = super::typing::ProvisionsOfSpec::of(kb, origin)
+            .at_sort(kb, carrier)
             .into_iter()
             .find(|q| kb.canonical_sort_sym(q.provider) == provider)
+            .map(|q| q.row)
         else {
             break;
         };
-        row = source.row;
+        row = source;
     }
     spec
 }
@@ -1307,21 +1321,33 @@ struct EqualityProvision {
 /// The equality-family specs, in the order a diagnostic lists them.
 const EQUALITY_SPECS: [&str; 3] = ["PartialEq", "Eq", "NonEq"];
 
-/// Every sort a provision of the equality family is ABOUT, canonical — the sorts the
-/// derivation leaves alone, a provision having spoken for their equality. Read through
-/// [`super::typing::provisions_about`], at the spec's carrier parameter or its sole one,
-/// and not through the parameter an operation receives on: `Eq` declares no operation, so
-/// that reading filed `sort W { provides Eq[T = C]; operation eq(…) }` under `W`, `C`
-/// derived its own equality beside the witness's, and `W.eq` was never called (MEASURED,
-/// c3371cd0, WI-20261121-TV0PA). The equality-closure record reads the same function
-/// ([`equality_signatures`]), so the two agree on which provisions are about a sort.
-fn spoken_for(kb: &KnowledgeBase) -> HashSet<Symbol> {
-    EQUALITY_SPECS
-        .into_iter()
-        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
-        .flat_map(|spec| super::typing::provisions_about(kb, spec))
-        .map(|p| p.about)
-        .collect()
+/// The provisions of the equality family, each spec's filed by CARRIER
+/// ([`super::typing::ProvisionsOfSpec`], WI-20261121-JE2MT), in [`EQUALITY_SPECS`] order:
+/// `sort W { provides Eq[T = C] }` is at `Eq[T = C]`, the carrier `C`'s own `Eq` would be at.
+/// Read at the carrier and not at the parameter an operation receives on: `Eq` declares no
+/// operation, so that reading filed the witness under `W`, `C` derived its own equality beside
+/// the witness's, and `W.eq` was never called (MEASURED, c3371cd0, WI-20261121-TV0PA). The
+/// derivation ([`EqualityProvisions::speak_for`]), the equality-closure record
+/// ([`equality_signatures`]) and the load check ([`equality_reaching_no_eq`]) read it alike,
+/// so they agree on which provisions are about a sort.
+struct EqualityProvisions(Vec<(Symbol, super::typing::ProvisionsOfSpec)>);
+
+impl EqualityProvisions {
+    fn of(kb: &KnowledgeBase) -> Self {
+        EqualityProvisions(
+            EQUALITY_SPECS
+                .into_iter()
+                .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
+                .map(|spec| (spec, super::typing::ProvisionsOfSpec::of(kb, spec)))
+                .collect(),
+        )
+    }
+
+    /// Has a provision of the family spoken for `sort`'s equality — is one at its carrier? The
+    /// derivation leaves such a sort alone.
+    fn speak_for(&self, kb: &KnowledgeBase, sort: Symbol) -> bool {
+        self.0.iter().any(|(_, provisions)| provisions.any_at_sort(kb, sort))
+    }
 }
 
 /// The [`EqualitySignature`] of every composite the KB holds now, by canonical sort.
@@ -1340,17 +1366,17 @@ fn equality_signatures(
     // once per row: the two are the provider's for the spec, whichever row asks.
     let mut read: std::collections::HashMap<(Symbol, Symbol), (bool, u32)> =
         std::collections::HashMap::new();
-    for name in EQUALITY_SPECS {
-        let Some(spec) = kb.try_resolve_symbol(&format!("anthill.prelude.{name}")) else {
-            continue;
-        };
+    // Read per composite: a provision at a primitive, an abstract sort or a spec's own
+    // parameter is out of this check's domain — see [`later_equality_refusals`].
+    let family = EqualityProvisions::of(kb);
+    for (spec, provisions) in &family.0 {
+        let spec = *spec;
         let spec_canon = kb.canonical_sort_sym(spec);
-        for provision in super::typing::provisions_about(kb, spec) {
-            let Some(signature) = out.get_mut(&provision.about) else {
-                // Not a composite: a primitive, an abstract sort, a spec's own
-                // parameter. Out of this check's domain — see [`later_equality_refusals`].
+        for &composite in &composites {
+            let Some(signature) = out.get_mut(&composite) else {
                 continue;
             };
+            for provision in provisions.at_sort(kb, composite) {
             let provider = kb.canonical_sort_sym(provision.provider);
             let (conditional, clauses) = *read.entry((provider, spec_canon)).or_insert_with(|| {
                 (
@@ -1365,6 +1391,7 @@ fn equality_signatures(
                 conditional,
                 clauses,
             });
+            }
         }
     }
     // No `PartialEq.eq` ⇒ no `eq` spec op, and nothing can supply an impl of it. A derived
@@ -1722,7 +1749,7 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
     let parametric = |kb: &KnowledgeBase, s: Symbol| !kb.type_param_syms_of(s).is_empty();
     // Every carrier ANY equality provision already names — read carrier-side, which is
     // a DIFFERENT question from the three above (WI-1069). See the seed's comment.
-    let spoken_for = spoken_for(kb);
+    let spoken_for = EqualityProvisions::of(kb);
 
     let mut total: HashSet<Symbol> = sorts
         .iter()
@@ -1748,7 +1775,7 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
             // own name".
             !boundary.contains(&cs)
                 && !partial.contains(&cs)
-                && !spoken_for.contains(&cs)
+                && !spoken_for.speak_for(kb, cs)
                 && !parametric(kb, s)
                 && !provides_eq(kb, s)
                 && every_field_names_a_sort(kb, s)

@@ -2344,6 +2344,8 @@ mod wi_qaa6s_a_witness_takes_the_whole_equality_test;
 mod wi_jy1xe_negated_quantifier_test;
 #[path = "include/wi_tv0pa_eq_gives_partial_eq_test.rs"]
 mod wi_tv0pa_eq_gives_partial_eq_test;
+#[path = "include/wi_je2mt_provision_at_its_carrier_test.rs"]
+mod wi_je2mt_provision_at_its_carrier_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;

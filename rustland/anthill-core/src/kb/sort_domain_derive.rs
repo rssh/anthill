@@ -32,7 +32,6 @@
 //! `operation countAt[X]() requires SortDomain[T = X]` resolves `SortDomain[T = Colour]`
 //! against the provider relation like any other requirement.
 
-use std::collections::HashSet;
 
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
@@ -62,17 +61,19 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     // provider index owes this pass nothing since WI-20261010-ANK4X — it takes each row
     // where the row is asserted — where it used to be dropped here and rebuilt after.
     let spec_canon = kb.canonical_sort_sym(spec);
-    // Carriers that already provide it — this pass's own rows from an earlier load phase.
-    let already: HashSet<Symbol> = super::typing::provision_carriers_of_spec(kb, spec)
-        .into_iter()
-        .map(|c| kb.canonical_sort_sym(c))
-        .collect();
+    // The provisions standing now — an author's, a witness's, and this pass's own rows from
+    // an earlier load phase — each at its CARRIER (WI-20261121-JE2MT): a sort is skipped
+    // where one stands at `SortDomain[T = s]`, the carrier its derived row would be at.
+    // MEASURED before (`spec-carrier-set` b1): read through the parameter an operation
+    // receives on, which `SortDomain` has none of, `sort W { provides SortDomain[T = Colour] }`
+    // was filed under `W`, and `Colour` was derived a second row beside it.
+    let already = super::typing::ProvisionsOfSpec::of(kb, spec);
     let mut sorts: Vec<Symbol> = kb.sort_domains.keys().map(|d| d.sym()).collect();
     // Registration order would be nicer than a hash walk; the symbol's index is the order
     // the sorts were interned in, which is stable for one program.
     sorts.sort_by_key(|s| s.to_bits());
     for s in sorts {
-        if s == spec_canon || already.contains(&s) {
+        if s == spec_canon || already.any_at_sort(kb, s) {
             continue;
         }
         let Some(entry) = kb.sort_domain(s).cloned() else {

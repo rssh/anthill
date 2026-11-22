@@ -2351,8 +2351,8 @@ impl WitnessActual<'_> {
 /// whose carrier appears only in the spec's carrier BINDING (`sort MappedStreamFinite
 /// provides FiniteCollection[C = MappedStream[…]]`), files under the WITNESS. The
 /// carrier-keyed walk [`sort_provides`] therefore answers FALSE for a carrier that is
-/// fully spoken for, which [`provision_carriers_of_spec`]'s doc already states for the
-/// eq-derive reader. DISPATCH does not ask that question — it reads the spec-base bucket
+/// fully spoken for — the asymmetry the eq-derive reader answers by reading each provision
+/// at its carrier ([`ProvisionsOfSpec`], WI-20261121-JE2MT). DISPATCH does not ask that question — it reads the spec-base bucket
 /// and matches each provision's carrier binding — so the two readers of one relation
 /// disagreed, and this is the leg that ends the disagreement at the subtype side.
 ///

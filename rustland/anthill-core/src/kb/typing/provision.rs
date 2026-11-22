@@ -580,7 +580,7 @@ pub(super) fn provision_binding_at_param(
 
 /// The value a spec view binds at `carrier_param`, whatever it is — [`provision_binding_at_param`]
 /// before its filter to a sort-like base.
-fn provision_binding_value_at_param(
+pub(super) fn provision_binding_value_at_param(
     kb: &KnowledgeBase,
     carrier_param: Symbol,
     spec_view: &Value,
@@ -1013,43 +1013,10 @@ pub(super) fn provision_bindings(
         .unwrap_or_default()
 }
 
-/// WI-1098 — every CARRIER any provision of `spec_sort` names, canonical.
-///
-/// NOT [`sort_provides`], and the difference is the whole reason this exists (WI-1069:
-/// a provision records a PROVIDER and a CARRIER, and "same provision" is not "same
-/// statement"). `sort_provides` asks "does THIS sort's own declaration provide", keyed
-/// on `sort_ref`; a WITNESS names its carrier only in the spec's `T` binding
-/// (`sort WrapperNonEq { provides NonEq[T = Wrapper] }` files under `WrapperNonEq`), so
-/// the carrier answers `false` to that question while being fully spoken for. This
-/// answers the carrier's question instead, through [`witness_dispatch_carrier`] — the
-/// same owner the eq-dispatch index reads, so the two cannot disagree about which sort
-/// a provision is ABOUT.
-///
-/// Written for `eq_derive`'s Total classification, which must not derive a claim over a
-/// carrier somebody has already made one about. MEASURED before the guard: a
-/// `provides NonEq[T = Wrapper]` witness left `Wrapper` seeded Total, so the derivation
-/// asserted `provides Eq[Wrapper]` — reflexivity of an equality the author had
-/// explicitly witnessed as non-reflexive — and `check_eq_noneq_exclusive` could not see
-/// the contradiction either, because it groups by `sort_ref` too. That reader has moved to
-/// [`provisions_about`] (WI-20261121-TV0PA): this one files an `Eq`-only witness under the
-/// witness, `Eq` declaring no operation to receive on. The derivations of `SortDomain` and
-/// `TypeValue` read it still.
-pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
-    provides_rows_of_spec(kb, spec_sort)
-        .map(|row| {
-            // `None` = the provision's carrier IS the provider (a self-provision, an
-            // instance fact, or a bare one naming no other sort) — that function's own
-            // documented contract.
-            witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view)
-                .unwrap_or(row.provider)
-        })
-        .map(|c| kb.canonical_sort_sym(c))
-        .collect()
-}
-
 /// WI-20261010-ANK4X — the PROVIDER of each provision of `spec_sort` (its `sort_ref`),
-/// one per row and in relation order. Not [`provision_carriers_of_spec`], which answers
-/// the sort a row is ABOUT: `eq_derive`'s partial seed asks who wrote a `NonEq`.
+/// one per row and in relation order. Not where a row is — its carrier, which
+/// [`ProvisionsOfSpec`] files rows by: `eq_derive`'s partial seed asks who wrote a `NonEq`,
+/// and `type_value_derive`'s refusal who wrote a `TypeValue`.
 pub(crate) fn providers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     provides_rows_of_spec(kb, spec_sort).map(|row| row.provider).collect()
 }
@@ -1069,42 +1036,11 @@ pub(crate) fn partial_eq_is_conditional(kb: &KnowledgeBase, carrier: Symbol, par
         .any(|&spec| sort_provides(kb, spec, partial_eq) && provision_is_conditional(kb, carrier, spec))
 }
 
-/// WI-20261006-SZKV7 — one provision of `spec`, with the sort it is ABOUT.
-pub(crate) struct ProvisionAbout {
-    /// The row, which is the provision's identity: restating it lands on the same row.
-    pub(crate) row: crate::kb::RuleId,
-    /// The `sort_ref`: who provides.
-    pub(crate) provider: Symbol,
-    /// The sort bound to the spec's carrier parameter — canonical — or the provider where
-    /// the provision names no other sort.
-    pub(crate) about: Symbol,
-}
-
-/// Every provision of `spec_sort` with the sort it is about, read off the binding of the
-/// spec's carrier parameter on the SECOND rung too ([`spec_carrier_param_or_sole`]).
-///
-/// NOT [`provision_carriers_of_spec`], and the difference is the reason this exists.
-/// That one answers through [`witness_dispatch_carrier`], whose carrier parameter is the
-/// one an operation RECEIVES on: right for a dispatch, and `None` for `Eq` and `NonEq`,
-/// which declare no such operation — so a witness `provides Eq[T = Reading]` is filed
-/// there under the WITNESS. For "whose equality does this provision speak about" the
-/// sole parameter is the answer, and without it a witness that writes `Eq` alone (the
-/// spelling `eq.anthill` advertises, `PartialEq` then being forwarded) adds to a
-/// carrier's equality where nothing looking at the carrier can see it (/code-review).
-pub(crate) fn provisions_about(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<ProvisionAbout> {
-    let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
-    provides_rows_of_spec(kb, spec_sort)
-        .map(|row| ProvisionAbout {
-            row: row.rid,
-            provider: row.provider,
-            about: row_about(kb, carrier_param, &row),
-        })
-        .collect()
-}
-
 /// The sort ONE provision is about, canonical: the base of what it binds to `carrier_param`
 /// (the spec's [`spec_carrier_param_or_sole`]), or its provider where it binds none there.
-/// [`provisions_about`]'s reading, and [`spec_op_suppliers_of_provider`]'s.
+/// [`spec_op_suppliers_of_provider`]'s reading — a reader of the single carrier parameter,
+/// which stage 2 of `docs/design/spec-carrier-set.md` moves (WI-20261122-CXR5B). The
+/// derivations read [`ProvisionsOfSpec`] instead (WI-20261121-JE2MT).
 fn row_about(kb: &KnowledgeBase, carrier_param: Option<Symbol>, row: &ProvidesRow) -> Symbol {
     let about = carrier_param
         .filter(|_| view_is_sort_view(kb, &row.spec_view))

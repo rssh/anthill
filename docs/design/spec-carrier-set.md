@@ -933,3 +933,19 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
     to file or fold into WI-20261122-CXR5B.
 - **2026-11-22, the user approved both**: the second amendment, merged into §5.4's wording,
   and c3 as a row of WI-20261122-CXR5B.
+- **2026-11-22, stage 1 implemented (WI-20261121-JE2MT).** The owner is `typing::sort_carrier`
+  (kb/typing/sort_carrier.rs), and `typing::ProvisionsOfSpec` files each provision at its
+  carrier, unified as the default rows unify (bucket, then `carrier_views_overlap`).
+  `provisions_about` and `provision_carriers_of_spec` are deleted; their readers moved as §5
+  lists, and `HandWrittenTypeValue` names the provider. b1 moved, driven by a call at
+  `Colour` (`wi_je2mt_provision_at_its_carrier_test`): 1 with the change, 3 backed out. One
+  reading was kept and not changed: a LEFT-OUT binding of a one-type-var spec reads as the
+  provider, §5.2 as it stands, not as decision 3's `?`. Read as `?`, a refused `provides
+  PartialEq` with no binding gave about 150 equality-closure errors beside its refusal
+  (measured). Decision 3 lands with stage 2, beside the refusal it restates. `ProvisionsOfSpec`
+  answers for a spec with a dictionary of one type-var, and for an undeclared bootstrap name
+  (a KB loaded without the stdlib), which is read at the provider. That KB's only rows are
+  the derivation's self-provisions. A self-representing spec, or one of several type-vars, is
+  stage 2's, and asking about one that has provisions panics. The first full run found the
+  bootstrap case: about 150 no-stdlib tests panicked. readers.md's rows for the
+  stage 1 readers (§4's D row and the "other" row's `EqProviders::of`) are done.

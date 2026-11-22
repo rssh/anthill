@@ -13,8 +13,9 @@
 //! * the derivation read which sort a provision is about at the parameter an operation
 //!   receives on, and `Eq` declares none — so `sort W { provides Eq[T = C]; operation eq(…) =
 //!   true }` was filed under `W`, `C` derived its own equality beside it, and `eq(c(v: 1),
-//!   c(v: 2))` answered 0, `W.eq` never called (`eq_derive::spoken_for`, now through
-//!   `typing::provisions_about`);
+//!   c(v: 2))` answered 0, `W.eq` never called (`eq_derive::spoken_for`, then through
+//!   `typing::provisions_about`; since WI-20261121-JE2MT `EqualityProvisions::speak_for`, each
+//!   provision read at its carrier by `typing::ProvisionsOfSpec`);
 //! * a witness with no `eq` loaded clean and died at the first comparison,
 //!   `EqualityWithNoMember` — `PartialEq.eq` is a builtin, which the provider-coverage check
 //!   reads as backing every provider (`eq_derive::equality_reaching_no_eq`, a load error).
@@ -28,7 +29,8 @@
 //!   [`a_witness_with_no_eq_is_refused_at_load`] and
 //!   [`an_own_provision_no_member_can_answer_is_refused_naming_what_was_written`] — the check
 //!   reads `PartialEq` rows, and a conditional `Eq` then has none;
-//! * `spoken_for` read through `provision_carriers_of_spec` again FAILS 4:
+//! * `spoken_for` read through `provision_carriers_of_spec` again (the witness criterion's
+//!   parameter, a helper WI-20261121-JE2MT retired) FAILS 4:
 //!   [`a_witness_that_writes_eq_alone_speaks_for_its_carrier`],
 //!   [`a_parametric_witness_of_eq_answers_under_its_condition`],
 //!   [`a_witness_of_eq_over_a_float_composite_is_its_whole_equality`] and

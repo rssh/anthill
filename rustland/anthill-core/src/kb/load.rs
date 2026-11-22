@@ -1289,8 +1289,9 @@ pub enum LoadError {
     /// derived-only for the same reason; WI-20260911-3MV2C reached the same line
     /// independently for the error tag.
     HandWrittenTypeValue {
-        /// The carrier the provision was written at, qualified.
-        carrier: String,
+        /// The sort that wrote the provision, qualified: its PROVIDER, a witness included
+        /// (WI-20261121-JE2MT) — the refusal is about who wrote the clause.
+        provider: String,
     },
     /// A `provides anthill.prelude.NamedTuple` (`typing::written_tuple_provisions`): a
     /// tuple type is `NamedTuple` applied to its components, written only as tuple syntax, and
@@ -4089,9 +4090,8 @@ impl LoadError {
             LoadError::EqualityReachesNoEq { carrier, provisions } => {
                 equality_reaches_no_eq_detail(carrier, provisions)
             }
-            LoadError::HandWrittenTypeValue { carrier } => {
-                format!("'{}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: '{}' already has its derived instance.",
-                    carrier, carrier)
+            LoadError::HandWrittenTypeValue { provider } => {
+                format!("'{provider}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: the loader derives each sort's instance.")
             }
             LoadError::ProvidesNamedTuple { provider } => {
                 format!("'{provider}' writes `provides anthill.prelude.NamedTuple`, but no sort provides `NamedTuple`: a tuple type is `NamedTuple` applied to its components and is written only as tuple syntax. Delete the clause.")
@@ -6710,12 +6710,12 @@ impl std::fmt::Display for LoadError {
                     position, span.start, span.end,
                 )
             }
-            LoadError::HandWrittenTypeValue { carrier } => {
+            LoadError::HandWrittenTypeValue { provider } => {
                 write!(
                     f,
                     "'{}' writes `provides anthill.reflect.TypeValue[…]`, but every \
                      `TypeValue` instance is DERIVED and none may be written",
-                    carrier,
+                    provider,
                 )
             }
             LoadError::ProvidesNamedTuple { provider } => {
@@ -23423,28 +23423,28 @@ pub(crate) enum CarrierEq {
 }
 
 /// Who provides `Eq`: a carrier by a provision of its own (and the specs it provides,
-/// `sort_provides`), or a witness's about it (`provisions_about`). Read by the equality index,
-/// for the law at a carrier's `eq`, and by a contract proof, for the law at a parameter's
-/// declared type ([`Self::type_is_self_equal_by_law`]).
+/// `sort_provides`), or a witness's at its carrier (`Eq[T = C]`, read through
+/// [`super::typing::ProvisionsOfSpec`], WI-20261121-JE2MT). Read by the equality index, for the
+/// law at a carrier's `eq`, and by a contract proof, for the law at a parameter's declared type
+/// ([`Self::type_is_self_equal_by_law`]).
 pub(crate) struct EqProviders {
-    eq_spec: Option<Symbol>,
-    about: std::collections::HashSet<Symbol>,
+    /// `Eq`, with its provisions filed by carrier; `None` where the KB has no `Eq`.
+    eq: Option<(Symbol, super::typing::ProvisionsOfSpec)>,
 }
 
 impl EqProviders {
     pub(crate) fn of(kb: &KnowledgeBase) -> Self {
-        let eq_spec = kb.try_resolve_symbol("anthill.prelude.Eq");
-        let about = eq_spec
-            .map(|e| super::typing::provisions_about(kb, e).into_iter().map(|p| p.about).collect())
-            .unwrap_or_default();
-        EqProviders { eq_spec, about }
+        let eq = kb
+            .try_resolve_symbol("anthill.prelude.Eq")
+            .map(|e| (e, super::typing::ProvisionsOfSpec::of(kb, e)));
+        EqProviders { eq }
     }
 
     /// How `sort` provides `Eq`; `None` where it does not.
     pub(crate) fn carrier_eq(&self, kb: &KnowledgeBase, sort: Symbol) -> Option<CarrierEq> {
-        let eq_spec = self.eq_spec?;
-        let provides = self.about.contains(&kb.canonical_sort_sym(sort))
-            || super::typing::sort_provides(kb, sort, eq_spec);
+        let (eq_spec, provisions) = self.eq.as_ref()?;
+        let eq_spec = *eq_spec;
+        let provides = provisions.any_at_sort(kb, sort) || super::typing::sort_provides(kb, sort, eq_spec);
         if !provides {
             return None;
         }

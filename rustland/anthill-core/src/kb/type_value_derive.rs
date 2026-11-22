@@ -104,33 +104,37 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     // carrier's body, a `namespace <Carrier>` block, a witness sort), so a spelling
     // cannot escape by being added elsewhere — the WI-835 lesson about enumerating
     // positions instead of reading the producer.
-    let mut errors: Vec<super::load::LoadError> = super::typing::provision_carriers_of_spec(kb, spec)
+    //
+    // The refusal is about who WROTE the provision, so it reads the PROVIDER
+    // (WI-20261121-JE2MT): a witness `sort W { provides TypeValue[T = C] }` is `W`'s clause,
+    // and `C` wrote nothing. A row this pass derived is a sort's own, its provider the sort.
+    let mut errors: Vec<super::load::LoadError> = super::typing::providers_of_spec(kb, spec)
         .into_iter()
-        .filter(|c| {
+        .filter(|p| {
             // Not one of OURS from an earlier phase. See
             // [`KnowledgeBase::derived_type_value_carriers`] for why provenance has to be
             // recorded rather than read off the relation.
             !kb.derived_type_value_carriers
-                .contains(&kb.canonical_sort_sym(*c))
+                .contains(&kb.canonical_sort_sym(*p))
         })
-        .map(|c| super::load::LoadError::HandWrittenTypeValue {
-            carrier: kb.qualified_name_of(c).to_string(),
+        .map(|p| super::load::LoadError::HandWrittenTypeValue {
+            provider: kb.qualified_name_of(p).to_string(),
         })
         .collect();
-    // Deterministic order by the one field the variant carries, so a multi-carrier
-    // refusal reads the same on every run. Keyed on `carrier` directly rather than on a
+    // Deterministic order by the one field the variant carries, so a multi-provider
+    // refusal reads the same on every run. Keyed on `provider` directly rather than on a
     // `{:?}` rendering, which allocated two Strings per COMPARISON.
     errors.sort_by(|a, b| match (a, b) {
         (
-            super::load::LoadError::HandWrittenTypeValue { carrier: x },
-            super::load::LoadError::HandWrittenTypeValue { carrier: y },
+            super::load::LoadError::HandWrittenTypeValue { provider: x },
+            super::load::LoadError::HandWrittenTypeValue { provider: y },
         ) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
     });
     errors.dedup_by(|a, b| match (a, b) {
         (
-            super::load::LoadError::HandWrittenTypeValue { carrier: x },
-            super::load::LoadError::HandWrittenTypeValue { carrier: y },
+            super::load::LoadError::HandWrittenTypeValue { provider: x },
+            super::load::LoadError::HandWrittenTypeValue { provider: y },
         ) => x == y,
         _ => false,
     });
@@ -162,12 +166,11 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         return errors;
     }
     let spec_canon = kb.canonical_sort_sym(spec);
-    // The carriers that ALREADY provide `TypeValue` — an author's (refused above) or this
-    // pass's own from an earlier load phase. Read once; see the loop for why.
-    let already: HashSet<Symbol> = super::typing::provision_carriers_of_spec(kb, spec)
-        .into_iter()
-        .map(|c| kb.canonical_sort_sym(c))
-        .collect();
+    // The provisions that ALREADY stand — an author's (refused above) or this pass's own
+    // from an earlier load phase — each at its CARRIER (WI-20261121-JE2MT), so a witness's
+    // `TypeValue[T = C]` is at `C`, where the row this would derive for `C` is. Read once;
+    // see the loop for why.
+    let already = super::typing::ProvisionsOfSpec::of(kb, spec);
     // Every sort that some provision names as a SPEC — `Iterable`, `PartialEq`,
     // `IndexedSeq`, … A spec is a BOUND, not a carrier, and deriving a row for one is not
     // a harmless extra: `List provides Iterable`, so a goal `TypeValue[T = List[T =
@@ -202,7 +205,7 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         if specs.contains(&cs) {
             continue;
         }
-        // ALREADY-PROVIDING carriers come from the set read ONCE above, not from a
+        // ALREADY-PROVIDING carriers come from the provisions filed ONCE above, not from a
         // `sort_provides` call per sort. That predicate is a TRANSITIVE walk over the
         // provider relation — and, when this was written, a scan of the whole relation
         // per call, the provider index not standing this early in the pipeline (it does
@@ -212,7 +215,7 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         // The DIRECT reading is also the right question: what matters is whether this
         // carrier already has its OWN row, not whether it reaches one through a spec it
         // provides. A transitive hit would skip a carrier that needs a row of its own.
-        if already.contains(&cs) {
+        if already.any_at_sort(kb, cs) {
             continue;
         }
         let params: Vec<Symbol> = kb.type_param_syms_of(s).to_vec();

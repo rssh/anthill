@@ -22,8 +22,9 @@
 //! bucket and matches each provision's carrier binding, so it sees the witness. The
 //! SUBTYPE relation asked `sort_provides`, which is carrier-keyed, and answered "no" for
 //! a carrier that is fully spoken for. `provision_carriers_of_spec`'s doc had already
-//! written that asymmetry down for the eq-derive reader; this is the same asymmetry at
-//! the subtype reader, where its cost is a refused program.
+//! written that asymmetry down for the eq-derive reader (that helper is gone since
+//! WI-20261121-JE2MT, the derivations reading each provision at its carrier); this is the
+//! same asymmetry at the subtype reader, where its cost is a refused program.
 //!
 //! WHAT THE TICKET SAID AND WHAT IS MEASURED. WI-20260829-N01PY was filed as "a LAZY
 //! STREAM cannot feed an EAGER consumer, so `xs.map(f).length()` and every shape like it

@@ -874,7 +874,7 @@ end
             "namespace ank4x.layer_demo\n  sort Shade\n    entity dark\n    entity light\n  end\nend\n";
         let mut kb = crate::kb::test_support::load_stdlib(None);
         let eq = kb.try_resolve_symbol("anthill.prelude.Eq").expect("the stdlib declares Eq");
-        let providers_of_eq = |kb: &KnowledgeBase| crate::kb::typing::provision_carriers_of_spec(kb, eq);
+        let providers_of_eq = |kb: &KnowledgeBase| crate::kb::typing::providers_of_spec(kb, eq);
         let base = providers_of_eq(&kb);
         assert!(
             base.len() > 10,
