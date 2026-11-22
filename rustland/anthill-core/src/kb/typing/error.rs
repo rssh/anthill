@@ -1986,7 +1986,7 @@ impl TypeError {
                 )
             }
             TypeError::DispatchAmbiguous { op, tie, in_rule_own_term, .. } => {
-                let (candidates, repair) = render_call_tie(kb, tie, *in_rule_own_term);
+                let (candidates, repair) = render_call_tie(kb, tie, *op, *in_rule_own_term);
                 unselected_instance_message(
                     kb.qualified_name_of(*op),
                     kb.qualified_name_of(tie.spec),
@@ -3134,7 +3134,7 @@ impl TypeError {
             // for the candidate list and the repair syntax that make a use-site
             // refusal actionable.
             TypeError::DispatchAmbiguous { op, tie, in_rule_own_term, .. } => {
-                let (candidates, repair) = render_call_tie(kb, tie, *in_rule_own_term);
+                let (candidates, repair) = render_call_tie(kb, tie, *op, *in_rule_own_term);
                 LoadError::UnselectedInstance {
                     op: kb.qualified_name_of(*op).to_string(),
                     spec: kb.qualified_name_of(tie.spec).to_string(),

@@ -800,7 +800,8 @@ The stage 1 rows are JE2MT's; the stage 2 rows are WI-20261122-CXR5B's.
     result fixes the provider (§5.4's second amendment). g5 keeps answering 1.
   - c3, folded in by the user: a provider with constructors may be named in a bracket where
     no value at the call decides. c3 and g4 then answer, and §5.4's concrete-provider
-    paragraph is reworded for the user's approval.
+    paragraph is reworded for the user's approval. (Done by stage 2's eighth step, History: c3 and g4 answer, the
+    paragraph reworded and approved.)
   - The diagnostics the X readers print ("Write the instance: …") use the substituted sort.
   - f1, f2 and f4 answer as decision 6's table says: f4 is refused at load until one
     provision is marked `default provides`.
@@ -1149,3 +1150,28 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   `?` told from a provider's own type parameter by the parameters' variables, read only where
   the binding is a variable: asked of every provider parameter through `type_param_global_var`,
   it panicked on a dotted declaration's (`wi1000`).
+- **2026-11-22, stage 2's eighth step (WI-20261122-CXR5B): c3 and g4.** A provider with
+  constructors may be named in a bracket where no value at the call decides. §4.4's check 3
+  (`validate_instance_selection`) refused every bracket naming one, and the tie rendering
+  offered none (`TieRepair::ValueDirected`); both now ask the operation: where an operation OF
+  the spec the bracket names takes no value the dispatch reads its provider off
+  (`op_has_spec_carrier_param`: a `Self` parameter of a self-representing spec, one at the
+  carrier parameter of a spec with a dictionary), the bracket is admitted and offered. A value
+  that decides keeps the refusal, and so does a named requirement slot of another sort
+  (`SortedSet.empty[T = String, O = ConcOrd]()`, WI-20260911-TX0G6's rule): a first cut that
+  asked only the operation's values moved those, five rows in `wi_tx0g6`, `wi_b6qya` and
+  `wi_hzvqa`. For a self-representing spec the bracket also fixes the provision's carrier, the
+  provider, in `check_apply_call` (the expected-type arm's twin, §5.4's second amendment), and the
+  candidate match lets a goal naming its carrier leave out a type-var the carrier's row binds to
+  the provider's own parameter (`candidates_at`): `Src.make[Src = Ones]()` fixing no `T` was
+  refused "the call selected `Ones` …, which provides no instance at these bindings", the very
+  bracket g3's refusal now offers. Moved: c3 offers `[Dflt = …]`, `Dflt.dflt[T = Int64, Dflt =
+  C2]()` → 2; g3 offers `[Src = …]`; g4 → 1 (`[Src = Twos]` → 2); `wi843`'s concrete tie at
+  `Zeroable.zero()` offers the bracket, which answers 5. `kernel-language.md` §5.4's "A selected
+  witness is validated at the call site" reworded, approved by the user. Rows:
+  `wi_cxr5b_concrete_bracket_test` (4), three failing with `src/` at `3fd813422` and the control
+  (a bracket where a value decides) passing. A /code-review of the step found the bracketed
+  `Self` result typed the bare provider, `Ones[T = o.T]` under a `let`, so a use at `Ones[T =
+  Int64]` of `Src.make[Src = Ones, T = Int64]()` was refused; it is the provider at what the
+  call fixed of the spec's type-var each of its own type-vars stands for, and the fourth row
+  fails with the bare typing restored.

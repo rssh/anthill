@@ -4528,6 +4528,56 @@ fn check_apply_call(
                 }
                 _ => carrier,
             };
+            // WI-20261122-CXR5B (§5.4's second amendment; c3/g4 of `docs/design/spec-carrier-set.md`)
+            // — and so does a bracket naming the provider, where no value and no expected type
+            // fixed it: `Src.next(Src.make[Src = Ones]())`. The provider's provision is at its
+            // own type-vars, so what the call leaves open stays open, and a result typed `Self`
+            // is a value of the provider (`Ones`, at `?`), as the expected type makes it. Read at
+            // no carrier, as a goal writing none of the spec's type-vars, the call matched no
+            // provision and was refused "the call selected `Ones` …, which provides no instance
+            // at these bindings" (g4, MEASURED) — the bracket g3's refusal offers. Held to the
+            // arm's own test: a provider of the spec that supplies a member that runs.
+            let carrier = match (&carrier, pinned_witness_for(kb, &selections, spec_sort)) {
+                (ReceiverCarrier::NotApplicable, Some(named))
+                    if spec_is_self_representing(kb, kb.canonical_sort_sym(spec_sort))
+                        && sort_provides(kb, named, spec_sort)
+                        && spec_op_suppliers_for_carrier(kb, spec_sort, named, fn_sym, op_short_sym)
+                            .iter()
+                            .any(|supplier| op_is_executable(kb, supplier.target)) =>
+                {
+                    // The provider at its own type-vars, each the type the call fixed the spec's
+                    // type-var its provision binds to it (`Ones provides Src[T = T]`: `Src.T` is
+                    // `Ones.T`); one the call left open stays open. Typed bare, the result of
+                    // `Src.make[Src = Ones, T = Int64]()` was `Ones[T = o.T]`, and a use at
+                    // `Ones[T = Int64]` was refused (found by /code-review).
+                    let mut own: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                    for (spec_tv, bound) in provider_spec_view_bindings(kb, named, spec_sort).unwrap_or_default() {
+                        let Some(p) = view_ref_symbol(kb, &bound).filter(|p| is_sort_param_symbol(kb, *p)) else {
+                            continue;
+                        };
+                        let Some(vid) = type_param_vid_in_sort(kb, spec_sort, spec_tv) else {
+                            continue;
+                        };
+                        if let Some(Value::Term { id, .. }) =
+                            spec_param_binding(kb, &subst, vid).filter(|b| type_is_ground(kb, b))
+                        {
+                            own.push((p, id));
+                        }
+                    }
+                    let base = kb.make_sort_ref(named);
+                    let at = Value::term(if own.is_empty() { base } else { kb.make_parameterized_type(base, &own) });
+                    if carrier_sort_of_value(kb, &op.return_type)
+                        .is_some_and(|r| same_sort_canonical(kb, r, spec_sort))
+                    {
+                        resolved_ret = at.clone();
+                    }
+                    ReceiverCarrier::Concrete(GoalCarrier {
+                        sort: named,
+                        args: receiver_type_args(kb, &at),
+                    })
+                }
+                _ => carrier,
+            };
 
             // WI-357: a concretely-dispatched self-receiver spec op (e.g.
             // `Stream.splitFirst` on a `List[Int]`) binds none of the spec's

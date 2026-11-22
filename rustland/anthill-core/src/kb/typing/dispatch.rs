@@ -449,6 +449,7 @@ pub(super) fn is_value_directed_provider(
 pub(super) fn render_instance_tie(
     kb: &KnowledgeBase,
     tie: &InstanceTie,
+    op: Option<Symbol>,
 ) -> (Vec<String>, TieRepair) {
     let candidates = tie_candidate_names(kb, tie);
     if !tie.at_call_goal {
@@ -467,10 +468,17 @@ pub(super) fn render_instance_tie(
         return (candidates, TieRepair::OneProviderTwoProvisions);
     }
     let concrete = crate::kb::load::sorts_with_constructors(kb);
+    // WI-20261122-CXR5B (c3) — a provider with constructors is nameable where the call's
+    // operation takes no value that decides its dispatch, as `validate_instance_selection`
+    // admits it there.
+    let no_value_decides = op.is_some_and(|op| {
+        impl_parent_of_op(kb, op).is_some_and(|p| same_sort_canonical(kb, p, tie.spec))
+            && !op_has_spec_carrier_param(kb, op, tie.spec)
+    });
     let repair = match tie
         .candidates
         .iter()
-        .position(|s| !is_value_directed_provider(kb, &concrete, *s))
+        .position(|s| no_value_decides || !is_value_directed_provider(kb, &concrete, *s))
     {
         Some(i) => TieRepair::Bracket(format!(
             "[{} = {}]",
@@ -489,9 +497,10 @@ pub(super) fn render_instance_tie(
 pub(super) fn render_call_tie(
     kb: &KnowledgeBase,
     tie: &InstanceTie,
+    op: Symbol,
     in_rule_own_term: bool,
 ) -> (Vec<String>, TieRepair) {
-    let (candidates, repair) = render_instance_tie(kb, tie);
+    let (candidates, repair) = render_instance_tie(kb, tie, Some(op));
     let repair = match repair {
         TieRepair::Bracket(bracket) if in_rule_own_term => TieRepair::BracketElsewhere(bracket),
         repair => repair,

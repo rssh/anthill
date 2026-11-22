@@ -259,6 +259,14 @@ fn selecting_at_the_unselected_call_makes_it_load_and_run() {
     );
 }
 
+/// MOVED by WI-20261122-CXR5B (c3 of `docs/design/spec-carrier-set.md`, folded into that
+/// ticket by the user 2026-11-22): a concrete provider may be named where no value at the
+/// call decides — `Zeroable.zero()` takes none — so the bracket is admitted there, and the tie
+/// OFFERS it; written, `Zeroable.zero[Zeroable = Pebble]()` loads and answers 5. The principle
+/// below still holds: the message suggests no bracket it would refuse, and this one it admits.
+/// A named requirement SLOT of another sort bound to a concrete provider stays refused
+/// (`wi_tx0g6_selection_validation_test`).
+///
 /// THE MESSAGE MUST NOT SUGGEST A BRACKET IT WOULD ITSELF REFUSE. §4.4 check 3
 /// refuses an explicit witness on a CONCRETE provider (there the VALUE decides), so
 /// a tie among concrete providers has no bracket repair — and a tier-3 diagnostic
@@ -280,7 +288,7 @@ fn selecting_at_the_unselected_call_makes_it_load_and_run() {
 /// clause would silently turn this into a load-clean program and the `load_errs`
 /// oracle would report it, which is how the move was found.
 #[test]
-fn a_tie_among_concrete_providers_does_not_suggest_a_bracket() {
+fn a_tie_among_concrete_providers_where_no_value_decides_offers_the_bracket() {
     let src = r#"
 namespace wi843.concretetie
   import anthill.prelude.{Int64, Bool}
@@ -314,14 +322,13 @@ end
     let errs = load_errs(src);
     let text = errs.join("\n");
     assert!(
-        text.contains("ambiguous dispatch of") && text.contains("CONCRETE provider"),
-        "a tie among concrete providers must still be named, and must say WHY no \
-         selection is available: {text}"
+        text.contains("ambiguous dispatch of") && text.contains("[Zeroable = "),
+        "a tie among concrete providers at a call no value decides is named, and offers the \
+         bracket that selects one: {text}"
     );
-    assert!(
-        !text.contains("[Zeroable ="),
-        "the bracket must not be suggested where §4.4 check 3 refuses it: {text}"
-    );
+    let selected = src.replace("Zeroable.zero())", "Zeroable.zero[Zeroable = Pebble]())");
+    assert_ne!(selected, src, "the fixture's call was not rewritten");
+    assert_eq!(eval_int(&selected, "wi843.concretetie.Driver.drive", "the bracket the tie offers"), 5);
 
     // The CONTROL that this absence is the branch firing — rather than the bracket
     // never being suggested at all — is the sibling

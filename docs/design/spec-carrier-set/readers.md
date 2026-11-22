@@ -212,3 +212,8 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
   provides, a call naming no carrier is held to the provisions at the type-vars σ fixed
   (`a_provision_meets_fixed`, step 6, e7), beside `carriers_no_provision_binds`, which asks a
   carrier at the single parameter.
+- `validate_instance_selection` (slots.rs, §4.4's check 3) and `render_instance_tie`
+  (dispatch.rs) read `is_value_directed_provider` only where an operation of the spec takes a
+  value that decides its dispatch (`op_has_spec_carrier_param`, L6) — step 8, c3/g4.
+- `candidates_at` (candidates.rs): a goal naming its carrier that leaves out a type-var the
+  carrier's row binds to its provider's own parameter is at one of its values (step 8, g4).

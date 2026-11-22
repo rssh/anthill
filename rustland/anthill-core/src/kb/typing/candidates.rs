@@ -968,6 +968,17 @@ fn candidates_at(
                     if sort_param_is_effect_row(kb, goal.spec_sort, &param_name) {
                         continue;
                     }
+                    //  - WI-20261122-CXR5B (c3/g4 of `docs/design/spec-carrier-set.md`): where
+                    //    the carrier filter above has selected the row and the row binds the
+                    //    param to a PARAMETER OF ITS PROVIDER (`Ones provides Src[T = T]`), the
+                    //    provision is at every value of it, and a goal that leaves it out is at
+                    //    one of them: `Src.make[Src = Ones]()`, the call naming its provider and
+                    //    fixing no `T`. Rejected, that call matched no provision (g4, MEASURED).
+                    //    A concrete binding (`Eq[T = Int]`) and a structured one stay
+                    //    discriminating, and so does every binding of a goal with no carrier.
+                    if goal.carrier.is_some() && impl_param_ref(kb, candidate_value, &impl_param_set).is_some() {
+                        continue;
+                    }
                     all_match = false;
                     break;
                 }

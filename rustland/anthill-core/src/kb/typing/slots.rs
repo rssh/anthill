@@ -3885,7 +3885,20 @@ pub(super) fn validate_instance_selection(
     // their typo was a coherence rule. Ordering check 3 first was justified as "a
     // refusal of the WHOLE spelling", which only holds once the witness provides.
     check_witness_provides_spec(kb, fn_sym, spec_sort, witness, span)?;
-    if is_value_directed_provider(kb, concrete, witness) {
+    // WI-20261122-CXR5B (c3 and g4 of `docs/design/spec-carrier-set.md`) — only where a VALUE
+    // at the call decides: the operation takes an argument the dispatch reads its provider off
+    // (`op_has_spec_carrier_param`: a `Self` parameter of a self-representing spec, one typed
+    // at the spec's carrier parameter of a spec with a dictionary). Where it takes none
+    // (`Dflt.dflt()`, `Src.make[T = Int64]()`), nothing but the bracket can name the provider,
+    // and two providers with constructors left the call with no repair: refused "no explicit
+    // selection of a concrete provider" (g4), and the tie offered none (c3).
+    // The operation must be OF the spec the bracket names: a named requirement slot of another
+    // sort (`SortedSet.empty[T = String, O = ConcOrd]()`, `O: WeakOrd`) keeps the rule as
+    // WI-20260911-TX0G6 decided it — read off the named sort alone.
+    let names_its_own_provider = impl_parent_of_op(kb, fn_sym).is_some_and(|p| same_sort_canonical(kb, p, spec_sort));
+    if is_value_directed_provider(kb, concrete, witness)
+        && !(names_its_own_provider && !op_has_spec_carrier_param(kb, fn_sym, spec_sort))
+    {
         return Err(TypeError::ValueDirectedSelection {
             span,
             op: fn_sym,
