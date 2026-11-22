@@ -788,7 +788,8 @@ The stage 1 rows are JE2MT's; the stage 2 rows are WI-20261122-CXR5B's.
   - e1 answers 2, e2 9 and e4 32; e3 and e5 stay refused at load (decision 7). `?c` is
     `BoxHolder` and `Bag` (decisions 5, 8).
   - The bound-`joinTwo` receiver defect (§6 decision 4) gets a probe of its own, with ONE
-    provision, since e5 is refused by decision 7 anyway.
+    provision, since e5 is refused by decision 7 anyway. (Done by the fifth step: e6 answers
+    32, History.)
   - `VectorSpace` declared `F` first still reads `Vec3`'s provision as its own.
   - c1 answers 42, or its cause is named. (Done by the fourth step: 42, and the cause named,
     History; c4 refused naming both witnesses, the bracket naming either answering.)
@@ -1082,3 +1083,27 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   Not moved: the bound-`joinTwo` receiver defect (a bound operation's `Self` parameter compared
   at the spec's bindings, `check_instance_fact_op_signatures`; an M reader, reproduced with one
   provision).
+- **2026-11-22, stage 2's fifth step (WI-20261122-CXR5B): the receiver of an operation bound
+  by name** (§7's bound-`joinTwo` row). For a self-representing spec a provision's carrier is
+  its provider (decisions 5 and 8), and the first parameter a spec operation types `Self` is the
+  receiver, which dispatch reaches through a value of the provider. `check_member_signature`
+  passed a member narrowing it to the provider; `check_instance_fact_op_signatures`, the check
+  of an operation bound by name, compared it against the spec at the provision's bindings and
+  refused `joinTwo = Bag.join` with `join(a: Bag, b: Holder)` ("parameter 1 … `Bag`,
+  incompatible with … `Holder[C = Box, Element = Int64]`"). It now passes the same receiver, the
+  first such parameter only: a second one narrowed to the provider still admits any provider
+  and is refused, naming it alone. Moved: e6 (new probe, e4 with `peek` and `joinTwo` bound by
+  name, one provision) → 32, e4's answer; `join(a: Bag, b: Bag)` refused at parameter 2 only
+  (it named 1 and 2). The receiver is the provider bare or at its own type-vars: a /code-review
+  of the step found that a first cut, matching it by its head alone, passed `join(a: Bag[T =
+  Int64], …)` for `Bag[T]`, and `joinTwo(bag(v: "s"), …)` ran `join` on a `String`; it is
+  refused, as the member form is. Rows: `wi_cxr5b_bound_receiver_test` (3), the first two
+  failing with `src/` at `9ce71a1d9`, the third a guard against that cut. Measured and not moved, a defect of the self-representing class's S readers:
+  e7 (new probe, e4 plus `Holder.peek(crate(n: 5))`, nothing providing `Holder` at `C = Crate`)
+  loads clean and dies at run, "operation has no body: `Holder.peek`" — the same before this
+  step. The call reaches `NoCandidates` with no carrier: the receiver's classification found no
+  provision at `C = Crate`, the goal's carrier for a self-representing spec is the provider,
+  which a call with no `Self` value cannot name, and `carriers_no_provision_binds` reads a
+  carrier only at the single parameter. A spec with a dictionary refuses the same call at load
+  ("requirement `Coll[C = Bar]` cannot be supplied"). By decision 1 the call fixes `C = Crate`
+  and no provision is at it, so it is refused at load.

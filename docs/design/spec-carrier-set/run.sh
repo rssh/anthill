@@ -42,7 +42,7 @@ echo "##### D. Decision 1: what a call fixes, for every provider"
 for f in d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11 d12 d13 d14 d15; do run "$(ls $f-*.anthill)"; done
 
 echo "##### E. Decision 4: a spec that takes Self and a type-var"
-for f in e1 e2 e3 e4 e5; do
+for f in e1 e2 e3 e4 e5 e6 e7; do
   run "$(ls $f-*.anthill)"
   carrier "$(ls $f-*.anthill)" Holder 'Holder'
 done

@@ -6090,12 +6090,43 @@ pub fn check_instance_fact_op_signatures(
             }
 
             // ── per-param type (contravariant: σ(spec_param) <: bound_param) ─
+            //
+            // WI-20261122-CXR5B — THE RECEIVER, as [`check_member_signature`] reads it: the
+            // FIRST parameter the spec types as itself (`joinTwo(a: Self, b: Self)`, a
+            // self-representing spec) and the bound operation as its provider (`Bag.join(a:
+            // Bag, b: Holder)`). Dispatch makes the narrowing sound — the call reaches the
+            // binding through a value of the provider — and the provision's carrier is the
+            // provider (decisions 5 and 8 of `docs/design/spec-carrier-set.md`), not the spec at
+            // its bindings, which is what σ compared it against: `a: Bag` was refused as
+            // incompatible with `Holder[C = Box, Element = Int64]` while the same receiver
+            // written as `Bag`'s own member passed (MEASURED, one provision, design §7). A
+            // SECOND parameter so narrowed is still compared, and refused: it admits any
+            // provider. So is a receiver narrowed to ONE instance of a parameterized provider
+            // (`join(a: Bag[T = Int64], …)` for `Bag[T]`), which a call on another `Bag`
+            // reaches: passed by its head alone, `joinTwo(bag(v: "s"), …)` ran `join` on a
+            // `String` (found by /code-review), where the member form is refused. The receiver is
+            // the provider bare or at its own type-vars, its carrier, and nothing narrower.
+            let provider_canon = kb.canonical_sort_sym(p.carrier);
+            let spec_canon = kb.canonical_sort_sym(p.spec);
+            let at_its_carrier = |bound_pty: &Value| {
+                carrier_view_parts(kb, bound_pty).is_some_and(|(head, bindings)| {
+                    kb.canonical_sort_sym(head) == provider_canon
+                        && bindings.iter().all(|(_, b)| is_type_param_view(kb, b))
+                })
+            };
+            let receiver = spec_info.params.iter().zip(bound_info.params.iter()).position(|((_, spec_pty), (_, bound_pty))| {
+                sort_functor_of_view(kb, spec_pty).is_some_and(|b| kb.canonical_sort_sym(b) == spec_canon)
+                    && at_its_carrier(bound_pty)
+            });
             for (i, ((_, spec_pty), (_, bound_pty))) in spec_info
                 .params
                 .iter()
                 .zip(bound_info.params.iter())
                 .enumerate()
             {
+                if Some(i) == receiver {
+                    continue;
+                }
                 if instance_binding_type_ok(kb, spec_pty, bound_pty, &p.sigma, false) == Some(false)
                 {
                     let bound_disp = type_display_name_value(kb, bound_pty);

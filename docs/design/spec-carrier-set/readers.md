@@ -204,3 +204,7 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 - The higher-kinded branch of `check_apply_call` (WI-453) leaves a call a witness at the filled
   carrier answers, or whose bracket names another provider, to the resolution after it (step 4,
   c1).
+- `check_instance_fact_op_signatures` (signature.rs, an M reader of an operation bound by
+  name) passes the receiver of a self-representing spec's operation, the first parameter the
+  spec types `Self` and the bound operation types the provider, as `check_member_signature`
+  does (step 5).
