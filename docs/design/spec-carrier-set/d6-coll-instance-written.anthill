@@ -1,0 +1,32 @@
+namespace carrier_set.d6
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  sort Coll
+    sort C = ?
+    sort Elem = ?
+    operation first(c: C) -> Elem
+  end
+  sort Foo
+    entity foo
+  end
+  sort W2
+    provides Coll[C = Foo, Elem = String]
+    operation first(c: Foo) -> String = "two"
+  end
+  sort W1
+    provides Coll[C = Foo, Elem = Int64]
+    operation first(c: Foo) -> Int64 = 1
+  end
+
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(Coll[Elem = Int64].first(foo)))
+      0
+  end
+end

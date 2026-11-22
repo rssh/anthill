@@ -49,7 +49,7 @@ Questions:
 Not counted above — the callers of two WRAPPERS:
 - `provision_carrier_sort` (provision.rs:38, over `provision_carrier_binding`, scp):
   type_receiver.rs:465 `witness_route_only` (W), dot_rule.rs:311 and :887 (V).
-- `clause_carrier_param` (carrier.rs:2595: scp, else the FIRST parameter, no class gate):
+- `clause_carrier_param` (carrier.rs:2594: scp, else the FIRST parameter, no class gate):
   provision.rs:2226 `instance_at_goal_carrier` (P), dict.rs:3538 `dep_completed_at_carrier`
   (S), projection.rs:4122 `instance_member_carrier` (P), carrier.rs:1576
   `enclosing_requires_licensing_clause` (V), carrier.rs:2276 and :2487 (P).
@@ -175,7 +175,7 @@ Not counted above — the callers of two WRAPPERS:
 
 ## Ladders that are not one of the three named functions
 
-- `clause_carrier_param` (carrier.rs:2595): scp, else the FIRST parameter, with no class
+- `clause_carrier_param` (carrier.rs:2594): scp, else the FIRST parameter, with no class
   gate. Its own doc records a measured defect of reading the first parameter.
 - `check_rule_sort_uses` (provision.rs:812-816): scp, else the sole parameter, with NO
   self-representing gate, under the sop gate.

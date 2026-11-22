@@ -1,0 +1,29 @@
+namespace carrier_set.d4
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+  sort Conv
+    sort A = ?
+    sort B = ?
+    operation tag(b: B) -> Int64
+  end
+  sort Meters
+    entity meters
+    provides Conv[A = Self, B = String]
+    operation tag(b: String) -> Int64 = 1
+  end
+  sort Feet
+    entity feet
+    provides Conv[A = Self, B = String]
+    operation tag(b: String) -> Int64 = 2
+  end
+  sort Program
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let _ = println(console(), to_string(Conv[A = Feet].tag("km")))
+      0
+  end
+end

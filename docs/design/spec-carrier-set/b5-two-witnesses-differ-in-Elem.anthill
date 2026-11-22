@@ -1,4 +1,4 @@
-namespace carrier_set.a8
+namespace carrier_set.b5
   import anthill.cli.Main
   import anthill.prelude.Console.{console, println, ConsoleOutput}
   import anthill.prelude.Int64.{to_string}

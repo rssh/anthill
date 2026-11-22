@@ -1,17 +1,22 @@
 # The carrier of a spec is a set of its type-vars
 
-## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. For WI-20261121-JE2MT.
+## Status: design, measured 2026-11-22 on `1a58f1e48` (code `88e83f4ae`); §6's decisions taken with the user the same day. Reviewed the same day from another session: a8 moved from §3 A to §3 B (it was a first match, not a selection), decision 1 reopened on that account and then decided with the user (the carrier belongs to the operation, §3 D), decisions 3 and 5 and §5's scope corrected (History, at the end). Open: decision 5, the scope, and the §5.4 wording's approval. For WI-20261121-JE2MT.
 
-This is a CORRECTION of the implementation, not a change of the language. The type system
-already says what a spec's carrier is. Proposal 074 §1.2 (decided): "a spec may have several
-carriers … a value typed at the spec is the dictionary, covering all its parameters".
-[`path-dependent-types.md`](path-dependent-types.md) §5.4 (decided 2026-06-13): a sort's
-type-vars are the instance's identity, and what is not part of it is an operation's type
-parameter (§1.1 below). The implementation never followed either. It computes ONE parameter per spec, by an inference
-`kernel-language.md` §5.1 itself calls "the rule as implemented", and about 120 sites read
-that one parameter. JE2MT found two of the ways it is computed disagreeing. This document
-says what the carrier is, measures where the single parameter answers wrongly, and lays out
-the correction.
+The MODEL is the type system's own, so this corrects the implementation to it. Proposal 074
+§1.2 (decided): "a spec may have several carriers … a value typed at the spec is the
+dictionary, covering all its parameters". [`path-dependent-types.md`](path-dependent-types.md)
+§5.4 (decided 2026-06-13): a sort's type-vars are the instance's identity, and what is not
+part of it is an operation's type parameter (§1.1 below). The implementation never followed
+either. It computes ONE parameter per spec, by an inference `kernel-language.md` §5.1 itself
+calls "the rule as implemented", and about 120 sites read that one parameter. JE2MT found two
+of the ways it is computed disagreeing.
+
+Some CONSEQUENCES of the correction move verdicts a program sees: what decision 1 admits,
+what decision 3 refuses, b5's first match, and the shape of a reflect relation (decision 5).
+Each is listed in §6 and decided with the user; none is taken silently.
+
+This document says what the carrier is, measures where the single parameter answers wrongly,
+and lays out the correction.
 
 The probes and the script that reruns them are in [`spec-carrier-set/`](spec-carrier-set/).
 The full list of readers is [`spec-carrier-set/readers.md`](spec-carrier-set/readers.md).
@@ -30,17 +35,21 @@ A provision `W provides S[p₁ = t₁, …]` is AT the instance its bindings at 
 name: the whole binding list for a dictionary spec, the provider for a self-representing
 one. From that:
 
-- **Two provisions are at the same instance** where those bindings unify.
-- **A witness** is a provider that is none of the sorts bound at the carrier.
+- **Two provisions are at the same instance** where those bindings unify. A binding can be
+  an effect row (`Iterable`'s `E`), so the unification is over rows too.
+- **A witness** is a provider that is none of the sorts bound at the carrier, a binding's
+  sort being its head (`List` for `List[T = E]`).
 - **"Add this provision unless one is written"** (the derivations) asks whether a written
   provision is at an instance that unifies with the one to be added.
-- **Which argument of an operation fixes the instance** is a question about THAT OPERATION:
-  its parameters typed at a type-var of the carrier. It is not a property of the spec, and
-  it is not "the carrier".
+- **What a call of an operation fixes** is a question about THAT OPERATION: the type-vars
+  its signature mentions, directly or inside an application (`m: M[A]` mentions `M`). Its
+  arguments fix those in its parameters, and its expected type those in its result
+  (decision 1, §6). This is the operation's carrier. It is not a property of the spec.
 
-A proper subset of the type-vars ("`Element` is decided by `C`") is NOT in the language,
-and the implementation does not enforce one (§3, `a8`). Adding it would be a language
-extension. The correction does not need it.
+A proper subset of the type-vars ("`Element` is decided by `C`") is NOT in the language.
+The implementation neither enforces one nor tells two such instances apart: it takes the
+first one declared (§3 B, b5–b8). Adding a subset would be a language extension. The
+correction does not need it.
 
 ### 1.1 The same model, read as path-dependent members
 
@@ -68,14 +77,15 @@ words. Read through it, the question "which sort is this provision for" disappea
 
 ## 2. What the implementation computes instead
 
-ONE parameter per spec, by one of seven ladders:
+ONE parameter per spec. Five ladders compute it (L1–L5); two more rules read something else
+in its place, a set per operation (L6) and a label (L7):
 
 | ladder | rule | where |
 |---|---|---|
 | L1 | the first declared type-var that some operation takes as a BARE parameter type | `spec_carrier_param`, provision.rs:133 |
 | L2 | L1, else the sole type-var if the spec is not self-representing | `spec_carrier_param_or_sole`, provision.rs:187 |
 | L3 | for a spec with a dictionary: L1, else the FIRST type-var | `spec_over_parameter`, provision.rs:243 |
-| L4 | L1, else the first type-var, with no class gate | `clause_carrier_param`, carrier.rs:2595 |
+| L4 | L1, else the first type-var, with no class gate | `clause_carrier_param`, carrier.rs:2594 |
 | L5 | L1, else the sole type-var, with no self-representing gate | inline in `check_rule_sort_uses`, provision.rs:812 |
 | L6 | any type-var any parameter of the operation is typed at (a SET); the spec itself if self-representing | `op_has_spec_carrier_param`, value_type.rs:1301 |
 | L7 | `Effect`'s `T` binding, by label | `registered_effect_kinds`, signature.rs:5877 |
@@ -83,8 +93,9 @@ ONE parameter per spec, by one of seven ladders:
 L1 is under the witness criterion (`witness_dispatch_carrier_value`, coherence.rs:2888), so
 dispatch, the coherence groups, the member checks and the derivations of `SortDomain` and
 `TypeValue` read it. L2 is under `provisions_about`, the equality derivation (since
-TV0PA), the goal keys, and the default rows. 114 call sites read L1–L3 and their wrappers
-directly ([readers.md](spec-carrier-set/readers.md)), plus 9 callers of two wrappers.
+TV0PA), the goal keys, and the default rows. [readers.md](spec-carrier-set/readers.md) lists
+114 call sites: 106 read L1–L3 and their wrappers, and 8 read L6
+(`op_has_spec_carrier_param`). Two further wrappers have 9 callers.
 
 L1 and L2 disagree only on a spec with exactly one type-var that is not self-representing
 and that no operation takes as a bare parameter type. In the standard library that is
@@ -110,11 +121,11 @@ the wrong reason.
 | a5 | two witnesses at `A = Int64` that differ only in `B`; the call binds `B = Bool` | 2 |
 | a6 | `Rel[A, B]`, `relate(a: A, b: B)`; two witnesses that differ in `A`; `Rel.relate(red, 5)` | 2 |
 | a7 | the same, the witnesses differing in `B`; `Rel.relate(5, red)` | 2 |
-| a8 | `Coll[C, Elem]`, `first(c: C) -> Elem`; `W1 provides Coll[C = Foo, Elem = Int64]`, `W2 … Elem = String`; `to_string(Coll.first(foo))` | 1 |
 
-Every one is right. None of them depends on which single parameter is "the carrier", and
-a8 shows the carrier is the whole set: two instances at `C = Foo` coexist and the expected
-`Int64` picks one.
+Every one is right, and none depends on which single parameter is "the carrier". In each,
+what tells the instances apart is a bracket (a2, a5) or an argument (a6, a7); a5–a7 pick the
+SECOND-declared witness, so they are not first matches. Where only the expected result type
+could tell them apart, the selection is not by bindings at all: b5–b8 below.
 
 ### B. Where the single parameter answers wrongly
 
@@ -176,6 +187,37 @@ end
 
 `put` takes values of both type-vars, so L1 takes the first one declared.
 
+**b5–b8: two instances that differ in a type-var no argument fixes are a first match.**
+
+```anthill
+sort Coll
+  sort C = ?
+  sort Elem = ?
+  operation first(c: C) -> Elem
+end
+sort W1
+  provides Coll[C = Foo, Elem = Int64]
+  operation first(c: Foo) -> Int64 = 1
+end
+sort W2
+  provides Coll[C = Foo, Elem = String]
+  operation first(c: Foo) -> String = "two"
+end
+```
+
+| probe | the call | answers |
+|---|---|---|
+| b5 | `to_string(Coll.first(foo))`: `Int64` expected, `W1` declared first | 1 |
+| b6 | the same with `W2` declared first | refused: "expected Int64, got String" |
+| b7 | `println(console(), Coll.first(foo))`: `String` expected, `W1` first | refused: "expected String, got Int64" |
+| b8 | `let x = Coll.first(foo)`: nothing fixes `Elem` | runs, no ambiguity reported |
+
+The expected type selects nothing: the first-declared witness answers, and a call that
+expects the other one is refused as a type mismatch. Where nothing fixes `Elem` (b8), the
+call is not refused the way a3 is. L1 makes `C` the carrier, both rows are filed at
+`C = Foo`, and the first is taken. This is the one wrong answer driven by a CALL for a spec
+with several type-vars; b3/b4 read a reflect row.
+
 **The standard library is read right by declaration order.** A load of the standard library
 alone has 585 provision rows. Three bind two or more sorts: `Map provides
 Iterable[C = Map[…], Element = Pair[…]]`, the same for `FiniteCollection`, and `Vec3
@@ -184,15 +226,41 @@ provides VectorSpace[V = Vec3, F = Float]`. They read as `Map`'s and `Vec3`'s ow
 takes `F` too, so with `F` declared first `Vec3`'s provision would read as a witness for
 `Float`.
 
-### C. Not this question (recorded so they are not mistaken for it)
+### C. Not decided here (recorded so they are not mistaken for one of §3 B)
 
-| probe | program | answers | why it is not the carrier |
+| probe | program | answers | why it is kept apart |
 |---|---|---|---|
-| c1 | `sort BoxM { provides Monad[M = Box]; … }` with its own `pure`/`flatMap`/`map`; `Monad.flatMap(box(v: 41), …)` | refused: "no impl matches" | unchanged with the witness criterion on L2 and with `spec_carrier_param` itself on L2 (both experiments, reverted) |
+| c1 | `sort BoxM { provides Monad[M = Box]; … }` with its own `pure`/`flatMap`/`map`; `Monad.flatMap(box(v: 41), …)` | refused: "no impl matches" | moving L1 to L2 does not fix it (both experiments, reverted). That does NOT show it is independent of the V question: the readers that find the argument at the carrier match a bare type-var (`declared_type_param_vid`'s arity pin), so `m: M[A]` may be missed there too. A stage 2 row; its cause is to be named when stage 2 reaches the V readers |
 | c2 | control: `Box` providing `Monad[M = Self]` with the same members | 42 | |
 | c3 | two data sorts each `provides Dflt[T = Int64]` | refused, and no bracket is accepted: "each is a CONCRETE provider, where … the VALUE decides" | the bracket rule asks whether the provider has constructors (`is_value_directed_provider`, dispatch.rs:426), not which parameter is the carrier. Known since wi822 (`TieRepair::ValueDirected`) |
 
-c1 and c3 are separate defects. Neither is filed.
+c3 is a separate defect. Neither c1 nor c3 is filed.
+
+### D. What a call fixes: the probes behind decision 1
+
+The rule a call is held to is `kernel-language.md` §5.4's last case of "A body-less
+operation must have something that can run it" (around line 3542). In plain words: take what
+the call fixes; look at the provisions at that; if they agree on everything else, take it from
+them; if they disagree, refuse and have the instance written. As written, "what the call
+fixes" is the spec's single carrier parameter, fixed by "an argument, bracket, expected
+result or requirement in scope". So its own example has `A` as the carrier of
+`Conv.tag("km")` when `Conv` declares `conv(a: A, b: B)`, and `B` when it declares only
+`tag(b: B)`.
+
+| probe | program | answers |
+|---|---|---|
+| d1 | `Dflt[T]`, `dflt() -> T`; witnesses at `Int64` and `String`; `to_string(Dflt.dflt())` | 1 |
+| d2 | the same; `println(console(), Dflt.dflt())` | two |
+| d3 | `Conv[A, B]`, `tag(b: B) -> Int64`; `Meters` and `Feet` at `B = String`; `Conv.tag("km")` | refused: "it leaves `A` open, and `Meters` and `Feet` provide `Conv` at what it fixes, naming different types for it. Write the instance" |
+| d4 | the same, `Conv[A = Feet].tag("km")` | 2 |
+| d5 | ONE provider writing both of b5's provisions (`first = WB.f1` at `Elem = Int64`, `first = WB.f2` at `Elem = String`) | refused at load four times, among them "conflicting provisions: … the first provision written would silently win" (§8.7) |
+| d6 | b6 (`W2` declared first), `Coll[Elem = Int64].first(foo)` | 1 |
+| d7 | b6, `Coll.first[Coll = W1](foo)` | refused: "W1 provides Coll, but not at the bindings this call … needs" |
+
+The expected type already fixes a type-var (d1, d2), and the rule's refusal works (d3, d4).
+b5–b8 break the rule even as written: the provisions at `C = Foo` give `Elem` different
+types, and the first declared answers. d7 is a defect of its own: naming the witness is
+refused against the first match's bindings. It is a stage 2 row.
 
 ## 4. The readers, by the question each one has
 
@@ -200,9 +268,9 @@ From [readers.md](spec-carrier-set/readers.md), 114 sites:
 
 | question | sites | under the model |
 |---|---|---|
-| D: add a provision unless one is written | 4, and the `Eq` family's K/X/other rows (6) | is a written provision at an instance that unifies with the one to be added |
+| D: add a provision unless one is written | 4 | is a written provision at an instance that unifies with the one to be added |
 | S: select the instance a goal asks for | 39 | the goal's bindings at the carrier, all of them for a dictionary spec |
-| V: which argument fixes the instance | 17 | the operation's parameters typed at a type-var of the carrier (L6 already reads this) |
+| V: which argument fixes the instance | 17 | the operation's carrier (decision 1): the type-vars its signature mentions, directly or in an application. L6 reads a set, but of the parameters only and of a bare type-var only |
 | P: projection, left-out bindings | 12 | a binding of the carrier set, read by name; "except the carrier" becomes a decision, §6 |
 | K: a refusal decided by the parameter | 10 | per refusal (§6 for `ProvisionNamesNoCarrier`) |
 | SC: the spec's class | 9 | unchanged: these ask whether the spec has a dictionary, not which parameter |
@@ -210,6 +278,9 @@ From [readers.md](spec-carrier-set/readers.md), 114 sites:
 | W: witness or own | 5 | the provider is none of the sorts bound at the carrier |
 | O: overlap, defaults, specificity | 5 | provisions whose instances unify; default rows keyed by instance |
 | M: member checks | 4 | the provision's instance; the receiver per operation, as §8.7 already says |
+| other | 3 | `EqProviders::of` (load.rs:23438) reads the stage 1 helper; the seal's re-judging (signature.rs:3070) moves with W; the layer test (layer.rs:877) lists `Eq`'s providers and keeps asking that |
+
+The `Eq` family's K and X rows (eq_derive.rs:600, :652, :1348) are stage 1 with D.
 
 ## 5. The correction
 
@@ -217,29 +288,42 @@ From [readers.md](spec-carrier-set/readers.md), 114 sites:
 memoized per canonical spec:
 
 ```rust
-enum SpecCarrier {
-    /// An operation takes the spec itself: the provider is the carrier.
-    SelfSort,
-    /// A spec with a dictionary: these type-vars, in declaration order.
-    TypeVars(SmallVec<[Symbol; 2]>),
+struct SpecCarrier {
+    /// An operation takes the spec itself: the provider is part of the carrier.
+    self_sort: bool,
+    /// The type-vars in the carrier, in declaration order: every one, for a spec with a
+    /// dictionary; for a self-representing spec, none or some, as decision 4 decides.
+    type_vars: SmallVec<[Symbol; 2]>,
 }
 ```
 
+The shape holds decision 4's three possible answers (`Self`; `Self` and some type-vars; the
+type-vars alone), so the owner can be written before decision 4 is measured. Only its
+CONTENTS for a self-representing spec wait on it.
+
 It replaces L1–L5 as the answer to "where is this provision". Two questions stay apart from
 it, under names that say what they answer: which parameters of an OPERATION fix its
-instance (L6, per operation), and the spec's class (`sort_class`, 074 §2). Nothing reads
-"the first" of anything.
+instance (L6, per operation, extended to an application of a type-var), and the spec's
+class (`sort_class`, 074 §2). Nothing reads "the first" of anything.
 
-**Stage 1: the derivations.** One helper, "the written provisions of `S` at an instance
-that unifies with `t`", replaces `provisions_about` and `provision_carriers_of_spec` in:
+**Stage 1: the owner and the derivations.** `spec_carrier` is written first. One helper,
+"the written provisions of `S` at an instance that unifies with `t`", is built ON it, not on
+L2, so it is not one more reader of the single parameter to migrate later. It replaces
+`provisions_about` and `provision_carriers_of_spec` in:
 
 - `eq_derive` (`spoken_for`, `equality_signatures`, `equality_reaching_no_eq`, `written_spec_of`)
 - `load.rs` `EqProviders::of`
 - `sort_domain_derive`'s `already`
 - `type_value_derive`'s `already`. `HandWrittenTypeValue` reads the PROVIDER.
 
-Every spec these read has one type-var, so this stage moves no verdict except b1 and b2. It
-is small, and it holds every measured defect of §3 B.
+Every spec these read has one type-var, so stage 1 moves ONE verdict: b1. b2 names `W`
+before and after stage 1 (the witness criterion does not move in it), so b2 is a GUARD for
+stage 2, when the criterion moves, not a stage 1 row.
+
+**Scope** (finding 9 of the review; the user's call). JE2MT asks for a row per reader that
+answers wrongly for a one-parameter spec, and one owner. That is stage 1. Stage 2 is the
+114-site change on the per-call path with decisions 1, 3 and 5. Proposed: deliver JE2MT as
+the owner and stage 1, and give stage 2 a ticket of its own.
 
 **Stage 2: everything else**, by question, in the order W, O, S, V, P, M, K, with the two
 indexes that are keyed by the single parameter: `ProvidesIndex`'s witness carriers memo
@@ -256,19 +340,70 @@ corrected to describe the set, as 074 §1.2 has it:
   sole-parameter sentence (around 1476–1491); `ProvisionNamesNoCarrier` (around 1495);
   "Where a spec genuinely has no carrier parameter, a witness for it cannot exist" (around 1570).
 - §5.2: a left-out parameter is `?` "the spec's carrier parameter excepted" (around 2143).
+- §5.4: the last case of "A body-less operation must have something that can run it"
+  (around 3542), reworded per decision 1.
 - §8.3: "a provision being about the sort it binds to its spec's carrier parameter, or to
   the sole one" (around 6266).
 - §8.7: "One carrier declaring one spec twice" (around 7272); the member receiver "the
   first typed by a spec parameter the provision binds to the carrier" (around 7325).
 - 058 §3.6 keeps its rule. A note says its "carrier" is the instance.
 
-## 6. Decisions (taken with the user 2026-11-22, each as proposed)
+## 6. Decisions (taken with the user 2026-11-22, each as proposed; 1 reopened, 5 added, after review)
 
-1. **§8.7, one provider declaring one spec twice.** Today two provisions by the SAME
-   provider that agree at the single parameter and differ in another type-var are refused,
-   because "every reader of a carrier's provider view takes the first match". Under the
-   model they are two instances, as a8's two providers already are. Decided: admit them.
-   The refusal's reason is the single-parameter lookup this document removes.
+1. **What a call fixes, for every provider. DECIDED 2026-11-22**, after it was reopened. It
+   began as "§8.7, one provider declaring one spec twice" (d5, refused at load), decided
+   "admit them, as a8's two providers already are". That premise was wrong (a8 is now
+   b5–b8, a first match), so the rule that tells two such instances apart had to be stated
+   first. Taken with the user:
+
+   **The carrier belongs to the OPERATION**: the type-vars its signature mentions, its
+   parameters and its result. `first(c: C) -> Elem` mentions `C` and `Elem`; `tag(b: B) ->
+   Int64` mentions `B` alone, whatever else `Conv` declares. A call fixes them: the
+   parameters by its arguments, the result by its expected type, and any of them by a
+   bracket or a `requires` in scope. What the signature does not mention is read off the
+   provisions at what the call fixes. If those provisions disagree, the call is refused and
+   the instance is written at it. One provider and several are held to the same rule, so
+   §8.7's refusal of d5 goes, for a spec with a dictionary.
+
+   | probe | today | decided |
+   |---|---|---|
+   | b5 | 1 | 1 |
+   | b6 | refused, type mismatch | 1 |
+   | b7 | refused, type mismatch | two |
+   | b8 | runs, first declared | refused, "write the instance" (`Coll[Elem = Int64].first(foo)`) |
+   | d5 | refused at load | loads; its calls answer as b5–b8 |
+   | d7 | refused | 1 |
+   | d1, d2, d3, d4, d6 | 1, two, refused, 2, 1 | unchanged |
+
+   Declaration order decides nothing, and a call's verdict does not depend on which other
+   operations the spec declares. Option (b) of the reopening (refuse such pairs at load) was
+   not taken: it would refuse d3's program, whose repair d4 runs today and is the one §5.4
+   itself prints.
+
+   For a SELF-REPRESENTING spec the instance is the provider, so two provisions by one
+   provider that differ in a type-var are one instance written twice. They stay refused
+   (§8.7's rule, kept for that class).
+
+   **Proposed wording for §5.4**, for the user's approval before the spec changes:
+
+   > - At the call, in an operation body or a rule body, of a body-less member `op` of a
+   >   spec `S` whose instance the call does not fix. The carrier of `op` is the type-vars of
+   >   `S` its signature mentions, in a parameter or in the result, directly or inside an
+   >   application (`m: M[A]`). The call fixes them: a parameter's by the argument, the
+   >   result's by the expected type, and any of them by a bracket or a `requires` in scope.
+   >   The instance is the provision at what the call fixes. A type-var `op`'s signature
+   >   does not mention is read off that provision, as `Iterable.find(xs)` reads `Element`
+   >   off `List`'s. Whether one provider or several provide `S`, the call is refused when:
+   >   - a type-var of `op`'s carrier is fixed by nothing at the call: `Dflt.dflt()` with
+   >     nothing expected;
+   >   - the provisions at what it fixes give a type-var it leaves open different types:
+   >     `Conv.tag("km")` over `Meters` and `Feet` at `B = String`, whether or not `Conv`
+   >     declares `conv`; `let x = Coll.first(foo)` over provisions at `C = Foo` that
+   >     disagree on `Elem`.
+   >
+   >   The instance is then written at the call: a bracket (`Conv[A = Meters].tag("km")`,
+   >   `Coll[Elem = Int64].first(foo)`) or a `requires` on the operation; in a rule body, on
+   >   the call's receiver.
 2. **A written provision that overlaps the one a derivation would add without covering
    it** (`Eq[T = Box[T = Int64]]` against the derived `Eq[T = Box[T = T]]`). Today `Box`
    gets no derived equality at all. Decided: keep that (any overlap skips). §8.3's "Closed
@@ -277,20 +412,37 @@ corrected to describe the set, as 074 §1.2 has it:
    `?`, except the carrier parameter, which a written provision must bind
    (`LiveLlm provides Llm[E = {External}]` is refused). Under the model every left-out
    type-var is `?`. Decided: keep the refusal, restated as "a provision binds each type-var
-   an operation of the spec takes a value of". It is per operation, and it is the same
-   refusal for every spec it refuses today.
+   an operation of the spec takes a value of". It is per operation. Corrected after
+   review: it refuses MORE than today. Today the refusal itself depends on declaration
+   order: over `Bag2 { put(c: C, x: T) }`, `provides Bag2[C = Self]` is refused as naming
+   no carrier with `T` declared first, and passes that check with `C` first (where, in the
+   probe, the member check refuses it for `put`'s narrower `x`). Restated, it is refused
+   in both orders. The standard library is unaffected: every provision of
+   `PersistentCollection`, `MutableCollection` and `VectorSpace` binds both type-vars. The
+   test fixtures are not measured.
 4. **A spec that takes itself and also has a type-var an operation takes**
    (`spec_carrier_param`'s doc: "a spec declaring BOTH a carrier parameter and a
    self-receiving operation", measured to refuse a program that loads when its binding
    was discarded). Is its carrier `Self`, or `Self` and those type-vars? Decided: measure
-   it in the tree before stage 2, and decide from the measurement.
+   it in the tree before stage 2, and decide from the measurement. (`Stream` is not in this
+   class: its operations take only `Self`.)
+5. **ADDED after review: the reflect relation.** `anthill.reflect.typing.provision_carrier(?p,
+   ?s, ?c)` answers ONE sort per provision, and b1, b3 and b4 are measured through it. It
+   is user-visible, and under the model a provision of a spec with several type-vars is at
+   several sorts. Its new shape is to be decided: one row per type-var of the carrier (a
+   fourth column naming the type-var); or `?c` the instance itself (the spec at its carrier
+   bindings, `Bag2[T = Int64, C = MyBag]`); or one-sort answers kept where the carrier has
+   one type-var. Its readers in the standard library (`default_provider`,
+   `self_provides`, reflect/typing.anthill) move with it.
 
 ## 7. Acceptance for JE2MT
 
-- **Stage 1 rows:** b1 derives no second row; b2 names `W`; the equality rows of
-  `wi_tv0pa_eq_gives_partial_eq_test` stay green. Each has its back-out.
-- **Stage 2 rows:** b3 and b4 agree (`MyBag`'s own in both orders); `VectorSpace` declared
-  `F` first still reads `Vec3`'s provision as its own; each of §6's decisions has its
+- **Stage 1 rows:** b1 derives no second row, with its back-out. The equality rows of
+  `wi_tv0pa_eq_gives_partial_eq_test` stay green.
+- **Stage 2 rows:** b2 still names `W` once the witness criterion moves; b3 and b4 agree
+  (`MyBag`'s own in both orders); b5–b8, d5 and d7 answer as decision 1's table says, and
+  d1–d4 and d6 as they do today; `VectorSpace` declared `F` first still reads `Vec3`'s
+  provision as its own; c1 answers 42 or its cause is named; each of §6's decisions has its
   driven row.
 - **The a-rows** pass before and after, by design.
 - **Gates:** families green; full workspace via `rustland/scripts/test.sh`; scaland
@@ -303,8 +455,37 @@ docs/design/spec-carrier-set/run.sh                     # rustland/target/debug/
 docs/design/spec-carrier-set/run.sh path/to/anthill
 ```
 
-The two experiments of §3 were edits to the tree, measured and reverted:
+The two experiments of §3 were edits to the tree, measured and reverted. Each was run over
+a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
 
 - `witness_at_param(kb, spec_carrier_param(…)?, …)` → `spec_carrier_param_or_sole` in
-  `witness_dispatch_carrier_value`: a–c unchanged except b2, which then named `C`.
-- the same fallback inside `spec_carrier_param` itself: c1 still refused.
+  `witness_dispatch_carrier_value`: unchanged except b2, which then named `C`.
+- the same fallback inside `spec_carrier_param` itself: unchanged, so c1 still refused.
+
+## History
+
+- **2026-11-22, written.** The model taken with the user; §6's four decisions taken with
+  the user, each as proposed. Committed in `182cc7154`.
+- **2026-11-22, reviewed from another session** (anthill-6d), which reran `run.sh` on
+  `182cc7154` and confirmed every row and every citation, `clause_carrier_param`'s line
+  aside (2594). Taken from it, each checked here first:
+  - a8 is a first match by declaration order, not a selection by the expected type. Its
+    three variants were reproduced, and it moved to §3 B as b5–b8.
+  - Decision 1's premise was a8, so decision 1 was reopened with two selection rules.
+  - b2 is a stage 2 guard, not a stage 1 row; stage 1 moves one verdict.
+  - Decision 3 refuses a superset. The order-dependence of today's refusal was measured
+    here.
+  - The `SpecCarrier` shape no longer presupposes decision 4.
+  - The reflect relation became decision 5.
+  - The opening no longer says "not a change of the language" of the consequences.
+  - c1 is no longer called independent of the V question.
+  - The stage 1 helper is built on `spec_carrier`.
+  - Scope: stage 2 is proposed as its own ticket.
+  - Smaller: five ladders compute one parameter, not seven; the 114 sites include L6's 8;
+    §4 has its "other" row; rows unify; a witness reads each binding's head sort; the
+    experiments' coverage is stated.
+- **2026-11-22, decision 1 decided with the user.** d1–d7 measured on `182cc7154` (§3 D).
+  The user's point: the carrier belongs to the operation, not to the sort. `first`'s
+  signature mentions `Elem` in its result, so the expected type fixes `Elem` as an argument
+  fixes `C`. That is the rule for every provider. Option (b) was not taken. The §5.4
+  wording is proposed, not yet approved.

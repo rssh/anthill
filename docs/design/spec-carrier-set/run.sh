@@ -25,7 +25,7 @@ carrier() { # which sort the reflect relation says a provision is at
 }
 
 echo "##### A. Selection: which instance a call gets"
-for f in a1 a2 a3 a4 a5 a6 a7 a8; do run "$(ls $f-*.anthill)"; done
+for f in a1 a2 a3 a4 a5 a6 a7; do run "$(ls $f-*.anthill)"; done
 
 echo "##### B. The single carrier parameter, read two ways"
 rows    b1-sortdomain-witness.anthill SortDomain 'Colour|W'
@@ -33,6 +33,10 @@ carrier b1-sortdomain-witness.anthill SortDomain 'Colour|W'
 "$A" load b2-typevalue-witness.anthill 2>&1 | grep -i typevalue | head -2 | sed 's/^/=== b2: /'
 carrier b3-order-T-first.anthill Bag2 MyBag
 carrier b4-order-C-first.anthill Bag2 MyBag
+for f in b5 b6 b7 b8; do run "$(ls $f-*.anthill)"; done
 
-echo "##### C. Not this question (controls for the record)"
+echo "##### C. Not decided here (kept apart)"
 for f in c1 c2 c3; do run "$(ls $f-*.anthill)"; done
+
+echo "##### D. Decision 1: what a call fixes, for every provider"
+for f in d1 d2 d3 d4 d5 d6 d7; do run "$(ls $f-*.anthill)"; done
