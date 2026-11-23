@@ -9,8 +9,6 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20261025-053QV-a-position-typed-at-a-spec
-
 - tags: typing
 
 ## Description
@@ -43,4 +41,8 @@ DECIDED WITH THE USER (2026-10-25), the two points the note above left: (1) only
 ### 2026-10-25T16:28:10Z — feedback — claude
 
 Scope rewritten to the decisions of 2026-10-25 recorded in the notes above: C2 leaves this ticket for WI-20261025-053QV (a position typed at a spec over a parameter admits a value whose own sort provides an instance of it, so a provision at `Tagger` handing a `Bk` to `d(x: Tagger)` is correct), and C5 states the relation the pattern and the typing positions now share.
+
+### 2026-11-23T20:46:01Z — feedback — user
+
+WI-20261025-053QV REWORKED (user, 2026-11-23): its rule — a value whose own sort provides an instance of a spec over a parameter is admitted where the spec is written — is withdrawn for proposal 074's reading, decided after it (kernel-language §8.2: a value typed at a spec with a dictionary is that dictionary, and a provider's value is none; `keep(b(k: 0))` over `keep(w: Tagger)` stays refused, `keep(Dictionary.instance[Tagger[C = B]]())` answers 1). So this ticket no longer depends on it, and THE RELATION TO HOLD above no longer has a typing-position half for a spec over a parameter: "the relation WI-20261025-053QV gives the typing positions" is now 074's, under which a `Bk` is no `Tagger` at any typing position. Whether a type pattern keeps its provider leg (`Error.reify[T1 = Tagger[C = Bk]]` catching a raised `bk(k: 1)`, `type_admits(Tagger[C = Bk], Bk)` answering yes — decided with the user 2026-10-25, before 074) is this ticket's to ask again before it moves. In the family `g-compatibility` the `param-spec` pair is read "no" (Spec::No), every spelling refusing it, and a `dict-spec` pair (the dictionary at `Tagger`) is admitted at every position, `type_admits` included; this ticket's two exceptions (C5, C6) are unchanged.
 
