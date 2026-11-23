@@ -3,9 +3,9 @@
 - id: WI-20260827-1ZG70-a-meta-predicate-s-argument
 - created: 2026-08-27T09:31:02Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-27T09:31:02Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-23T19:59:55Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -114,4 +114,8 @@ WI-20260827-W1YKH is the third piece and is INDEPENDENT of this one: `term_field
 THE CORPUS IS GREEN FOR ALL OF IT — 5863 passed / 0 failed at baseline, with the prerequisite alone, and with all four pieces. Nothing in the suite reaches any of this, so green is not evidence and every row above must be driven at its own test site.
 
 ACCEPTANCE AMENDMENT: replace "the chosen policy (a/b/c above) is stated in kernel-language.md §5.2" with the (d) reading, and add `varA` / `varB` to the control set — a repair that answers the headline row while deciding either of those is not a repair. A driven prototype of (a)+(d)+the prerequisite exists and measured green.
+
+### 2026-11-23T19:59:41Z — feedback — user
+
+DELIVERED 2026-11-23 (1561f4fcb), policy (d) as the 2026-08-27 note chose it, READ-ONLY by the user's decision (binding from host code is later: a binding call inside = or not(...) is to be a load error; SortDomain.fill is a first client). Re-measured on 6b4e2519e first: the defect stood (ng one conditional answer; the four standard-library SortProvidesInfo rows with an open effect row, E: {?_, ?_}, waited at the first term_functor_name), both prerequisites delivered (4XXSD, W1YKH). The wait had moved: since 068 §2 it is Interpreter::call_host's, refusing an argument that holds one of the rule's unfilled variables anywhere. REPAIR: a host function is one of two kinds, told apart by its signature — BuiltinFn::Ground (never handed an unfilled variable; the default, every embedder entry, every reader of the whole term) and BuiltinFn::SeesVars (handed its arguments as they are with a HostEnv it asks at each position it reads, waiting there). HOST_FNS_SEEING_VARS: as_term, term_functor_name, term_as_int, term_as_string, term_field; term_list_items stays ground (its spine may end in an unbound tail). ACCEPTANCE: term_functor_name(as_term(some(?x))) answers some("some"); a reader over SortProvidesInfo reads the open-row provisions down to the open tail (SortView, merge, open); term_as_int(as_term(7)) = none() stays 0 and = some(7) 1, driven; varA / varB added to the controls and still wait; the policy is stated in kernel-language §5.3 ('A host function that sees variables', beside the four states of a call, where 068 now says what a host function waits on) with a pointer from §5.2's gate paragraph — placement and wording approved by the user. Rows: wi_1zg70_host_fn_sees_vars_test (6) + a registry unit test; back-outs at the file head (the kind 3 fail, the reads 3 fail, as_term alone 2 fail; wi880_guards_hold passes every way). /code-review xhigh: 7 findings, 5 fixed, 1 no change, 1 the spec approval. Gate 12650 / 0 / 26; scaland testFull 811 + 51 (2 skipped) + 1, no Scala file changed. NOT DONE: not(term_functor_name(as_term(some(?x))) = some("some")) stays conditional — not(...) waits on any free variable of its goal, as before.
 
