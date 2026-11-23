@@ -2381,6 +2381,8 @@ mod wi_cxr5b_own_two_applications_test;
 mod wi_cxr5b_guard_core_test;
 #[path = "include/wi_cxr5b_former_carrier_test.rs"]
 mod wi_cxr5b_former_carrier_test;
+#[path = "include/wi_cxr5b_x_readers_test.rs"]
+mod wi_cxr5b_x_readers_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;

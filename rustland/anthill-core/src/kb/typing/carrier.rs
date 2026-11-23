@@ -940,7 +940,7 @@ fn narrow_by(standing: &mut Vec<(Symbol, SmallVec<[(Symbol, Value); 2]>)>, keep:
 }
 
 /// A provision view's binding of the spec's type-var `param`, by its label.
-fn binding_named(kb: &KnowledgeBase, view: &SmallVec<[(Symbol, Value); 2]>, param: Symbol) -> Option<Value> {
+pub(super) fn binding_named(kb: &KnowledgeBase, view: &SmallVec<[(Symbol, Value); 2]>, param: Symbol) -> Option<Value> {
     view.iter()
         .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short_name_of(kb.local_name_of(param)))
         .map(|(_, v)| v.clone())

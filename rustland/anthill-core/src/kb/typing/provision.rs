@@ -286,6 +286,32 @@ pub(crate) fn spec_over_parameter(kb: &KnowledgeBase, spec: Symbol) -> Option<Sy
     })
 }
 
+/// WI-20261122-CXR5B — the type-var of `spec` (a spec over a parameter) a value of `provider`
+/// stands at: the one a provision of the spec binds to `provider` — its own (decision 6: the
+/// provider heads the binding) or a witness's — the first declared where several do; the spec's
+/// [`spec_over_parameter`] where none does. What a refusal of a provider's value at the spec
+/// tells the author to write (`Sp.A`, `requires Sp[A = P]`): read at the single carrier
+/// parameter, `P provides Sp[A = Self, B = Int64]` with `B` declared first was told `Sp.B`.
+pub(crate) fn param_a_provider_stands_at(kb: &KnowledgeBase, spec: Symbol, provider: Symbol) -> Option<Symbol> {
+    let canon = kb.canonical_sort_sym(spec);
+    let type_vars = sort_carrier(kb, canon).type_vars.clone();
+    // The provider's own provisions first, then the witnesses': which was filed first decides
+    // nothing (found by /code-review).
+    let own: Vec<ProvidesRow> = provides_rows_of_provider(kb, provider)
+        .filter(|row| kb.canonical_sort_sym(row.spec_base) == canon)
+        .collect();
+    let rows: Vec<ProvidesRow> = provides_rows_of_spec(kb, canon).collect();
+    for row in own.iter().chain(rows.iter()) {
+        let view = row.bindings(kb);
+        for &tv in &type_vars {
+            if binding_named(kb, &view, tv).is_some_and(|b| composed_self_reference(kb, provider, &b)) {
+                return Some(tv);
+            }
+        }
+    }
+    spec_over_parameter(kb, spec)
+}
+
 /// Proposal 074 §2, "Which sorts have a dictionary" — the classes of sort, read off the
 /// declaration alone (never off who provides the sort), its secondary entries included
 /// (kernel-language §8.2). An ABSTRACT sort is one with no constructors; it has a dictionary

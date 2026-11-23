@@ -1747,7 +1747,8 @@ fn check_type_value_against_field(
     // The note `check_value_sort_membership` gives a provider's value at such a field.
     let note = extract_sort_ref_sym(kb, declared_type).and_then(|spec| {
         let type_sym = sort_functor_of_view(kb, &type_ty)?;
-        let param = spec_over_parameter(kb, spec).filter(|_| sort_provides(kb, type_sym, spec))?;
+        spec_over_parameter(kb, spec).filter(|_| sort_provides(kb, type_sym, spec))?;
+        let param = param_a_provider_stands_at(kb, spec, type_sym)?;
         Some(provider_is_not_the_spec_note(
             kb, spec, param, type_sym, &context,
         ))
@@ -1959,6 +1960,7 @@ fn check_value_sort_membership(
     // uses for the same field.
     let actual = match spec_over_parameter(kb, declared_sym)
         .filter(|_| sort_provides(kb, parent, declared_sym))
+        .and_then(|_| param_a_provider_stands_at(kb, declared_sym, parent))
     {
         Some(param) => format!(
             "{got} — {}",

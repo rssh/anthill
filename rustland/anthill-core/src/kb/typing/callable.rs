@@ -389,7 +389,7 @@ fn provider_at_a_spec_type_error(
     context: &TypeErrorContext,
 ) -> Option<TypeError> {
     let spec = sort_functor_of_view(kb, declared)?;
-    let param = spec_over_parameter(kb, spec)?;
+    spec_over_parameter(kb, spec)?;
     let mut provider = sort_functor_of_view(kb, actual)?;
     // A value typed at a sort with a dictionary is that dictionary, no provider's value
     // (proposal 074 §2): `Additive[T = Int64]` where `Additive[T = Float]` is expected is two
@@ -402,6 +402,7 @@ fn provider_at_a_spec_type_error(
     while !carrier_is_an_instance(kb, provider, spec) {
         provider = kb.strict_parent_sort(provider)?;
     }
+    let param = param_a_provider_stands_at(kb, spec, provider)?;
     let (expected, got) = render_mismatch_pair(kb, declared, actual);
     Some(TypeError::Other {
         span,
@@ -467,7 +468,13 @@ pub(super) fn spec_typed_value_at_carrier_error(
     context: TypeErrorContext,
 ) -> Option<TypeError> {
     let typed_at = sort_functor_of_view(kb, recv_ty)?;
-    let typed_at_param = spec_over_parameter(kb, typed_at)?;
+    // The callee's own spec is to be written at the parameter this position receives at
+    // (WI-20261122-CXR5B); another spec at its own.
+    let typed_at_param = if same_sort_canonical(kb, typed_at, callee_sort) {
+        spec_over_parameter(kb, typed_at).map(|_| carrier_param)?
+    } else {
+        spec_over_parameter(kb, typed_at)?
+    };
     let typed_at_name = kb.qualified_name_of(typed_at);
     let typed_at_param = short_name_of(kb.local_name_of(typed_at_param)).to_owned();
     Some(TypeError::Other {

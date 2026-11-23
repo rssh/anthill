@@ -1349,3 +1349,24 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   operation-bracket repair (`wi_cxr5b_call_fixes`, `wi_rydnv` ×3). The sweep, four grids, 228
   programs, moves no verdict with the order. Gate 12626 / 0; families green; scaland testFull
   811 + 51 (2 skipped) + 1.
+- **2026-11-23, stage 2's fifteenth step (WI-20261122-CXR5B): the X readers.** The six sites
+  readers.md lists, probed in both declaration orders over `Sp[A, B] { op(c: A, x: B); tag(x: B)
+  }` with `P provides Sp[A = Self, B = Int64]`. Two read the single carrier parameter for a name:
+  the note a provider's value gets at a position typed by the spec — "`Sp` is a spec over its
+  parameter `B` … type this position `Sp.B`" with `B` declared first, where `P` stands at `A`
+  (`provider_is_not_the_spec_note`, at an argument and at a field) — and the refusal of a value
+  typed at the spec, which was asked only at the single carrier parameter: `Sp.tag(w)` with `w:
+  Sp` was refused as such with `B` first and "missing `requires Sp[A = …]`", a type-var `tag`
+  takes no value of, with `A` first. Now the note names the type-var a provision binds the
+  provider at, the provider's own provisions first (`param_a_provider_stands_at`), and a value
+  typed at the spec is refused at every type-var the operation takes a value of, naming it. The
+  others read no name by order: `compare_member_signature` and the `spec_over_parameter`
+  class tests ask only whether a spec is over a parameter; `unprovided_spec_at_former` names
+  the parameter its former stands at; `written_spec_of` is the one-type-var `PartialEq`
+  family's. The rule-term repair (`parameter_named_apart` in a rule's own term) was measured
+  writing what the call fixes in both orders (`Sp[A = Foo, B = …]`), the bindings in the spec's
+  declared order. Rows: `wi_cxr5b_x_readers_test` (3), each failing backed out (the third with
+  this step's first cut, which asked every provision in the order filed). /code-review (high): 2
+  findings; 1 fixed (that order), 1 not needed (a type-var bound to the spec itself, which no
+  program was found to reach; a guard tried for it ran no row and was taken out). Gate 12629 /
+  0; families green; scaland testFull 811 + 51 (2 skipped) + 1.

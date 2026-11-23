@@ -141,8 +141,8 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 | kb/typing/signature.rs:3179 | member_fits_spec_op | or_sole | M | with no provision, σ binds the carrier to the carrier's own application |
 | kb/typing/signature.rs:3261 | check_override_refinement | wdc | M | each provision's witness carrier, for the refinement and signature legs |
 | kb/typing/dispatch.rs:829 | carrier_the_call_binds | or_sole | S | the carrier a defaulted call's bracket or expected type binds |
-| kb/typing/callable.rs:392 | provider_at_a_spec_type_error | sop | X | "B provides Tagger but is not a Tagger", naming the parameter |
-| kb/typing/callable.rs:470 | spec_typed_value_at_carrier_error | sop | K | a receiver typed at a dictionary spec is refused |
+| kb/typing/callable.rs:392 | provider_at_a_spec_type_error | sop | X | "B provides Tagger but is not a Tagger", naming the parameter — **done** (CXR5B step 15: `param_a_provider_stands_at`, as sorts.rs:1750 and :1960) |
+| kb/typing/callable.rs:470 | spec_typed_value_at_carrier_error | sop | K | a receiver typed at a dictionary spec is refused — **done** (CXR5B step 15: at every type-var the operation takes, naming it) |
 | kb/typing/relation.rs:2223 | route_requirement_read | or_sole | S | a concrete carrier ⇒ build from provisions, not the caller's scope |
 | kb/typing/relation.rs:2271 | route_requirement_read | ohscp | V | no carrier argument ⇒ the instance is the sort's requirement |
 | kb/typing/dep_projection.rs:581 | provider_half_carrier | or_sole | S | the caller slot's carrier binding picks whose chain fills the provider half |

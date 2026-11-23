@@ -686,11 +686,19 @@ fn check_apply_call(
                     let carrier_vid = type_param_vid_in_sort(kb, spec_sort, carrier_param)?;
                     Some((spec_sort, carrier_param, carrier_vid, candidates))
                 });
-            if let Some((spec_sort, carrier_param, carrier_vid, candidates)) = receiving {
+            if let Some((spec_sort, _, _, candidates)) = receiving {
+                // WI-20261122-CXR5B (decision 1) — at every type-var the operation takes a value
+                // of, not the single carrier parameter alone: `Sp.tag(w)` over `tag(x: B)` with
+                // `w: Sp` was refused "missing `requires Sp[A = …]`" with `A` declared first, and
+                // as the value typed at the spec it is with `B` first.
                 for (i, pname, pvid) in candidates {
-                    if pvid != carrier_vid {
+                    let Some(carrier_param) = sort_type_params_as_pairs(kb, spec_sort)
+                        .iter()
+                        .map(|(p, _)| *p)
+                        .find(|p| type_param_vid_in_sort(kb, spec_sort, *p) == Some(pvid))
+                    else {
                         continue;
-                    }
+                    };
                     let Some(recv_ty) = supplied_arg_type(
                         kb,
                         &op.params,
