@@ -1,6 +1,6 @@
 # May a value of type A stand where B is expected — the readers of one question
 
-## Status: measurement, 2026-10-25, on `d6a28558`; unchanged, every one of its 153 programs, on `1373e04f`. The second map of "one answer per question" (`docs/process/converging.md` §3.10, q18), after `supplier-question-map.md`. Tracked by WI-20261025-27050 (C5, C6) and WI-20261025-053QV (the typing positions' half of C2's row); guarded by the family `g-compatibility`. Nothing here is implemented.
+## Status: measurement, 2026-10-25, on `d6a28558`; unchanged, every one of its 153 programs, on `1373e04f`. The second map of "one answer per question" (`docs/process/converging-history.md` §3.10, `docs/process/converging.md` q18), after `supplier-question-map.md`. Tracked by WI-20261025-27050 (C5, C6) and WI-20261025-053QV (the typing positions' half of C2's row); guarded by the family `g-compatibility`. Nothing here is implemented.
 
 ## The question
 

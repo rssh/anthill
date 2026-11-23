@@ -1,6 +1,6 @@
 # Who supplies a call — the readers of one question
 
-## Status: measured 2026-10-25 on `d6a28558`, re-measured on `1373e04f` after WI-20261025-ZAWX9 (`3657c39d`) gave the defaulted path one answer, and DELIVERED by WI-20261025-7K84M the same day: every cell of the matrix is §8.7's answer, one cell aside that is another ticket's (footnote 2). The first map of "one answer per question" (`docs/process/converging.md` §3.10, q18); guarded by the family `f-supplier-routes`, which lists no exceptions. The tables below are the measurement as it was; [What one answer took](#what-one-answer-took) is the delivery.
+## Status: measured 2026-10-25 on `d6a28558`, re-measured on `1373e04f` after WI-20261025-ZAWX9 (`3657c39d`) gave the defaulted path one answer, and DELIVERED by WI-20261025-7K84M the same day: every cell of the matrix is §8.7's answer, one cell aside that is another ticket's (footnote 2). The first map of "one answer per question" (`docs/process/converging-history.md` §3.10, `docs/process/converging.md` q18); guarded by the family `f-supplier-routes`, which lists no exceptions. The tables below are the measurement as it was; [What one answer took](#what-one-answer-took) is the delivery.
 
 ## The question
 

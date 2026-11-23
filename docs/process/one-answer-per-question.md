@@ -1,6 +1,6 @@
 # One answer per question — consolidating the typer's decisions
 
-A procedure for one kind of reorganization (`converging.md` §3.10, §4 q18): find a question the
+A procedure for one kind of reorganization (`converging-history.md` §3.10, `converging.md` §4 q18): find a question the
 implementation answers in more than one place, measure where the answers differ, decide which
 answer is the language's, and make every place ask one function. Worked twice so far —
 `docs/design/supplier-question-map.md` (which implementation runs a call) and
