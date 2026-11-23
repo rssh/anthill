@@ -2534,6 +2534,8 @@ mod wi_c580v_type_argument_through_requires_test;
 mod wi_vqprp_unbound_variable_read_test;
 #[path = "include/wi_4xxsd_fold_host_arg_value_test.rs"]
 mod wi_4xxsd_fold_host_arg_value_test;
+#[path = "include/wi_1zg70_host_fn_sees_vars_test.rs"]
+mod wi_1zg70_host_fn_sees_vars_test;
 #[path = "include/make_fn_rule_body_term_test.rs"]
 mod make_fn_rule_body_term_test;
 #[path = "include/wi_6hvxm_every_arrow_is_a_function_test.rs"]

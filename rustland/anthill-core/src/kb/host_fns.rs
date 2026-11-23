@@ -56,7 +56,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::eval::{EvalError, Interpreter, Value};
+use crate::eval::{EvalError, HostEnv, Interpreter, Value};
 
 /// A host function this process exposes to an `operation_map` clause, with the ARITY
 /// it accepts.
@@ -106,6 +106,11 @@ pub enum HostFnImpl {
     /// `Fn + 'static` (`Interpreter::register_builtin_sym`), so this costs nothing but
     /// the `Arc`.
     Dynamic(Arc<dyn Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>>),
+    /// WI-20260827-1ZG70 — a plain function that SEES the caller's unfilled variables
+    /// ([`crate::eval::BuiltinFn::SeesVars`]): it is handed them, asks the [`HostEnv`] at
+    /// each position it reads, and waits there. Only the runtime's own table mints one;
+    /// an embedder entry is [`Self::Dynamic`], never handed an unfilled variable.
+    SeesVars(fn(&mut Interpreter, &[Value], &HostEnv) -> Result<Value, EvalError>),
 }
 
 impl HostFn {
@@ -124,6 +129,10 @@ impl HostFn {
         match &self.f {
             HostFnImpl::Static(f) => f(interp, args),
             HostFnImpl::Dynamic(f) => f(interp, args),
+            HostFnImpl::SeesVars(f) => {
+                let env = interp.host_env();
+                f(interp, args, &env)
+            }
         }
     }
 
@@ -136,6 +145,7 @@ impl HostFn {
                 let f = Arc::clone(f);
                 interp.register_builtin_sym(sym, move |i: &mut Interpreter, a: &[Value]| f(i, a));
             }
+            HostFnImpl::SeesVars(f) => interp.register_builtin_seeing_vars_sym(sym, *f),
         }
     }
 }
@@ -224,6 +234,10 @@ impl HostFn {
             HostFnImpl::Static(f) => HostFn {
                 arity: plain(arity),
                 f: HostFnImpl::Static(plain(f)),
+            },
+            HostFnImpl::SeesVars(f) => HostFn {
+                arity: plain(arity),
+                f: HostFnImpl::SeesVars(plain(f)),
             },
             HostFnImpl::Dynamic(_) => {
                 copier.refuse(DeepCloneError::DynamicHostFn { key: key.to_string() });

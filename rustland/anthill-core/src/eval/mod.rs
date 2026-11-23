@@ -135,7 +135,74 @@ impl EvalConfig {
 
 /// Rust-side builtin: takes the interpreter and evaluated arg `Value`s,
 /// returns a `Value` or an error. Mirrors `kb::resolve::builtins` in shape.
-pub type BuiltinFn = std::sync::Arc<dyn Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>>;
+///
+/// WI-20260827-1ZG70 — TWO KINDS, told apart by the SIGNATURE, so what a function is
+/// handed cannot disagree with what it was written to handle. Groundness is a property
+/// of an argument; this is one of the function: whether it can be handed a variable of
+/// the caller's that is not filled yet, and ask ([`HostEnv`]).
+#[derive(Clone)]
+pub enum BuiltinFn {
+    /// Never handed one of the caller's unfilled variables: [`Interpreter::call_host`]
+    /// waits before calling it when any argument holds one, anywhere. Right for a function
+    /// whose answer reads the whole argument — `Int64.add`, `term_to_string` — and the
+    /// kind every registration gets unless it says otherwise.
+    Ground(std::sync::Arc<dyn Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>>),
+    /// Handed its arguments as they are, unfilled variables included. It asks the
+    /// [`HostEnv`] at each position it READS and waits there ([`HostEnv::read`]); a
+    /// variable at a position it does not read it passes along, so its answer holds
+    /// whatever the variable is bound to later — `term_functor_name(some(?x))` is
+    /// `some("some")`, and `term_functor_name(?x)` waits.
+    SeesVars(
+        std::sync::Arc<dyn Fn(&mut Interpreter, &[Value], &HostEnv) -> Result<Value, EvalError>>,
+    ),
+}
+
+/// What a variable-seeing host function ([`BuiltinFn::SeesVars`]) may ask of its caller:
+/// is the variable at a position it reads filled? READ-ONLY — it binds nothing.
+///
+/// The bridge applies σ to the arguments before the call, so a variable the rule has bound
+/// is its value by then, and what is still a variable of the rule's is one the rule has not
+/// filled: one of [`Interpreter::bridge_unknowns`]. Outside a bridged run there are none,
+/// and a variable an argument holds is the data it is (a `fresh_var()` an operation body
+/// made), as it was before.
+pub struct HostEnv {
+    unfilled: std::rc::Rc<[crate::kb::term::VarId]>,
+}
+
+impl HostEnv {
+    /// Is `v` itself one of the caller's unfilled variables — on any carrier?
+    pub fn is_unfilled(&self, kb: &KnowledgeBase, v: &Value) -> bool {
+        is_one_of(kb, &self.unfilled, v)
+    }
+
+    /// Read the position `v` stands at: `Err(Suspended)` when it is one of the caller's
+    /// unfilled variables, so the call waits as a ground host function's does. `what`
+    /// names the read, for the suspension's detail.
+    pub fn read(&self, kb: &KnowledgeBase, v: &Value, what: &str) -> Result<(), EvalError> {
+        if self.is_unfilled(kb, v) {
+            return Err(unfilled_read(what));
+        }
+        Ok(())
+    }
+}
+
+/// Is `v` itself one of `unknowns` (a flexible variable of the caller's)?
+fn is_one_of(kb: &KnowledgeBase, unknowns: &[crate::kb::term::VarId], v: &Value) -> bool {
+    use crate::kb::term_view::TermView;
+    !unknowns.is_empty()
+        && matches!(
+            v.index_var(kb),
+            Some(crate::kb::term::Var::Global(vid)) if unknowns.contains(&vid)
+        )
+}
+
+/// The suspension of a read of one of the caller's unfilled variables (068 §2).
+fn unfilled_read(what: &str) -> EvalError {
+    EvalError::Suspended {
+        detail: format!("bridge: {what} reads a variable the rule has not bound yet"),
+        truncated: false,
+    }
+}
 
 /// Proposal 039 / WI-084 — a term-level constant's memoized value state in
 /// `Interpreter::const_cache`. `Forcing` marks a const whose value source is
@@ -772,7 +839,7 @@ impl Interpreter {
                 name: qualified_name.to_string(),
             }
         })?;
-        self.builtins.insert(sym, std::sync::Arc::new(f));
+        self.builtins.insert(sym, BuiltinFn::Ground(std::sync::Arc::new(f)));
         Ok(())
     }
 
@@ -785,7 +852,24 @@ impl Interpreter {
     where
         F: Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError> + 'static,
     {
-        self.builtins.insert(sym, std::sync::Arc::new(f));
+        self.builtins.insert(sym, BuiltinFn::Ground(std::sync::Arc::new(f)));
+    }
+
+    /// [`Self::register_builtin_sym`] for a function that SEES the caller's unfilled
+    /// variables ([`BuiltinFn::SeesVars`]) — WI-20260827-1ZG70. Its one caller is
+    /// `HostFn::register_on`, for a row of the runtime's own table of such functions.
+    pub(crate) fn register_builtin_seeing_vars_sym<F>(&mut self, sym: crate::intern::Symbol, f: F)
+    where
+        F: Fn(&mut Interpreter, &[Value], &HostEnv) -> Result<Value, EvalError> + 'static,
+    {
+        self.builtins.insert(sym, BuiltinFn::SeesVars(std::sync::Arc::new(f)));
+    }
+
+    /// The caller's unfilled variables, as a variable-seeing host function is handed them.
+    pub(crate) fn host_env(&self) -> HostEnv {
+        HostEnv {
+            unfilled: std::rc::Rc::clone(&self.bridge_unknowns),
+        }
     }
 
     /// Register a durability mirror, keyed by its canonical store-value
@@ -1639,12 +1723,7 @@ impl Interpreter {
 
     /// Is `v` itself one of the caller's unknowns ([`Self::bridge_unknowns`])?
     pub(crate) fn is_unknown(&self, v: &Value) -> bool {
-        use crate::kb::term_view::TermView;
-        !self.bridge_unknowns.is_empty()
-            && matches!(
-                v.index_var(&self.kb),
-                Some(crate::kb::term::Var::Global(vid)) if self.bridge_unknowns.contains(&vid)
-            )
+        is_one_of(&self.kb, &self.bridge_unknowns, v)
     }
 
     /// Does `v` hold one of the caller's unknowns anywhere in it?
@@ -1676,10 +1755,15 @@ impl Interpreter {
 
     /// Run a host function — the one door every host call goes through. 068 §2: a host
     /// function reads whatever it is handed (`eq` over an unknown answered `false`,
-    /// arithmetic over one a type mismatch), so one handed any of the caller's unknowns
-    /// waits, as the bridge's whole call used to. Checked here and nowhere else, no route of
-    /// the dispatch — a direct target, an override, a spec implementation chosen by value, a
-    /// dictionary sibling, the bridge's own entry — can hand one an unknown.
+    /// arithmetic over one a type mismatch), so a [`BuiltinFn::Ground`] one handed any of
+    /// the caller's unknowns waits, as the bridge's whole call used to. Checked here and
+    /// nowhere else, no route of the dispatch — a direct target, an override, a spec
+    /// implementation chosen by value, a dictionary sibling, the bridge's own entry — can
+    /// hand one an unknown.
+    ///
+    /// A [`BuiltinFn::SeesVars`] one is handed them, with the [`HostEnv`] it asks at each
+    /// position it reads (WI-20260827-1ZG70): the wait moves from the whole argument to the
+    /// positions the function's answer depends on.
     ///
     /// `requirements` is the channel the route handed. A builtin enters no frame, so the
     /// channel is kept for the call ([`Self::running_builtin`]), where a host function that
@@ -1691,7 +1775,9 @@ impl Interpreter {
         args: &[Value],
         requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
     ) -> Result<Value, EvalError> {
-        if args.iter().any(|a| self.mentions_unknown(a)) {
+        if matches!(builtin, BuiltinFn::Ground(_))
+            && args.iter().any(|a| self.mentions_unknown(a))
+        {
             return Err(self.reads_unknown(&format!("host `{}`", self.kb.qualified_name_of(sym))));
         }
         let saved = self.running_builtin.replace(RunningBuiltin {
@@ -1699,7 +1785,14 @@ impl Interpreter {
             requirements,
         });
         let opened = self.open_host_arguments(sym, args);
-        let result = (builtin)(self, opened.as_deref().unwrap_or(args));
+        let args = opened.as_deref().unwrap_or(args);
+        let result = match builtin {
+            BuiltinFn::Ground(f) => f(self, args),
+            BuiltinFn::SeesVars(f) => {
+                let env = self.host_env();
+                f(self, args, &env)
+            }
+        };
         self.running_builtin = saved;
         match result {
             Ok(v) => self.pair_host_result(sym, v),
@@ -1845,10 +1938,7 @@ impl Interpreter {
     /// The suspension a read of one of the caller's unknowns raises: the call cannot be
     /// evaluated YET, and the resolver delays it until a binding wakes it (068 §2.2).
     pub(crate) fn reads_unknown(&self, what: &str) -> EvalError {
-        EvalError::Suspended {
-            detail: format!("bridge: {what} reads a variable the rule has not bound yet"),
-            truncated: false,
-        }
+        unfilled_read(what)
     }
 
     /// WI-625 gap 1: is this interpreter running as the resolver's op-body

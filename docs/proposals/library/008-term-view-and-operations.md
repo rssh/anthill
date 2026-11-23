@@ -142,6 +142,12 @@ still unusable on the population it was migrated for. **`SortProvidesInfo` itsel
 is not the problem** — it is an ordinary relation and enumerates fine; the
 suspension is entirely in the host call downstream of it.
 
+*Closed 2026-11-23 by `WI-20260827-1ZG70`:* the readers `as_term`,
+`term_functor_name`, `term_as_int`, `term_as_string` and `term_field` SEE
+variables — they wait only where a position they read is unbound
+(kernel-language.md §5.3, "A host function that sees variables"). A rule now reads
+the four open-row provisions of the standard library down to the `open` tail.
+
 **(c) `extract_sort_ref` BINDS. This item was the same reading artifact as (a),
 and is withdrawn.** Measured 2026-08-27 with the reader reifying:
 

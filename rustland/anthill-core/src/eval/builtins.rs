@@ -36,7 +36,9 @@ use std::sync::Arc;
 
 use super::reflect_builtins as rb;
 use super::value::Dictionary;
-use super::{EvalError, Interpreter, UnrunnableHostBinding, UnrunnableHostBindingWhy, Value};
+use super::{
+    EvalError, HostEnv, Interpreter, UnrunnableHostBinding, UnrunnableHostBindingWhy, Value,
+};
 use crate::kb::resolve::TermUnification;
 // WI-20260827-2YHZ3 — the carrier-neutral operand accessors (`literal_int64`,
 // `literal_bool`, …) every scalar builtin below reads its arguments through.
@@ -249,17 +251,13 @@ const HOST_FNS: &[(
     // all, and `not(...)` over an accessor answered 1 out of a call that never ran
     // (kernel-language.md §5.2's decided-false decline). The binding block is
     // `rustland/anthill-stl/anthill/reflect.anthill`; it also records why twenty of them
-    // take a NAMESPACE target rather than a carrier one.
-    ("term_functor_name", 1, term_functor_name),
-    ("term_field", 2, term_field),
-    ("term_as_string", 1, term_as_string),
-    ("term_as_int", 1, term_as_int),
+    // take a NAMESPACE target rather than a carrier one. Five of them SEE the caller's
+    // unfilled variables and are in `HOST_FNS_SEEING_VARS` below (WI-20260827-1ZG70).
     ("term_as_entity", 1, term_as_entity),
     ("term_to_string", 1, reflect_term_to_string),
     ("term_list_items", 1, reflect_term_list_items),
     ("reflect_field_access", 2, reflect_field_access),
     ("extract_type_builtin", 1, extract_type_builtin),
-    ("as_term", 1, as_term),
     ("reflect_fresh_var", 1, reflect_fresh_var),
     ("reflect_make_fn", 2, reflect_make_fn),
     // WI-722 (043.1) — the occurrence-BUILD side of a compile-time macro: a per-shape
@@ -435,8 +433,36 @@ const HOST_FNS: &[(
     ("kernel_not", 1, rb::kernel_not),
 ];
 
+/// WI-20260827-1ZG70 — the host functions that SEE the caller's unfilled variables
+/// ([`crate::eval::BuiltinFn::SeesVars`]). A function here is handed its arguments as they
+/// are, asks the [`HostEnv`] at each position it reads, and waits there; every function in
+/// [`HOST_FNS`] waits before it is called when an argument holds an unfilled variable
+/// anywhere. A separate table rather than a column of that one, so the kind IS the
+/// function's type: a row cannot say "sees variables" of a function written not to ask.
+///
+/// THE RULE A ROW OWES: an answer that holds whatever the variables it did not read are
+/// bound to later. So a function belongs here only when it reads PART of its argument and
+/// its answer depends on that part alone — the head (`term_functor_name`, `term_as_int`,
+/// `term_as_string`), a field's name and the head (`term_field`, which hands the field
+/// itself back unread), nothing (`as_term`). One whose
+/// answer reads the whole argument — `term_to_string` prints it, `term_eq` compares it,
+/// `nonvar` / `ground` ask exactly what a later binding changes — stays in [`HOST_FNS`].
+/// `term_list_items` reads the SPINE, which may end in an unfilled tail; it is not here
+/// yet, and waits as before.
+const HOST_FNS_SEEING_VARS: &[(
+    &str,
+    usize,
+    fn(&mut Interpreter, &[Value], &HostEnv) -> Result<Value, EvalError>,
+)] = &[
+    ("as_term", 1, as_term),
+    ("term_functor_name", 1, term_functor_name),
+    ("term_field", 2, term_field),
+    ("term_as_string", 1, term_as_string),
+    ("term_as_int", 1, term_as_int),
+];
+
 /// The function `key` names, from EITHER half of the registry: this runtime's own
-/// [`HOST_FNS`], then WI-1122's embedder table on the KB.
+/// [`HOST_FNS`] (with [`HOST_FNS_SEEING_VARS`]), then WI-1122's embedder table on the KB.
 ///
 /// `HOST_FNS` is consulted first, but the order is not a precedence rule — a key
 /// cannot be in both, because `KnowledgeBase::register_host_fn` refuses to register
@@ -454,6 +480,12 @@ fn host_fn_by_key(kb: &crate::kb::KnowledgeBase, key: &str) -> Option<HostFn> {
     {
         return Some(hit);
     }
+    if let Some(&(_, arity, f)) = HOST_FNS_SEEING_VARS.iter().find(|&&(k, _, _)| k == key) {
+        return Some(HostFn {
+            arity,
+            f: HostFnImpl::SeesVars(f),
+        });
+    }
     kb.host_fn_registry().get(key)
 }
 
@@ -463,6 +495,7 @@ fn host_fn_by_key(kb: &crate::kb::KnowledgeBase, key: &str) -> Option<HostFn> {
 /// over the key rather than an accessor handing out the table.
 pub(crate) fn is_builtin_host_fn_key(key: &str) -> bool {
     HOST_FNS.iter().any(|&(k, _, _)| k == key)
+        || HOST_FNS_SEEING_VARS.iter().any(|&(k, _, _)| k == key)
 }
 
 // WI-876's `HostFn` — the function plus the ARITY it accepts — now lives in
@@ -4411,10 +4444,19 @@ fn execute_stream(
 /// Returns the functor's short name for `Fn` / `Ref` terms; none() otherwise.
 /// Anthill code can't construct Symbols cleanly yet, so this surfaces the
 /// functor as a String for direct comparison (`eq(name, "Claimed")`).
-fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+///
+/// SEES VARIABLES (WI-20260827-1ZG70): it reads the HEAD and nothing under it, so
+/// `some(?x)` answers `some("some")` with `?x` unfilled, and an unfilled variable AT the
+/// head waits — answering `none()` for it would be refuted by the first binding.
+fn term_functor_name(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &HostEnv,
+) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("term_functor_name", args)?;
     // A call held as data names the code's functor (`quoted(term: add(1, 2))` is `add`).
     let arg = interp.kb.quote_content(&arg).unwrap_or(arg);
+    env.read(&interp.kb, &arg, "`term_functor_name`")?;
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
@@ -4684,10 +4726,17 @@ fn build_value_list(interp: &mut Interpreter, elems: Vec<Value>) -> Result<Value
 /// `extract_named_arg` shim (rustland/anthill-todo/src/main.rs:383) so the
 /// anthill side has the same field-extraction primitive without having to
 /// thread Symbol values through.
-fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+///
+/// SEES VARIABLES (WI-20260827-1ZG70): it reads the NAME and the receiver's head, and an
+/// unfilled variable at either waits. The field's own value it does not read — it is handed
+/// back as it is: `term_field(some(?x), "value")` is `some(?x)`, which holds whatever `?x`
+/// is bound to, the variable being the field.
+fn term_field(interp: &mut Interpreter, args: &[Value], env: &HostEnv) -> Result<Value, EvalError> {
     let [term_arg, name_arg] = expect_args::<2>("term_field", args)?;
+    env.read(&interp.kb, &name_arg, "`term_field`'s field name")?;
     // A call held as data reads the code's fields.
     let term_arg = interp.kb.quote_content(&term_arg).unwrap_or(term_arg);
+    env.read(&interp.kb, &term_arg, "`term_field`")?;
     let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
@@ -4948,8 +4997,16 @@ fn reflect_term_list_items(interp: &mut Interpreter, args: &[Value]) -> Result<V
 /// (WI-246) — so the one reflect operation whose whole job is "read the string this
 /// term denotes" answered `none()` for a term that plainly denoted one. Asking
 /// [`TermView::literal_string`] is the same question with no list to keep in step.
-fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+///
+/// SEES VARIABLES (WI-20260827-1ZG70): it reads the head. An unfilled variable there waits;
+/// a compound head answers `none()`, which no binding under it changes.
+fn term_as_string(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &HostEnv,
+) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("term_as_string", args)?;
+    env.read(&interp.kb, &arg, "`term_as_string`")?;
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
@@ -4978,8 +5035,16 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 /// otherwise `none()`. The int-literal partner to `term_as_string`, with the
 /// identical carrier handling (see there) — used to read a numeric field (e.g. a
 /// `StoreFormat` version) after `term_field`.
-fn term_as_int(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+///
+/// SEES VARIABLES (WI-20260827-1ZG70), as `term_as_string` does: `term_as_int(?x)` waits —
+/// `?x` may be bound to `7` — and `term_as_int(some(?x))` is `none()`.
+fn term_as_int(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &HostEnv,
+) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("term_as_int", args)?;
+    env.read(&interp.kb, &arg, "`term_as_int`")?;
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
@@ -5056,7 +5121,12 @@ fn term_as_entity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 /// surface.) The `Value::Entity → Term::Fn` materialization a consumer may need
 /// happens downstream in `alloc_from_value` at the consumption site (the
 /// `pattern_query` lowering, `persist`), NOT here.
-fn as_term(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+///
+/// SEES VARIABLES (WI-20260827-1ZG70) and reads none: the identity hands an unfilled
+/// variable back as it came, so `as_term(some(?x))` is `some(?x)` and the reader it is
+/// passed to decides whether it waits. Waiting here, as every ground host function does,
+/// is what kept `term_functor_name(as_term(some(?x)))` from answering at all.
+fn as_term(_interp: &mut Interpreter, args: &[Value], _env: &HostEnv) -> Result<Value, EvalError> {
     let [e] = expect_args::<1>("as_term", args)?;
     Ok(e)
 }
@@ -7599,7 +7669,13 @@ mod tests {
     #[test]
     fn every_host_fn_key_declares_the_arity_its_function_accepts() {
         let kb = crate::kb::KnowledgeBase::new();
-        for (key, _, _) in HOST_FNS {
+        // WI-20260827-1ZG70 — both of the runtime's tables: a variable-seeing function's
+        // arity is checked by the same probe, through the same `HostFn::call`.
+        let keys = HOST_FNS
+            .iter()
+            .map(|(k, _, _)| *k)
+            .chain(HOST_FNS_SEEING_VARS.iter().map(|(k, _, _)| *k));
+        for key in keys {
             let host = host_fn_by_key(&kb, key).unwrap_or_else(|| panic!("{key} is registered"));
             let args = vec![Value::Float(1.0); host.arity];
             if let Err(EvalError::ArityMismatch { expected, got, .. }) =
@@ -7615,6 +7691,32 @@ mod tests {
         assert!(
             host_fn_by_key(&kb, "no_such_host_function").is_none(),
             "the control: the registry is CLOSED, so an unknown key has no entry",
+        );
+    }
+
+    /// WI-20260827-1ZG70 — the runtime's two tables share no key. `host_fn_by_key` reads
+    /// [`HOST_FNS`] first, so a key in both would be a PRECEDENCE: the variable-seeing row
+    /// silently dead, and its function's reads never asked. And each kind is registered as
+    /// itself — the row's kind is what `call_host` reads.
+    #[test]
+    fn a_host_fn_key_is_in_one_table_and_registers_as_its_kind() {
+        let kb = crate::kb::KnowledgeBase::new();
+        for (key, _, _) in HOST_FNS_SEEING_VARS {
+            assert!(
+                !HOST_FNS.iter().any(|(k, _, _)| k == key),
+                "{key} is in both tables; the ground row would shadow the one that sees variables"
+            );
+            assert!(
+                matches!(host_fn_by_key(&kb, key).map(|h| h.f), Some(HostFnImpl::SeesVars(_))),
+                "{key} is found as a function that sees variables"
+            );
+        }
+        assert!(
+            matches!(
+                host_fn_by_key(&kb, "term_to_string").map(|h| h.f),
+                Some(HostFnImpl::Static(_))
+            ),
+            "the control: a reader of the WHOLE argument stays ground"
         );
     }
 
@@ -7668,6 +7770,9 @@ mod tests {
             .get(&sym)
             .cloned()
             .expect("register_on must bind the entry under its symbol");
+        let crate::eval::BuiltinFn::Ground(registered) = registered else {
+            panic!("an embedder entry is registered as a ground host function");
+        };
         let through_map =
             registered(&mut interp, &args).expect("the registered closure must be invocable");
 
