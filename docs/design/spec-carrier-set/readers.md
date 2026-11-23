@@ -191,6 +191,14 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 
 ## Readers outside the named functions, moved by CXR5B
 
+- `simp_guard_decision` / `call_carriers` (value_type.rs), the guard core: the per-carrier
+  question at the single carrier parameter, the provision question elsewhere. The guard step: a
+  spec with a dictionary and two or more type-vars asks the provision question wherever its
+  carriers stand (`spec_asks_provisions`); `check_apply_call` asks it before the carrier at that
+  parameter, and `defaulted_call_at_non_instance` as the body-less call does.
+- `witness_dispatch_carrier` (coherence.rs), measured and kept: a dispatch key read at the
+  parameter dispatch reads; decision 6's label moved the provision off the type-var a call fixes.
+
 - `provider_spec_view_bindings` (carrier.rs), the one view per (provider, spec) the ~20 P
   readers ask: it merged a provider's provisions of a spec and kept the first binding. The P
   readers step: it leaves out what the provider's own provisions at two applications of one

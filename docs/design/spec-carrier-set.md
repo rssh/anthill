@@ -1287,3 +1287,32 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   grid binds per application and runs), 2 kept (the view's extra walk of a provider's rows;
   the spec text, then approved). Gate 12605 / 0; families green; scaland testFull 811 + 51 (2
   skipped) + 1.
+- **2026-11-23, stage 2's thirteenth step (WI-20261122-CXR5B): the guard core, by decision 1**
+  (the user's choice among the remaining readers). Measured first: the witness classifier
+  (`witness_dispatch_carrier`, W) and the member checks (M) give no order-dependent verdict — the
+  classifier's answer is a dispatch KEY, read at the same parameter dispatch reads — and moving it
+  to decision 6 (a provision the provider heads is never a witness) broke `wi_rydnv`'s four rows:
+  `Meters provides Conv[A = Meters, B = String]` beside `tag(b: B)` is found by `Conv.tag("km")` at
+  `B = String`, which filing it at `Meters` lost. Reverted. A text diff of the sweep (both orders,
+  every refusal) found what remains: a call at an application no provision is at was refused two
+  ways by declaration order — `Sp.get(foo)` "`Foo` provides no `Sp`" with `A` first and "no
+  provision of `Sp` binds `A = Foo`" with `B` first, `Sp.op(foo, 1)` likewise — because the guard
+  core (`simp_guard_decision`, shared by the `@[simp]` guards, the rule-body check and an
+  operation body) asked each carrier to provide the spec where every carrier stood at the single
+  carrier parameter, and a provision at the carriers otherwise, and the operation body asked the
+  carrier at that parameter before the guard. Now a spec with a dictionary and two or more
+  type-vars (`spec_asks_provisions`) is asked for a provision at what the call fixes wherever its
+  carriers stand, refused "no provision of `S` binds …" (WI-20260925-PRVA2's sentence: "`String`
+  provides no `Conv`" is false of a provision's second binding); the operation body asks it
+  first, and a defaulted operation's call as a body-less one's. A self-representing spec keeps the
+  per-carrier question (decision 8; e7 unchanged). That refusal told an operation whose
+  `requires` of the spec does not cover the call that it "declares no requirement of its own";
+  it says the one it declares does not cover it now. The projection refusal of the P readers step
+  lists its types sorted. The sweep's 196 programs now read the same in both orders, refusal text
+  included. Rows: `wi_cxr5b_guard_core_test` (4), three failing with `src/` backed out, the
+  control passing. Moved, text only: `wi590`'s bare-carrier refusal (four consumers), `wi_89j6k`'s
+  "beside `Both2` alone". /code-review (high): 3 findings; 1 fixed (a stale doc), 1 not
+  needed (the defaulted and body-less refusals name different binding sets, both true), 1 kept
+  (the guard's provision walk; the gate ran in 364 s). Gate 12609 / 0; families green; scaland
+  testFull 811 + 51 (2 skipped) + 1. REMAINING: §8.3's "the sort it binds to its spec's
+  carrier parameter, or to the sole one" (one type-var specs, wording only).

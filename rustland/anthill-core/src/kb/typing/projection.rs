@@ -2949,7 +2949,9 @@ fn project_via_provided_spec(
     // provider's view leaves out is the `?` the call then ties (below), as decision 1 reads it.
     if owner.is_none() {
         if let Some((spec, values)) = member_written_apart(kb, recv_sort, None, member) {
-            let types: Vec<String> = values.iter().map(|v| declared_type_display(kb, v)).collect();
+            // Sorted: the refusal reads the same whichever provision is written first.
+            let mut types: Vec<String> = values.iter().map(|v| declared_type_display(kb, v)).collect();
+            types.sort();
             let msg = format!(
                 "type '{recv}' provides '{spec}' more than once, binding its member '{member}' \
                  apart — to {types} — so '{member}' off a '{recv}' names none of them; write the \

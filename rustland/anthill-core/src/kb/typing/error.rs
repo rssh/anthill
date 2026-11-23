@@ -115,6 +115,28 @@ impl CallBody {
         }
     }
 
+    /// Why the body cannot discharge the requirement: it declares none of the spec, or the one
+    /// it declares (`declares`) does not cover the call — WI-20261122-CXR5B: `useB2[P](a: WIS,
+    /// b: P) requires Spec2[B = P]` was told it "declares no `Spec2` requirement of its own".
+    fn own_requirement(self, short: &str, declares: bool) -> String {
+        if declares {
+            format!("the `{short}` requirement {} does not cover it", self.declarer())
+        } else {
+            format!("{} no `{short}` requirement of its own", self.declarer())
+        }
+    }
+
+    /// The repair that takes the requirement on in this body, after the provision; where the
+    /// body declares one of the spec (`declares`), writing that one to cover the call.
+    fn take_it_on_or_cover(self, short: &str, declares: bool) -> String {
+        match (self, declares) {
+            (CallBody::Operation, true) => {
+                format!(", or write the operation's `requires {short}[…]` to cover it")
+            }
+            _ => self.take_it_on(short),
+        }
+    }
+
     /// The repair that takes the requirement on in this body, after the provision.
     fn take_it_on(self, short: &str) -> String {
         match self {
@@ -922,6 +944,8 @@ pub enum TypeError {
         /// `(spec parameter, carrier sort)` for each known carrier, in parameter order.
         bindings: Vec<(Symbol, Symbol)>,
         body: CallBody,
+        /// The body declares a requirement of the spec, which does not cover the call.
+        declares: bool,
     },
     /// WI-20261010-9BKZ4 — the KB holds something that changes what a SEALED load's
     /// code means, and a sealed load's bodies are typed once (`typing::sealed`, where
@@ -2569,6 +2593,7 @@ impl TypeError {
                 spec_sort_sym,
                 bindings,
                 body,
+                declares,
                 ..
             } => {
                 let spec_qn = kb.qualified_name_of(*spec_sort_sym);
@@ -2585,10 +2610,9 @@ impl TypeError {
                     ),
                     CallBody::Operation | CallBody::Constant => format!(
                         "`{op_qn}` requires `{spec_qn}` at `{at}`, and no provision binds that — \
-                         {} no `{short}` requirement of its own. Add a `provides {short}[{at}]` \
-                         (on a sort, or a witness sort){}",
-                        body.declarer(),
-                        body.take_it_on(short),
+                         {}. Add a `provides {short}[{at}]` (on a sort, or a witness sort){}",
+                        body.own_requirement(short, *declares),
+                        body.take_it_on_or_cover(short, *declares),
                     ),
                 }
             }
@@ -3597,6 +3621,7 @@ impl TypeError {
                 spec_sort_sym,
                 bindings,
                 body,
+                declares,
                 ..
             } => {
                 let spec_qn = kb.qualified_name_of(*spec_sort_sym);
@@ -3608,11 +3633,11 @@ impl TypeError {
                     field_name: "requires".to_string(),
                     expected_type: format!("a `{spec_qn}` provision binding `{at}`"),
                     actual_type: format!(
-                        "no provision of `{spec_qn}` binds `{at}`, and {} no `{short}` \
-                         requirement of its own — so no call here can discharge it. Add a \
-                         `provides {short}[{at}]` (on a sort, or a witness sort){}",
-                        body.declarer(),
-                        body.take_it_on(short),
+                        "no provision of `{spec_qn}` binds `{at}`, and {} — so no call here can \
+                         discharge it. Add a `provides {short}[{at}]` (on a sort, or a witness \
+                         sort){}",
+                        body.own_requirement(short, *declares),
+                        body.take_it_on_or_cover(short, *declares),
                     ),
                     span: self.span(kb),
                 }

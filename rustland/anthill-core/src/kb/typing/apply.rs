@@ -5380,6 +5380,52 @@ fn check_apply_call(
                         let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
                         let carrier =
                             pinned_carrier.or_else(|| unclassified_goal_carrier(kb, &goal));
+                        let arg_carriers = call_arg_carriers(
+                            kb,
+                            &op.params,
+                            &pos_call_params,
+                            pos_results,
+                            named_args,
+                            named_results,
+                            &subst,
+                        );
+                        let body = if env.enclosing_op().is_some() {
+                            CallBody::Operation
+                        } else if env.in_rule_body() {
+                            CallBody::Rule
+                        } else {
+                            CallBody::Constant
+                        };
+                        // A requirement of the spec the operation declares, which does not
+                        // cover the call (`op_requires_covers_call` answered no).
+                        let declares = env
+                            .op_requires()
+                            .iter()
+                            .any(|r| same_sort_canonical(kb, r.required_sort, spec_sort));
+                        // WI-20261122-CXR5B (decision 1) — the carriers the call's arguments
+                        // fix that no provision binds together, the rule body's question
+                        // ([`carriers_no_provision_binds`]), FIRST: for a spec with a dictionary
+                        // and two or more type-vars it is asked wherever they stand. Asked after
+                        // the carrier at the spec's single carrier parameter, `Sp.get(foo)` with
+                        // no provision at `A = Foo` was refused "`Foo` provides no `Sp`" with `A`
+                        // declared first and "no provision binds `A = Foo`" with `B` first.
+                        if !host_implements(kb, fn_sym) {
+                            match carriers_no_provision_binds(kb, fn_sym, spec_sort, &arg_carriers) {
+                                Some(GuardRefusal::NoProvision(bindings)) => {
+                                    return Err(TypeError::NoProvisionAtCarriers {
+                                        span,
+                                        callee_op: fn_sym,
+                                        spec_sort_sym: spec_sort,
+                                        bindings: bindings.into_vec(),
+                                        body,
+                                        declares,
+                                    });
+                                }
+                                // The carrier parameter's own question is the goal's carrier's,
+                                // read below.
+                                Some(GuardRefusal::Carrier(_)) | None => {}
+                            }
+                        }
                         if let Some(refusal) = carrier
                             .and_then(|c| unprovided_spec_at_carrier(kb, &goal, c, fn_sym, span))
                         {
@@ -5389,36 +5435,7 @@ fn check_apply_call(
                         if let Some(refusal) = unprovided_spec_at_former(kb, &goal, fn_sym, span) {
                             return Err(refusal);
                         }
-                        // … and carriers at several parameters that no provision binds
-                        // together, the rule body's question ([`carriers_no_provision_binds`]).
                         if !host_implements(kb, fn_sym) {
-                            let arg_carriers = call_arg_carriers(
-                                kb,
-                                &op.params,
-                                &pos_call_params,
-                                pos_results,
-                                named_args,
-                                named_results,
-                                &subst,
-                            );
-                            let body = if env.enclosing_op().is_some() {
-                                CallBody::Operation
-                            } else if env.in_rule_body() {
-                                CallBody::Rule
-                            } else {
-                                CallBody::Constant
-                            };
-                            if let Some(bindings) =
-                                carriers_no_provision_binds(kb, fn_sym, spec_sort, &arg_carriers)
-                            {
-                                return Err(TypeError::NoProvisionAtCarriers {
-                                    span,
-                                    callee_op: fn_sym,
-                                    spec_sort_sym: spec_sort,
-                                    bindings,
-                                    body,
-                                });
-                            }
                             // WI-20261122-CXR5B (e7 of `docs/design/spec-carrier-set.md`) — A
                             // SELF-REPRESENTING spec's call with no `Self` value names no carrier
                             // (the provider), and the reads above ask one at the spec's single
@@ -5458,6 +5475,7 @@ fn check_apply_call(
                                         spec_sort_sym: spec_sort,
                                         bindings: named,
                                         body,
+                                        declares,
                                     });
                                 }
                             }
@@ -7580,6 +7598,34 @@ fn defaulted_call_at_non_instance(
     };
     if !matches!(resolve(kb, goal, &scope), ResolutionResult::NoMatch { .. }) {
         return None;
+    }
+    // WI-20261122-CXR5B — a spec asked for a provision at what the call fixes
+    // ([`spec_asks_provisions`]) is refused as the body-less call is: "no provision of `S` binds
+    // …", naming every type-var the call fixes to a sort, not the carrier at its single carrier
+    // parameter alone.
+    if spec_asks_provisions(kb, goal.spec_sort) {
+        let bindings: Vec<(Symbol, Symbol)> = sort_carrier(kb, goal.spec_sort)
+            .type_vars
+            .iter()
+            .filter_map(|&tv| {
+                let vid = type_param_vid_in_sort(kb, goal.spec_sort, tv)?;
+                let b = spec_param_binding(kb, subst, vid).filter(|b| type_is_ground(kb, b))?;
+                carrier_sort_of_value(kb, &b).map(|sort| (tv, sort))
+            })
+            .collect();
+        if !bindings.is_empty() {
+            return Some(TypeError::NoProvisionAtCarriers {
+                span,
+                callee_op: fn_sym,
+                spec_sort_sym: goal.spec_sort,
+                bindings,
+                body: if env.enclosing_op().is_some() { CallBody::Operation } else { CallBody::Constant },
+                declares: env
+                    .op_requires()
+                    .iter()
+                    .any(|r| same_sort_canonical(kb, r.required_sort, goal.spec_sort)),
+            });
+        }
     }
     unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
 }

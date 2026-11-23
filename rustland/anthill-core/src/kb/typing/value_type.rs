@@ -1395,7 +1395,7 @@ pub(super) fn simp_guard_decision(
         return (FindDictOutcome::DontFire, None);
     };
     let known = carriers.known_bindings();
-    let refusal = if !carriers.at_several_parameters {
+    let refusal = if !carriers.asks_provisions {
         // A carrier that IS the sort provides it ([`sort_provides`]): the value there is
         // the sort's own or some provider's, and the law is each one's.
         known
@@ -1423,10 +1423,15 @@ pub(crate) struct CallCarriers {
     /// `(parameter index, spec parameter, carrier sort)` for each carrier the reader knows, in
     /// parameter order.
     pub(crate) known: SmallVec<[(usize, Symbol, Symbol); 4]>,
-    /// A carrier stands at a parameter other than the spec's carrier parameter, so the question
-    /// is whether a provision binds the carriers together ([`provision_admits_carriers`]), not
-    /// whether each carrier provides the spec.
+    /// A carrier stands at a parameter other than the spec's carrier parameter, so a supplier
+    /// found at that parameter answers only where its provision binds the others
+    /// ([`supplier_answers_at`]).
     pub(crate) at_several_parameters: bool,
+    /// The guard's question is whether a provision binds the carriers where they stand
+    /// ([`provision_admits_carriers`]), not whether each carrier provides the spec: every spec
+    /// with a dictionary and two or more type-vars, wherever its carriers stand (decision 1 of
+    /// `docs/design/spec-carrier-set.md`, WI-20261122-CXR5B).
+    asks_provisions: bool,
 }
 
 impl CallCarriers {
@@ -1490,14 +1495,28 @@ pub(crate) fn call_carriers(
         .iter()
         .filter_map(|&(i, param)| arg_carrier_sort(i).map(|carrier| (i, param, carrier)))
         .collect();
-    let at_several_parameters = !(self_representing
-        || type_params.len() <= 1
-        || every_carrier_at_carrier_param(kb, spec_sort, &carrier_params));
+    let asks_provisions = !self_representing && spec_asks_provisions(kb, spec_sort);
+    let at_several_parameters =
+        asks_provisions && !every_carrier_at_carrier_param(kb, spec_sort, &carrier_params);
     Some(CallCarriers {
         count: carrier_params.len(),
         known,
         at_several_parameters,
+        asks_provisions,
     })
+}
+
+/// WI-20261122-CXR5B (decision 1 of `docs/design/spec-carrier-set.md`) — is a call of
+/// `spec_sort`'s operation asked whether a PROVISION is at what it fixes, wherever its carriers
+/// stand, rather than whether each carrier provides the spec? A spec with a dictionary and two
+/// or more type-vars. Asked at the spec's single carrier parameter alone, the question — and
+/// the refusal, "`Foo` provides no `Sp`" or "no provision of `Sp` binds `A = Foo`" — turned on
+/// which type-var is declared first. A spec self-representing by its declaration (decision 8:
+/// `joinTwo(a: Self, …)` beside `peek(c: C)`) keeps the per-carrier question: its carrier is the
+/// provider, and a call with no `Self` value is judged by what it fixes elsewhere (e7).
+pub(crate) fn spec_asks_provisions(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
+    kb.type_params_of_sort(spec_sort).len() > 1
+        && !spec_is_self_representing(kb, kb.canonical_sort_sym(spec_sort))
 }
 
 /// Does every carrier stand at `spec_sort`'s CARRIER parameter — the one its operations

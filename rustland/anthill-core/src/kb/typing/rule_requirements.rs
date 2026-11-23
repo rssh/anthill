@@ -2981,6 +2981,7 @@ pub(super) fn check_one_spec_op_requirement(
                 spec_sort_sym: spec_sort,
                 bindings: bindings.into_vec(),
                 body: CallBody::Rule,
+                declares: false,
             });
             return;
         }
@@ -3115,24 +3116,21 @@ pub(super) fn known_call_carrier(kb: &KnowledgeBase, ty: &Value) -> Option<Symbo
 /// carrier of the argument at parameter `i` ([`known_call_carrier`]), `None` where load does
 /// not know it.
 ///
-/// Asked where the dispatch found no candidate at the call's types and the carrier at the
-/// spec's carrier parameter is an instance by some route ([`unprovided_spec_at_carrier`]
-/// answers `None`). The call was then passed to the run time, which dispatched on that one
-/// carrier: `Conv.conv(leaf(v: 1), "s")` under `W provides Conv[A = Leaf, B = Int64]` ran
-/// `W.conv` with a `String` in its `Int64` parameter.
+/// The guard's refusal ([`simp_guard_decision`]) at the arguments' carriers: `NoProvision` for
+/// carriers no provision binds where they stand, `Carrier` for one at the carrier parameter that
+/// provides nothing (the goal's carrier's question, which its caller asks itself). Asked where the
+/// dispatch found no candidate at the call's types — since WI-20261122-CXR5B BEFORE the carrier
+/// at the spec's carrier parameter is asked ([`unprovided_spec_at_carrier`]), so a spec of two or
+/// more type-vars is refused by what the call fixes whichever is declared first. Passed to the
+/// run time instead, the call dispatched on that one carrier: `Conv.conv(leaf(v: 1), "s")` under
+/// `W provides Conv[A = Leaf, B = Int64]` ran `W.conv` with a `String` in its `Int64` parameter.
 pub(super) fn carriers_no_provision_binds(
     kb: &KnowledgeBase,
     functor: Symbol,
     spec_sort: Symbol,
     arg_carriers: &[Option<Symbol>],
-) -> Option<Vec<(Symbol, Symbol)>> {
-    let decision = simp_guard_decision(kb, functor, spec_sort, |i| {
-        arg_carriers.get(i).copied().flatten()
-    });
-    match decision.1 {
-        Some(GuardRefusal::NoProvision(bindings)) => Some(bindings.into_vec()),
-        Some(GuardRefusal::Carrier(_)) | None => None,
-    }
+) -> Option<GuardRefusal> {
+    simp_guard_decision(kb, functor, spec_sort, |i| arg_carriers.get(i).copied().flatten()).1
 }
 
 /// WI-1043 — is `carrier` an instance of `spec_sort` through a WITNESS provision, i.e.

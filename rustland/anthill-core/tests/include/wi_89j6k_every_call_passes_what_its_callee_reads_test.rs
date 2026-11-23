@@ -362,9 +362,15 @@ fn a_body_using_an_unwritten_slot_at_a_type_of_its_own_is_refused() {
         &["`A` as `requires test.j6k.partial.Spec2[B = test.j6k.partial.useB2.P]` leaves it", "`A = test.j6k.partial.WIS` at this call"],
         "beside `Both`",
     );
+    // WI-20261122-CXR5B (the guard step): no provision binds the `A` the call fixes, said so
+    // whichever of `Spec2`'s type-vars is declared first — and that the `requires` `useB2`
+    // declares does not cover it, where that sentence said it declares none.
     assert_refused_naming(
         &load_errors_of(&hole(both_int)),
-        &["`test.j6k.partial.Spec2[A = test.j6k.partial.WIS, B = ?P]` cannot be supplied"],
+        &[
+            "no provision of `test.j6k.partial.Spec2` binds `A = test.j6k.partial.WIS`",
+            "the `Spec2` requirement this operation declares does not cover it",
+        ],
         "beside `Both2` alone",
     );
     let tagger = r#"

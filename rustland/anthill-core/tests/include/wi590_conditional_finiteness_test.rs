@@ -462,7 +462,10 @@ end
 "#;
 
 /// WI-20260926-0RPRV — the bare-carrier REFUSAL, all four consumers. Each must name the
-/// missing provision (`Nats provides no FiniteCollection`), not merely fail: before the
+/// missing provision — `no provision of FiniteCollection binds C = Nats` since WI-20261122-CXR5B's
+/// guard step (a spec of two or more type-vars is asked for a provision at what the call fixes,
+/// the body-less `collect` and the three defaulted members alike), `Nats provides no
+/// FiniteCollection` before — not merely fail: before the
 /// fix `size` / `foldLeft` / `foldRight` were refused ONLY by `probe.effects: undeclared
 /// effect ?_` — the access row a carrier with no provision leaves open — which says
 /// nothing about finiteness and would vanish the day that row got grounded some other
@@ -479,7 +482,8 @@ fn defaulted_members_at_a_bare_infinite_carrier_name_the_missing_provision() {
         let errs = stdlib_plus_source_errors(&fill(BARE_PROBE, "Nats", c));
         assert!(
             errs.iter().any(|e| e.contains(
-                "`wi590.conditional.bare.Nats` provides no `anthill.prelude.FiniteCollection`"
+                // A defaulted member names each type-var the call fixes (`, Element = Int64`).
+                "no provision of `anthill.prelude.FiniteCollection` binds `C = wi590.conditional.bare.Nats"
             )),
             "`{}` at a bare `Nats` must be refused naming the missing FiniteCollection \
              provision; got: {errs:?}",
