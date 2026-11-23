@@ -60,7 +60,13 @@ reads the whole head covariantly — the question of WI-20261017-DYX5E (PreOpene
 
 ⁴ Decided by the user on 2026-10-25, after this matrix was first read as "no" by §8.2: a value whose
 own sort provides an instance of a spec over a parameter is admitted where the spec is written, and
-is a value of the spec's type there, not of the carrier (WI-20261025-053QV).
+is a value of the spec's type there, not of the carrier (WI-20261025-053QV). **Withdrawn by the
+user on 2026-11-23** for proposal 074's reading, decided after it (kernel-language §8.2): a value
+typed at a spec with a dictionary is that dictionary, and a provider's value is none — a `Bk` is
+no `Tagger`, the "no" this matrix was first read as. What 053QV kept is the dictionary itself at
+the spec, the family's `dict-spec` pair (`Dictionary.instance[Tagger[C = Bk]]()` at `Tagger`):
+admitted at every position, and at the provision since 053QV, where it was refused as a value
+typed at a spec where its member is expected though `W` writes the provision at the spec.
 
 `refinement`: `sort Narrow { requires Wide[W = Int64]; entity narrow }`, with `WP provides
 Wide[W = Int64]`; `refinement-other-args` asks `Narrow` at `Wide[W = String]`.
@@ -70,7 +76,8 @@ Wide[W = Int64]`; `refinement-other-args` asks `Narrow` at `Wide[W = String]`.
 **The typer's six positions are one answer.** Every row agrees across argument, `let`, return,
 field, list element and lambda argument. Two rows are wrong in all six alike:
 `refinement-other-args` (WI-20261020-G37HS: the typer's refinement through `requires` ignores the
-clause's arguments), and, by the user's decision of 2026-10-25, `param-spec` (⁴, WI-20261025-053QV).
+clause's arguments), and, by the user's decision of 2026-10-25, `param-spec` (⁴, WI-20261025-053QV;
+that decision withdrawn on 2026-11-23, so `param-spec` is right in all six).
 
 **The two other readers disagree with it, each in its own way.**
 
@@ -78,7 +85,8 @@ clause's arguments), and, by the user's decision of 2026-10-25, `param-spec` (�
   - **C2 — a provision at a spec over a parameter answers its provider** — first read as a defect,
     since §8.2 said a `Bk` is no `Tagger`; the user decided the other way on 2026-10-25 (⁴), so
     provision lookup is the reader that is right here, and the typing positions and `type_admits`
-    are what move (WI-20261025-053QV, and 27050's C5).
+    are what move (WI-20261025-053QV, and 27050's C5). 2026-11-23: a defect again (⁴), and gone —
+    since proposal 073 stage 3 no spelling answers a `Bk` at `Tagger`.
   - **C3 — type arguments are not compared.** A provision at `Box[V = String]` answers a call at
     `Box[V = Int64]`: WI-20260929-05ZQE. A provision at `Box[V = Colour]` answers one at `Box[V =
     Colour.red]`: DYX5E (³).
@@ -135,6 +143,10 @@ option of its own, held to §5.2's rule. Its judge reads an answer as admitted o
 exceptions are C5 and C6 under WI-20261025-27050, the `param-spec` row's typing positions under
 WI-20261025-053QV and its `type_admits` under 27050, and the known rows under G37HS, 05ZQE and
 DYX5E; run without them it names exactly those programs. Green on both carriers.
+
+2026-11-23: 155 programs, with the `dict-spec` pair (⁴), and three exceptions — C5 and C6 under
+27050, and DYX5E's provision row; the `param-spec` ones came off with proposal 073 stage 3
+(2026-11-13), and `param-spec` is read "no" (⁴).
 
 ## Reproduce
 

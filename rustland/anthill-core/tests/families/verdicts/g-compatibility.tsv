@@ -1,5 +1,5 @@
 # g-compatibility — a value of type A where B is expected, at every position that asks
-# 147 programs: name, tab, verdict. Written by `scripts/families.sh bless`; a changed line is a changed verdict.
+# 155 programs: name, tab, verdict. Written by `scripts/families.sh bless`; a changed line is a changed verdict.
 pair=variant-to-sort,position=argument	runs 1
 pair=variant-to-sort,position=let	runs 1
 pair=variant-to-sort,position=return	runs 1
@@ -37,6 +37,14 @@ pair=param-spec,position=list-element	loads; drive refused NotAdmitted
 pair=param-spec,position=lambda-argument	loads; drive refused NotAdmitted
 pair=param-spec,position=provision	loads; drive refused NotAdmitted
 pair=param-spec,position=type-admits	loads; drive refused NotAdmitted
+pair=dict-spec,position=argument	runs 1
+pair=dict-spec,position=let	runs 1
+pair=dict-spec,position=return	runs 1
+pair=dict-spec,position=field	runs 1
+pair=dict-spec,position=list-element	runs 1
+pair=dict-spec,position=lambda-argument	runs 1
+pair=dict-spec,position=provision	runs 1
+pair=dict-spec,position=type-admits	runs 1
 pair=refinement,position=argument	runs 1
 pair=refinement,position=let	runs 1
 pair=refinement,position=return	runs 1

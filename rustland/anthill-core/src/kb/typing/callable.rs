@@ -458,7 +458,9 @@ pub(super) fn provider_is_not_the_spec_note(
 /// `requires` could be built at no carrier, and the body read a frame nothing had filled
 /// (MEASURED: `viaDefaulted(w: Tagger) = Tagger.tagIn(w)` loaded and died "`__req_tag` not
 /// bound in caller frame"). The receiver's type may be the callee's own spec or any other
-/// that has a carrier parameter: neither is a carrier.
+/// that has a carrier parameter: neither is a carrier — but another spec is a value the
+/// parameter takes where a provision of the callee's spec is written at it
+/// ([`provision_stands_at_the_spec`], WI-20261025-053QV).
 pub(super) fn spec_typed_value_at_carrier_error(
     kb: &KnowledgeBase,
     callee_sort: Symbol,
@@ -473,7 +475,13 @@ pub(super) fn spec_typed_value_at_carrier_error(
     let typed_at_param = if same_sort_canonical(kb, typed_at, callee_sort) {
         spec_over_parameter(kb, typed_at).map(|_| carrier_param)?
     } else {
-        spec_over_parameter(kb, typed_at)?
+        // The class first: it is memoized, and answers `None` for nearly every argument of
+        // every such call (an `Int64` at `Additive.add`); the provision walk only after it.
+        let param = spec_over_parameter(kb, typed_at)?;
+        if provision_stands_at_the_spec(kb, callee_sort, carrier_param, typed_at) {
+            return None;
+        }
+        param
     };
     let typed_at_name = kb.qualified_name_of(typed_at);
     let typed_at_param = short_name_of(kb.local_name_of(typed_at_param)).to_owned();
@@ -493,6 +501,36 @@ pub(super) fn spec_typed_value_at_carrier_error(
             got = type_display_name_value(kb, recv_ty),
         ),
         site: TypeError::here(),
+    })
+}
+
+/// WI-20261025-053QV — does a provision of `callee_sort` bind `carrier_param` to a type
+/// headed by `spec` itself? Then a value typed at `spec` is a value the parameter takes, and
+/// is no carrier mistaken for its dictionary: with `W provides Desc[T = Tagger]`, a `Tagger`
+/// dictionary is a `Desc.T` at `W`'s provision, and `Desc.d(Dictionary.instance[Tagger[C =
+/// Bk]]())` is `W`'s `d` (proposal 074 §1.2: a value typed at a spec with a dictionary is the
+/// dictionary; kernel-language §8.2 refuses it where the spec's own MEMBER is expected).
+///
+/// Written at the spec: a provision whose binding there is a variable (a generic witness)
+/// says nothing of `spec`, and the value is refused as before. The binding's own arguments
+/// are not compared here: the dispatch that follows matches the provision against the call,
+/// and refuses one no provision answers in its own sentence.
+///
+/// Asked of ANOTHER spec's parameter only. A value typed at the callee's own spec, handed to
+/// its own operation (`Tagger.tag(w)` over `w: Tagger`), stays refused beside a provision
+/// `Tagger[C = Tagger]`: the value is itself a dictionary of the spec the call dispatches
+/// through, and which of the two answers is not this rule's (MEASURED, asked here: it loaded
+/// and answered nothing, a residual `unify(go, ?_)`).
+fn provision_stands_at_the_spec(
+    kb: &KnowledgeBase,
+    callee_sort: Symbol,
+    carrier_param: Symbol,
+    spec: Symbol,
+) -> bool {
+    provides_rows_of_spec(kb, callee_sort).any(|row| {
+        binding_named(kb, &row.bindings(kb), carrier_param)
+            .and_then(|binding| sort_functor_of_view(kb, &binding))
+            .is_some_and(|head| same_sort_canonical(kb, head, spec))
     })
 }
 

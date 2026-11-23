@@ -42,7 +42,9 @@
 //! `1373e04f`): 13 findings, over the six rows the exceptions name, and again once the typer
 //! read a refinement's clause (WI-20261020-G37HS, 2026-11-01): 6 findings, over five, and once
 //! the run time stopped dispatching on the value (proposal 073 stage 3, 2026-11-13): 3, over
-//! the three.
+//! the three. The `dict-spec` pair's provision is the program WI-20261025-053QV moved, with no
+//! exception for it: backed out (`provision_stands_at_the_spec`, kb/typing/callable.rs), 1
+//! moved and 1 P4 finding, over that program (2026-11-23).
 
 use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Property, Verdict};
 
@@ -52,12 +54,21 @@ const PAIRS: &[(&str, &str, &str, &str, Spec)] = &[
     ("sort-to-variant", "Colour", "red(v: 1)", "Colour.red", Spec::No),
     ("sibling-variant", "Colour.blue", "blue(v: 2)", "Colour.red", Spec::No),
     ("self-carrier", "List[T = Int64]", "[1, 2]", "Stream[T = Int64, E = {}]", Spec::Yes),
-    // A provider of a spec over a parameter at the spec: admitted by the user's decision of
-    // 2026-10-25, ahead of §8.2's text, which says a `Bk` is no `Tagger` until WI-20261025-053QV
-    // rewords it. Every spelling refuses it on this tree, the provision too: a provision at
-    // `Tagger` was found for a `Bk` by the run time's dispatch on the value, which proposal 073
-    // removed, and the typer's dispatch reads a `Bk` as no `Tagger`.
-    ("param-spec", "Bk", "bk(k: 0)", "Tagger", Spec::Yes),
+    // A provider of a spec over a parameter at the spec: no `Tagger` (§8.2). A value typed at
+    // a spec with a dictionary is that dictionary (proposal 074 §1.2), and a provider's value
+    // is none; WI-20261025-053QV's admission of it (the user's decision of 2026-10-25) was
+    // withdrawn for 074's reading (2026-11-23). Every spelling refuses it, the provision too.
+    ("param-spec", "Bk", "bk(k: 0)", "Tagger", Spec::No),
+    // The spec's dictionary at the spec, an open slot taking its instance: admitted at every
+    // position. The provision at `Tagger` answers it too (WI-20261025-053QV): it was refused,
+    // as a value typed at a spec where its member is expected, though `W` writes the spec.
+    (
+        "dict-spec",
+        "Tagger[C = Bk]",
+        "Dictionary.instance[Tagger[C = Bk]]()",
+        "Tagger",
+        Spec::Yes,
+    ),
     ("refinement", "Narrow", "narrow()", "Wide[W = Int64]", Spec::Yes),
     ("refinement-other-args", "Narrow", "narrow()", "Wide[W = String]", Spec::No),
     ("open-slot", "Box[V = Int64]", "box(v: 1)", "Box", Spec::Yes),
@@ -111,6 +122,7 @@ pub static FAMILY: Family = Family {
                 opt("sibling-variant", ""),
                 opt("self-carrier", ""),
                 opt("param-spec", ""),
+                opt("dict-spec", ""),
                 opt("refinement", ""),
                 opt("refinement-other-args", ""),
                 opt("open-slot", ""),
@@ -224,6 +236,7 @@ fn render(picks: &Picks<'_>) -> Program {
         r#"namespace family.g
   import anthill.prelude.{{Int64, String, Bool, List, Option, Stream, Error}}
   import anthill.reflect.{{type_admits}}
+  import anthill.realization.runtime.{{Dictionary}}
   sort Colour
     entity red(v: Int64)
     entity blue(v: Int64)

@@ -793,22 +793,10 @@ end
     assert_eq!(int(&mut interp, "c6gk8.cond.probe"), 1);
 }
 
-/// A provision at a spec over a parameter is no provision of its argument's type:
-/// `W provides Desc[T = Tagger]` and `Bk provides Tagger[C = Bk]` give `Desc` no provider at
-/// `Bk`, and `Desc.d(bk(k: 0))` is refused at load, naming `Desc[T = Bk]`. Whether a value of
-/// `Bk` is admitted at `Tagger` is WI-20261025-053QV's rule, not a dispatch: the two spellings
-/// that fix the call at `Tagger` are refused as well — `[T = Tagger]` at the argument, and the
-/// witness `[Desc = W]` as `Desc.d[Desc = W](5)` over a `W` providing `Desc[T = String]` is
-/// (the selection is checked against the goal the arguments give, and at `Bk` there is none).
-/// On the tree before (proposal 073 stage 3) the bare call and the witness call loaded and the
-/// run time, walking `Bk`'s provision of `Tagger`, answered `W.d`'s 100; with only the
-/// typer's deferral to it removed and the run time's walk gone, both loaded and answered
-/// nothing ("operation has no body").
-#[test]
-fn a_provision_at_a_spec_over_a_parameter_is_no_provider_of_its_argument() {
-    const PROGRAM: &str = r#"
+const DESC_PROGRAM: &str = r#"
 namespace c6gk8.desc
   import anthill.prelude.{Int64}
+  import anthill.realization.runtime.{Dictionary}
   sort Tagger
     sort C = ?
     operation tag(c: C) -> Int64
@@ -831,6 +819,23 @@ namespace c6gk8.desc
   operation probe() -> Int64 = CALL
 end
 "#;
+
+/// A provision at a spec over a parameter is no provision of its argument's type:
+/// `W provides Desc[T = Tagger]` and `Bk provides Tagger[C = Bk]` give `Desc` no provider at
+/// `Bk`, and `Desc.d(bk(k: 0))` is refused at load, naming `Desc[T = Bk]`. A value of `Bk` is
+/// no `Tagger` (kernel-language §8.2; proposal 074 §1.2, where WI-20261025-053QV's admission of
+/// it was withdrawn): the two spellings that fix the call at `Tagger` are refused as well —
+/// `[T = Tagger]` at the argument, and the witness `[Desc = W]` as `Desc.d[Desc = W](5)` over a
+/// `W` providing `Desc[T = String]` is (the selection is checked against the goal the arguments
+/// give, and at `Bk` there is none). A `Tagger` is a dictionary, and `W` answers one:
+/// [`a_dictionary_of_the_spec_is_answered_by_a_provision_written_at_it`].
+/// On the tree before (proposal 073 stage 3) the bare call and the witness call loaded and the
+/// run time, walking `Bk`'s provision of `Tagger`, answered `W.d`'s 100; with only the
+/// typer's deferral to it removed and the run time's walk gone, both loaded and answered
+/// nothing ("operation has no body").
+#[test]
+fn a_provision_at_a_spec_over_a_parameter_is_no_provider_of_its_argument() {
+    const PROGRAM: &str = DESC_PROGRAM;
     let unprovided = [
         "requirement `c6gk8.desc.Desc[T = c6gk8.desc.Bk]` cannot be supplied",
         "`c6gk8.desc.Bk` provides no `c6gk8.desc.Desc`",
@@ -889,6 +894,126 @@ end
         some("c6gk8.desc.Bk.d")
     );
     assert_eq!(int(&mut interp, "c6gk8.desc.probe"), 7);
+}
+
+/// WI-20261025-053QV, as proposal 074 reads it — A VALUE TYPED AT A SPEC IS THE SPEC'S
+/// DICTIONARY, AND A PROVISION WRITTEN AT THE SPEC ANSWERS IT: with `W provides Desc[T =
+/// Tagger]`, a `Tagger` is a `Desc.T`, and every spelling of the call at it is decided at load
+/// to `W.d` and answers its 100 — the bare call, the parameter fixed, the witness named, and a
+/// parameter typed at the spec handed on. The same dictionary is admitted at `Tagger` at every
+/// typing position (the family `g-compatibility`, pair `dict-spec`); the provision is the one
+/// spelling that refused it.
+///
+/// FAILS backed out (`provision_stands_at_the_spec` answering false, kb/typing/callable.rs):
+/// each of the four is refused at load, "expected c6gk8.desc.Desc.T, got Tagger[C = …] — … a
+/// value typed at it is not a value of a sort that provides it", the refusal of a value typed
+/// at a spec where its member is expected (WI-20261005-KSSA4) reaching another spec's
+/// parameter that a provision binds to the spec itself; and so are a defaulted operation of
+/// `Desc` called at the dictionary and the provision written through an alias of the spec.
+/// `W.d` called by name answers 100 on both trees: the member was never the question.
+#[test]
+fn a_dictionary_of_the_spec_is_answered_by_a_provision_written_at_it() {
+    const DICT: &str = "Dictionary.instance[Tagger[C = Bk]]()";
+    for (spelling, call) in [
+        ("the bare call", format!("Desc.d({DICT})")),
+        ("the spec's parameter fixed", format!("Desc.d[T = Tagger]({DICT})")),
+        ("the witness selected", format!("Desc.d[Desc = W]({DICT})")),
+        ("the member by name", format!("W.d({DICT})")),
+    ] {
+        let mut interp = interp_for(&DESC_PROGRAM.replace("CALL", &call));
+        if spelling != "the member by name" {
+            assert_eq!(
+                decided_in_op(interp.kb(), "c6gk8.desc.probe", "c6gk8.desc.Desc.d"),
+                some("c6gk8.desc.W.d"),
+                "{spelling}: decided at load"
+            );
+        }
+        assert_eq!(int(&mut interp, "c6gk8.desc.probe"), 100, "{spelling}");
+    }
+    // A parameter typed at the spec, handed on: the call in `via` is at `Tagger[C = w.C]`.
+    let handed_on = DESC_PROGRAM.replace(
+        "  operation probe() -> Int64 = CALL",
+        &format!(
+            "  operation via(w: Tagger) -> Int64 = Desc.d(w)\n  \
+             operation probe() -> Int64 = via({DICT})"
+        ),
+    );
+    let mut interp = interp_for(&handed_on);
+    assert_eq!(
+        decided_in_op(interp.kb(), "c6gk8.desc.via", "c6gk8.desc.Desc.d"),
+        some("c6gk8.desc.W.d"),
+        "a parameter typed at the spec: decided at load"
+    );
+    assert_eq!(int(&mut interp, "c6gk8.desc.probe"), 100, "a parameter typed at the spec");
+    // A defaulted operation of `Desc` at the dictionary runs its body at `W`'s instance — the
+    // shape KSSA4 measured dying "`__req_tag` not bound in caller frame" (found by review).
+    let defaulted = DESC_PROGRAM
+        .replace("CALL", &format!("Desc.e({DICT})"))
+        .replace(
+            "    operation d(x: T) -> Int64
+  end",
+            "    operation d(x: T) -> Int64
+    operation e(x: T) -> Int64 = d(x) + 1
+  end",
+        );
+    assert_eq!(int(&mut interp_for(&defaulted), "c6gk8.desc.probe"), 101, "a defaulted operation");
+    // The provision written through an alias of the spec is written at it (found by review).
+    let aliased = DESC_PROGRAM
+        .replace("CALL", &format!("Desc.d({DICT})"))
+        .replace("  sort W\n    import c6gk8.desc.{Desc, Tagger}\n    provides Desc[T = Tagger]",
+                 "  sort TA = Tagger\n  sort W\n    import c6gk8.desc.{Desc, Tagger, TA}\n    provides Desc[T = TA]");
+    assert!(aliased.contains("provides Desc[T = TA]"), "the alias is written");
+    assert_eq!(int(&mut interp_for(&aliased), "c6gk8.desc.probe"), 100, "through an alias");
+}
+
+/// THE CONTROLS of the row above — what the provision at the spec does not reach, refused on
+/// both trees. A provision at another application of the spec answers no dictionary of this
+/// one: refused as the requirement no row answers. A generic witness (`G provides Desc[T =
+/// X]`) is written at no spec, and the callee's own spec stays refused beside a provision of
+/// it at itself (`W2 provides Tagger[C = Tagger]`): a value typed at it is a dictionary of the
+/// spec its own call dispatches through. Both keep the spec-typed value's refusal.
+///
+/// MEASURED BACKED OUT, one part at a time. With `provision_stands_at_the_spec` answering
+/// false, the first program FAILS — still refused, in the spec-typed value's sentence rather
+/// than the requirement's — and the other two pass, by design. With the narrowing asked at the
+/// callee's own spec too, the third FAILS: it loads clean, and answers nothing (a residual
+/// `unify(go, ?_)`, measured through `anthill query`).
+#[test]
+fn a_dictionary_is_refused_where_no_provision_is_written_at_its_spec() {
+    let other_application = DESC_PROGRAM
+        .replace("CALL", "Desc.d(Dictionary.instance[Tagger[C = Bk]]())")
+        .replace("provides Desc[T = Tagger]", "provides Desc[T = Tagger[C = Int64]]")
+        .replace("d(x: Tagger) -> Int64 = 100", "d(x: Tagger[C = Int64]) -> Int64 = 100");
+    crate::common::assert_refused_naming(
+        &load_errors_of(&other_application),
+        &["requirement `c6gk8.desc.Desc[T = c6gk8.desc.Tagger[C = c6gk8.desc.Bk]]` cannot be supplied"],
+        "a provision at another application of the spec",
+    );
+    let spec_typed = "a value typed at it is not a value of a sort that provides it";
+    let generic = DESC_PROGRAM
+        .replace("CALL", "Desc.d(Dictionary.instance[Tagger[C = Bk]]())")
+        .replace(
+            "    provides Desc[T = Tagger]\n    operation d(x: Tagger) -> Int64 = 100",
+            "    sort X = ?\n    provides Desc[T = X]\n    operation d(x: X) -> Int64 = 5",
+        );
+    crate::common::assert_refused_naming(
+        &load_errors_of(&generic),
+        &["d.x (op-arg): expected c6gk8.desc.Desc.T, got Tagger[C = Bk]", spec_typed],
+        "a generic witness",
+    );
+    let own_spec = DESC_PROGRAM
+        .replace(
+            "  operation probe() -> Int64 = CALL",
+            "  sort W2\n    import c6gk8.desc.Tagger\n    provides Tagger[C = Tagger]\n    \
+             operation tag(c: Tagger) -> Int64 = 9\n  end\n  \
+             operation via(w: Tagger) -> Int64 = Tagger.tag(w)\n  \
+             operation probe() -> Int64 = via(Dictionary.instance[Tagger[C = Bk]]())",
+        );
+    crate::common::assert_refused_naming(
+        &load_errors_of(&own_spec),
+        &["tag.c (op-arg): expected c6gk8.desc.Tagger.C, got Tagger[C = w.C]", spec_typed],
+        "the callee's own spec, beside a provision of it at itself",
+    );
 }
 
 /// A member only another language implements is not pinned: `Sq.area` has a cpp

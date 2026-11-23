@@ -216,7 +216,9 @@
 //! PASS UNDER EVERY PART THAT LEAVES THE LIBRARY LOADING, by design:
 //! [`the_member_spelling_runs`] and [`the_bound_spelling_runs`], which ran on the parent
 //! commit and must still; [`a_list_at_a_stream_parameter_loads_as_before`], the control
-//! that the refusal is about specs over a parameter; and the two programs of
+//! that the refusal is about specs over a parameter;
+//! [`a_position_typed_at_the_spec_takes_its_dictionary_and_no_providers_value`], the ticket
+//! rows of WI-20261025-053QV as proposal 074 reads them; and the two programs of
 //! [`what_a_field_fixed_is_asked_for_and_not_held_against_the_clause`] that run, which pin
 //! a verdict this change's first cut made and its final one does not.
 
@@ -334,6 +336,108 @@ fn a_providers_value_is_refused_at_a_parameter_typed_at_the_spec() {
         ],
         "a provider's value at a parameter typed at the spec",
     );
+}
+
+/// WI-20261025-053QV, AS PROPOSAL 074 READS IT — A POSITION TYPED AT THE SPEC TAKES THE
+/// SPEC'S DICTIONARY, AND NO PROVIDER'S VALUE. The ticket (2026-10-25) would have admitted a
+/// `B` at `w: Tagger` and at `w: Tagger[C = B]`; 074 (2026-11-13) made a value typed at a spec
+/// with a dictionary that dictionary, and the user kept 074 (2026-11-23). So each of the
+/// ticket's rows keeps today's refusals, and its two that would have run are written with the
+/// dictionary: `keep(Dictionary.instance[Tagger[C = B]]())` and `keepWritten` of it answer 1,
+/// and a dictionary handed beside a value of its `C` answers `Tagger`'s operations at `B` (7, 2,
+/// 2). Rows 1–4 and 10 are [`a_spec_typed_value_is_refused_where_the_carrier_is_expected`] and
+/// [`a_providers_value_is_refused_at_a_parameter_typed_at_the_spec`]; rows 5–8 are the member
+/// and bound spellings' rows above.
+///
+/// Passes on the tree before and after WI-20261025-053QV's rework, by design: no row here
+/// moved — they pin 074's verdict where the withdrawn rule would have moved it.
+#[test]
+fn a_position_typed_at_the_spec_takes_its_dictionary_and_no_providers_value() {
+    let ns = "kssa4.dictionary_at_spec";
+    let dict = "Dictionary.instance[Tagger[C = B]]()";
+    let with_dictionary = |body: &str| {
+        ticket(ns, body).replace(
+            "  import anthill.prelude.{Int64}\n",
+            "  import anthill.prelude.{Int64}\n  import anthill.realization.runtime.{Dictionary}\n",
+        )
+    };
+    let not_a_tagger = format!("that does not make the value a `{ns}.Tagger`");
+    // Row 9: written at its instance, the value is still no `Tagger.C` in the body, a
+    // provider's value is refused at the call, and the dictionary keeps the body refusal.
+    for (arg, call_refused) in [("b(k: 0)", true), (dict, false)] {
+        let errs = load_errors_of(&with_dictionary(&format!(
+            "\n  operation writtenDefaulted(w: Tagger[C = B]) -> Int64 = Tagger.tagIn(w)\n  \
+             operation go() -> Int64 = writtenDefaulted({arg})\n"
+        )));
+        assert_refused_naming(
+            &errs,
+            &[
+                &format!("tagIn.x (op-arg): expected {ns}.Tagger.C, got Tagger[C = B]"),
+                "a value typed at it is not a value of a sort that provides it",
+            ],
+            "row 9, the body",
+        );
+        assert_eq!(
+            errs.iter().any(|e| e.contains(&not_a_tagger)),
+            call_refused,
+            "row 9 at {arg}, the call: {errs:?}"
+        );
+    }
+    // Rows 11–13: a provider's value, and a value of no provider, at the call.
+    for (row, decl, arg, refusal) in [
+        (
+            "row 11",
+            "operation keep(w: Tagger[C = B]) -> Int64 = 1",
+            "b(k: 0)",
+            "keep.w (op-arg): expected Tagger[C = B], got B",
+        ),
+        (
+            "row 12",
+            "operation keep(w: Tagger[C = Int64]) -> Int64 = 1",
+            "b(k: 0)",
+            "keep.w (op-arg): expected Tagger[C = Int64], got B",
+        ),
+        (
+            "row 12, a dictionary at another instance",
+            "operation keep(w: Tagger[C = Int64]) -> Int64 = 1",
+            dict,
+            "keep.w (op-arg): expected Tagger[C = Int64], got Tagger[C = B]",
+        ),
+        (
+            "row 12, the instance nothing provides",
+            "operation keep(w: Tagger[C = Int64]) -> Int64 = 1",
+            "Dictionary.instance[Tagger[C = Int64]]()",
+            "no impl provides",
+        ),
+        (
+            "row 13",
+            "operation keep(w: Tagger) -> Int64 = 1",
+            "5",
+            "keep.w (op-arg): expected Tagger, got Int64",
+        ),
+    ] {
+        let errs = load_errors_of(&with_dictionary(&format!(
+            "\n  {decl}\n  operation go() -> Int64 = keep({arg})\n"
+        )));
+        assert_refused_naming(&errs, &[refusal], row);
+    }
+    // Rows 10 and 11 written with the dictionary run.
+    for decl in [
+        "operation keep(w: Tagger) -> Int64 = 1",
+        "operation keep(w: Tagger[C = B]) -> Int64 = 1",
+    ] {
+        let src = with_dictionary(&format!(
+            "\n  {decl}\n  operation go() -> Int64 = keep({dict})\n"
+        ));
+        assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(1), "{decl}");
+    }
+    // The dictionary used: its operations at the value of its `C` handed beside it.
+    let src = with_dictionary(&format!(
+        "\n  operation viaDict(w: Tagger, x: w.C) -> Int64 =\n    \
+         Tagger.probe(x) * 100 + Tagger.tagIn(x) * 10 + Box.tagOf(x)\n  \
+         operation go() -> Int64 = viaDict({dict}, b(k: 0))\n"
+    ));
+    assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(722), "the dictionary used");
 }
 
 /// The three consumers at `spelling`, each entered with a `B`.
