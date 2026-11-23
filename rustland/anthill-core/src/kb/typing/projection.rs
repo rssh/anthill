@@ -2944,6 +2944,23 @@ fn project_via_provided_spec(
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Option<Result<ProjResult, TypeError>> {
+    // A receiver declared at the sort itself (`c: Foo`) fixes the receiver and nothing else. One
+    // declared by a spec's parameter (`c: C` in `Sp`) is the call's reading, and a member the
+    // provider's view leaves out is the `?` the call then ties (below), as decision 1 reads it.
+    if owner.is_none() {
+        if let Some((spec, values)) = member_written_apart(kb, recv_sort, None, member) {
+            let types: Vec<String> = values.iter().map(|v| declared_type_display(kb, v)).collect();
+            let msg = format!(
+                "type '{recv}' provides '{spec}' more than once, binding its member '{member}' \
+                 apart — to {types} — so '{member}' off a '{recv}' names none of them; write the \
+                 type meant",
+                recv = kb.qualified_name_of(recv_sort).to_owned(),
+                spec = kb.qualified_name_of(spec).to_owned(),
+                types = types.join(" and to "),
+            );
+            return Some(Err(projection_type_error(ctx, span, &msg)));
+        }
+    }
     if let Some(spec) = owner {
         // WI-20261001-80ZV8: DIRECT, ELSE COMPOSED THROUGH THE PROVISION CHAIN. A carrier
         // that reaches the owner only through an intermediate — `MappedStream provides
@@ -3046,6 +3063,10 @@ fn member_binding(kb: &KnowledgeBase, bindings: &[(Symbol, Value)], member: &str
 /// parameter excepted, and lends one of its own here as a written `?` does: read as no member,
 /// `k: c.K` over a `Car` that leaves `K` out was refused "type 'Car' has no member 'K'" where the
 /// written `K = ?` lent it (MEASURED).
+/// A member the provider's own provisions at two applications bind apart ([`member_written_apart`])
+/// lends nothing here: the provider's view of the spec leaves it out, and read as a left-out
+/// member it lent a fresh `?`, so `-> c.Elem = 5` loaded and handed its `5` to a `String` reader.
+/// The call refuses it, naming both ([`project_via_provided_spec`]).
 pub(super) fn unowned_member_bindings(
     kb: &mut KnowledgeBase,
     recv_sort: Symbol,
@@ -3061,6 +3082,9 @@ pub(super) fn unowned_member_bindings(
             .iter()
             .any(|d| d.as_str() == member)
         {
+            continue;
+        }
+        if member_written_apart(kb, recv_sort, Some(spec), member).is_some() {
             continue;
         }
         let Some(bindings) = provider_spec_view_bindings(kb, recv_sort, spec) else {
@@ -3085,6 +3109,36 @@ pub(super) fn unowned_member_bindings(
         }
     }
     out
+}
+
+/// WI-20261122-CXR5B — `member` off a `recv_sort`, where the sort's OWN provisions of a spec
+/// declaring it are at two applications that bind it apart ([`own_bindings_apart`]: `P provides
+/// Sp[C = Self, Elem = Int64]` beside `[C = Self, Elem = String]`): that spec (`owner`, or each
+/// the sort provides directly) and the types written for the member. A projection fixes the
+/// receiver and nothing else, so `c.Elem` off a `c: P` is either type, and it is refused as a call
+/// that leaves a type-var open between two provisions is (decision 1 of
+/// `docs/design/spec-carrier-set.md`). It read the first written provision. Asked only where the
+/// receiver's declaration names no spec: one declared by the spec's parameter is the call's
+/// reading, where the member left out of the view is a `?` the call ties.
+fn member_written_apart(
+    kb: &KnowledgeBase,
+    recv_sort: Symbol,
+    owner: Option<Symbol>,
+    member: &str,
+) -> Option<(Symbol, SmallVec<[Value; 2]>)> {
+    let specs: SmallVec<[Symbol; 4]> = match owner {
+        Some(spec) => SmallVec::from_elem(spec, 1),
+        None => directly_provided_specs(kb, recv_sort),
+    };
+    specs.into_iter().find_map(|spec| {
+        if !kb.type_params_of_sort(spec).iter().any(|d| d.as_str() == member) {
+            return None;
+        }
+        own_bindings_apart(kb, recv_sort, spec)
+            .into_iter()
+            .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == member)
+            .map(|(_, values)| (spec, values))
+    })
 }
 
 /// Do two provisions lend one member the same type? The same type however it is SPELLED

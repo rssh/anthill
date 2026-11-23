@@ -191,6 +191,12 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
 
 ## Readers outside the named functions, moved by CXR5B
 
+- `provider_spec_view_bindings` (carrier.rs), the one view per (provider, spec) the ~20 P
+  readers ask: it merged a provider's provisions of a spec and kept the first binding. The P
+  readers step: it leaves out what the provider's own provisions at two applications of one
+  carrier of its own bind apart (`own_bindings_apart`), and a projection of such a member off a
+  receiver declared at the sort is refused (`member_written_apart`, projection.rs).
+
 - `check_provision_binding_agreement` (coherence.rs) bucketed a provider's provisions by the
   binding of the spec's FIRST declared type-var. Step 3: a witness's provisions by
   `SpecApplication`, the provider's own in one bucket (decision 7, and the P readers'

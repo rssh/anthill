@@ -402,39 +402,32 @@ end
     )
 }
 
-/// THE SECOND PIN. Whichever order the two provisions are written in, the program is
-/// refused by the SAME named diagnostic.
+/// THE SECOND PIN. Whichever order the two provisions are written in, the program means the
+/// SAME thing.
 ///
-/// MEASURED before the fix, and the measurement is the whole point: with
-/// `Element = String` written first the program LOADED CLEAN; with `Element = Int64`
-/// first the identical program was refused with `expected Iter[Element = String,
-/// Carrier = C], got C`. The reader took the first matching provision, so the program's
-/// MEANING was decided by provision order and the losing binding was invisible.
+/// MEASURED before WI-842, and the measurement is the whole point: with `Element = String`
+/// written first the program LOADED CLEAN; with `Element = Int64` first the identical program
+/// was refused with `expected Iter[Element = String, Carrier = C], got C`. The reader took the
+/// first matching provision, so the program's MEANING was decided by provision order and the
+/// losing binding was invisible. WI-842 refused the pair at load, in either order.
+///
+/// WI-20261122-CXR5B (the P readers): the two are two APPLICATIONS of `Iter` at `C` — they
+/// differ in a type-var, not in an answer for one — and `Use.takes`'s `requires Iter[…, Element
+/// = String]` is answered by the provision there, in either order. The provider's one view of
+/// `Iter` leaves `Element` out rather than keeping the first written (`own_bindings_apart`), and
+/// a projection of it is refused (`wi_cxr5b_own_two_applications_test`). FAILS backed out to
+/// WI-842's check: refused "conflicting provisions" in both orders.
 #[test]
-fn conflicting_provisions_are_refused_in_either_order() {
+fn two_applications_mean_the_same_in_either_order() {
     for (ns, first, second) in [
         ("wi842.view.intfirst", "Int64", "String"),
         ("wi842.view.strfirst", "String", "Int64"),
     ] {
-        let errs = crate::common::try_load_kb_with(&two_provision_program(ns, first, second))
-            .err()
-            .unwrap_or_else(|| {
-                panic!(
-                    "`{ns}` must be REFUSED: `C` provides `Iter` twice at one application \
-                     with `Element` bound two ways, and every reader of the provider view \
-                     takes the first — so admitting it makes the program mean whichever \
-                     provision was written first"
-                )
-            });
-        let text = errs.join("\n");
-        for want in ["conflicting provisions", "Element", "Int64", "String"] {
-            assert!(
-                text.contains(want),
-                "`{ns}`: the refusal must name the conflict and both bindings (`{want}` \
-                 missing) — a bare type mismatch is the pre-WI-842 report, which named \
-                 neither the second provision nor the order-dependence:\n{text}"
-            );
-        }
+        let src = two_provision_program(ns, first, second);
+        let got = crate::common::interp_for(&src)
+            .call(&format!("{ns}.Use.go"), &anthill_core::eval::HostValue::all(&[Value::Int(0)]))
+            .map(|h| h.value);
+        assert!(matches!(got, Ok(Value::Int(1))), "`{ns}`: {got:?}");
     }
 }
 

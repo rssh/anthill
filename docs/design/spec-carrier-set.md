@@ -462,7 +462,7 @@ corrected to describe the set, as 074 §1.2 has it:
    | b6 | refused, type mismatch | 1 |
    | b7 | refused, type mismatch | two |
    | b8 | runs, first declared | refused; the substituted sort is written at the call (`Coll[Elem = Int64].first(foo)`) |
-   | d5 | refused at load | loads; its calls answer as b5–b8 (a witness; the provider's own two provisions, d15, stay refused until the P readers move) |
+   | d5 | refused at load | loads; its calls answer as b5–b8 (a witness; the provider's own two provisions, d15, load since the P readers step and answer 1) |
    | d7 | refused | 1 |
    | d8: one provider, `let x = Coll.first(foo)` | runs | runs (`Elem` read off the one provision) |
    | d9: one witness, `let x = Dflt.dflt()` | refused, "missing `requires Dflt[T = …]`" | refused (it fixes nothing) |
@@ -471,7 +471,8 @@ corrected to describe the set, as 074 §1.2 has it:
 
    **d5 is refused by three checks today, and all three move for it to load** (done by stage
    2's third step, History; d14, one witness binding an operation at two sorts of `Tag`, moved
-   with it, to 21; d15, the provider's OWN two provisions, stays refused, see there):
+   with it, to 21; d15, the provider's OWN two provisions, stayed refused until the P readers
+   step, which moved it to 1, History):
    - "ambiguous dispatch of `Coll.first` on carrier `Foo`: 2 implementations are supplied
      for that carrier". This is the supplier tie, keyed by the single carrier parameter.
    - "ambiguous instance: 2 distinct instance facts provide `Coll` for carrier `WB`". This
@@ -1252,3 +1253,37 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   a dictionary without it; which producers set it, said at the decision), 2 kept (the walk of
   the provider's rows at a run-time construction; an `at` on the node carrier, which no
   producer makes). Gate 12602 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1.
+- **2026-11-23, stage 2's twelfth step (WI-20261122-CXR5B): the P readers.** Step 3 kept a
+  provider's OWN provisions of a spec with a dictionary that agree where it heads a binding and
+  bind another type-var apart refused at load (d15; `wi842`'s and `wi_n3w68`'s `C provides
+  Iter[Carrier = C, Element = …]` pins), because the ~20 readers of a value's sort's one view of
+  a spec (`provider_spec_view_bindings`) merged them and kept the first binding. Lifting the
+  refusal alone (`check_provision_binding_agreement` buckets own provisions by `SpecApplication`
+  as it does a witness's) and sweeping one provider's two own provisions in both orders they can
+  be written ([`sweep/gen_own_two.py`](spec-carrier-set/sweep/gen_own_two.py), 60 programs: two
+  spec shapes; calls at an expected type, a bracket, a generic `requires`, an operation's
+  `requires`, a sort's `requires`, a projection, and at an application neither provision is at)
+  found one reader that decided by the order: a projection `c.Elem` off a `c: P` read the first
+  written, so `getE(c: P) -> c.Elem` answered in one order and was refused in the other, and `->
+  c.Elem = 5` LOADED and handed its `5` to a `String` reader. Every call shape answered alike.
+  Now the view holds what such provisions agree on and leaves out what they bind apart
+  (`own_bindings_apart`), and a projection of such a member off a receiver declared at the sort
+  is refused, naming each type; one declared by the spec's parameter (`c: C`) is the call's
+  reading, where the left-out member is the `?` the call ties. An application neither provision
+  is at (`requires Sp[C = P, Elem = Bool]`) is still refused: the left-out member reads as no
+  provision there. d15 → 1, its calls as b5–b8. The self-representing class stays refused
+  (decision 7). `kernel-language.md` §5.4 and §8.7 take the user's approved wording (2026-11-23).
+  Rows: `wi_cxr5b_own_two_applications_test` (4), each failing with `src/` backed out; with the
+  lift alone the projection row fails. Moved: `wi842`'s pin (`two_applications_mean_the_same_in_
+  either_order`, answers 1 in both orders), `wi_n3w68`'s (`a_parameterized_binding_apart_is_two_
+  applications_in_either_order`, which now holds the agreement predicate to the projection: its
+  head-sort back-out fails it), `provision_written_through_alias_test`'s conflict (now a
+  self-representing spec's), `wi_cxr5b_one_provider_test`'s control (removed, pointing here).
+  Measured and not this step's: a spec operation declared `-> c.Elem` refuses a provision's
+  BOUND member even at one provision (`binds … to a signature-incompatible operation`). The
+  sweep (all three grids, 196 programs) differs nowhere. /code-review (high): 6 findings; 3 fixed (the refusal fired on a receiver
+  declared by the spec's parameter, where the call ties the member; two stale docs; the refusal
+  counted types as applications), 1 not needed (operation bindings left out of the view: the
+  grid binds per application and runs), 2 kept (the view's extra walk of a provider's rows;
+  the spec text, then approved). Gate 12605 / 0; families green; scaland testFull 811 + 51 (2
+  skipped) + 1.

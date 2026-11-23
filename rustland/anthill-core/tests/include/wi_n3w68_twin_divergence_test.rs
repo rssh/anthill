@@ -51,30 +51,43 @@ end
 
 /// MEASURED before the fix: with `List[T = String]` written first the program LOADED
 /// CLEAN, and with `List[T = Int64]` first it was refused by the ordinary mismatch at
-/// `takes(c())` — the program's meaning decided by provision order, the defect WI-842's
-/// load refusal exists to remove, because `check_provision_binding_agreement` read the
-/// two bindings as one.
+/// `takes(c())` — the program's meaning decided by provision order, because
+/// `check_provision_binding_agreement` read the two bindings as one. The fix refused the pair
+/// by name, in either order (WI-842's check).
 ///
-/// BACK-OUT (A), MEASURED: restoring the head-sort compare (`sort_functor_of_view`) in
-/// `provision_bindings_agree` fails this test — the `Int64`-first row is refused only by
-/// the ordinary mismatch, with no named conflict — and, since the route merge now asks
-/// the same predicate, the `list, MidB first` row of the route test below. 2 of the 4
-/// tests here fail; the two controls pass.
+/// WI-20261122-CXR5B (the P readers): two provisions binding `Element` to two types are two
+/// applications of `Iter` at `C`, and load; `takes`' `requires` is answered by the one at
+/// `List[T = String]`, in either order. What this row still holds the predicate to is the
+/// provider's one view of `Iter`: it leaves out what the two bind apart, so a projection
+/// `i.Element` off a `C` is refused naming both. Read `List[T = Int64]` and `List[T = String]` as
+/// one, the two would be one application, the view would keep the first written, and the
+/// projection would be typed by it.
+///
+/// BACK-OUT (A), MEASURED before the P readers step: restoring the head-sort compare
+/// (`sort_functor_of_view`) in `provision_bindings_agree` failed this test, and the `list, MidB
+/// first` row of the route test below. MEASURED again 2026-11-23: the call half passes with the
+/// head-sort compare (`takes`' `requires` is resolved by the rows, not the view), the projection
+/// half fails — the projection loads in either order.
 #[test]
-fn a_parameterized_binding_conflict_is_refused_in_either_order() {
+fn a_parameterized_binding_apart_is_two_applications_in_either_order() {
     for (ns, first, second) in [
         ("n3w68.p3.intfirst", "List[T = Int64]", "List[T = String]"),
         ("n3w68.p3.strfirst", "List[T = String]", "List[T = Int64]"),
     ] {
-        let errs = load_errors(&one_carrier_two_provisions(ns, first, second));
-        let text = errs.join("\n");
-        for want in ["conflicting provisions", "Element", "List[T = Int64]", "List[T = String]"] {
-            assert!(
-                text.contains(want),
-                "`{ns}`: two provisions binding `Element` to `{first}` and `{second}` are \
-                 two answers for one application and must be refused by name (`{want}` \
-                 missing):\n{text}"
-            );
+        let src = one_carrier_two_provisions(ns, first, second);
+        let got = crate::common::interp_for(&src)
+            .call(&format!("{ns}.Use.go"), &anthill_core::eval::HostValue::all(&[anthill_core::eval::Value::Int(0)]))
+            .map(|h| h.value);
+        assert!(matches!(got, Ok(anthill_core::eval::Value::Int(1))), "`{ns}`: {got:?}");
+
+        let ns = format!("{ns}.proj");
+        let src = one_carrier_two_provisions(&ns, first, second).replace(
+            "    operation go(n: Int64)",
+            "    operation el(i: C) -> i.Element = Use.el(i)\n    operation go(n: Int64)",
+        );
+        let text = load_errors(&src).join("\n");
+        for want in ["binding its member 'Element' apart", "List[T = Int64]", "List[T = String]"] {
+            assert!(text.contains(want), "`{ns}`: `{want}` missing:\n{text}");
         }
     }
 }

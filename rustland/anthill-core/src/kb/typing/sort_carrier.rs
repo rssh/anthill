@@ -198,11 +198,10 @@ impl SpecApplication {
 
     /// Are two OWN provisions of `provider` ([`Self::is_own_of`]) at one carrier of the
     /// provider's own: alike at every type-var whose binding `provider` heads, and heading the
-    /// same type-vars. What [`check_provision_binding_agreement`] buckets a provider's own
-    /// provisions by. `C provides Iter[Carrier = C, Element = Int64]` beside `[Carrier = C,
-    /// Element = String]` are at one (`Carrier = C`), and the readers of `C`'s one view of
-    /// `Iter` would take the first `Element`; `Box provides Show[T = Box[E = Int64]]` beside
-    /// `Show[T = Box[E = String]]` are at two, as the bucket at the first type-var read them.
+    /// same type-vars. `C provides Iter[Carrier = C, Element = Int64]` beside `[Carrier = C,
+    /// Element = String]` are at one (`Carrier = C`), so `C`'s one view of `Iter` holds what they
+    /// agree on and leaves out the `Element` they bind apart ([`own_bindings_apart`]); `Box
+    /// provides Show[T = Box[E = Int64]]` beside `Show[T = Box[E = String]]` are at two.
     pub(crate) fn same_own_carrier(&self, kb: &KnowledgeBase, other: &SpecApplication, provider: Symbol) -> bool {
         if self.at_provider || other.at_provider {
             return self.at_provider == other.at_provider;

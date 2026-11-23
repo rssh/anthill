@@ -187,35 +187,9 @@ end
     }
 }
 
-/// CONTROL: a provider's OWN provisions of a spec with a dictionary (`Foo` heads `C = Self`)
-/// that bind `Elem` apart stay refused at load, by name, in either order — the readers of `Foo`'s
-/// one view of `Coll` would take the first. Passes either way, by design.
-#[test]
-fn own_provisions_binding_a_type_var_apart_stay_refused() {
-    for (ns, a, b) in [("wicxr5bo.own.int", "Int64", "String"), ("wicxr5bo.own.str", "String", "Int64")] {
-        let src = format!(
-            r#"
-namespace {ns}
-  import anthill.prelude.{{Int64, String}}
-  sort Coll
-    sort C = ?
-    sort Elem = ?
-    operation first(c: C) -> Elem
-  end
-  sort Foo
-    entity foo
-    provides Coll[C = Self, Elem = {a}]
-    provides Coll[C = Self, Elem = {b}]
-  end
-end
-"#
-        );
-        let text = load_errors_of(&src).join("\n");
-        for want in ["conflicting provisions", "binding 'Elem' to 2"] {
-            assert!(text.contains(want), "`{ns}`: `{want}` missing:\n{text}");
-        }
-    }
-}
+// A provider's OWN provisions of a spec with a dictionary that bind `Elem` apart (d15) were held
+// refused here until the P readers moved; they load since, and their rows are
+// `wi_cxr5b_own_two_applications_test`'s.
 
 /// A provider's own provisions it heads APART are two carriers, kept apart: `Box` provides
 /// `Show` for itself at `Box[E = Int64]` and at `Box[E = String]`, by its own member (2 = 1 +

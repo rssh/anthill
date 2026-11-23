@@ -2375,6 +2375,8 @@ mod wi_cxr5b_witness_backing_test;
 mod wi_cxr5b_order_swap_test;
 #[path = "include/wi_cxr5b_dictionary_application_test.rs"]
 mod wi_cxr5b_dictionary_application_test;
+#[path = "include/wi_cxr5b_own_two_applications_test.rs"]
+mod wi_cxr5b_own_two_applications_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;

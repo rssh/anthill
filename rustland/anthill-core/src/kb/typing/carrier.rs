@@ -3864,6 +3864,7 @@ pub(super) fn provider_spec_view_bindings(
     // (An unresolved `SortProvidesInfo` symbol yields no rows, and the tail returns
     // `None` — identical to the old `?` early return.)
     let mut merged: Option<SmallVec<[(Symbol, Value); 2]>> = None;
+    let mut rows_read = 0usize;
     for row in provides_rows_of_provider(kb, carrier_sym) {
         // Canonicalize both sides — the spec base in the provider fact's
         // `SortView` is resolved in the carrier's import scope and may be a
@@ -3875,6 +3876,7 @@ pub(super) fn provider_spec_view_bindings(
             continue;
         }
         let bindings = row.bindings(kb);
+        rows_read += 1;
         match &mut merged {
             // The overwhelmingly common case: one provision, returned as it was
             // read, with no merge allocation.
@@ -3899,7 +3901,80 @@ pub(super) fn provider_spec_view_bindings(
             }
         }
     }
+    // WI-20261122-CXR5B — the provider's OWN provisions at two applications of one carrier of
+    // its own (`P provides Sp[C = Self, Elem = Int64]` beside `[C = Self, Elem = String]`) agree
+    // on what the provider fixes and not on the rest: the view keeps what they agree on and
+    // leaves out each binding they write apart ([`own_bindings_apart`]), which the call then
+    // reads off the provision at what it fixes (decision 1 of `docs/design/spec-carrier-set.md`).
+    // Keeping the first written made every reader of the view mean that provision.
+    if rows_read > 1 {
+        if let Some(view) = &mut merged {
+            let apart = own_bindings_apart(kb, carrier_sym, spec_sort);
+            if !apart.is_empty() {
+                view.retain(|(p, _)| {
+                    let short = short_name_of(kb.local_name_of(*p));
+                    !apart.iter().any(|(q, _)| short_name_of(kb.local_name_of(*q)) == short)
+                });
+            }
+        }
+    }
     merged
+}
+
+/// WI-20261122-CXR5B — the bindings `provider`'s OWN provisions of `spec` write apart where they
+/// are at two applications of one carrier of the provider's own ([`SpecApplication::
+/// same_own_carrier`], not [`SpecApplication::same`]): each parameter, with every value written
+/// for it, in the order written. `P provides Sp[C = Self, Elem = Int64, first = P.m1]` beside
+/// `[C = Self, Elem = String, first = P.m2]` write `Elem` and `first` apart. Empty for a provider
+/// with one provision of the spec, for a witness's provisions (each is its own application,
+/// and its provider's view of the spec is none of theirs), for a self-representing spec (every
+/// provision is at its provider, one application: two that disagree are refused at load,
+/// decision 7), and for own provisions the provider heads apart (`Box provides Show[T = Box[E =
+/// Int64]]` beside `[T = Box[E = String]]`, two carriers of its own).
+pub(super) fn own_bindings_apart(
+    kb: &KnowledgeBase,
+    provider: Symbol,
+    spec: Symbol,
+) -> SmallVec<[(Symbol, SmallVec<[Value; 2]>); 1]> {
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let rows: SmallVec<[(SpecApplication, SmallVec<[(Symbol, Value); 2]>); 2]> = provides_rows_of_provider(kb, provider)
+        .filter(|row| kb.canonical_sort_sym(row.spec_base) == spec_canon)
+        .map(|row| (SpecApplication::of_view(kb, spec, &row.spec_view), row.bindings(kb)))
+        .collect();
+    let mut apart: SmallVec<[(Symbol, SmallVec<[Value; 2]>); 1]> = SmallVec::new();
+    for (i, (a, a_binds)) in rows.iter().enumerate() {
+        for (b, b_binds) in &rows[i + 1..] {
+            if !(a.is_own_of(kb, provider)
+                && b.is_own_of(kb, provider)
+                && a.same_own_carrier(kb, b, provider)
+                && !a.same(kb, b))
+            {
+                continue;
+            }
+            for (param, x) in a_binds {
+                let short = short_name_of(kb.local_name_of(*param));
+                let Some((_, y)) = b_binds.iter().find(|(q, _)| short_name_of(kb.local_name_of(*q)) == short) else {
+                    continue;
+                };
+                if provision_bindings_agree(kb, x, y) {
+                    continue;
+                }
+                let values = match apart.iter_mut().find(|(q, _)| short_name_of(kb.local_name_of(*q)) == short) {
+                    Some((_, values)) => values,
+                    None => {
+                        apart.push((*param, SmallVec::new()));
+                        &mut apart.last_mut().expect("just pushed").1
+                    }
+                };
+                for v in [x, y] {
+                    if !values.iter().any(|w| provision_bindings_agree(kb, w, v)) {
+                        values.push(v.clone());
+                    }
+                }
+            }
+        }
+    }
+    apart
 }
 
 /// WI-357 — true iff an effect label is still an unresolved type/row

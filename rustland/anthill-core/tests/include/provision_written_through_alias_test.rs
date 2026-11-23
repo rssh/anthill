@@ -455,6 +455,11 @@ fn an_unmet_requirement_of_a_provision_names_the_binding_as_written() {
 
 /// Two provisions of one carrier that bind a parameter differently are told both bindings
 /// as written, and the provisions listed for a requirement none of them answers are too.
+///
+/// The conflict is a SELF-REPRESENTING spec's (`two(t: Self)`), whose provisions by one provider
+/// are all at the provider, so two binding `B` apart are refused (decision 7 of
+/// `docs/design/spec-carrier-set.md`). Over `two(a: A)` with `A = W` they are two applications
+/// of a spec with a dictionary, which load since WI-20261122-CXR5B's P readers step.
 #[test]
 fn provisions_listed_in_a_refusal_are_named_as_written() {
     for (spelling, at, short, qualified) in [
@@ -463,9 +468,9 @@ fn provisions_listed_in_a_refusal_are_named_as_written() {
     ] {
         let ns = format!("pwaconflict{spelling}");
         let body = format!(
-            "  sort Two\n    sort A = ?\n    sort B = ?\n    operation two(a: A) -> Int64\n  end\n  \
-             sort W\n    entity w\n    provides Two[A = W, B = {at}]\n    \
-             provides Two[A = W, B = String]\n    operation two(a: W) -> Int64 = 1\n  end"
+            "  sort Two\n    sort A = ?\n    sort B = ?\n    operation two(t: Self) -> Int64\n  end\n  \
+             sort W\n    entity w\n    provides Two[A = Int64, B = {at}]\n    \
+             provides Two[A = Int64, B = String]\n    operation two(t: W) -> Int64 = 1\n  end"
         );
         let wanted = format!("binding 'B' to 2 ({short}, String)");
         let rendered = refusal(&ns, &body);

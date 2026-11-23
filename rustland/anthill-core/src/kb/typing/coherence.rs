@@ -2603,19 +2603,16 @@ fn fact_beside_self_provider_is_one_carrier(candidates: &[Provider]) -> bool {
 /// fixes (decision 1 of `docs/design/spec-carrier-set.md`, d5) — was refused as binding `Elem`
 /// and `first` two ways, and with `Elem` declared first it would have passed.
 ///
-/// A provider's OWN provisions of a spec are bucketed by the bindings the provider HEADS
-/// ([`SpecApplication::same_own_carrier`]). For a self-representing spec that is one bucket: all
-/// are at the provider, so two that bind a type-var apart are two readings of `Self.C` on one
-/// carrier (decision 7). For a spec with a dictionary, two that agree where the provider heads
-/// a binding and disagree elsewhere are two carriers by the model, but
-/// [`provider_spec_view_bindings`] — what its ~20 readers ask a value's own sort for, one view
-/// per (provider, spec) — merges them and keeps the first binding, so admitted, `C provides
-/// Iter[Carrier = C, Element = Int64]` beside `[…, Element = String]` would mean whichever was
-/// written first. Refused until those readers are told the application (the P readers of the
-/// design's §4, WI-20261122-CXR5B). Own provisions the provider heads apart (`Box provides
-/// Show[T = Box[E = Int64]]` beside `[T = Box[E = String]]`) are two buckets, as they were at
-/// the first type-var — a first cut that put every own provision in one bucket refused them
-/// (found by /code-review). (The Console shape leaves this reader under-determined in a way
+/// A provider's OWN provisions are bucketed by [`SpecApplication`] too. For a self-representing
+/// spec that is one bucket: all are at the provider, so two that bind a type-var apart are two
+/// readings of `Self.C` on one carrier (decision 7). For a spec with a dictionary, two that agree
+/// where the provider heads a binding and bind another type-var apart — `C provides
+/// Iter[Carrier = C, Element = Int64]` beside `[…, Element = String]` — are two carriers by the
+/// model, and load (WI-20261122-CXR5B, the P readers): [`provider_spec_view_bindings`], the one
+/// view per (provider, spec) its ~20 readers ask a value's own sort for, leaves out what they
+/// bind apart ([`own_bindings_apart`]) where it kept the first written, and a projection off the
+/// provider of such a member is refused naming both. Step 3 kept them one bucket, by the
+/// bindings the provider heads (`SpecApplication::same_own_carrier`), until then. (The Console shape leaves this reader under-determined in a way
 /// this ticket does not fix: asked for `Console`'s view of `Effect` it still answers
 /// the first of three. That is not §4.9's defect — no op binding is being selected,
 /// and MEASURED, no consumer asks — but it is the reason this reader cannot simply
@@ -2666,7 +2663,7 @@ pub(super) fn check_provision_binding_agreement(
             let key = (app.is_own_of(kb, *carrier), app);
             let slot = buckets.iter_mut().find(|((own, a), _)| match (*own, key.0) {
                 (false, false) => a.same(kb, app),
-                (true, true) => a.same_own_carrier(kb, app, *carrier),
+                (true, true) => a.same(kb, app),
                 _ => false,
             });
             match slot {
