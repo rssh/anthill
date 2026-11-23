@@ -3,9 +3,9 @@
 - id: WI-20261122-CXR5B-the-readers-of-the-single
 - created: 2026-11-22T10:23:52Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-22T10:23:52Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-23T14:57:19Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -115,4 +115,8 @@ Step 14 (969bdf146): a function-typed carrier, and the last texts. Section 8.3 r
 ### 2026-11-23T14:55:01Z — feedback — user
 
 Step 15 (aaa8686cd): the X readers. The six sites of readers.md probed in both declaration orders. Two read the single carrier parameter for a name: the note a provider's value gets at a spec-typed position ('Sp is a spec over its parameter B ... type this position Sp.B' with B first, where P stands at A; argument and field), and the refusal of a value typed at the spec, asked only at the single carrier parameter (Sp.tag(w) with w: Sp refused as such with B first, 'missing requires Sp[A = ...]' with A first). Now the note names the type-var a provision binds the provider at, own provisions first (param_a_provider_stands_at), and a spec-typed value is refused at every type-var the operation takes. The other four read no name by order (class tests, the former's own parameter, the one-type-var PartialEq family); the rule-term repair was measured writing what the call fixes in both orders. Rows: wi_cxr5b_x_readers_test (3, each failing backed out). /code-review (high): 2 findings, 1 fixed (row order), 1 not needed. Gate 12629 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1. With this, the TO DO list's readers, indexes and spec sections are done: what stays open is WI-20261121-DBR8V's (b), its own ticket.
+
+### 2026-11-23T14:57:17Z — feedback — user
+
+Delivered (closed with the user 2026-11-23). Stage 2 of docs/design/spec-carrier-set.md in fifteen steps: the readers of the single carrier parameter read the sort carrier and the operation carrier (decision 1), by question W, O, S, V, P, M, K, X (readers.md marks each); the default index and the reflect relations read the substituted sort (decision 5); kernel-language.md sections 5.1, 5.2, 5.4, 8.3 and 8.7 and 058 section 3.6's note carry the approved wording. Acceptance (design section 7): the stage 2 rows, each driven with its back-out (wi_cxr5b_* test files); families green; full workspace 12629 / 0 via rustland/scripts/test.sh; scaland testFull 811 + 51 (2 skipped) + 1. The order-swap sweep (docs/design/spec-carrier-set/sweep/run.sh, four grids, 228 programs) moves no verdict with declaration order. Left to its own ticket: WI-20261121-DBR8V's (b), equality through a witness.
 
