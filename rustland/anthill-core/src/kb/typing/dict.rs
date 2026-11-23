@@ -5443,7 +5443,7 @@ pub(super) fn reads_through_tuples(kb: &KnowledgeBase, spec: Symbol) -> bool {
 
 /// A tuple or an arrow, by its head and whatever stands inside it: a type no `provides`
 /// row can be written ON, so a spec is provided at one only by a sort whose row names it.
-fn is_structural_former(kb: &KnowledgeBase, ty: &Value) -> bool {
+pub(super) fn is_structural_former(kb: &KnowledgeBase, ty: &Value) -> bool {
     matches!(type_head(kb, ty), TypeHead::Arrow | TypeHead::NamedTuple)
 }
 

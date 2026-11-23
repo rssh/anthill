@@ -742,6 +742,135 @@ pub(super) fn select_provision_at_carrier(
     Ok(unwithheld(kb, written))
 }
 
+/// WI-20261122-CXR5B — `view`, the provision the receiver's classification read, without each
+/// type-var other than the carrier's that the provisions standing at the carrier (`at_carrier`)
+/// write apart: ground in two of them, and not one type. What the call leaves for the
+/// provisions to say is read off the one the selection keeps ([`select_provision_at_carrier`]),
+/// once the arguments have fixed what they fix. With one provision standing, `view` whole.
+pub(super) fn written_alike_at_carrier(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    carrier_pvid: VarId,
+    view: &SmallVec<[(Symbol, Value); 2]>,
+    at_carrier: &[(Symbol, SmallVec<[(Symbol, Value); 2]>)],
+) -> SmallVec<[(Symbol, Value); 2]> {
+    if at_carrier.len() < 2 {
+        return view.clone();
+    }
+    let mut kept: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    for (param, value) in view {
+        if type_param_vid_in_sort(kb, spec_sort, *param) != Some(carrier_pvid) {
+            let grounds: Vec<Value> = at_carrier
+                .iter()
+                .filter_map(|(_, other)| binding_named(kb, other, *param).filter(|v| type_is_ground(kb, v)))
+                .collect();
+            if grounds.windows(2).any(|w| !ground_types_equal(kb, &w[0], &w[1])) {
+                continue;
+            }
+        }
+        kept.push((*param, value.clone()));
+    }
+    kept
+}
+
+/// WI-20261122-CXR5B (decision 1 of `docs/design/spec-carrier-set.md`) — a call of `spec_sort`'s
+/// operation whose type-vars it holds no SORT carrier at, and one of them a tuple or an arrow:
+/// what it leaves free is read off the provisions at what it fixes. The sort readers do this at
+/// the carrier ([`select_provision_at_carrier`] over [`provisions_at_carrier`]); a carrier that is
+/// no sort has no provisions filed at it, so `Ap.only(lambda (x: Int64) -> x + 1)` beside `W
+/// provides Ap[F = (Int64) -> Int64, R = Foo]` left `R` out of its goal and answered no
+/// provision, and `Ap.run(lambda x -> 1, foo)` was refused with `F` declared first and answered
+/// with `R` first. A provision stands where every type-var the call holds unifies with its
+/// binding there; the type-vars the call leaves unground are bound from it where every one
+/// standing writes them alike, and refused (`ParameterNamedApart`) where they do not. A spec
+/// with no provision standing, or one whose binding is no ground type, is left to the readers
+/// after (the former's own refusal names it).
+pub(super) fn read_provisions_at_former_call(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    let tvs: SmallVec<[(Symbol, VarId); 2]> = sort_type_params_as_pairs(kb, spec_sort)
+        .iter()
+        .filter_map(|(p, _)| Some((*p, type_param_vid_in_sort(kb, spec_sort, *p)?)))
+        .collect();
+    let held: SmallVec<[(Symbol, VarId, Option<Value>); 2]> =
+        tvs.iter().map(|&(p, vid)| (p, vid, spec_param_binding(kb, subst, vid))).collect();
+    if !held.iter().any(|(_, _, b)| b.as_ref().is_some_and(|b| is_structural_former(kb, b))) {
+        return Ok(());
+    }
+    let mut standing: Vec<(Symbol, SmallVec<[(Symbol, Value); 2]>)> = Vec::new();
+    let rows: Vec<ProvidesRow> = provides_rows_of_spec(kb, spec_sort).collect();
+    for row in rows {
+        if is_conversion_row(kb, &row) {
+            continue;
+        }
+        let view = row.bindings(kb);
+        let mut scratch = subst.clone();
+        let meets = held.iter().all(|(p, _, b)| match (b, binding_named(kb, &view, *p)) {
+            (Some(b), Some(v)) => unify_types(kb, &mut scratch, b, &v),
+            _ => true,
+        });
+        if meets {
+            standing.push((row.provider, view));
+        }
+    }
+    if standing.is_empty() {
+        return Ok(());
+    }
+    let mut open: Vec<String> = Vec::new();
+    let mut reads: SmallVec<[(VarId, Option<Value>, Value); 2]> = SmallVec::new();
+    for (p, vid, b) in &held {
+        if b.as_ref().is_some_and(|b| type_is_ground(kb, b)) {
+            continue;
+        }
+        let written: Vec<Value> = standing.iter().filter_map(|(_, view)| binding_named(kb, view, *p)).collect();
+        let Some(first) = written.first().cloned() else {
+            continue;
+        };
+        // A binding over its provider's own parameters is that provider's instance, which this
+        // reading does not open: a type-var it would have to bind from one is left to the
+        // readers after. (A generic provision that does not meet the call is no candidate, and
+        // one that meets it at ground bindings is read as any other — found by /code-review: a
+        // generic provision of the spec anywhere gave the reading up.)
+        if written.iter().any(|w| !type_is_ground(kb, w)) {
+            return Ok(());
+        }
+        if written.len() < standing.len() || written.iter().any(|w| !ground_types_equal(kb, w, &first)) {
+            open.push(short_name_of(kb.local_name_of(*p)).to_owned());
+            continue;
+        }
+        reads.push((*vid, b.clone(), first));
+    }
+    if !open.is_empty() {
+        let mut providers: SmallVec<[Symbol; 2]> = SmallVec::new();
+        for (provider, _) in &standing {
+            if !providers.iter().any(|q| same_sort_canonical(kb, *q, *provider)) {
+                providers.push(*provider);
+            }
+        }
+        let suggestion = format!(
+            "{}[{}].{}(…)",
+            kb.qualified_name_of(spec_sort),
+            open.iter().map(|p| format!("{p} = …")).collect::<Vec<_>>().join(", "),
+            kb.local_name_of(fn_sym)
+        );
+        return Err(TypeError::ParameterNamedApart { span, op: fn_sym, spec: spec_sort, open, providers, suggestion });
+    }
+    for (vid, held, value) in reads {
+        match held {
+            Some(held) => {
+                unify_types(kb, subst, &held, &value);
+            }
+            None if !occurs_in_view(kb, vid, &value) => subst.bind_value(kb, vid, value),
+            None => {}
+        }
+    }
+    Ok(())
+}
+
 /// A call [`select_provision_at_carrier`] is asked about: the receiver's classification
 /// ([`carrier_param_receiver`]), what the call wrote, and its result.
 pub(super) struct CarrierCall<'a> {
@@ -825,9 +954,11 @@ fn ground_types_equal(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
 }
 
 /// [`TypeError::ParameterNamedApart`] for a call that leaves `open` free over providers that
-/// fix it apart, with the instance as the author writes it: on the call's own bracket, or — in
-/// a rule's own term, which takes none — on the call's receiver (`Conv[A = Meters, B =
-/// …].tag(…)`), the carrier parameter at the receiver's sort.
+/// fix it apart, with the instance as the author writes it: the substituted sort at the call,
+/// `Coll[Elem = …].first(…)` (WI-20261122-CXR5B; kernel-language §5.4, the substituted sort is
+/// written at the call), or — in a rule's own term — on the call's receiver (`Conv[A = Meters,
+/// B = …].tag(…)`), the carrier parameter at the receiver's sort. It was the operation's own
+/// bracket, `Coll.first[Elem = …](…)`.
 pub(super) fn parameter_named_apart(
     kb: &KnowledgeBase,
     env: &TypingEnv,
@@ -857,7 +988,12 @@ pub(super) fn parameter_named_apart(
     } else {
         let open_only: Vec<String> =
             open.iter().map(|p| format!("{} = …", short_name_of(kb.local_name_of(*p)))).collect();
-        format!("{}[{}](…)", kb.qualified_name_of(fn_sym), open_only.join(", "))
+        format!(
+            "{}[{}].{}(…)",
+            kb.qualified_name_of(spec_sort),
+            open_only.join(", "),
+            kb.local_name_of(fn_sym)
+        )
     };
     TypeError::ParameterNamedApart {
         span: call.span,

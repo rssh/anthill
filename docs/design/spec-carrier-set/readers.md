@@ -196,6 +196,11 @@ call needs, which [the design](../spec-carrier-set.md) calls a substituted sort.
   spec with a dictionary and two or more type-vars asks the provision question wherever its
   carriers stand (`spec_asks_provisions`); `check_apply_call` asks it before the carrier at that
   parameter, and `defaulted_call_at_non_instance` as the body-less call does.
+- `bind_spec_params_from_carrier_param`'s call in `check_apply_call` (apply.rs), and a call
+  holding no sort carrier (the former step): the first provision at the carrier bound what the
+  provisions there write apart before a lambda argument was typed (`written_alike_at_carrier`
+  now leaves it); a function-typed carrier read no provision at all
+  (`read_provisions_at_former_call`).
 - `witness_dispatch_carrier` (coherence.rs), measured and kept: a dispatch key read at the
   parameter dispatch reads; decision 6's label moved the provision off the type-var a call fixes.
 

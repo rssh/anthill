@@ -103,7 +103,7 @@ fn a_call_leaving_a_disagreed_type_var_free_is_refused_until_it_writes_it() {
         errs.iter().any(|e| e.contains("it leaves `Elem` open")
             && e.contains("W1")
             && e.contains("W2")
-            && e.contains("Coll.first[Elem = …](…)")),
+            && e.contains("Coll[Elem = …].first(…)")),
         "{errs:#?}"
     );
     let src = coll(

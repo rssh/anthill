@@ -148,7 +148,7 @@ fn an_unfixed_carrier_is_refused_in_both_bodies() {
             &[AT_A],
             "  sort U\n    operation use() -> Int64 = Conv.tag(\"km\")\n  end",
         )),
-        &["rydnv.unfixedop.Conv.tag", "it leaves `A` open", "rydnv.unfixedop.Conv.tag[A = …](…)"],
+        &["rydnv.unfixedop.Conv.tag", "it leaves `A` open", "rydnv.unfixedop.Conv[A = …].tag(…)"],
         "an operation body names the instance at the call",
     );
 }
@@ -212,7 +212,7 @@ fn providers_at_the_carrier_that_fix_the_open_parameter_apart_are_refused() {
         )),
         &[
             "it leaves `A` open",
-            "`rydnv.apartop.Conv.tag[A = …](…)`",
+            "`rydnv.apartop.Conv[A = …].tag(…)`",
         ],
         "the operation body",
     );
@@ -288,7 +288,7 @@ fn a_requirement_at_another_carrier_does_not_name_the_instance() {
             "  sort U\n    requires Conv[A = Meters, B = Int64]\n    \
              operation use() -> Int64 = Conv.tag(\"km\")\n  end",
         )),
-        &["it leaves `A` open", "rydnv.othercarrier.Conv.tag[A = …](…)"],
+        &["it leaves `A` open", "rydnv.othercarrier.Conv[A = …].tag(…)"],
         "a requirement at `Int64` beside a call at `String`",
     );
 }

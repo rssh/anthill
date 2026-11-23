@@ -834,16 +834,26 @@ fn check_apply_call(
                     view,
                     carrier_pvid,
                     recv_arg_sym,
-                )) => bind_spec_params_from_carrier_param(
-                    kb,
-                    &mut subst,
-                    *spec_sort,
-                    *carrier_sym,
-                    *carrier_pvid,
-                    recv_ty,
-                    view.clone(),
-                    *recv_arg_sym,
-                ),
+                )) => {
+                    // WI-20261122-CXR5B (decision 1) — what the provisions standing at the carrier
+                    // write apart is the call's to fix, by its arguments, and the selection's to
+                    // refuse where they do not ([`select_provision_at_carrier`]). Bound here from
+                    // the first of them, it was "fixed" before a lambda argument was typed:
+                    // `Ap.run(lambda x -> 1, foo)` beside two providers at `R = Foo` that bind
+                    // `F` apart ran the first, and `Ap.run(lambda (x: String) -> 7, foo)` was
+                    // refused against its `F` though the other's answers.
+                    let view = written_alike_at_carrier(kb, *spec_sort, *carrier_pvid, view, &at_carrier);
+                    bind_spec_params_from_carrier_param(
+                        kb,
+                        &mut subst,
+                        *spec_sort,
+                        *carrier_sym,
+                        *carrier_pvid,
+                        recv_ty,
+                        view,
+                        *recv_arg_sym,
+                    )
+                }
                 // WI-590: no carrier to read a provision from — the receiver is an
                 // abstract sort PARAM (bare, or a spec view over one). Its members come
                 // from the enclosing sort's own `requires Spec[C = P, …]` instead.
@@ -2123,6 +2133,17 @@ fn check_apply_call(
             };
             let view = select_provision_at_carrier(kb, env, &subst, &call)?;
             bind_ground_value_params_from_provider(kb, &mut subst, *spec_sort, &view);
+        } else if self_recv_spec.is_none() {
+            // A call holding no sort carrier, one of whose type-vars is a tuple or an arrow:
+            // what it leaves free is read off the provisions at what it fixes (decision 1).
+            if let Some(spec_sort) = impl_parent_sort_of_op(kb, fn_sym)
+                .filter(|&s| spec_asks_provisions(kb, s) && spec_has_any_providers(kb, s))
+                .filter(|&s| pinned_witness_for(kb, &selections, s).is_none())
+                .filter(|&s| !op_requires_covers_call(kb, env, &subst, s))
+                .filter(|&s| !env.enclosing_requires().iter().any(|r| same_sort_canonical(kb, r.required_sort, s)))
+            {
+                read_provisions_at_former_call(kb, &mut subst, spec_sort, fn_sym, span)?;
+            }
         }
 
         // WI-270 / WI-379: now that the arguments have been synthesized,

@@ -804,6 +804,10 @@ The stage 1 rows are JE2MT's; the stage 2 rows are WI-20261122-CXR5B's.
     paragraph is reworded for the user's approval. (Done by stage 2's eighth step, History: c3 and g4 answer, the
     paragraph reworded and approved.)
   - The diagnostics the X readers print ("Write the instance: …") use the substituted sort.
+    (The decision-1 refusal's repair does since the fourteenth step, History, as
+    `Coll[Elem = …].first(…)`; in a rule's own term it still writes the binding at the single
+    carrier parameter. A call that names no instance keeps the operation's bracket,
+    `TypeValue.type_value[T = B]()`, the established spelling.)
   - f1, f2 and f4 answer as decision 6's table says: f4 is refused at load until one
     provision is marked `default provides`.
   - The stdlib's `Stream` providers keep their inferred default rows, at `List[T = T]` and
@@ -1316,3 +1320,32 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   (the guard's provision walk; the gate ran in 364 s). Gate 12609 / 0; families green; scaland
   testFull 811 + 51 (2 skipped) + 1. REMAINING: §8.3's "the sort it binds to its spec's
   carrier parameter, or to the sole one" (one type-var specs, wording only).
+- **2026-11-23, stage 2's fourteenth step (WI-20261122-CXR5B): a function-typed carrier, and the
+  last texts.** §8.3's "the sort it binds to its spec's carrier parameter, or to the sole one"
+  reads "the sort it binds to the spec's type-var (`T`: each of `PartialEq`, `Eq` and `NonEq` has
+  one)" (approved by the user). The decision-1 refusal's repair writes the substituted sort at
+  the call, `Coll[Elem = …].first(…)`, as decision 1's table does, where it wrote the
+  operation's bracket. Then a fourth sweep grid ([`sweep/gen_former.py`](spec-carrier-set/sweep/gen_former.py),
+  32 programs): `Ap[F, R] { run(f: F, r: R); only(f: F) }` in both declaration orders, the
+  argument at `F` a lambda, typed or not, or a named operation. The readers of what a call
+  fixes read SORT carriers, and seven of sixteen shapes answered by the order: with `R` first
+  the provision the receiver classification read first bound `F` before the lambda argument was
+  typed, so `Ap.run(lambda x -> 1, foo)` beside two providers apart in `F` ran the first and
+  `Ap.run(lambda (x: String) -> 7, foo)` was refused against its `F` though `W2`'s answers 107;
+  with no sort carrier at all (`F` first, or `only`, which takes no `R`) nothing read `R` off a
+  provision, the goal left it out and no provision answered, so `Ap.only(lambda (x: Int64) ->
+  x + 1)` beside its one provider was refused in both orders. Now what the provisions at the
+  carrier write apart is left for the arguments to fix (`written_alike_at_carrier`), and a call
+  holding no sort carrier with a tuple or an arrow at a type-var reads what it leaves free off
+  the provisions at what it fixes (`read_provisions_at_former_call`) — refused, decision 1's
+  "it leaves `F` open", where they write it apart. Every verdict of the grid is decision 1's in
+  both orders; one refusal keeps two texts (a lambda no provision fits: "no provision answers at
+  it" with `F` first, the argument's mismatch with the one provision's `F` with `R` first).
+  Rows: `wi_cxr5b_former_carrier_test` (5), the four claimed failing with `src/` backed out and
+  the control passing; each half alone backed out fails the rows it says. /code-review (high): 3
+  findings; 1 fixed (the reading gave up beside any generic provision of the spec; a generic one
+  now stands where it meets the call, with a row), 2 kept (the rule-term repair still writes the
+  carrier parameter's binding; the two texts above). Moved, text only: the four rows quoting the
+  operation-bracket repair (`wi_cxr5b_call_fixes`, `wi_rydnv` ×3). The sweep, four grids, 228
+  programs, moves no verdict with the order. Gate 12626 / 0; families green; scaland testFull
+  811 + 51 (2 skipped) + 1.
