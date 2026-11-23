@@ -249,9 +249,16 @@ pub(super) fn visit_type(
             } else {
                 HashMap::new()
             };
+            // The lambda's own tuple keeps each projection off a binder of the list the arrow's
+            // own, read where the lambda is applied, and the binders are typed at the annotations
+            // as the body reads them (WI-20261121-XS9YD).
             let own_components: HashMap<usize, Value> = closed_early
                 .values()
                 .map(|c| (c.at, c.component.clone()))
+                .collect();
+            let body_components: HashMap<usize, Value> = closed_early
+                .values()
+                .map(|c| (c.at, c.read.clone()))
                 .collect();
             // Lambda param type, in priority order:
             //   1. explicit annotation on the pattern,
@@ -357,15 +364,24 @@ pub(super) fn visit_type(
                     }
                     _ => (None, ann),
                 },
-                None => (None, context_a
+                None => match context_a
                     .filter(|a| context_fits_lambda(kb, a, &param))
                     // WI-20261012-80259: a literal or an applied constructor written as the
                     // parameter says what the parameter is.
                     .or_else(|| pattern_own_type(kb, &param))
+                {
+                    Some(a) => (None, a),
                     // A list of binders with no fitting context: its own tuple, of what each
-                    // binder writes ([`lambda_own_tuple`]).
-                    .or_else(|| lambda_own_tuple(kb, &env, &param, &own_components))
-                .unwrap_or_else(|| {
+                    // binder writes ([`lambda_own_tuple`]); where its annotations project one
+                    // another, the binders are typed at them as the body reads them.
+                    None => match lambda_own_tuple(kb, &env, &param, &own_components) {
+                        Some(own) => {
+                            let body = (!closed_early.is_empty())
+                                .then(|| lambda_own_tuple(kb, &env, &param, &body_components))
+                                .flatten();
+                            (body, own)
+                        }
+                        None => (None, {
                     // WI-20260904-50B2K — SYNTHESIS MINTS THE ENGINE'S OWN VARIABLE, and
                     // the two forms answer different questions. A `type_var` means "no
                     // type is available here": INERT by design, compatible with anything
@@ -396,7 +412,9 @@ pub(super) fn visit_type(
                     let fresh = kb.intern("?param");
                     let vid = kb.fresh_var(fresh);
                     Value::Var(Var::Global(vid))
-                    })),
+                        }),
+                    },
+                },
             };
             let binder_type = binder_type.unwrap_or_else(|| param_type.clone());
             // The body's environment, and each binder of a list that projects itself bound in it at

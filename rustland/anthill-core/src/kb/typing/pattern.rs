@@ -1672,20 +1672,31 @@ pub(super) fn projects_a_sibling(kb: &KnowledgeBase, written: &[WrittenBinder<'_
         .any(|w| !sibling_projections(kb, &w.ty, written).is_empty())
 }
 
-/// Each projection in `ty` off a binder of `written`: the binder, and whether it is read through a
-/// FIELD of it (`s2.provider.K`, which reads the field off the binder's type and keeps what it opens
-/// in the record of the path, [`PathOpenings`]) rather than off it as it is (`a.L`, which reads the
-/// member off its type and keeps nothing). A projection's receiver and a rigid projection's subject
-/// are not looked into, as [`collect_projection_receivers`] does not.
+/// A projection off a binder of a lambda's list ([`sibling_projections`]).
+struct SiblingRead {
+    /// The binder.
+    head: Symbol,
+    /// What is projected.
+    member: Symbol,
+    /// Is it read through a FIELD of the binder (`s2.provider.K`, which reads the field off the
+    /// binder's type and keeps what it opens in the record of the path, [`PathOpenings`]) rather
+    /// than off it as it is (`a.L`, which reads the member off its type and keeps nothing)?
+    through_field: bool,
+    /// Where the receiver is written.
+    at: crate::span::SourceSpan,
+}
+
+/// Each projection in `ty` off a binder of `written`. A projection's receiver and a rigid
+/// projection's subject are not looked into, as [`collect_projection_receivers`] does not.
 fn sibling_projections(
     kb: &KnowledgeBase,
     ty: &Value,
     written: &[WrittenBinder<'_>],
-) -> Vec<(Symbol, bool)> {
+) -> Vec<SiblingRead> {
     let receivers = std::cell::RefCell::new(Vec::new());
     type_any_part(kb, ty, &|te| match te {
-        TypeExtractor::ExprCarried { value, .. } => {
-            receivers.borrow_mut().push(value.clone());
+        TypeExtractor::ExprCarried { value, member } => {
+            receivers.borrow_mut().push((value.clone(), *member));
             Some(false)
         }
         TypeExtractor::RigidTypeProjection { .. } => Some(false),
@@ -1694,9 +1705,15 @@ fn sibling_projections(
     receivers
         .into_inner()
         .iter()
-        .filter_map(|receiver| receiver_path_segs(kb, receiver))
-        .filter(|segs| written.iter().any(|w| w.name == segs[0]))
-        .map(|segs| (segs[0], segs.len() > 1))
+        .filter_map(|(receiver, member)| {
+            let segs = receiver_path_segs(kb, receiver)?;
+            written.iter().any(|w| w.name == segs[0]).then(|| SiblingRead {
+                head: segs[0],
+                member: *member,
+                through_field: segs.len() > 1,
+                at: site_of(receiver).0,
+            })
+        })
         .collect()
 }
 
@@ -1713,11 +1730,19 @@ fn skolems_in(kb: &KnowledgeBase, ty: &Value) -> HashSet<u32> {
 }
 
 /// WI-20261121-204T6 — each binder of `written`, in the order the annotations project one another
-/// (no cycle: refused before this is asked, `param_projection_cycle`): its component of the lambda's
-/// OWN tuple — its annotation, read after the siblings it projects ([`read_written_annotation`]) —
-/// and that component CLOSED where named ([`closed_where_named`]), ONCE: the type the binder is bound
-/// at in the body ([`closed_binder_types`]). Asked where nothing around the lambda says its parameter
-/// type; the lambda's own tuple takes the components ([`lambda_own_tuple`]).
+/// (no cycle: refused before this is asked, `param_projection_cycle`): its annotation as the BODY
+/// reads it, after the siblings it projects ([`read_written_annotation`]), and that reading CLOSED
+/// where named ([`closed_where_named`]), ONCE: the type the binder is bound at in the body
+/// ([`closed_binder_types`]); and its component of the lambda's OWN tuple. Asked where nothing
+/// around the lambda says its parameter type; the lambda's own tuple takes the components
+/// ([`lambda_own_tuple`]), and its binders are typed at the body's readings.
+///
+/// THE COMPONENT KEEPS EACH PROJECTION OFF A BINDER OF THE LIST THE LAMBDA'S OWN
+/// ([`SiblingReading::Own`]), read where the lambda is applied at the arguments, as an operation's
+/// parameter `b: a.L` is read where the operation is called (WI-20261121-XS9YD). The body's
+/// reading there made `b` a `State` beside `a: WrapH[L = State]` — the `a` it projects lost — and
+/// any `State` passed, where the operation refuses one of another `P` than the `a` given holds
+/// (MEASURED).
 ///
 /// Each annotation is read with each sibling at its closed type, in the body's record, so the
 /// reading here and the binder check's in the body read the sibling at one type and share what a
@@ -1729,14 +1754,19 @@ fn skolems_in(kb: &KnowledgeBase, ty: &Value) -> HashSet<u32> {
 /// rigid here and another there, and the lambda was refused against its own annotation, "two
 /// different unknowns" (MEASURED).
 ///
-/// EXCEPT a sibling the annotation reads OFF ITSELF (`b: a.L`) whose closing filled a slot nested
-/// in a written binding with a fresh rigid (`a: Pair[L = State]`, `State`'s `P`): what the member
-/// names is the slot left open, which the reading binder's closing names as its own (`b.P`); read
-/// off the closed `a` it was that rigid, and `k: b.provider.K` beside it read nothing ("no
-/// `requires` bound on 'State' whose carrier is this abstract type parameter declares a member
-/// 'K'", MEASURED). It is read as written there; and an annotation that reads such a sibling
-/// through a field as well is read in a record of its own ([`TypingEnv::with_own_path_openings`]),
-/// as the body reads that sibling at its closed type.
+/// EXCEPT a MEMBER read off a sibling itself (`b: a.L`) whose closing filled a slot nested in a
+/// written binding with a fresh rigid (`a: Pair[L = State]`, `State`'s `P`): what the member names
+/// is the slot left open, which the reading binder's closing names as its own (`b.P`); read off the
+/// closed `a` it was that rigid, and `k: b.provider.K` beside it read nothing ("no `requires` bound
+/// on 'State' whose carrier is this abstract type parameter declares a member 'K'", MEASURED). That
+/// member is read off the sibling's type as written ([`read_minted_siblings_as_written`]), which
+/// keeps nothing in the record, and the rest of the annotation as every other is: so one that reads
+/// such a sibling through a field as well (`k: Pair2[A = a.L, B = a.f.T]`) reads the field off the
+/// sibling closed, in the body's record, as the binder check does (WI-20261121-XS9YD). Read with
+/// the sibling as written, in a record of its own, the field's nested slot opened to one rigid here
+/// and another there, "type mismatch in <binder>.k (binder-annotation)" (MEASURED); in the body's
+/// record, the holder `a` was opened at its type as written and read in the body at its closing, a
+/// build with debug assertions' stop (MEASURED).
 ///
 /// An annotation that does not read keeps the type as written here, as [`written_component_types`]
 /// keeps it: the binder check reads every annotation that projects at its turn and refuses it there
@@ -1749,6 +1779,8 @@ pub(super) fn read_list_in_order(
     let mut done: HashMap<Symbol, ClosedBinder> = HashMap::new();
     // The binders whose closing minted a rigid for a nested slot.
     let mut minted: HashSet<Symbol> = HashSet::new();
+    let names: Vec<Symbol> = written.iter().map(|w| w.name).collect();
+    let own_binders = ArrowBinders::of(&names);
     let mut pending: Vec<&WrittenBinder<'_>> = written.iter().collect();
     while !pending.is_empty() {
         let at = pending
@@ -1756,62 +1788,112 @@ pub(super) fn read_list_in_order(
             .position(|w| {
                 sibling_projections(kb, &w.ty, written)
                     .iter()
-                    .all(|(head, _)| *head == w.name || !pending.iter().any(|p| p.name == *head))
+                    .all(|r| r.head == w.name || !pending.iter().any(|p| p.name == r.head))
             })
             .expect("a lambda's parameters project one another with no cycle");
         let w = pending.remove(at);
-        let mut refused = false;
-        let component = if value_contains_projection(kb, &w.ty) {
-            let reads = sibling_projections(kb, &w.ty, written);
-            let off_itself = |s: Symbol| reads.iter().any(|(head, field)| *head == s && !field);
-            let through_field = |s: Symbol| reads.iter().any(|(head, field)| *head == s && *field);
-            let as_written = |s: Symbol| minted.contains(&s) && off_itself(s);
-            let mut reading = if minted.iter().any(|s| as_written(*s) && through_field(*s)) {
-                env.with_own_path_openings()
-            } else {
-                env.clone()
-            };
+        let readings = if value_contains_projection(kb, &w.ty) {
+            let mut reading = env.clone();
             for sibling in written {
-                let ty = match done.get(&sibling.name) {
-                    Some(closed) if !as_written(sibling.name) => closed.ty.clone(),
-                    _ => sibling.ty.clone(),
-                };
-                reading.bind_var(sibling.name, ty);
+                let ty = done.get(&sibling.name).map_or(&sibling.ty, |closed| &closed.ty);
+                reading.bind_var(sibling.name, ty.clone());
                 reading.clear_receiver_alias(sibling.name);
             }
             let ctx = TypeErrorContext::BinderAnnotation { binder: w.name };
-            match read_written_annotation(kb, &reading, &w.ty, &ctx, w.annotation) {
-                Ok(read) => read,
-                Err(_) => {
-                    refused = true;
-                    w.ty.clone()
-                }
-            }
+            let ann = w.annotation;
+            let off_written =
+                read_minted_siblings_as_written(kb, &reading, w, written, &minted, &done, &ctx);
+            let read = off_written.and_then(|off_written| {
+                let read = |kb: &mut KnowledgeBase, receiver: &Value, _: &Value, member| {
+                    match receiver_path_segs(kb, receiver)?[..] {
+                        [head] => off_written.get(&(head, member)).cloned(),
+                        _ => None,
+                    }
+                };
+                let body = SiblingReading::Body(&read);
+                read_written_annotation_with(kb, &reading, &w.ty, &ctx, ann, Some(body))
+            });
+            let own = SiblingReading::Own(&own_binders);
+            read.and_then(|read| {
+                let component =
+                    read_written_annotation_with(kb, env, &w.ty, &ctx, ann, Some(own))?;
+                Ok((component, read))
+            })
         } else {
-            w.ty.clone()
+            Ok((w.ty.clone(), w.ty.clone()))
+        };
+        let ((component, read), refused) = match readings {
+            Ok(readings) => (readings, false),
+            Err(_) => ((w.ty.clone(), w.ty.clone()), true),
         };
         let ty = closed_where_named(
             kb,
-            component.clone(),
+            read.clone(),
             Some(w.name),
             BinderOf::Declaration,
             w.binder.span,
             w.binder.owner,
         );
-        if !skolems_in(kb, &ty).is_subset(&skolems_in(kb, &component)) {
+        if !skolems_in(kb, &ty).is_subset(&skolems_in(kb, &read)) {
             minted.insert(w.name);
         }
-        done.insert(w.name, ClosedBinder { at: w.at, component, ty, refused });
+        done.insert(w.name, ClosedBinder { at: w.at, component, read, ty, refused });
     }
     done
 }
 
-/// A binder's type closed before its list is bound ([`read_list_in_order`]): its place in the list,
-/// its component of the lambda's own tuple, and that component closed where named; and whether its
-/// annotation did not read there, which the binder check must refuse ([`binder_refused`]).
+/// Each member `w`'s annotation reads OFF a sibling of `minted` itself (`a.L`), read off the
+/// sibling's type as written — its own reading, its annotation read as the body reads it and not
+/// closed ([`ClosedBinder`]) — by the sibling and the member: [`read_list_in_order`]'s exception.
+/// `reading` holds every sibling read already at its closed type; each such sibling is bound at
+/// its own reading for its own member's reading alone, which keeps nothing in the body's record. A
+/// member that does not read is the annotation's refusal.
+///
+/// The reading, not the annotation: a sibling whose annotation projects in turn (`k: Pair2[A =
+/// a.L, B = a.f.T]`) gave `j: Pair2[A = k.A]` the projection `a.L` unread, "expected Pair2[A = a.L,
+/// …], got Pair2[A = State[P = ?P], …]" (MEASURED with the annotation put back; 338cce4e8 read
+/// such a sibling as its annotation too).
+fn read_minted_siblings_as_written(
+    kb: &mut KnowledgeBase,
+    reading: &TypingEnv,
+    w: &WrittenBinder<'_>,
+    written: &[WrittenBinder<'_>],
+    minted: &HashSet<Symbol>,
+    done: &HashMap<Symbol, ClosedBinder>,
+    ctx: &TypeErrorContext,
+) -> Result<HashMap<(Symbol, Symbol), Value>, TypeError> {
+    let mut off_written = HashMap::new();
+    let mut as_written: Option<TypingEnv> = None;
+    for r in sibling_projections(kb, &w.ty, written) {
+        if r.through_field
+            || !minted.contains(&r.head)
+            || off_written.contains_key(&(r.head, r.member))
+        {
+            continue;
+        }
+        let sibling = done
+            .get(&r.head)
+            .expect("a sibling whose closing minted a rigid has been read");
+        let env = as_written.get_or_insert_with(|| reading.clone());
+        env.bind_var(r.head, sibling.read.clone());
+        let projection = build_projection_from_segs(kb, &[r.head], r.member, r.at);
+        let read = read_written_annotation(kb, env, &projection, ctx, w.annotation);
+        // Only this member's reading sees the sibling as written.
+        env.bind_var(r.head, sibling.ty.clone());
+        off_written.insert((r.head, r.member), read?);
+    }
+    Ok(off_written)
+}
+
+/// A binder's type closed before its list is bound ([`read_list_in_order`]): its place in the list;
+/// its component of the lambda's own tuple, the annotation with each projection off a binder of the
+/// list left the lambda's own; its annotation as the body reads it, and that reading closed where
+/// named; and whether its annotation did not read, which the binder check must refuse
+/// ([`binder_refused`]).
 pub(super) struct ClosedBinder {
     pub(super) at: usize,
     pub(super) component: Value,
+    pub(super) read: Value,
     ty: Value,
     pub(super) refused: bool,
 }
@@ -1872,7 +1954,7 @@ pub(super) fn closed_binder_types(
             let closed: Value = match early.get(&w.name) {
                 // Typed at another component than the one it was closed from, the binder would be
                 // bound at a type unrelated to the arrow's parameter: refused by the lambda arm.
-                Some(early) if !views_structurally_equal(kb, &components[w.at].1, &early.component) => {
+                Some(early) if !views_structurally_equal(kb, &components[w.at].1, &early.read) => {
                     return None;
                 }
                 Some(early) => early.ty.clone(),

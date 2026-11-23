@@ -21,8 +21,18 @@
 //!    nested slot: that annotation reads it as written, the slot left open, and one that reads it
 //!    through a field as well is read in a record of its own.
 //!
-//! BACK-OUTS, MEASURED — each part alone, with a temporary switch, over the whole `wi_tests` (9689);
-//! every failure is in this file but two, named:
+//! SINCE WI-20261121-XS9YD: the last point reads that only the MEMBER read off such a sibling is
+//! read as written (off the sibling's own reading), and the rest of the annotation is read with
+//! the sibling closed, in the body's record; there is no record of its own any more. And that
+//! reading is the BODY's: the lambda's own tuple keeps each projection off a binder of the list
+//! the lambda's own, read where it is applied at the arguments, as an operation's parameter is
+//! read where it is called (`b: a.L` is no longer `State` there, but `a.L` at the `a` given). Two
+//! rows here moved with it, each said at its site. The row
+//! `one_annotation_reading_a_sibling_both_ways_is_refused_not_crashed`, named below, is
+//! `wi_xs9yd_one_annotation_both_ways_test`'s now, and the lambda loads and runs.
+//!
+//! BACK-OUTS, MEASURED for 204T6 — each part alone, with a temporary switch, over the whole
+//! `wi_tests` (9689); every failure is in this file but two, named:
 //!  * all of it (the list read with its siblings as written, in the body's record, as before) — 7:
 //!    each test but the two controls; the ticket's rows panic as quoted above;
 //!  * every sibling read as written, not at its closed type — 6: each of those but
@@ -59,7 +69,8 @@
 //! PASS WITH ALL OF IT BACKED OUT, BY DESIGN: `against_a_slot_whose_types_are_written_the_list_is_read_as_before`
 //! (a slot's components type the binders and nothing is read before their turn) and
 //! `a_slot_nested_in_a_field_is_one_unknown_for_both_readings` (no projected binder is closed to
-//! another type, so nothing changes — it is the control of the reading kept apart, above).
+//! another type, so nothing changes — it is the control of the reading kept apart, above; there is
+//! no reading kept apart since WI-20261121-XS9YD, and it passes as it did).
 //!
 //! NOT HERE, measured beside it and out of this ticket: `takes(lambda (s2: State[P = MemStore], k:
 //! s2.provider.K) -> …)` against `f: (s: State[P = MemStore], j: s.provider.K) -> Int64` is refused
@@ -160,11 +171,13 @@ fn assert_refused(src: &str, refusal: &str, why: &str) {
 /// The refusal an application meets where a lambda's parameter reads a slot nested in a field's
 /// written binding (`k: h.f.T` over `f: Box[T = List[T = ?]]`): the lambda's `k` is a list of the
 /// rigid that slot opens to, which no argument is. Of `[1]` it is right where the field writes `?`
-/// (`Hold`, `HoldL`, `WrapH`: an element no argument is known to be), and wrong over `Hold2[X =
-/// List]`, whose holder's type fixes it, and for the argument read off the holder itself
-/// (`h0.f.v`), which an operation's parameter `k: h.f.T` takes (MEASURED): WI-20261121-ZPZDY. No
-/// change of this ticket's: a lambda over a plain `Hold` meets it as before
-/// (`a_slot_nested_in_a_field_is_one_unknown_for_both_readings`).
+/// (`Hold`, `HoldL`, `WrapH`: an element no argument is known to be), and wrong for the argument
+/// read off the holder itself (`h0.f.v`), which an operation's parameter `k: h.f.T` takes
+/// (MEASURED): WI-20261121-ZPZDY. No change of this ticket's: a lambda over a plain `Hold` meets it
+/// as before (`a_slot_nested_in_a_field_is_one_unknown_for_both_readings`). It was wrong over
+/// `Hold2[X = List]` too, whose holder's type fixes the element; since WI-20261121-XS9YD the
+/// lambda reads `h.f.T` at the holder given, and takes `[1]` there
+/// (`a_nested_slot_is_closed_once_and_read_at_that_type`).
 const NESTED_SLOT_APPLIED: &str =
     "type mismatch in g.k (op-arg): expected List[T = ?T], got List[T = Int64]";
 
@@ -295,13 +308,21 @@ fn a_chain_of_projections_reads_each_at_its_type() {
         "g(pair(l: h0), h0, [1])",
         "a field read off the middle binder",
     );
-    assert_refused(
-        &two_state_program(
-            "wi_204t6.chain.other",
-            "",
-            "let h = lambda (a: Pair[L = State], b: a.L, k: b.provider.K) -> check(b, k)\n    h(pair(l: u), w, ju)",
-        ),
-        "type mismatch in h.k (op-arg): expected w.provider.K, got u.provider.K",
+    // MOVED WITH WI-20261121-XS9YD: `b` is refused here too, `w` being no `a.L` of `pair(l: u)` —
+    // the lambda's own `b` is `a.L`, read at the `a` given, as an operation's parameter is; it was
+    // `State`, and any `State` passed (`wi_xs9yd_one_annotation_both_ways_test`).
+    let errs = load_errors_of(&two_state_program(
+        "wi_204t6.chain.other",
+        "",
+        "let h = lambda (a: Pair[L = State], b: a.L, k: b.provider.K) -> check(b, k)\n    h(pair(l: u), w, ju)",
+    ));
+    assert_eq!(errs.len(), 2, "a key of another `State` in the chain: {errs:#?}");
+    assert_refused_naming(
+        &errs,
+        &[
+            "type mismatch in h.b (op-arg): expected State[P = u.P], got State[P = w.P]",
+            "type mismatch in h.k (op-arg): expected w.provider.K, got u.provider.K",
+        ],
         "a key of another `State` in the chain",
     );
 }
@@ -318,7 +339,7 @@ fn a_nested_slot_is_closed_once_and_read_at_that_type() {
     let program = |ns: &str, params: &str| {
         format!(
             "namespace {ns}
-  import anthill.prelude.{{Int64, List}}
+  import anthill.prelude.{{Int64, List, String}}
   sort Box
     sort T = ?
     entity box(v: T)
@@ -342,16 +363,22 @@ end
         let ns = format!("wi_204t6.nested_binding.{tag}");
         assert_runs(&program(&ns, params), &ns, tag);
     }
-    // Applied, it is refused at the argument, as a lambda reading a nested slot through a field
-    // was before this change (`a_slot_nested_in_a_field_is_one_unknown_for_both_readings`): its
-    // `k` is a list of the unknown that slot opens to, which no argument is.
-    for (tag, params, apply) in [
-        ("forward", "k: h.f.T, h: Hold2[X = List]", "g([1], h0)"),
-        ("in_order", "h: Hold2[X = List], k: h.f.T", "g(h0, [1])"),
+    // MOVED WITH WI-20261121-XS9YD. Applied, it was refused at the argument (`NESTED_SLOT_APPLIED`):
+    // `k` was a list of the unknown the slot opens to, which no argument is. The lambda's own `k`
+    // is `h.f.T` now, read at the holder given as an operation's parameter is: `h0`'s `f` holds a
+    // `List[T = Int64]`, so `[1]` runs and `["s"]` is refused.
+    let applied = |tag: &str, params: &str, apply: &str| {
+        program(&format!("wi_204t6.nested_binding.applied.{tag}"), params)
+            .replace("    42\n", &format!("    let h0 = hold2(f: box(v: [1]))\n    {apply}\n"))
+    };
+    let element = "type mismatch in g.k (op-arg): expected List[T = Int64], got List[T = String]";
+    for (tag, params, ok, refused) in [
+        ("forward", "k: h.f.T, h: Hold2[X = List]", "g([1], h0)", "g([\"s\"], h0)"),
+        ("in_order", "h: Hold2[X = List], k: h.f.T", "g(h0, [1])", "g(h0, [\"s\"])"),
     ] {
-        let applied = program(&format!("wi_204t6.nested_binding.applied.{tag}"), params)
-            .replace("    42\n", &format!("    let h0 = hold2(f: box(v: [1]))\n    {apply}\n"));
-        assert_refused(&applied, NESTED_SLOT_APPLIED, tag);
+        let ns = format!("wi_204t6.nested_binding.applied.{tag}");
+        assert_runs(&applied(tag, params, ok), &ns, tag);
+        assert_refused(&applied(&format!("{tag}_other"), params, refused), element, tag);
     }
 }
 
@@ -433,46 +460,6 @@ fn a_sibling_read_off_itself_and_through_a_field() {
             tag,
         );
     }
-}
-
-/// ONE annotation reading a sibling both off itself and through a field, where the sibling's
-/// closing minted a rigid for a nested slot (`k: Pair2[A = a.L, B = a.f.T]` beside `a: WrapH[L =
-/// State]`): the member wants `a` as written and the field read `a` closed, so it is read with `a`
-/// as written, in a record of its own — kept in the body's, `a` would be opened at `WrapH[L =
-/// State]` there and read at its closing in the body, a build with debug assertions' stop. STILL
-/// REFUSED, an over-rejection: the binder check reads it with `a` closed, and the two readings
-/// differ, "type mismatch in <binder>.k (binder-annotation)" (WI-20261121-XS9YD).
-/// FAILS with that reading kept in the body's record: a panic at load.
-#[test]
-fn one_annotation_reading_a_sibling_both_ways_is_refused_not_crashed() {
-    let src = format!(
-        "namespace wi_204t6.one_annotation
-  import anthill.prelude.{{Int64, List}}
-  sort State
-    sort P = ?
-    entity state(provider: P)
-  end
-  sort Pair2
-    sort A = ?
-    sort B = ?
-    entity pair2(a: A, b: B)
-  end
-{HOLDS}
-  sort WrapH
-    sort L = ?
-    entity wraph(f: Box[T = List[T = ?]], l: L)
-  end
-  operation go() -> Int64 =
-    let g = lambda (a: WrapH[L = State], k: Pair2[A = a.L, B = a.f.T]) -> 42
-    42
-end
-"
-    );
-    assert_refused(
-        &src,
-        "type mismatch in <binder>.k (binder-annotation)",
-        "`a.L` and `a.f.T` in one annotation",
-    );
 }
 
 /// CONTROL — a slot nested in a field's written binding (`k: h.f.T` over `f: Box[T = List[T =

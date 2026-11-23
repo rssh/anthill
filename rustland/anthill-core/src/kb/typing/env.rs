@@ -947,18 +947,6 @@ impl TypingEnv {
         &self.path_openings
     }
 
-    /// A copy whose readings of a path are kept in a record of their own, not the body's: for a
-    /// PROVISIONAL reading, at types a name is not bound at in the body (WI-20261121-204T6: a
-    /// lambda's own types, read with a binder as written, [`read_list_in_order`]). Kept in the
-    /// body's, a holder read there at one type and in the body at another is "a re-key that gave
-    /// the path another value".
-    pub(super) fn with_own_path_openings(&self) -> TypingEnv {
-        TypingEnv {
-            path_openings: PathOpenings::default(),
-            ..self.clone()
-        }
-    }
-
     /// WI-20260824-PAPX0: record that `name` denotes the type `node` names.
     pub(super) fn bind_type_denotation(&mut self, name: Symbol, node: Rc<NodeOccurrence>) {
         self.type_denotations.insert(name, node);

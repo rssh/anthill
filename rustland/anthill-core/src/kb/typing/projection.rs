@@ -1386,10 +1386,46 @@ pub(super) fn read_written_annotation(
     ctx: &TypeErrorContext,
     at: &NodeOccurrence,
 ) -> Result<Value, TypeError> {
+    read_written_annotation_with(kb, env, ty, ctx, at, None)
+}
+
+/// How [`read_written_annotation_with`] reads a projection off a binder of a lambda's list whose
+/// binders project one another ([`read_list_in_order`], WI-20261121-XS9YD).
+#[derive(Clone, Copy)]
+pub(super) enum SiblingReading<'r> {
+    /// The body's: off the binder's type in `env`, a member this reading answers tried first
+    /// ([`ProjectionReading`]) — the member read off a sibling's type as written.
+    Body(ProjectionReading<'r>),
+    /// The lambda's own type's: left as it is, the lambda's arrow's own projection, read where
+    /// the lambda is applied at that application's arguments ([`ArrowBinders`]), as an
+    /// operation's parameter `b: a.L` is read where the operation is called.
+    Own(&'r ArrowBinders<'r>),
+}
+
+/// [`read_written_annotation`], with a lambda list's projections off its own binders read as
+/// `siblings` says.
+pub(super) fn read_written_annotation_with(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    ty: &Value,
+    ctx: &TypeErrorContext,
+    at: &NodeOccurrence,
+    siblings: Option<SiblingReading<'_>>,
+) -> Result<Value, TypeError> {
     let span = Some(at.span.span);
     let scope = written_scope(kb, env, at);
     let ty = read_denoted_projections(kb, env, scope, ty, ctx, span)?;
-    Discharge::new(&env.var_bindings, Receivers::Own(Some(env)), ctx, span).eliminate(kb, &ty)
+    let (reading, bound) = match siblings {
+        None => (None, None),
+        Some(SiblingReading::Body(reading)) => (Some(reading), None),
+        Some(SiblingReading::Own(binders)) => (None, Some(binders)),
+    };
+    Discharge {
+        reading,
+        bound,
+        ..Discharge::new(&env.var_bindings, Receivers::Own(Some(env)), ctx, span)
+    }
+    .eliminate(kb, &ty)
 }
 
 /// WI-20261003-P1PVT — WHOSE NAMES a projection's receivers are, which decides what names the
@@ -1430,11 +1466,15 @@ pub(super) struct CallRecords<'a> {
 }
 
 /// WI-20260929-0RP29 — a caller's own reading of a projection — given its receiver, the
-/// receiver's type and the member — off a receiver whose type it knows to stand for EVERY type
-/// its slots admit, tried before the call's ([`project_type_member`]): `Some` is the member's
-/// type, `None` defers to the call's. The declaration rule reads a carrier instance whose
-/// parameters are rigids — any type — where the call's reading takes a member resting on one
-/// for unknown and keeps it neutral.
+/// receiver's type and the member — tried before the walk's own ([`project_type_member`]): `Some`
+/// is the member's type, `None` defers to the walk's. Its readers:
+///  * the declaration rule and a call's parameters, off a receiver whose type the caller knows to
+///    stand for EVERY type its slots admit — a carrier instance whose parameters are rigids, any
+///    type — where the call's reading takes a member resting on one for unknown and keeps it
+///    neutral;
+///  * a lambda's list, a member off a sibling read off the sibling's type as written where the
+///    body holds it closed, by a lookup of readings made before ([`SiblingReading::Body`],
+///    WI-20261121-XS9YD).
 pub(super) type ProjectionReading<'r> =
     &'r dyn Fn(&mut KnowledgeBase, &Value, &Value, Symbol) -> Option<Value>;
 
@@ -1496,7 +1536,13 @@ pub(super) struct ArrowBinders<'a> {
     outer: Option<&'a ArrowBinders<'a>>,
 }
 
-impl ArrowBinders<'_> {
+impl<'a> ArrowBinders<'a> {
+    /// The binders of one arrow, inside none: a lambda's list, read as its own arrow's
+    /// ([`SiblingReading::Own`]).
+    pub(super) fn of(syms: &'a [Symbol]) -> Self {
+        ArrowBinders { syms, outer: None }
+    }
+
     fn binds(&self, sym: Symbol) -> bool {
         self.syms.contains(&sym) || self.outer.is_some_and(|o| o.binds(sym))
     }

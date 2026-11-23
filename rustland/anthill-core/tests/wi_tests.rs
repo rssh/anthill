@@ -2558,6 +2558,8 @@ mod wi_ffy4r_witness_pin_every_route_test;
 mod wi_fv92r_nested_alias_projection_test;
 #[path = "include/wi_204t6_lambda_sibling_projection_test.rs"]
 mod wi_204t6_lambda_sibling_projection_test;
+#[path = "include/wi_xs9yd_one_annotation_both_ways_test.rs"]
+mod wi_xs9yd_one_annotation_both_ways_test;
 #[path = "include/wi_kbz4f_operation_value_reads_projection_test.rs"]
 mod wi_kbz4f_operation_value_reads_projection_test;
 
