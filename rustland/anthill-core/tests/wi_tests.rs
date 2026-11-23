@@ -2110,6 +2110,9 @@ mod wi_p9qbf_lazy_truncation_test;
 mod wi_0wt09_depth_is_nesting_test;
 #[path = "include/wi_96qkw_execute_options_test.rs"]
 mod wi_96qkw_execute_options_test;
+
+#[path = "include/wi_5mmgp_query_refutation_test.rs"]
+mod wi_5mmgp_query_refutation_test;
 #[path = "include/wi_517y5_contract_as_written_test.rs"]
 mod wi_517y5_contract_as_written_test;
 #[path = "include/wi_yr3n7_domain_check_test.rs"]

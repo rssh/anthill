@@ -22,7 +22,10 @@ use smallvec::SmallVec;
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
-use super::resolve::{PositionalPlan, ResolveConfig, SearchStream};
+use super::resolve::{
+    PositionalPlan, ResolveConfig, ResolveError, ResolveStats, SearchFailure, SearchFault, SearchLimit, SearchStream,
+    Solution,
+};
 use super::term::{Literal, Term, TermId};
 use super::term_view::{TermView, ViewHead};
 use super::KnowledgeBase;
@@ -900,6 +903,80 @@ impl KnowledgeBase {
         Ok(self.resolve_lazy(&goals, &execute_config(options)))
     }
 
+    /// WI-20261123-5MMGP — THE REFUTATION OF A QUERY: the search
+    /// [`Self::execute_typed_logical_query_with`] makes, run in proof mode (the record
+    /// `anthill.reflect.SLDProof.of` reads, kernel-language §8.3), and what it establishes.
+    ///
+    /// `q` is lowered and typed as `execute_typed_logical_query_with` lowers and types it, and
+    /// refused the same way ([`LowerError::QueryRefused`]); the search runs at `options`'
+    /// budget and takes the steps that search takes. Proof mode is on for this search alone.
+    ///
+    /// THE QUERY'S VARIABLES ARE ITS OWN. Nothing outside a query can bind them, so a complete
+    /// search with no answer establishes that no binding satisfies its goals, and that is
+    /// [`Refutation::Refuted`] — where `SLDProof.of(!g, ?p)` waits while `g` has an unbound
+    /// variable (kernel-language §8.3), because there `g`'s variables may be the asking
+    /// clause's. For a ground goal the two agree, and give the same term.
+    ///
+    /// THE VERDICT, read along the pull ([`SearchStream::next_solution`]):
+    /// * [`Refutation::Answered`] — the first DEFINITE answer; the search stops at it;
+    /// * [`Refutation::Refuted`] — the search ended complete with no answer: the
+    ///   `anthill.reflect.SLDProof.refuted` term of the query's goals. For ONE goal it is that
+    ///   goal's refutation, the term `SLDProof.of(!g, ?p)` binds `?p` to. For SEVERAL it is
+    ///   `refuted(and(g1, and(g2, …)), steps)`: the goal the conjunction `!(g1, g2, …)` writes,
+    ///   and one `Step(none, failing, because)` per branch, naming the query goal the branch
+    ///   failed at as it was asked on that branch — in the order of the goals, then of the
+    ///   branches. The kernel's `and` clause and `push_and` builtin, a level of each per
+    ///   conjunct in the proof of `!(g1, g2)`, are no steps of the query's;
+    /// * [`Refutation::Undecided`] — neither: a limit cut the search ([`Undecided::Limit`]),
+    ///   it faulted ([`Undecided::Faulted`]: the fault a pull of the stream reports, or a
+    ///   refutation the record cannot build — a fault of the search, never a guess), or it
+    ///   ended complete with conditional answers only ([`Undecided::Conditional`]).
+    ///
+    /// [`RefutationOutcome::stats`] is what the search cost and how complete it was, as
+    /// [`SearchStream::stats`] gives it where the verdict was read; a refutation the record
+    /// could not build is among its `errors` too.
+    ///
+    /// THE COST OF PROOF MODE: the record keeps every goal the search asks, on every branch,
+    /// until the verdict is read (a refutation is read off the whole record), so its memory
+    /// grows with the steps taken — up to `options.max_steps` of them. A caller that raises the
+    /// budget raises that bound with it.
+    pub fn refute_typed_logical_query_with(
+        &mut self,
+        q: &Value,
+        options: &ExecuteOptions,
+    ) -> Result<RefutationOutcome, LowerError> {
+        let goals = self.lower_query(q)?;
+        let goals = self.type_query_goals(&goals)?;
+        let mut stream = self.resolve_lazy_goals_with_proof(goals, &execute_config(options));
+        let mut conditional = Vec::new();
+        let mut unbuilt: Option<ResolveError> = None;
+        let verdict = loop {
+            match stream.next_solution(self) {
+                Ok(Some(answer)) if answer.is_definite() => break Refutation::Answered(answer),
+                Ok(Some(answer)) => conditional.push(answer),
+                Ok(None) if !conditional.is_empty() => break Refutation::Undecided(Undecided::Conditional(conditional)),
+                Ok(None) => {
+                    break match stream.query_refutation(self) {
+                        Ok(proof) => Refutation::Refuted(proof),
+                        Err(message) => {
+                            let error = ResolveError::new(message);
+                            unbuilt = Some(error.clone());
+                            Refutation::Undecided(Undecided::Faulted(SearchFault {
+                                error,
+                                residual: Vec::new(),
+                            }))
+                        }
+                    }
+                }
+                Err(SearchFailure::Faulted(fault)) => break Refutation::Undecided(Undecided::Faulted(fault)),
+                Err(SearchFailure::Truncated { limit }) => break Refutation::Undecided(Undecided::Limit(limit)),
+            }
+        };
+        let mut stats = stream.stats();
+        stats.errors.extend(unbuilt);
+        Ok(RefutationOutcome { verdict, stats })
+    }
+
     /// `goals` routed as one query's, each as the occurrence the typer read. The typer marks
     /// what it decided on the occurrence it reads (a call's member), so the goal that runs is
     /// that occurrence, whatever carrier the goal came on. An integrity guard's goals are typed
@@ -921,6 +998,41 @@ impl KnowledgeBase {
         };
         Ok(routed.into_iter().map(Value::Node).collect())
     }
+}
+
+/// WI-20261123-5MMGP — what [`KnowledgeBase::refute_typed_logical_query_with`] establishes of
+/// a query, and what its search cost.
+#[derive(Debug)]
+pub struct RefutationOutcome {
+    /// Answered, refuted or undecided.
+    pub verdict: Refutation,
+    /// [`SearchStream::stats`] where the verdict was read: the steps taken, `out_of_fuel`,
+    /// `truncated` and the faults noted — with a refutation the record could not build.
+    pub stats: ResolveStats,
+}
+
+/// WI-20261123-5MMGP — the verdict of [`KnowledgeBase::refute_typed_logical_query_with`].
+#[derive(Debug)]
+pub enum Refutation {
+    /// The search ended complete with no answer: the `anthill.reflect.SLDProof.refuted` term of
+    /// the query's goals, its shape as the entry's doc states it.
+    Refuted(TermId),
+    /// The query's first definite answer.
+    Answered(Solution),
+    /// The search neither answered nor refuted the query.
+    Undecided(Undecided),
+}
+
+/// WI-20261123-5MMGP — why a query is [`Refutation::Undecided`].
+#[derive(Debug)]
+pub enum Undecided {
+    /// A limit cut the search ([`SearchFailure::Truncated`]): an empty end is no refutation.
+    Limit(SearchLimit),
+    /// The search recorded a fault ([`SearchFailure::Faulted`]), or the record could not build
+    /// the refutation of a search that ended complete.
+    Faulted(SearchFault),
+    /// The search ended complete with conditional answers only, each in the order yielded.
+    Conditional(Vec<Solution>),
 }
 
 /// WI-20261122-96QKW — the budget of the search a `LogicalQuery` runs

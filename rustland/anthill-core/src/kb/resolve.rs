@@ -1264,6 +1264,7 @@ impl Default for ResolveConfig {
 /// `Value::Node` keeps it, instead of materializing to a hash-consed `TermId`
 /// (lossy for an occurrence's identity/span). WI-348 was the first step of the
 /// audit that has since removed this module's `Value` → `TermId` reify outright.
+#[derive(Debug)]
 pub struct Solution {
     pub subst: Substitution,
     pub residual: Vec<Value>,
@@ -2454,6 +2455,23 @@ impl SearchStream {
             faults: self.faults.clone(),
             steps: self.stats.steps,
         }
+    }
+
+    /// WI-20261123-5MMGP — the refutation of this search's query goals, for a stream made in
+    /// proof mode over them ([`KnowledgeBase::resolve_lazy_goals_with_proof`]) and pulled to a
+    /// complete end with no answer ([`Self::next_solution`] at `Ok(None)`, none before). The
+    /// shape is [`ProofRecorder::query_refutation`]'s. An `Err` where the stream keeps no
+    /// record, where it has answered or has not ended complete, or where the record cannot
+    /// build the refutation: a refutation is never read off a search that is not one.
+    pub(crate) fn query_refutation(&self, kb: &mut KnowledgeBase) -> Result<TermId, String> {
+        let Some(rec) = self.proof.as_ref() else {
+            return Err("the search was not made in proof mode".to_string());
+        };
+        if self.answers_yielded > 0 || self.truncated || !self.stack.is_empty() {
+            return Err("proof mode: only a search that ended complete with no answer is refuted".to_string());
+        }
+        let roots: Vec<u32> = (1..=self.query_goals.len() as u32).collect();
+        rec.query_refutation(kb, &roots, &self.query_goals)
     }
 
     /// WI-20261121-G8E02 — the proof tag of the top frame's current goal, or
@@ -7194,10 +7212,19 @@ impl KnowledgeBase {
     /// ([`SearchStream::drain_with_proofs`]) and, where it yields none and was complete, the
     /// goal has a refutation. The search itself takes the same steps as without it.
     pub(crate) fn resolve_lazy_goal_with_proof(&self, goal: Value, config: &ResolveConfig) -> SearchStream {
-        let mut stream = self.resolve_lazy_goals(vec![goal], config);
+        self.resolve_lazy_goals_with_proof(vec![goal], config)
+    }
+
+    /// WI-20261123-5MMGP — [`Self::resolve_lazy_goals`] in PROOF MODE, each query goal a root
+    /// of the record: the `i`-th goal's node is `i + 1`. A positive proof is built of the first
+    /// goal ([`SearchStream::drain_with_proofs`], which is asked of one goal); a refutation of
+    /// all of them ([`SearchStream::query_refutation`]).
+    pub(crate) fn resolve_lazy_goals_with_proof(&self, goals: Vec<Value>, config: &ResolveConfig) -> SearchStream {
+        let mut stream = self.resolve_lazy_goals(goals, config);
         let mut rec = ProofRecorder::default();
-        let root = rec.root();
-        stream.stack[0].goals[0].proof = ProofTag::of(root);
+        for g in &mut stream.stack[0].goals {
+            g.proof = ProofTag::of(rec.root());
+        }
         stream.proof = Some(Box::new(rec));
         stream
     }

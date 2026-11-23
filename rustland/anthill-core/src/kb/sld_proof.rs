@@ -341,10 +341,7 @@ impl ProofRecorder {
     /// with no answer and was complete. An `Err` where the record holds no failed attempt of
     /// `root`.
     pub(crate) fn refutation(&self, kb: &mut KnowledgeBase, root: u32) -> Result<TermId, String> {
-        let mut by_node: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (i, a) in self.attempts.iter().enumerate() {
-            by_node.entry(a.node).or_default().push(i as u32 + 1);
-        }
+        let by_node = self.attempts_by_node();
         let failed_root = by_node
             .get(&root)
             .and_then(|atts| atts.iter().rev().copied().find(|&a| self.failed(a)))
@@ -353,6 +350,63 @@ impl ProofRecorder {
         let empty = Substitution::default();
         let mut b = Builder { kb, syms, subst: &empty };
         self.refuted_attempt(&mut b, &by_node, failed_root)
+    }
+
+    /// WI-20261123-5MMGP — the refutation of a QUERY, `roots` the nodes of its goals in order
+    /// and `goals` the goals themselves, read off the record of a search that ended with no
+    /// answer and was complete
+    /// ([`KnowledgeBase::refute_typed_logical_query_with`](super::KnowledgeBase::refute_typed_logical_query_with)).
+    ///
+    /// ONE GOAL: that goal's refutation ([`Self::refutation`]), the term
+    /// `SLDProof.of(!g, ?p)` binds `?p` to.
+    ///
+    /// SEVERAL: `refuted(and(g1, and(g2, …)), steps)` — the goal is the conjunction as `!(g1,
+    /// g2, …)` writes it, and the steps are FLAT: one `Step(none, failing, because)` per branch,
+    /// naming the query goal the branch failed at, as asked on that branch, in the order of the
+    /// goals and then of the branches. The kernel's own plumbing — the `and` clause and the
+    /// `push_and` builtin, a level of each per conjunct, which the proof of `!(g1, g2)` holds —
+    /// is no step of the query's: the query's goals are its own, and are asked side by side.
+    pub(crate) fn query_refutation(
+        &self,
+        kb: &mut KnowledgeBase,
+        roots: &[u32],
+        goals: &[Value],
+    ) -> Result<TermId, String> {
+        assert_eq!(roots.len(), goals.len(), "one root per query goal");
+        if let [root] = roots {
+            return self.refutation(kb, *root);
+        }
+        let Some((last, init)) = goals.split_last() else {
+            return Err("proof mode: a query with no goal has no refutation".to_string());
+        };
+        let and = kb
+            .try_resolve_symbol("anthill.kernel.and")
+            .ok_or_else(|| "`anthill.kernel.and` is not loaded: a conjunction is written with it".to_string())?;
+        let conjunction = init
+            .iter()
+            .rev()
+            .fold(last.clone(), |rest, g| kb.make_goal_value(and, vec![g.clone(), rest]));
+        let by_node = self.attempts_by_node();
+        let syms = ProofSyms::resolve(kb)?;
+        let empty = Substitution::default();
+        let mut b = Builder { kb, syms, subst: &empty };
+        let none = b.clause_label(None);
+        let steps = self.steps_at(&mut b, &by_node, none, roots)?;
+        if steps.is_empty() {
+            return Err("proof mode: the record holds no failed attempt of any goal of the query".to_string());
+        }
+        let goal = b.goal(&conjunction)?;
+        let list = b.kb.build_list(&steps);
+        Ok(b.entity(b.syms.refuted, &[goal, list]))
+    }
+
+    /// Each node's attempts, in the order they were made.
+    fn attempts_by_node(&self) -> HashMap<u32, Vec<u32>> {
+        let mut by_node: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (i, a) in self.attempts.iter().enumerate() {
+            by_node.entry(a.node).or_default().push(i as u32 + 1);
+        }
+        by_node
     }
 
     fn failed(&self, a: u32) -> bool {
@@ -423,8 +477,20 @@ impl ProofRecorder {
             InstanceKind::Clause(rid) => b.clause_label(Some(*rid)),
             _ => b.clause_label(None),
         };
+        self.steps_at(b, by_node, clause, &inst.body)
+    }
+
+    /// The steps at the goals of `nodes`, each named in `clause`: each failed attempt of one of
+    /// them, on its branch, in the order of the nodes and then of the attempts.
+    fn steps_at(
+        &self,
+        b: &mut Builder<'_>,
+        by_node: &HashMap<u32, Vec<u32>>,
+        clause: TermId,
+        nodes: &[u32],
+    ) -> Result<Vec<TermId>, String> {
         let mut out = Vec::new();
-        for n in &inst.body {
+        for n in nodes {
             let Some(atts) = by_node.get(n) else { continue };
             for &a in atts {
                 if !self.failed(a) {
