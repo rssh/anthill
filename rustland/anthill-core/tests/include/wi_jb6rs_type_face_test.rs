@@ -614,18 +614,19 @@ const STORED_DECLS: &str = r#"
 /// A type written as data survives the JSON store: the writer spells an entity's type by
 /// its qualified name, and the reader, under a field declared `Type`, builds the type that
 /// name denotes — so the reloaded fact is found by the bracket and is the fact it was. A
-/// sort's type (`Int64`) is read back the same way. A type WITH bindings has no flat form
-/// and is refused at the writer, loudly, rather than written as the instance it would
-/// reload as.
+/// sort's type (`Int64`) is read back the same way. A type WITH bindings is its text too
+/// (WI-20261122-WC18Y: proposal 021's `Type` row, `type_to_text` / `type_from_text`), where it
+/// used to be refused at the writer: written as the entity object an instance is, it would
+/// have reloaded as an instance.
 ///
 /// A string naming no type under such a field is refused, not read as a string.
 ///
-/// BACKED OUT, each alone (measured), this row fails: the reader's `Type` arm, or its
-/// refusal of a name that is no type; the writer's arm qualifying a type, or asking
-/// `Option.none` before it (`none[]` became JSON `null`), or its refusal of a type with
-/// bindings; the clause bracket's entity fill (the fixture does not load); the fact-field
-/// check's type-face arm; and `bare_entity_slots`' face guard, which keeps the reload's
-/// `Item[]` from being expanded into a pattern.
+/// BACKED OUT, each alone (measured before WC18Y), this row failed: the reader's `Type` arm,
+/// or its refusal of a name that is no type; the writer's arm qualifying a type, or asking
+/// `Option.none` before it (`none[]` became JSON `null`); the clause bracket's entity fill
+/// (the fixture does not load); the fact-field check's type-face arm; and
+/// `bare_entity_slots`' face guard, which keeps the reload's `Item[]` from being expanded into
+/// a pattern.
 #[test]
 fn a_type_in_the_json_store_reads_back_as_the_type() {
     use anthill_core::persistence::term_ser;
@@ -662,7 +663,16 @@ fn a_type_in_the_json_store_reads_back_as_the_type() {
         domain,
     );
     assert!(
-        matches!(&unknown, Err(errs) if errs.iter().any(|e| format!("{e:?}").contains("names no sort"))),
+        matches!(&unknown, Err(errs) if errs.iter().any(|e| matches!(
+            e,
+            term_ser::SerError::Row {
+                error: term_ser::ValueError {
+                    problem: term_ser::ValueProblem::UnknownName { name },
+                    ..
+                },
+                ..
+            } if name == "no.such.Sort"
+        ))),
         "a `Type` field naming no type is refused, not read as a string: {unknown:?}"
     );
 
@@ -673,11 +683,20 @@ fn a_type_in_the_json_store_reads_back_as_the_type() {
         .try_resolve_symbol("test.jb6rs.boundstored.BoundHolder")
         .expect("BoundHolder resolves");
     let rids = bound.rules_by_functor(holder);
-    let refused = term_ser::serialize_json(&bound, "test.jb6rs.boundstored.BoundHolder", &rids);
+    let json = term_ser::serialize_json(&bound, "test.jb6rs.boundstored.BoundHolder", &rids)
+        .expect("a type with bindings is written");
     assert!(
-        matches!(&refused, Err(e) if format!("{e:?}").contains("cannot be represented")),
-        "a type with bindings is refused at the writer: {refused:?}"
+        json.contains("\"test.jb6rs.boundstored.Foo[X = anthill.prelude.Int64]\""),
+        "as its text: {json}"
     );
+    let mut reloaded = load_kb_with(&format!("namespace test.jb6rs.boundstored{STORED_DECLS}end\n"));
+    let domain = reloaded.intern("test.jb6rs.boundstored");
+    term_ser::load_json(&mut reloaded, &json, domain).expect("loads back");
+    let goal = query_pattern_term(
+        &mut reloaded,
+        "test.jb6rs.boundstored.BoundHolder(t: test.jb6rs.boundstored.Foo[X = anthill.prelude.Int64])",
+    );
+    assert_eq!(reloaded.resolve(&[goal], &config).len(), 1, "and reads back as the type: {json}");
 }
 
 /// A field declared at a DATA sort holds its instances, and the typer refuses anything

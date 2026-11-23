@@ -284,7 +284,13 @@ langauge = "rust"
     assert!(
         errs.iter().any(|e| matches!(
             e,
-            term_ser::SerError::UnknownField { field, .. } if field == "langauge"
+            term_ser::SerError::Row {
+                error: term_ser::ValueError {
+                    problem: term_ser::ValueProblem::UnknownField { name },
+                    ..
+                },
+                ..
+            } if name == "langauge"
         )),
         "expected UnknownField for 'langauge', got: {errs:?}",
     );

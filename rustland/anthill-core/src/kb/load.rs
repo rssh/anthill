@@ -26549,6 +26549,43 @@ pub fn convert_query_term(
     Ok(goals.pop().expect("one goal converted for one pattern"))
 }
 
+/// WI-20261122-WC18Y — ONE TYPE written as text outside any file (`ty`, the declared type of
+/// the one item of `parsed`), lowered as a declaration's type is ([`Loader::type_expr_to_value`])
+/// at `<global>`: how proposal 021 reads a value at `Type` and a `meta.entity`
+/// (`term_ser::type_from_text`). So a type read back from its text is the term the same type
+/// is where a declaration writes it, defaults of unwritten parameters filled, an entity's type
+/// its constructor's face. An alias is the type it stands for: the text is written by the
+/// type, not by how an author spelled it. A name that is a value or no type is refused as an
+/// annotation's is ([`LoadError::AnnotationNamesNoType`]).
+///
+/// The text is nobody's file. It is read ON BEHALF OF NO FILE, so a file-scoped import of
+/// whichever file was scanned last does not reach it (the asking file is restored after),
+/// and under ONE name-only source, so a text read per call banks no source entry per call.
+pub(crate) fn lower_type_text(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    ty: &TypeExpr,
+) -> Result<Value, Vec<LoadError>> {
+    let global = kb.global_scope();
+    let source = kb.sources.synthetic("<a type read from its text>");
+    let asking = kb.symbols.set_asking_file(None);
+    let mut loaded_paths = HashSet::new();
+    let mut loader =
+        Loader::new(kb, parsed, &NullResolver, &mut loaded_paths, global, Some(source));
+    // It declares nothing, as a query pattern declares nothing: an inline description in the
+    // text (`?x {< … >}`) asserts no `DescriptionInfo`.
+    loader.lent_to_query = true;
+    let value = loader.type_expr_to_value(ty);
+    let value = loader.refuse_annotation_naming_no_type(ty, value);
+    let errors = dedup_load_errors(std::mem::take(&mut loader.errors));
+    kb.symbols.set_asking_file(asking);
+    if errors.is_empty() {
+        Ok(value)
+    } else {
+        Err(errors)
+    }
+}
+
 /// The goals of one query — a conjunction sharing `var_map` — each converted as
 /// [`convert_query_term`] converts one, and typed together where they are read (proposal 073
 /// §6.2): a variable one goal's column gives a type is at that type in the others, as in a
@@ -30680,7 +30717,8 @@ struct Loader<'a> {
     /// nothing ([`SourceRole::Query`]): an inline description in it asserts no
     /// `DescriptionInfo`, as one elsewhere in the pattern asserts none. MEASURED before it:
     /// `applyThunk(lambda () -> ?s {< the text >}?, ?r)` asserted one, which every query of
-    /// the run then answered.
+    /// the run then answered. Lent to a type read from its text ([`lower_type_text`]) too,
+    /// which declares nothing either: reading a `Type` value asserts no fact.
     lent_to_query: bool,
     // Map from parse-time Symbol → KB Symbol (for reintern — plain intern)
     sym_map: HashMap<u32, Symbol>,
@@ -41862,6 +41900,17 @@ impl<'a> Loader<'a> {
     /// call's bracket is lowered by the other entry.
     fn annotation_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         let value = self.written_type_to_value(ty);
+        self.refuse_annotation_naming_no_type(ty, value)
+    }
+
+    /// [`Self::annotation_type_to_value`]'s refusal, of a type `ty` lowered to `value`: one
+    /// that is a value, or a name that is no type. Shared with a type read from its text
+    /// ([`lower_type_text`]), which is lowered without the alias's node.
+    fn refuse_annotation_naming_no_type(
+        &mut self,
+        ty: &TypeExpr,
+        value: crate::eval::value::Value,
+    ) -> crate::eval::value::Value {
         // A NAME, or a member read off a bracket: a bracket on a head that takes no argument
         // is refused where it is lowered (`type_application_keys`).
         if !matches!(ty, TypeExpr::Simple(_) | TypeExpr::Member { .. }) {

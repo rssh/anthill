@@ -423,7 +423,16 @@ status = "Open"
         .expect_err("missing required field must error");
     assert!(
         errs.iter()
-            .any(|e| matches!(e, term_ser::SerError::MissingField { field, .. } if field == "id")),
+            .any(|e| matches!(
+                e,
+                term_ser::SerError::Row {
+                    error: term_ser::ValueError {
+                        problem: term_ser::ValueProblem::MissingField { name },
+                        ..
+                    },
+                    ..
+                } if name == "id"
+            )),
         "expected MissingField for 'id', got: {errs:?}"
     );
 }

@@ -17,7 +17,7 @@
 
 use anthill_core::kb::term::Term;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::persistence::term_ser::{self, SerError};
+use anthill_core::persistence::term_ser::{self, SerError, ValueError, ValueProblem};
 
 /// `Stray` is a TOP-LEVEL entity, so its qualified name IS its short name — the one
 /// shape the last-segment fallback could land on from any path ending in `.Stray`.
@@ -165,8 +165,13 @@ status = { Stray = { id = "s1" } }
     assert!(
         errs.iter().any(|e| matches!(
             e,
-            SerError::UnknownConstructor { name, sort: Some(sort) }
-                if name == "Stray" && sort == "wi912.app.Status"
+            SerError::Row {
+                error: ValueError {
+                    problem: ValueProblem::UnknownConstructor { name, sort },
+                    ..
+                },
+                ..
+            } if name == "Stray" && sort == "wi912.app.Status"
         )),
         "expected UnknownConstructor(Stray in wi912.app.Status), got {errs:?}",
     );
@@ -191,7 +196,16 @@ status = { Nowhere = {} }
     .expect_err("`Nowhere` is declared nowhere");
     assert!(
         errs.iter()
-            .any(|e| matches!(e, SerError::UnknownConstructor { name, .. } if name == "Nowhere")),
+            .any(|e| matches!(
+                e,
+                SerError::Row {
+                    error: ValueError {
+                        problem: ValueProblem::UnknownConstructor { name, .. },
+                        ..
+                    },
+                    ..
+                } if name == "Nowhere"
+            )),
         "expected UnknownConstructor(Nowhere), got {errs:?}",
     );
 }

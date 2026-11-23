@@ -529,6 +529,9 @@ mod wi_9wvt7_type_value_bracket_test;
 mod wi_9wvt7_value_position_alias_test;
 #[path = "include/wi_jb6rs_type_face_test.rs"]
 mod wi_jb6rs_type_face_test;
+
+#[path = "include/wi_wc18y_value_codec_test.rs"]
+mod wi_wc18y_value_codec_test;
 #[path = "include/wi_9wvt7_clock_handler_test.rs"]
 mod wi_9wvt7_clock_handler_test;
 

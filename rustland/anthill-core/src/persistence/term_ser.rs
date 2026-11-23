@@ -1,43 +1,314 @@
-/// Term serialization — TOML/JSON ↔ KB terms.
-///
-/// Both formats use a `meta` + `data` envelope. The `meta.entity` field names
-/// the fully-qualified entity type; `data` contains one or more instances.
-///
-/// The core conversion is format-agnostic: `serde_json::Value` is the common
-/// intermediate. TOML is converted to/from `serde_json::Value` via serde.
+//! Term serialization — one value at a declared type ↔ JSON, and the TOML/JSON data files
+//! built on it (proposal 021).
+//!
+//! THE UNIT IS THE VALUE. [`decode_value`] reads one JSON value as a term of a declared type
+//! and [`encode_value`] writes one value, on any carrier, at its declared type. The type is a
+//! term too, on any carrier, and is required: the mapping is directed by it at every step,
+//! in both directions. [`CodecOptions`] chooses among the spellings the proposal admits.
+//!
+//! A data file — the `meta` + `data` envelope — is one use of the pair: each `data` entry is
+//! the object of the fields of the constructor `meta.entity` names, decoded with variables
+//! on and asserted as a fact ([`load_json`], [`load_toml`]); [`serialize_json`] and
+//! [`serialize_toml`] write facts back the same way. TOML is converted to and from
+//! `serde_json::Value`, so it follows the same mapping.
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
 use crate::eval::value::Value;
-use crate::intern::{positional_label, Contested, ResolveResult, Symbol, SymbolKind};
+use crate::intern::{is_positional_label_at, Contested, ResolveResult, Symbol};
+use crate::kb::load::{lower_type_text, LoadError};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
-use crate::kb::ClauseKind;
 use crate::kb::term_view::{TermView, ViewHead};
-use crate::kb::{KnowledgeBase, RuleId};
+use crate::kb::typing::{extract_type, type_display_name_value, type_qualified_text, TypeExtractor};
+use crate::kb::{ClauseKind, KnowledgeBase, RuleId};
+use crate::parse::desugar_target as dt;
+use crate::parse::ir::Item;
+use crate::persistence::print::TermPrinter;
 
-// Qualified names of the prelude `Option`/`List` constructors. The (de)serializer
-// detects these wrappers by QUALIFIED name (WI-503) so a user entity merely named
-// `some`/`none`/`cons`/`nil` in another namespace isn't mistaken for one. Defined
-// once here rather than re-spelled at each call site.
+// The prelude sorts and constructors the mapping gives a spelling of its own. Detected by
+// QUALIFIED name (WI-503), so a user entity merely named `some` / `cons` in another
+// namespace is mapped as the entity it is.
+const OPTION: &str = "anthill.prelude.Option";
 const OPTION_SOME: &str = "anthill.prelude.Option.some";
 const OPTION_NONE: &str = "anthill.prelude.Option.none";
+const LIST: &str = "anthill.prelude.List";
 const LIST_CONS: &str = "anthill.prelude.List.cons";
 const LIST_NIL: &str = "anthill.prelude.List.nil";
 
-// ── Error type ─────────────────────────────────────────────────
+// ── Options ────────────────────────────────────────────────────
 
+/// How the mapping spells what it has two spellings for (proposal 021, "API"). Each default
+/// is the mapping as the proposal states it. The JSON does not record the options it was
+/// written with, so a value is read with the options it was written with: where an option
+/// chooses between two spellings the reader takes the chosen one and refuses the other,
+/// except [`BigIntSpelling`], whose reader takes both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CodecOptions {
+    /// `false`: a string is the string it spells. `true`: `"?name"` is a variable, `"?"` an
+    /// anonymous one, and a leading `\` escapes a literal `?` string.
+    pub variables: bool,
+    pub entity_tags: EntityTags,
+    pub tag_names: TagNames,
+    pub big_int: BigIntSpelling,
+    pub wider_tuple: WiderTuple,
+}
+
+impl CodecOptions {
+    /// The options a data file is read and written with: the defaults, with variables on and a
+    /// wider tuple refused, so a data file has one format and a fact is written whole (a
+    /// projected tuple would reload as another fact).
+    pub fn data_file() -> Self {
+        CodecOptions {
+            variables: true,
+            wider_tuple: WiderTuple::Refuse,
+            ..CodecOptions::default()
+        }
+    }
+}
+
+/// Whether a constructed value always carries its constructor's tag.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EntityTags {
+    /// Every constructed value is `"Tag"` or `{"Tag": …}`, whatever its declared type.
+    #[default]
+    Always,
+    /// A value whose declared type's ONE constructor is the type itself (a free-standing
+    /// entity, an eponymous sort with no other constructor, a constructor's own type) is the
+    /// object of its fields, at any depth. Every other constructed value is tagged still.
+    OmitAtEntityType,
+}
+
+/// How a tag names its constructor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TagNames {
+    /// The constructor's short name, looked up among the declared type's constructors.
+    #[default]
+    Short,
+    /// Its qualified name, which reads without the schema at hand.
+    Qualified,
+}
+
+/// How a `BigInt` is written. The reader takes both spellings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BigIntSpelling {
+    /// A number in the `i64` range, its decimal digits past it.
+    #[default]
+    NumberWhenItFits,
+    /// Always its digits, for a reader that loses integers past 2^53.
+    AlwaysDigits,
+}
+
+/// What the writer does with a tuple value wider than its declared type (kernel §4.5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WiderTuple {
+    /// Write the components the type names and no others.
+    #[default]
+    Project,
+    /// Refuse it ([`ValueProblem::WiderThanDeclared`]).
+    Refuse,
+}
+
+// ── Errors ─────────────────────────────────────────────────────
+
+/// Where in a JSON value a problem is: a sequence of keys and indices from the value's root.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JsonPath(Vec<PathStep>);
+
+/// One step of a [`JsonPath`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathStep {
+    Key(String),
+    Index(usize),
+}
+
+impl JsonPath {
+    pub fn steps(&self) -> &[PathStep] {
+        &self.0
+    }
+
+    /// The path written from `root` — `$` for a value, `data[2]` for a file's row.
+    fn write_from(&self, root: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(root)?;
+        for step in &self.0 {
+            match step {
+                PathStep::Index(i) => write!(f, "[{i}]")?,
+                PathStep::Key(k) if is_identifier(k) => write!(f, ".{k}")?,
+                PathStep::Key(k) => write!(f, "[{}]", serde_json::Value::String(k.clone()))?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for JsonPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write_from("$", f)
+    }
+}
+
+fn is_identifier(k: &str) -> bool {
+    let mut chars = k.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// What was wrong with one value, at the place a [`ValueError`] names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValueProblem {
+    /// The JSON value, or the value being written, is not of a shape the type takes.
+    WrongShape { found: String },
+    /// A number under `Int64` or `BigInt` written with a fraction or an exponent.
+    NotAnInteger { found: String },
+    /// A number past the range of `Int64`, or an unquoted one past `u64` under `BigInt`.
+    OutOfRange { found: String },
+    /// A key that names no field of the constructor, or no label of the tuple.
+    UnknownField { name: String },
+    /// A required field or a tuple component is absent.
+    MissingField { name: String },
+    /// A tag, or a value's constructor, that is no constructor of the declared type.
+    UnknownConstructor { name: String, sort: String },
+    /// An object where a constructed value is expected that is not the object of one key, its
+    /// constructor's tag (`tags` are the ones the declared type admits).
+    NotTagged { found: String, tags: Vec<String> },
+    /// A shorthand payload for a constructor without exactly one field, or a bare tag for one
+    /// with fields.
+    NotOneField { constructor: String, fields: usize },
+    /// A constructor reserved to the runtime ([`crate::kb::RuntimeAccount`]), at any depth.
+    RuntimeAccount { constructor: String },
+    /// The declared type has no data spelling (`Set`, `Map`, a function type).
+    NoDataSpelling,
+    /// With [`WiderTuple::Refuse`], a tuple value with components its type does not name.
+    WiderThanDeclared { labels: Vec<String> },
+    /// A type still holds a parameter after substitution and defaults.
+    UnboundParameter { name: String },
+    /// A variable where none has a spelling: any with variables off, a rigid or de Bruijn
+    /// one, one standing for a whole `Option`.
+    Variable,
+    /// A value with no spelling: `some(none())`, a list with a variable tail, a non-finite
+    /// float.
+    Unrepresentable { what: String },
+    /// A name in a type's text that is absent at `<global>`.
+    UnknownName { name: String },
+    /// A name in a type's text that is ambiguous at `<global>`.
+    AmbiguousName { name: String, candidates: Vec<String> },
+    /// A name in a type's text that is `internal` to where it is declared.
+    InternalName { name: String, declared_in: String },
+    /// A type's text that is not the text of one type.
+    NotAType { text: String, reason: String },
+}
+
+impl std::fmt::Display for ValueProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValueProblem::WrongShape { found } => write!(f, "found {found}"),
+            ValueProblem::NotAnInteger { found } => {
+                write!(f, "found {found}, which is not written as an integer")
+            }
+            ValueProblem::OutOfRange { found } => write!(f, "found {found}, which is out of range"),
+            ValueProblem::UnknownField { name } => write!(f, "`{name}` names no field"),
+            ValueProblem::MissingField { name } => write!(
+                f,
+                "required field `{name}` is absent (only an Option field may be omitted)"
+            ),
+            ValueProblem::UnknownConstructor { name, sort } => {
+                write!(f, "'{name}' is not a constructor of sort '{sort}'")
+            }
+            ValueProblem::NotTagged { found, tags } => write!(
+                f,
+                "found {found}, where a constructed value is its constructor's tag ({})",
+                tags.join(", ")
+            ),
+            ValueProblem::NotOneField {
+                constructor,
+                fields: 0,
+            } => write!(f, "`{constructor}` declares no fields, so it is written as its tag alone"),
+            ValueProblem::NotOneField {
+                constructor,
+                fields: 1,
+            } => write!(
+                f,
+                "`{constructor}` declares one field, so its payload is the object of its fields \
+                 or its one field's value"
+            ),
+            ValueProblem::NotOneField {
+                constructor,
+                fields,
+            } => write!(
+                f,
+                "`{constructor}` declares {fields} fields, so its payload is the object of its fields"
+            ),
+            ValueProblem::RuntimeAccount { constructor } => write!(
+                f,
+                "`{constructor}` is {}; a value read from outside does not hold one",
+                crate::kb::RuntimeAccount::NOT_CONSTRUCTED
+            ),
+            ValueProblem::NoDataSpelling => write!(f, "the type has no data spelling"),
+            ValueProblem::WiderThanDeclared { labels } => write!(
+                f,
+                "the tuple has components the type does not name: {}",
+                labels.join(", ")
+            ),
+            ValueProblem::UnboundParameter { name } => write!(
+                f,
+                "type parameter `{name}` is bound neither by the type nor by a default"
+            ),
+            ValueProblem::Variable => write!(f, "found a variable, which has no spelling here"),
+            ValueProblem::Unrepresentable { what } => write!(f, "{what} has no spelling"),
+            ValueProblem::UnknownName { name } => write!(f, "`{name}` names nothing at <global>"),
+            ValueProblem::AmbiguousName { name, candidates } => write!(
+                f,
+                "`{name}` is ambiguous at <global>: {}",
+                candidates.join(", ")
+            ),
+            ValueProblem::InternalName { name, declared_in } => {
+                write!(f, "`{name}` is internal to `{declared_in}`")
+            }
+            ValueProblem::NotAType { text, reason } => write!(f, "`{text}` is not one type: {reason}"),
+        }
+    }
+}
+
+/// A value the pair could not read or write: where, what type was expected there, and what
+/// went wrong. Renders `{path}: expected {expected}, {problem}`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueError {
+    /// Where, e.g. `$.order.Order.lines[1]`.
+    pub path: JsonPath,
+    /// The type declared there, printed as the KB prints a type.
+    pub expected: String,
+    pub problem: ValueProblem,
+}
+
+impl ValueError {
+    fn write_from(&self, root: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.path.write_from(root, f)?;
+        write!(f, ": expected {}, {}", self.expected, self.problem)
+    }
+}
+
+impl std::fmt::Display for ValueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write_from("$", f)
+    }
+}
+
+impl std::error::Error for ValueError {}
+
+/// An error of the file readers and writers: of the envelope, or of one row ([`Self::Row`]).
 #[derive(Debug, Clone)]
 pub enum SerError {
     Format(String),
-    /// A data file names a constructor of one of the runtime's accounts.
+    /// `meta.entity` names a constructor of one of the runtime's accounts.
     RuntimeAccount(String),
     MissingMeta(String),
     UnknownEntity(String),
-    /// WI-912: a persisted name (`meta.entity`, or a variant key with no declared sort)
-    /// resolved to SEVERAL symbols at `<global>` — the ladder's ambiguity stop (WI-907).
-    /// Qualify the name in the data file.
+    /// WI-912: `meta.entity` resolved to SEVERAL symbols at `<global>` — the ladder's
+    /// ambiguity stop (WI-907). Qualify the name in the data file.
     AmbiguousName {
         name: String,
         candidates: Vec<String>,
@@ -51,12 +322,6 @@ pub enum SerError {
         entity: String,
         declared_in: String,
     },
-    /// WI-912: a variant key names no constructor — of the field's declared `sort`
-    /// when there is one, or of anything at `<global>` when there is none.
-    UnknownConstructor {
-        name: String,
-        sort: Option<String>,
-    },
     /// WI-926: `meta.entity` resolved to a symbol that declares no fields. The
     /// name is not an entity — typically a multi-constructor sort, which has no
     /// single row shape to deserialize against.
@@ -64,15 +329,19 @@ pub enum SerError {
         entity: String,
         constructors: Vec<String>,
     },
-    UnknownField {
+    /// The type arguments `meta.entity` applies its constructor to could not be read, or the
+    /// type they make is not the constructor's.
+    EntityType {
         entity: String,
-        field: String,
+        error: ValueError,
     },
-    MissingField {
-        entity: String,
-        field: String,
+    /// A row of a section is not a value of the constructor's fields: the `data` entry at
+    /// `index`, or the one `data` object (`None`); for a writer, the fact at that position of
+    /// the facts written.
+    Row {
+        index: Option<usize>,
+        error: ValueError,
     },
-    InvalidValue(String),
 }
 
 impl std::fmt::Display for SerError {
@@ -102,13 +371,6 @@ impl std::fmt::Display for SerError {
                 f,
                 "entity '{entity}' is internal to '{declared_in}' and cannot be named by a data file"
             ),
-            SerError::UnknownConstructor {
-                name,
-                sort: Some(sort),
-            } => write!(f, "'{name}' is not a constructor of sort '{sort}'"),
-            SerError::UnknownConstructor { name, sort: None } => {
-                write!(f, "unknown constructor: {name}")
-            }
             SerError::NoFieldSchema {
                 entity,
                 constructors,
@@ -128,27 +390,1285 @@ impl std::fmt::Display for SerError {
                 }
                 Ok(())
             }
-            SerError::UnknownField { entity, field } => {
-                write!(f, "unknown field '{field}' on entity '{entity}'")
+            SerError::EntityType { entity, error } => {
+                write!(f, "meta.entity '{entity}': ")?;
+                error.write_from("meta.entity", f)
             }
-            SerError::MissingField { entity, field } => {
-                write!(
-                    f,
-                    "required field '{field}' absent from persisted entity '{entity}' \
-                     (only an Option field may be omitted)"
-                )
-            }
-            SerError::InvalidValue(msg) => write!(f, "invalid value: {msg}"),
+            SerError::Row { index: Some(index), error } => error.write_from(&format!("data[{index}]"), f),
+            SerError::Row { index: None, error } => error.write_from("data", f),
         }
     }
 }
 
 impl std::error::Error for SerError {}
 
-// ── Public API ─────────────────────────────────────────────────
+// ── The pair ───────────────────────────────────────────────────
 
-/// Load entities from a TOML string into the KB.
-/// Returns the number of facts loaded.
+/// Read `json` as ONE value of type `ty` (on any carrier) and return its term, hash-consed
+/// into `kb`'s store. Nothing is asserted: the KB's facts and rules are as they were. With
+/// `opts.variables` on, the value's variables are fresh, and their scope is this one call.
+/// To pass the result to an operation, wrap it as `Value::term(id)`.
+pub fn decode_value(
+    kb: &mut KnowledgeBase,
+    json: &serde_json::Value,
+    ty: &impl TermView,
+    opts: CodecOptions,
+) -> Result<TermId, ValueError> {
+    let ty = Ty::closed(owned(ty));
+    Decoder::new(kb, opts).value(json, &ty)
+}
+
+/// Write `value` at type `ty`, each on any carrier: a `TermId`, a `Value` an operation
+/// returned, an occurrence. One term encodes to the same bytes on every carrier. Reads `kb`
+/// and changes nothing. A value that is not data — a closure, a stream, a map, a cell — is
+/// refused, as is a type with no data spelling.
+pub fn encode_value(
+    kb: &KnowledgeBase,
+    value: &impl TermView,
+    ty: &impl TermView,
+    opts: CodecOptions,
+) -> Result<serde_json::Value, ValueError> {
+    let ty = Ty::closed(owned(ty));
+    let value = owned(value);
+    Encoder::new(kb, opts, &value).value(&value, &ty)
+}
+
+/// Read a type from its text — how a value at `Type` is spelled, and `meta.entity`. Names
+/// are resolved at `<global>`, and one that is absent, ambiguous or `internal` is refused.
+/// The type is lowered as a declaration's type is, so it is the term the same type is in a
+/// declaration: an entity's type is its constructor's face, an unwritten parameter takes its
+/// default. A type holding a variable is refused.
+pub fn type_from_text(kb: &mut KnowledgeBase, text: &str) -> Result<TermId, ValueError> {
+    let refuse = |problem| ValueError {
+        path: JsonPath::default(),
+        expected: "Type".to_owned(),
+        problem,
+    };
+    let not_a_type = |reason: String| {
+        refuse(ValueProblem::NotAType {
+            text: text.to_owned(),
+            reason,
+        })
+    };
+    // One `const` with no value, whose declared type is the text: the grammar's type rule, and
+    // no other item. A text that closes the declaration and writes another (`Int64 const x:
+    // …`) parses to two items, and one that gives it a value (`Int64 = 3`) has one.
+    let source = format!("const __anthill_type_text: {text}\n");
+    let parsed = crate::parse::parse(&source).map_err(|errs| {
+        not_a_type(errs.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join("; "))
+    })?;
+    // A top-level `import` is kept apart from the items, and is refused as well.
+    let ty = match parsed.items.as_slice() {
+        [Item::Const(c)] if c.value.is_none() && parsed.imports.is_empty() => &c.ty,
+        _ => return Err(not_a_type("the text holds more than a type".to_owned())),
+    };
+    let value = lower_type_text(kb, &parsed, ty).map_err(|errs| {
+        let first = errs.into_iter().next().expect("a refused lowering reports an error");
+        refuse(type_text_problem(text, first))
+    })?;
+    if holds_variable(kb, &value) {
+        return Err(refuse(ValueProblem::Variable));
+    }
+    kb.alloc_from_value(&value)
+        .map_err(|e| not_a_type(format!("it has no term: {e:?}")))
+}
+
+/// Write a type as its text: every name qualified, an application's bindings in the order of
+/// their keys' names, so one type has one text in every load. The text [`type_from_text`]
+/// reads back as the same type. A type holding a variable, or a value that is not a type, is
+/// refused.
+pub fn type_to_text(kb: &KnowledgeBase, ty: &impl TermView) -> Result<String, ValueError> {
+    type_text(kb, &owned(ty)).map_err(|problem| ValueError {
+        path: JsonPath::default(),
+        expected: "Type".to_owned(),
+        problem,
+    })
+}
+
+/// [`type_to_text`] without a location: the encoder places the problem.
+fn type_text(kb: &KnowledgeBase, ty: &Value) -> Result<String, ValueProblem> {
+    if holds_variable(kb, ty) {
+        return Err(ValueProblem::Variable);
+    }
+    if !is_type_term(kb, ty) {
+        return Err(ValueProblem::WrongShape {
+            found: describe_value(kb, ty),
+        });
+    }
+    Ok(type_qualified_text(kb, &crate::kb::term_view::ViewItem::Value(ty)))
+}
+
+/// The value's problem for the first refusal of a type's lowering: a name's, named as the
+/// name ladder names it; any other, as the loader renders it.
+fn type_text_problem(text: &str, e: LoadError) -> ValueProblem {
+    match e {
+        // The location is in the one-line source the text was wrapped in, not the caller's.
+        LoadError::Located { inner, .. } => type_text_problem(text, *inner),
+        LoadError::UnresolvedName { name, .. } | LoadError::UnresolvedTypeName { name, .. } => {
+            ValueProblem::UnknownName { name }
+        }
+        LoadError::AmbiguousSymbol {
+            name, candidates, ..
+        } => ValueProblem::AmbiguousName { name, candidates },
+        LoadError::ForbiddenInternalAccess {
+            name, declared_in, ..
+        } => ValueProblem::InternalName { name, declared_in },
+        other => ValueProblem::NotAType {
+            text: text.to_owned(),
+            reason: other.to_string(),
+        },
+    }
+}
+
+/// Any carrier as an owned `Value`, so the walks read one carrier type and descend by
+/// [`crate::kb::term_view::ViewItem::to_value`].
+fn owned(v: &impl TermView) -> Value {
+    match v.as_bind_value() {
+        crate::kb::persist_subst::BindValue::Term(t) => Value::term(t),
+        crate::kb::persist_subst::BindValue::Value(v) => v,
+        crate::kb::persist_subst::BindValue::Path(_) => {
+            unreachable!("a view's own value is never a path into a fact")
+        }
+    }
+}
+
+/// Does `v` hold a variable anywhere?
+fn holds_variable(kb: &KnowledgeBase, v: &impl TermView) -> bool {
+    match v.head(kb) {
+        ViewHead::Var(_) => true,
+        ViewHead::Functor { pos_arity, .. } => {
+            (0..pos_arity).any(|i| v.pos_arg(kb, i).is_some_and(|a| holds_variable(kb, &a)))
+                || v.named_keys(kb)
+                    .into_iter()
+                    .any(|k| v.named_arg(kb, k).is_some_and(|a| holds_variable(kb, &a)))
+        }
+        ViewHead::Const(_) | ViewHead::Ident(_) | ViewHead::Bottom | ViewHead::Opaque => false,
+    }
+}
+
+/// How often each flex variable occurs in `v`.
+fn count_variables(kb: &KnowledgeBase, v: &impl TermView, counts: &mut HashMap<VarId, usize>) {
+    match v.head(kb) {
+        ViewHead::Var(Var::Global(vid)) => *counts.entry(vid).or_default() += 1,
+        ViewHead::Functor { pos_arity, .. } => {
+            for i in 0..pos_arity {
+                if let Some(a) = v.pos_arg(kb, i) {
+                    count_variables(kb, &a, counts);
+                }
+            }
+            for k in v.named_keys(kb) {
+                if let Some(a) = v.named_arg(kb, k) {
+                    count_variables(kb, &a, counts);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Is `v` a type, as a value at `Type` must be — and not an instance, or a value? A name is a
+/// type when it is a face, or has a type reading and no face beside it (`Int64`): a
+/// constructor's instance and its type share a name, and the type is the FACE
+/// (WI-20260902-JB6RS). The reader's rule ([`type_from_text`] refuses what this refuses),
+/// so a `Type` value the writer writes reads back.
+fn is_type_term(kb: &KnowledgeBase, v: &Value) -> bool {
+    let names_a_type =
+        |s: Symbol| s.is_type_face() || (kb.has_type_reading(s) && kb.type_face_of(s) == s);
+    match extract_type(kb, v) {
+        TypeExtractor::SortRef(s) => names_a_type(s),
+        TypeExtractor::Parameterized { base, .. } => {
+            // A parameterized type's head is its functor, which may be a constructor's face.
+            match v.head(kb) {
+                ViewHead::Functor { functor, .. } => names_a_type(functor),
+                _ => names_a_type(base),
+            }
+        }
+        TypeExtractor::NamedTuple(_)
+        | TypeExtractor::Arrow { .. }
+        | TypeExtractor::PolyType { .. }
+        | TypeExtractor::EffectsRows(_)
+        | TypeExtractor::Nothing => true,
+        _ => false,
+    }
+}
+
+// ── The declared type, as the walks read it ───────────────────
+
+/// A declared type: a type term on whatever carrier it rides, and what the type parameters it
+/// may name are bound to. A constructor's field is typed in its sort's parameters; at a value
+/// of `Box[T = Int64]` the field `items: List[T = T]` is read with `T` bound to `Int64`. The
+/// binding is itself a type with the bindings of the place it was written in, so a parameter
+/// is substituted at any depth without building a type term (the encoder has a `&` KB).
+#[derive(Clone)]
+struct Ty {
+    view: Value,
+    env: Env,
+}
+
+/// The bindings of the parameters a type may name: each parameter's canonical variable (its
+/// `VarId`'s raw id) and what it stands for.
+#[derive(Clone, Default)]
+struct Env(Rc<Vec<(u32, Binding)>>);
+
+#[derive(Clone)]
+enum Binding {
+    To(Ty),
+    /// A parameter the type leaves unwritten and that declares no default, kept by its name: its
+    /// canonical variable is anonymous (`?_`), and a message names the parameter.
+    Open(Symbol),
+}
+
+impl Env {
+    fn lookup(&self, id: u32) -> Option<&Binding> {
+        self.0.iter().find(|(v, _)| *v == id).map(|(_, b)| b)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Ty {
+    /// A type that names no parameter of a place: what a caller hands the pair.
+    fn closed(view: Value) -> Ty {
+        Ty {
+            view,
+            env: Env::default(),
+        }
+    }
+
+    fn within(&self, view: Value) -> Ty {
+        Ty {
+            view,
+            env: self.env.clone(),
+        }
+    }
+}
+
+/// What a declared type is, to the mapping.
+enum Shape {
+    String,
+    Int64,
+    Float,
+    BigInt,
+    Bool,
+    Type,
+    Option(Ty),
+    List(Ty),
+    /// Components in the type's order, each `(label, type)`.
+    Tuple(Vec<(Symbol, Ty)>),
+    /// A sort or an entity: the constructors its values may be. `own` when the type's one
+    /// constructor is the type itself. `env` binds the sort's parameters, the place its
+    /// constructors' fields are typed in.
+    Data {
+        sort: Symbol,
+        ctors: Vec<Symbol>,
+        own: bool,
+        env: Env,
+    },
+}
+
+/// The type `ty` stands for once its parameter is looked up: `T` at `cons.head` within
+/// `List[T = Stock]` is `Stock`. A parameter nothing binds is refused, naming it.
+fn resolve(kb: &KnowledgeBase, ty: &Ty) -> Result<(Ty, TypeExtractor), ValueProblem> {
+    let mut cur = ty.clone();
+    loop {
+        match extract_type(kb, &cur.view) {
+            TypeExtractor::FlexVar { name, id } => match cur.env.lookup(id) {
+                // A binding is a type of an OUTER place, so the walk ends.
+                Some(Binding::To(bound)) => cur = bound.clone(),
+                Some(Binding::Open(param)) => {
+                    return Err(ValueProblem::UnboundParameter {
+                        name: kb.local_name_of(*param).to_owned(),
+                    })
+                }
+                None => {
+                    return Err(ValueProblem::UnboundParameter {
+                        name: kb.local_name_of(name).to_owned(),
+                    })
+                }
+            },
+            TypeExtractor::Skolem { name, .. } | TypeExtractor::TypeVar(name) => {
+                return Err(ValueProblem::UnboundParameter {
+                    name: kb.local_name_of(name).to_owned(),
+                })
+            }
+            other => return Ok((cur, other)),
+        }
+    }
+}
+
+fn classify(kb: &KnowledgeBase, ty: &Ty) -> Result<Shape, ValueProblem> {
+    let (ty, extracted) = resolve(kb, ty)?;
+    let (head, bindings) = match extracted {
+        TypeExtractor::SortRef(s) => (s, Vec::new()),
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        TypeExtractor::NamedTuple(fields) => {
+            return Ok(Shape::Tuple(
+                fields.into_iter().map(|(l, t)| (l, ty.within(t))).collect(),
+            ))
+        }
+        _ => return Err(ValueProblem::NoDataSpelling),
+    };
+    let sort = head.plain();
+    let arg = |name: &str| {
+        bindings
+            .iter()
+            .find(|(k, _)| kb.local_name_of(*k) == name || is_positional_label_at(kb.local_name_of(*k), 0))
+            .map(|(_, v)| ty.within(v.clone()))
+            .ok_or_else(|| ValueProblem::UnboundParameter {
+                name: name.to_owned(),
+            })
+    };
+    if !head.is_type_face() {
+        match kb.qualified_name_of(sort) {
+            "anthill.prelude.String" => return Ok(Shape::String),
+            "anthill.prelude.Int64" => return Ok(Shape::Int64),
+            "anthill.prelude.Float" => return Ok(Shape::Float),
+            "anthill.prelude.BigInt" => return Ok(Shape::BigInt),
+            "anthill.prelude.Bool" => return Ok(Shape::Bool),
+            "anthill.prelude.Type" => return Ok(Shape::Type),
+            OPTION => return Ok(Shape::Option(arg("T")?)),
+            LIST => return Ok(Shape::List(arg("T")?)),
+            _ => {}
+        }
+    }
+    let ctors = kb.field_constructors_of_sort(sort);
+    if ctors.is_empty() {
+        return Err(ValueProblem::NoDataSpelling);
+    }
+    let own = ctors.len() == 1 && ctors[0] == sort;
+    let env = sort_env(kb, sort, &ty, &bindings);
+    Ok(Shape::Data {
+        sort,
+        ctors,
+        own,
+        env,
+    })
+}
+
+/// The bindings of `sort`'s parameters at the type `ty` applies it to: each parameter the
+/// type binds, by its name or its position, to the type written there (within `ty`'s own
+/// bindings); one it leaves unwritten to its declared default (within the parameters bound
+/// before it); one with neither is OPEN, refused, by its name, where a field names it.
+fn sort_env(kb: &KnowledgeBase, sort: Symbol, ty: &Ty, bindings: &[(Symbol, Value)]) -> Env {
+    // A constructor's own type is typed in its sort's parameters.
+    let owner = if kb.type_param_syms_of(sort).is_empty() {
+        kb.sort_of_constructor(sort).unwrap_or(sort)
+    } else {
+        sort
+    };
+    let mut bound: Vec<(u32, Binding)> = Vec::new();
+    for (i, &param) in kb.type_param_syms_of(owner).iter().enumerate() {
+        // WI-954: every declared parameter publishes its canonical variable, and it is a
+        // plain `Var::Global` (the loader refuses any other); a field names the parameter by it.
+        let var = kb.canonical_type_param_var(param).unwrap_or_else(|| {
+            panic!("`{}` declares no canonical variable", kb.qualified_name_of(param))
+        });
+        let Term::Var(Var::Global(vid)) = kb.get_term(var) else {
+            panic!("`{}`'s canonical variable is no `Var::Global`", kb.qualified_name_of(param))
+        };
+        let id = vid.raw();
+        let name = kb.local_name_of(param);
+        let written = bindings.iter().find(|(k, _)| {
+            let label = kb.local_name_of(*k);
+            label == name || is_positional_label_at(label, i)
+        });
+        let binding = match written {
+            Some((_, v)) => Binding::To(ty.within(v.clone())),
+            None => match kb.sort_param_defaults.get(&param) {
+                Some(&default) => Binding::To(Ty {
+                    view: Value::term(default),
+                    env: Env(Rc::new(bound.clone())),
+                }),
+                None => Binding::Open(param),
+            },
+        };
+        bound.push((id, binding));
+    }
+    Env(Rc::new(bound))
+}
+
+/// The type `ty` stands for, printed as the KB prints a type, with the parameters its place
+/// binds substituted where they occur in an application (`List[T = Int64]`, not `List[T =
+/// T]`). Display only: the application is rebuilt as an entity value, which the KB's one
+/// type renderer reads as it reads a term (WI-20260904-B1KFS).
+fn expected_text(kb: &KnowledgeBase, ty: &Ty) -> String {
+    type_display_name_value(kb, &shown_type(kb, ty))
+}
+
+fn shown_type(kb: &KnowledgeBase, ty: &Ty) -> Value {
+    let mut ty = ty.clone();
+    while let TypeExtractor::FlexVar { id, .. } = extract_type(kb, &ty.view) {
+        match ty.env.lookup(id) {
+            Some(Binding::To(bound)) => ty = bound.clone(),
+            // An open parameter is shown by its own name, not by its anonymous variable.
+            Some(Binding::Open(param)) => return Value::SymbolRef(*param),
+            None => return ty.view,
+        }
+    }
+    if ty.env.is_empty() {
+        return ty.view;
+    }
+    match (ty.view.head(kb), extract_type(kb, &ty.view)) {
+        (ViewHead::Functor { functor, .. }, TypeExtractor::Parameterized { bindings, .. })
+            if !bindings.is_empty() =>
+        {
+            let named: Vec<(Symbol, Value)> = bindings
+                .into_iter()
+                .map(|(k, v)| (k, shown_type(kb, &ty.within(v))))
+                .collect();
+            Value::Entity {
+                functor,
+                pos: Rc::from(Vec::new()),
+                named: named.into(),
+            }
+        }
+        _ => ty.view,
+    }
+}
+
+/// A short rendering of a JSON value for a message.
+fn describe_json(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Array(a) => format!("an array of {} elements", a.len()),
+        serde_json::Value::Object(m) if m.len() == 1 => {
+            format!("an object of one key `{}`", m.keys().next().expect("one key"))
+        }
+        serde_json::Value::Object(m) => format!("an object of {} keys", m.len()),
+        other => clip(other.to_string()),
+    }
+}
+
+/// A short rendering of a value for a message.
+fn describe_value(kb: &KnowledgeBase, v: &Value) -> String {
+    clip(TermPrinter::new(kb).print_value(v))
+}
+
+fn clip(mut s: String) -> String {
+    const MAX: usize = 60;
+    if s.chars().count() > MAX {
+        s = s.chars().take(MAX).collect::<String>() + "…";
+    }
+    s
+}
+
+/// The tag a constructor is written with.
+fn tag_of(kb: &KnowledgeBase, ctor: Symbol, names: TagNames) -> String {
+    match names {
+        TagNames::Short => kb.local_name_of(ctor).to_owned(),
+        TagNames::Qualified => kb.qualified_name_of(ctor).to_owned(),
+    }
+}
+
+/// A constructor's declared fields, each `(field, type)`, in declared order. A constructor the
+/// KB records names for and no types for is not one the mapping can read.
+fn declared_fields(kb: &KnowledgeBase, ctor: Symbol) -> Vec<(Symbol, Option<Value>)> {
+    let types = kb.entity_field_types(ctor).map(<[_]>::to_vec).unwrap_or_default();
+    kb.entity_field_names(ctor)
+        .map(<[_]>::to_vec)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| {
+            let t = types.iter().find(|(s, _)| *s == f).map(|(_, t)| t.clone());
+            (f, t)
+        })
+        .collect()
+}
+
+fn runtime_account(kb: &KnowledgeBase, ctor: Symbol) -> Result<(), ValueProblem> {
+    match kb.runtime_account_of(ctor) {
+        Some(_) => Err(ValueProblem::RuntimeAccount {
+            constructor: kb.qualified_name_of(ctor).to_owned(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// The `TupleLiteral` functor a tuple value is built on, as a rule writes it.
+fn tuple_functor(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
+}
+
+/// Are the components all positional (`_1`, `_2`, … in order)? Such a tuple is an array.
+fn all_positional(kb: &KnowledgeBase, comps: &[(Symbol, Ty)]) -> bool {
+    comps
+        .iter()
+        .enumerate()
+        .all(|(i, (l, _))| is_positional_label_at(kb.local_name_of(*l), i))
+}
+
+// ── Decoding ───────────────────────────────────────────────────
+
+struct Decoder<'k> {
+    kb: &'k mut KnowledgeBase,
+    opts: CodecOptions,
+    /// The variables of this one value, by name.
+    vars: HashMap<String, VarId>,
+    path: Vec<PathStep>,
+    /// Where a TOML row held a float with no JSON value (`nan`, `inf`), and which: refused
+    /// when the walk reaches the place, as a value of the row ([`toml_to_json`]).
+    nonfinite: Vec<(Vec<PathStep>, f64)>,
+}
+
+impl<'k> Decoder<'k> {
+    fn new(kb: &'k mut KnowledgeBase, opts: CodecOptions) -> Self {
+        Decoder {
+            kb,
+            opts,
+            vars: HashMap::new(),
+            path: Vec::new(),
+            nonfinite: Vec::new(),
+        }
+    }
+
+    fn err(&self, ty: &Ty, problem: ValueProblem) -> ValueError {
+        ValueError {
+            path: JsonPath(self.path.clone()),
+            expected: expected_text(self.kb, ty),
+            problem,
+        }
+    }
+
+    fn at<R>(&mut self, step: PathStep, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.path.push(step);
+        let r = f(self);
+        self.path.pop();
+        r
+    }
+
+    fn value(&mut self, json: &serde_json::Value, ty: &Ty) -> Result<TermId, ValueError> {
+        let shape = classify(self.kb, ty).map_err(|p| self.err(ty, p))?;
+        if let Some((_, f)) = self.nonfinite.iter().find(|(at, _)| *at == self.path) {
+            let what = format!("the TOML float `{}`", toml_float_text(*f));
+            return Err(self.err(ty, ValueProblem::Unrepresentable { what }));
+        }
+        if let Some(var) = self.variable(json) {
+            // Under an `Option` the variable is the present value's (021, "Variables"), and one
+            // that would stand for a whole inner `Option` has no spelling, as the writer says.
+            return match shape {
+                Shape::Option(inner) => match classify(self.kb, &inner) {
+                    Ok(Shape::Option(_)) => Err(self.err(&inner, ValueProblem::Variable)),
+                    _ => Ok(self.some(var)),
+                },
+                _ => Ok(var),
+            };
+        }
+        let wrong = |me: &Self| me.err(ty, ValueProblem::WrongShape { found: describe_json(json) });
+        use serde_json::Value as J;
+        match shape {
+            Shape::String => match json {
+                J::String(s) => Ok(self.literal(Literal::String(self.unescape(s)))),
+                _ => Err(wrong(self)),
+            },
+            Shape::Bool => match json {
+                J::Bool(b) => Ok(self.literal(Literal::Bool(*b))),
+                _ => Err(wrong(self)),
+            },
+            Shape::Int64 => match json {
+                J::Number(n) => match n.as_i64() {
+                    Some(i) => Ok(self.literal(Literal::Int(i))),
+                    // Past `i64` either way: a `u64`, or an integer the parser has rounded to
+                    // an f64 (`-9223372036854775809`). An f64 in range was written with a
+                    // fraction or an exponent (`3.0`, `1e3`).
+                    None if n.is_u64() || n.as_f64().is_some_and(past_i64) => {
+                        Err(self.err(ty, ValueProblem::OutOfRange { found: n.to_string() }))
+                    }
+                    None => Err(self.err(ty, ValueProblem::NotAnInteger { found: n.to_string() })),
+                },
+                _ => Err(wrong(self)),
+            },
+            Shape::Float => match json {
+                J::Number(n) => {
+                    let f = n.as_f64().expect("a JSON number is an f64 without arbitrary_precision");
+                    Ok(self.literal(Literal::Float(OrderedFloat(f))))
+                }
+                _ => Err(wrong(self)),
+            },
+            Shape::BigInt => {
+                let digits = match json {
+                    J::Number(n) if n.is_i64() || n.is_u64() => n.to_string(),
+                    J::Number(n) => {
+                        // An f64: written with a fraction or an exponent, or an integer past
+                        // `u64` (or below `i64`) that the parser has already rounded.
+                        let f = n.as_f64().unwrap_or(f64::NAN);
+                        let problem = if f.fract() == 0.0 && (f >= TWO_TO_64 || f <= -TWO_TO_63) {
+                            ValueProblem::OutOfRange { found: n.to_string() }
+                        } else {
+                            ValueProblem::NotAnInteger { found: n.to_string() }
+                        };
+                        return Err(self.err(ty, problem));
+                    }
+                    J::String(s) if is_decimal_integer(s) => s.clone(),
+                    _ => return Err(wrong(self)),
+                };
+                let n: num_bigint::BigInt = digits.parse().expect("decimal digits parse as a BigInt");
+                Ok(self.literal(Literal::BigInt(n)))
+            }
+            Shape::Type => match json {
+                J::String(s) => type_from_text(self.kb, s).map_err(|e| self.err(ty, e.problem)),
+                _ => Err(wrong(self)),
+            },
+            Shape::Option(inner) => match json {
+                J::Null => Ok(self.none()),
+                other => {
+                    let v = self.value(other, &inner)?;
+                    Ok(self.some(v))
+                }
+            },
+            Shape::List(elem) => match json {
+                J::Array(items) => {
+                    let mut terms = Vec::with_capacity(items.len());
+                    for (i, item) in items.iter().enumerate() {
+                        terms.push(self.at(PathStep::Index(i), |me| me.value(item, &elem))?);
+                    }
+                    Ok(self.kb.build_list(&terms))
+                }
+                _ => Err(wrong(self)),
+            },
+            Shape::Tuple(comps) => self.tuple(json, ty, &comps),
+            Shape::Data {
+                sort,
+                ctors,
+                own,
+                env,
+            } => self.data(json, ty, sort, &ctors, own, &env),
+        }
+    }
+
+    /// The variable `json` spells, with variables on: `"?name"`, or `"?"` for an anonymous one.
+    fn variable(&mut self, json: &serde_json::Value) -> Option<TermId> {
+        if !self.opts.variables {
+            return None;
+        }
+        let name = json.as_str()?.strip_prefix('?')?;
+        let vid = if name.is_empty() {
+            let anon = self.kb.intern("_");
+            self.kb.fresh_var(anon)
+        } else {
+            match self.vars.get(name) {
+                Some(&v) => v,
+                None => {
+                    let sym = self.kb.intern(name);
+                    let v = self.kb.fresh_var(sym);
+                    self.vars.insert(name.to_owned(), v);
+                    v
+                }
+            }
+        };
+        Some(self.kb.alloc(Term::Var(Var::Global(vid))))
+    }
+
+    /// With variables on, a string of one or more `\` and then `?` loses one `\`.
+    fn unescape(&self, s: &str) -> String {
+        if self.opts.variables && s.starts_with('\\') && s.trim_start_matches('\\').starts_with('?') {
+            s[1..].to_owned()
+        } else {
+            s.to_owned()
+        }
+    }
+
+    fn literal(&mut self, lit: Literal) -> TermId {
+        self.kb.alloc(Term::Const(lit))
+    }
+
+    /// `none`, as the loader writes it: the nullary constructor's `Ref`.
+    fn none(&mut self) -> TermId {
+        let none = self.kb.resolve_symbol(OPTION_NONE);
+        self.kb.alloc(Term::Ref(none))
+    }
+
+    fn some(&mut self, inner: TermId) -> TermId {
+        let some = self.kb.resolve_symbol(OPTION_SOME);
+        let field = self.kb.entity_field_names(some).expect("`some` declares its field")[0];
+        self.kb
+            .make_entity_term(some, SmallVec::new(), SmallVec::from_elem((field, inner), 1))
+    }
+
+    fn tuple(&mut self, json: &serde_json::Value, ty: &Ty, comps: &[(Symbol, Ty)]) -> Result<TermId, ValueError> {
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        if all_positional(self.kb, comps) {
+            let Some(items) = json.as_array() else {
+                return Err(self.err(ty, ValueProblem::WrongShape { found: describe_json(json) }));
+            };
+            if items.len() != comps.len() {
+                let problem = match comps.get(items.len()) {
+                    Some((label, _)) => ValueProblem::MissingField {
+                        name: self.kb.local_name_of(*label).to_owned(),
+                    },
+                    None => ValueProblem::UnknownField {
+                        name: crate::intern::positional_label(comps.len()),
+                    },
+                };
+                return Err(self.err(ty, problem));
+            }
+            for (i, ((label, cty), item)) in comps.iter().zip(items).enumerate() {
+                let t = self.at(PathStep::Index(i), |me| me.value(item, cty))?;
+                named.push((*label, t));
+            }
+        } else {
+            let Some(obj) = json.as_object() else {
+                return Err(self.err(ty, ValueProblem::WrongShape { found: describe_json(json) }));
+            };
+            if let Some(k) = obj
+                .keys()
+                .find(|k| !comps.iter().any(|(l, _)| self.kb.local_name_of(*l) == k.as_str()))
+            {
+                return Err(self.err(ty, ValueProblem::UnknownField { name: k.clone() }));
+            }
+            if let Some((label, _)) = comps.iter().find(|(l, _)| !obj.contains_key(self.kb.local_name_of(*l))) {
+                let name = self.kb.local_name_of(*label).to_owned();
+                return Err(self.err(ty, ValueProblem::MissingField { name }));
+            }
+            // In the order the object writes them: a labelled tuple's order is its identity
+            // (kernel §4.5), and the writer writes the value's own.
+            for (name, item) in obj {
+                let (label, cty) = comps
+                    .iter()
+                    .find(|(l, _)| self.kb.local_name_of(*l) == name.as_str())
+                    .expect("every key names a component");
+                let t = self.at(PathStep::Key(name.clone()), |me| me.value(item, cty))?;
+                named.push((*label, t));
+            }
+        }
+        let functor = tuple_functor(self.kb).ok_or_else(|| self.err(ty, ValueProblem::NoDataSpelling))?;
+        Ok(self.kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args: named,
+        }))
+    }
+
+    fn data(
+        &mut self,
+        json: &serde_json::Value,
+        ty: &Ty,
+        sort: Symbol,
+        ctors: &[Symbol],
+        own: bool,
+        env: &Env,
+    ) -> Result<TermId, ValueError> {
+        use serde_json::Value as J;
+        if own && self.opts.entity_tags == EntityTags::OmitAtEntityType {
+            runtime_account(self.kb, ctors[0]).map_err(|p| self.err(ty, p))?;
+            return match json {
+                J::Object(fields) => self.fields(ctors[0], env, fields, ty),
+                other => Err(self.err(ty, ValueProblem::WrongShape { found: describe_json(other) })),
+            };
+        }
+        match json {
+            J::String(tag) => {
+                let ctor = self.ctor_by_tag(tag, ctors, sort, ty)?;
+                let fields = declared_fields(self.kb, ctor).len();
+                if fields != 0 {
+                    return Err(self.err(
+                        ty,
+                        ValueProblem::NotOneField {
+                            constructor: self.kb.local_name_of(ctor).to_owned(),
+                            fields,
+                        },
+                    ));
+                }
+                Ok(self.kb.alloc(Term::Ref(ctor)))
+            }
+            J::Object(m) if m.len() == 1 => {
+                let (tag, payload) = m.iter().next().expect("one key");
+                let ctor = self.ctor_by_tag(tag, ctors, sort, ty)?;
+                let ctor_ty = ty.within(Value::SymbolRef(self.kb.type_face_of(ctor)));
+                self.at(PathStep::Key(tag.clone()), |me| match payload {
+                    J::Object(fields) => me.fields(ctor, env, fields, &ctor_ty),
+                    other => me.shorthand(ctor, env, other, &ctor_ty),
+                })
+            }
+            other => {
+                let mut tags: Vec<String> =
+                    ctors.iter().map(|c| tag_of(self.kb, *c, self.opts.tag_names)).collect();
+                tags.sort();
+                Err(self.err(
+                    ty,
+                    match other {
+                        J::Object(_) => ValueProblem::NotTagged {
+                            found: describe_json(other),
+                            tags,
+                        },
+                        _ => ValueProblem::WrongShape { found: describe_json(other) },
+                    },
+                ))
+            }
+        }
+    }
+
+    /// The constructor of the declared type a tag names — among those constructors and nowhere
+    /// else (WI-912): a tag outside the type is a wrong-typed value, not a name to look up.
+    fn ctor_by_tag(&self, tag: &str, ctors: &[Symbol], sort: Symbol, ty: &Ty) -> Result<Symbol, ValueError> {
+        let ctor = ctors
+            .iter()
+            .copied()
+            .find(|c| tag_of(self.kb, *c, self.opts.tag_names) == tag)
+            .ok_or_else(|| {
+                self.err(
+                    ty,
+                    ValueProblem::UnknownConstructor {
+                        name: tag.to_owned(),
+                        sort: self.kb.qualified_name_of(sort).to_owned(),
+                    },
+                )
+            })?;
+        runtime_account(self.kb, ctor).map_err(|p| self.err(ty, p))?;
+        Ok(ctor)
+    }
+
+    /// The object of a constructor's fields: each key a field, decoded at its declared type in
+    /// the sort's parameters (`env`); an absent `Option` field is `none()`, any other absent
+    /// field an error.
+    fn fields(
+        &mut self,
+        ctor: Symbol,
+        env: &Env,
+        obj: &serde_json::Map<String, serde_json::Value>,
+        ty: &Ty,
+    ) -> Result<TermId, ValueError> {
+        let declared = declared_fields(self.kb, ctor);
+        if let Some(k) = obj
+            .keys()
+            .find(|k| !declared.iter().any(|(f, _)| self.kb.local_name_of(*f) == k.as_str()))
+        {
+            return Err(self.err(ty, ValueProblem::UnknownField { name: k.clone() }));
+        }
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        for (field, fty) in &declared {
+            let name = self.kb.local_name_of(*field).to_owned();
+            let Some(fty) = fty else {
+                return Err(self.err(ty, ValueProblem::NoDataSpelling));
+            };
+            let fty = Ty {
+                view: fty.clone(),
+                env: env.clone(),
+            };
+            let term = match obj.get(&name) {
+                Some(v) => self.at(PathStep::Key(name), |me| me.value(v, &fty))?,
+                None => match classify(self.kb, &fty) {
+                    Ok(Shape::Option(_)) => self.none(),
+                    Ok(_) => return Err(self.err(ty, ValueProblem::MissingField { name })),
+                    Err(problem) => {
+                        return Err(self.at(PathStep::Key(name), |me| me.err(&fty, problem)))
+                    }
+                },
+            };
+            named.push((*field, term));
+        }
+        Ok(self.construct(ctor, named))
+    }
+
+    /// The single-field shorthand: the payload is the value of the constructor's one field.
+    fn shorthand(&mut self, ctor: Symbol, env: &Env, payload: &serde_json::Value, ty: &Ty) -> Result<TermId, ValueError> {
+        let declared = declared_fields(self.kb, ctor);
+        let (field, fty) = match declared.as_slice() {
+            [(field, Some(fty))] => (field, fty),
+            [(_, None)] => return Err(self.err(ty, ValueProblem::NoDataSpelling)),
+            _ => {
+                return Err(self.err(
+                    ty,
+                    ValueProblem::NotOneField {
+                        constructor: self.kb.local_name_of(ctor).to_owned(),
+                        fields: declared.len(),
+                    },
+                ))
+            }
+        };
+        let fty = Ty {
+            view: fty.clone(),
+            env: env.clone(),
+        };
+        let term = self.value(payload, &fty)?;
+        Ok(self.construct(ctor, SmallVec::from_elem((*field, term), 1)))
+    }
+
+    /// A constructed value as the loader writes it: a nullary constructor its `Ref`, any other
+    /// an application with its fields in declared order (WI-498).
+    fn construct(&mut self, ctor: Symbol, named: SmallVec<[(Symbol, TermId); 2]>) -> TermId {
+        if named.is_empty() {
+            self.kb.alloc(Term::Ref(ctor))
+        } else {
+            self.kb.make_entity_term(ctor, SmallVec::new(), named)
+        }
+    }
+}
+
+const TWO_TO_63: f64 = 9_223_372_036_854_775_808.0;
+const TWO_TO_64: f64 = 18_446_744_073_709_551_616.0;
+
+/// An integral f64 at or past `i64`'s range. The parser rounds an integer past it to an f64,
+/// and `-9223372036854775809` rounds to -2^63 exactly, `i64::MIN`; so the bound includes it,
+/// and `-9223372036854775808.0`, written with a fraction, is refused as out of range too.
+fn past_i64(f: f64) -> bool {
+    f.fract() == 0.0 && f.abs() >= TWO_TO_63
+}
+
+fn is_decimal_integer(s: &str) -> bool {
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+// ── Encoding ───────────────────────────────────────────────────
+
+struct Encoder<'k> {
+    kb: &'k KnowledgeBase,
+    opts: CodecOptions,
+    path: Vec<PathStep>,
+    /// With variables on, how often each variable occurs in the value being written, and the
+    /// name each one is written with: the scope of a variable is one value, so two variables
+    /// that share a name (`?x`, renamed apart in two clauses) are written apart (`?x`, `?x_2`),
+    /// and an anonymous one that occurs twice is named, or the reader would read one
+    /// variable as two, or two as one.
+    occurrences: HashMap<VarId, usize>,
+    names: HashMap<VarId, String>,
+}
+
+impl<'k> Encoder<'k> {
+    /// An encoder of the one value `v`.
+    fn new(kb: &'k KnowledgeBase, opts: CodecOptions, v: &Value) -> Self {
+        let mut occurrences = HashMap::new();
+        if opts.variables {
+            count_variables(kb, v, &mut occurrences);
+        }
+        Encoder {
+            kb,
+            opts,
+            path: Vec::new(),
+            occurrences,
+            names: HashMap::new(),
+        }
+    }
+
+    /// The spelling of the variable `vid` in this value.
+    fn variable(&mut self, vid: VarId) -> String {
+        if let Some(name) = self.names.get(&vid) {
+            return name.clone();
+        }
+        let base = self.kb.local_name_of(vid.name()).to_owned();
+        if base == "_" && self.occurrences.get(&vid).copied().unwrap_or(0) <= 1 {
+            return "?".to_owned();
+        }
+        let mut name = format!("?{base}");
+        let mut k = 2;
+        while self.names.values().any(|n| *n == name) {
+            name = format!("?{base}_{k}");
+            k += 1;
+        }
+        self.names.insert(vid, name.clone());
+        name
+    }
+
+    fn err(&self, ty: &Ty, problem: ValueProblem) -> ValueError {
+        ValueError {
+            path: JsonPath(self.path.clone()),
+            expected: expected_text(self.kb, ty),
+            problem,
+        }
+    }
+
+    fn at<R>(&mut self, step: PathStep, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.path.push(step);
+        let r = f(self);
+        self.path.pop();
+        r
+    }
+
+    fn wrong(&self, ty: &Ty, v: &Value) -> ValueError {
+        self.err(
+            ty,
+            ValueProblem::WrongShape {
+                found: describe_value(self.kb, v),
+            },
+        )
+    }
+
+    fn value(&mut self, v: &Value, ty: &Ty) -> Result<serde_json::Value, ValueError> {
+        use serde_json::Value as J;
+        let kb = self.kb;
+        let shape = classify(kb, ty).map_err(|p| self.err(ty, p))?;
+        if let ViewHead::Var(var) = v.head(kb) {
+            return match (var, &shape) {
+                (Var::Global(vid), shape) if self.opts.variables && !matches!(shape, Shape::Option(_)) => {
+                    Ok(J::String(self.variable(vid)))
+                }
+                _ => Err(self.err(ty, ValueProblem::Variable)),
+            };
+        }
+        match shape {
+            Shape::String => match v.literal_string(kb) {
+                Some(s) => Ok(J::String(self.escape(s))),
+                None => Err(self.wrong(ty, v)),
+            },
+            Shape::Bool => v.literal_bool(kb).map(J::Bool).ok_or_else(|| self.wrong(ty, v)),
+            Shape::Int64 => v
+                .literal_int64(kb)
+                .map(|n| J::Number(n.into()))
+                .ok_or_else(|| self.wrong(ty, v)),
+            Shape::Float => {
+                let f = v.literal_f64(kb).ok_or_else(|| self.wrong(ty, v))?;
+                serde_json::Number::from_f64(f).map(J::Number).ok_or_else(|| {
+                    self.err(
+                        ty,
+                        ValueProblem::Unrepresentable {
+                            what: format!("the non-finite float {f}"),
+                        },
+                    )
+                })
+            }
+            Shape::BigInt => {
+                let n = v.literal_big_int(kb).ok_or_else(|| self.wrong(ty, v))?;
+                match (self.opts.big_int, i64::try_from(&n)) {
+                    (BigIntSpelling::NumberWhenItFits, Ok(i)) => Ok(J::Number(i.into())),
+                    _ => Ok(J::String(n.to_string())),
+                }
+            }
+            Shape::Type => type_text(kb, v).map(J::String).map_err(|p| self.err(ty, p)),
+            Shape::Option(inner) => match v.head(kb) {
+                ViewHead::Functor {
+                    functor,
+                    pos_arity: 0,
+                    named_arity: 0,
+                } if kb.qualified_name_of(functor) == OPTION_NONE => Ok(J::Null),
+                ViewHead::Functor { functor, .. } if kb.qualified_name_of(functor) == OPTION_SOME => {
+                    let present = v
+                        .named_field(kb, "value")
+                        .or_else(|| v.pos_arg(kb, 0))
+                        .map(|p| p.to_value())
+                        .ok_or_else(|| self.wrong(ty, v))?;
+                    match self.value(&present, &inner)? {
+                        J::Null => Err(self.err(
+                            ty,
+                            ValueProblem::Unrepresentable {
+                                what: "`some(none())`".to_owned(),
+                            },
+                        )),
+                        json => Ok(json),
+                    }
+                }
+                _ => Err(self.wrong(ty, v)),
+            },
+            Shape::List(elem) => self.list(v, ty, &elem),
+            Shape::Tuple(comps) => self.tuple(v, ty, &comps),
+            Shape::Data {
+                sort,
+                ctors,
+                own,
+                env,
+            } => self.data(v, ty, sort, &ctors, own, &env),
+        }
+    }
+
+    /// With variables on, a string of zero or more `\` and then `?` gains one `\`.
+    fn escape(&self, s: String) -> String {
+        if self.opts.variables && s.trim_start_matches('\\').starts_with('?') {
+            format!("\\{s}")
+        } else {
+            s
+        }
+    }
+
+    fn list(&mut self, v: &Value, ty: &Ty, elem: &Ty) -> Result<serde_json::Value, ValueError> {
+        let kb = self.kb;
+        let mut items = Vec::new();
+        let mut cell = v.clone();
+        loop {
+            match cell.head(kb) {
+                ViewHead::Functor {
+                    functor,
+                    pos_arity: 0,
+                    named_arity: 0,
+                } if kb.qualified_name_of(functor) == LIST_NIL => break,
+                ViewHead::Functor { functor, .. } if kb.qualified_name_of(functor) == LIST_CONS => {
+                    let (Some(head), Some(tail)) = (cell.named_field(kb, "head"), cell.named_field(kb, "tail")) else {
+                        return Err(self.wrong(ty, &cell));
+                    };
+                    let (head, tail) = (head.to_value(), tail.to_value());
+                    let i = items.len();
+                    items.push(self.at(PathStep::Index(i), |me| me.value(&head, elem))?);
+                    cell = tail;
+                }
+                ViewHead::Var(_) => {
+                    return Err(self.err(
+                        ty,
+                        ValueProblem::Unrepresentable {
+                            what: "a list with a variable tail".to_owned(),
+                        },
+                    ))
+                }
+                _ => return Err(self.wrong(ty, &cell)),
+            }
+        }
+        Ok(serde_json::Value::Array(items))
+    }
+
+    fn tuple(&mut self, v: &Value, ty: &Ty, comps: &[(Symbol, Ty)]) -> Result<serde_json::Value, ValueError> {
+        let kb = self.kb;
+        match v.head(kb) {
+            ViewHead::Functor { functor, .. } if Some(functor) == tuple_functor(kb) => {}
+            _ => return Err(self.wrong(ty, v)),
+        }
+        let wider: Vec<String> = v
+            .named_keys(kb)
+            .into_iter()
+            .map(|k| kb.local_name_of(k).to_owned())
+            .filter(|k| !comps.iter().any(|(l, _)| kb.local_name_of(*l) == k.as_str()))
+            .collect();
+        if !wider.is_empty() && self.opts.wider_tuple == WiderTuple::Refuse {
+            return Err(self.err(ty, ValueProblem::WiderThanDeclared { labels: wider }));
+        }
+        if let Some((label, _)) = comps.iter().find(|(l, _)| v.named_field(kb, kb.local_name_of(*l)).is_none()) {
+            let name = kb.local_name_of(*label).to_owned();
+            return Err(self.err(ty, ValueProblem::MissingField { name }));
+        }
+        if all_positional(kb, comps) {
+            let mut array = Vec::with_capacity(comps.len());
+            for (i, (label, cty)) in comps.iter().enumerate() {
+                let component = v.named_field(kb, kb.local_name_of(*label)).expect("present").to_value();
+                array.push(self.at(PathStep::Index(i), |me| me.value(&component, cty))?);
+            }
+            return Ok(serde_json::Value::Array(array));
+        }
+        // A labelled tuple in the VALUE's own order, which is its identity (kernel §4.5): a
+        // value conforming to its type in another order is another value, and written in the
+        // type's order it would read back as that other one.
+        let mut object = serde_json::Map::new();
+        for key in v.named_keys(kb) {
+            let name = kb.local_name_of(key).to_owned();
+            let Some((_, cty)) = comps.iter().find(|(l, _)| kb.local_name_of(*l) == name) else {
+                continue; // a wider component, projected away (refused above when asked)
+            };
+            let component = v.named_arg(kb, key).expect("a key the value holds").to_value();
+            let json = self.at(PathStep::Key(name.clone()), |me| me.value(&component, cty))?;
+            object.insert(name, json);
+        }
+        Ok(serde_json::Value::Object(object))
+    }
+
+    fn data(
+        &mut self,
+        v: &Value,
+        ty: &Ty,
+        sort: Symbol,
+        ctors: &[Symbol],
+        own: bool,
+        env: &Env,
+    ) -> Result<serde_json::Value, ValueError> {
+        let kb = self.kb;
+        let ViewHead::Functor { functor, .. } = v.head(kb) else {
+            return Err(self.wrong(ty, v));
+        };
+        if functor.is_type_face() {
+            // A type is not an instance of the type it names.
+            return Err(self.wrong(ty, v));
+        }
+        let Some(ctor) = ctors.iter().copied().find(|c| *c == functor) else {
+            return Err(self.err(
+                ty,
+                ValueProblem::UnknownConstructor {
+                    name: kb.qualified_name_of(functor).to_owned(),
+                    sort: kb.qualified_name_of(sort).to_owned(),
+                },
+            ));
+        };
+        runtime_account(kb, ctor).map_err(|p| self.err(ty, p))?;
+        self.declared_only(v, ctor, ty)?;
+        if own && self.opts.entity_tags == EntityTags::OmitAtEntityType {
+            return Ok(serde_json::Value::Object(self.fields(v, ctor, env, ty)?));
+        }
+        let tag = tag_of(kb, ctor, self.opts.tag_names);
+        if declared_fields(kb, ctor).is_empty() {
+            return Ok(serde_json::Value::String(tag));
+        }
+        let ctor_ty = ty.within(Value::SymbolRef(kb.type_face_of(ctor)));
+        let fields = self.at(PathStep::Key(tag.clone()), |me| me.fields(v, ctor, env, &ctor_ty))?;
+        // The shorthand, where the one field's encoding is not an object: an object there would
+        // read back as the constructor's own fields (021, "Entities and sorts"). A one field
+        // omitted (`none()`) leaves the object of no fields, which reads back the same.
+        let shorthand = declared_fields(kb, ctor).len() == 1
+            && fields.values().next().is_some_and(|json| !json.is_object());
+        let payload = if shorthand {
+            fields.into_iter().next().map(|(_, json)| json).expect("one field")
+        } else {
+            serde_json::Value::Object(fields)
+        };
+        let mut wrapper = serde_json::Map::new();
+        wrapper.insert(tag, payload);
+        Ok(serde_json::Value::Object(wrapper))
+    }
+
+    /// A constructed value holds its constructor's declared fields and nothing else: an argument
+    /// beyond them has no place in the object of its fields, and dropping it would write
+    /// another value.
+    fn declared_only(&self, v: &Value, ctor: Symbol, ty: &Ty) -> Result<(), ValueError> {
+        let kb = self.kb;
+        let declared = declared_fields(kb, ctor);
+        let ViewHead::Functor { pos_arity, .. } = v.head(kb) else {
+            return Ok(());
+        };
+        let extra_named = v
+            .named_keys(kb)
+            .into_iter()
+            .map(|k| kb.local_name_of(k).to_owned())
+            .find(|k| !declared.iter().any(|(f, _)| kb.local_name_of(*f) == k.as_str()));
+        let extra = match extra_named {
+            Some(name) => Some(name),
+            None if pos_arity > declared.len() => Some(crate::intern::positional_label(declared.len())),
+            None => None,
+        };
+        match extra {
+            Some(name) => Err(self.err(ty, ValueProblem::UnknownField { name })),
+            None => Ok(()),
+        }
+    }
+
+    /// The object of a constructed value's fields, in declared order, each at its declared type
+    /// in the sort's parameters; a `none()` `Option` field is omitted.
+    fn fields(
+        &mut self,
+        v: &Value,
+        ctor: Symbol,
+        env: &Env,
+        ty: &Ty,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, ValueError> {
+        let kb = self.kb;
+        let mut object = serde_json::Map::new();
+        for (i, (field, fty)) in declared_fields(kb, ctor).into_iter().enumerate() {
+            let name = kb.local_name_of(field).to_owned();
+            let Some(fty) = fty else {
+                return Err(self.err(ty, ValueProblem::NoDataSpelling));
+            };
+            let fty = Ty {
+                view: fty,
+                env: env.clone(),
+            };
+            // A positional application fills the declared fields in order.
+            let Some(arg) = v.named_field(kb, &name).or_else(|| v.pos_arg(kb, i)).map(|a| a.to_value()) else {
+                return Err(self.err(ty, ValueProblem::MissingField { name }));
+            };
+            let json = self.at(PathStep::Key(name.clone()), |me| me.value(&arg, &fty))?;
+            if json.is_null() && matches!(classify(kb, &fty), Ok(Shape::Option(_))) {
+                continue;
+            }
+            object.insert(name, json);
+        }
+        Ok(object)
+    }
+}
+
+// ── The data file: `meta` + `data` ─────────────────────────────
+
+/// The file extensions this module can read: [`load_toml`] and [`load_json`].
+///
+/// Exported because whatever NAMES data files must key off the same list. The
+/// CLI builds its conventional `anthill.{ext}` names from it (WI-746), so a
+/// format it looks for is always one there is a reader for, and a format there
+/// is a reader for is always one it looks for.
+pub const DATA_EXTENSIONS: [&str; 2] = ["toml", "json"];
+
+/// Load the rows of a TOML data file into the KB as facts of `domain`. Returns the number of
+/// facts loaded; every row's error is reported, not only the first.
 pub fn load_toml(
     kb: &mut KnowledgeBase,
     source: &str,
@@ -156,12 +1676,13 @@ pub fn load_toml(
 ) -> Result<usize, Vec<SerError>> {
     let toml_val: toml::Value =
         toml::from_str(source).map_err(|e| vec![SerError::Format(e.to_string())])?;
-    let json_val = toml_to_json(toml_val);
-    load_value(kb, json_val, domain)
+    let mut nonfinite = Vec::new();
+    let json_val = toml_to_json(toml_val, &mut Vec::new(), &mut nonfinite);
+    load_value(kb, json_val, domain, &nonfinite)
 }
 
-/// Load entities from a JSON string into the KB.
-/// Returns the number of facts loaded.
+/// Load the rows of a JSON data file into the KB as facts of `domain`. Returns the number of
+/// facts loaded; every row's error is reported, not only the first.
 pub fn load_json(
     kb: &mut KnowledgeBase,
     source: &str,
@@ -169,63 +1690,408 @@ pub fn load_json(
 ) -> Result<usize, Vec<SerError>> {
     let json_val: serde_json::Value =
         serde_json::from_str(source).map_err(|e| vec![SerError::Format(e.to_string())])?;
-    load_value(kb, json_val, domain)
+    load_value(kb, json_val, domain, &[])
 }
 
-/// Serialize facts of a given entity type to TOML.
-pub fn serialize_toml(
-    kb: &KnowledgeBase,
-    entity_name: &str,
-    rule_ids: &[RuleId],
-) -> Result<String, SerError> {
-    let json_val = facts_to_value(kb, entity_name, rule_ids)?;
-    let toml_val =
-        json_to_toml(&json_val).map_err(|e| SerError::Format(format!("TOML conversion: {e}")))?;
+/// Write the facts `rule_ids` as one TOML envelope whose `meta.entity` is `entity`, a
+/// constructor's NAME. A constructor applied to type arguments is written by
+/// [`serialize_toml_at`], which takes its type.
+pub fn serialize_toml(kb: &KnowledgeBase, entity: &str, rule_ids: &[RuleId]) -> Result<String, SerError> {
+    to_toml_text(&facts_to_value(kb, &row_type_by_name(kb, entity)?, rule_ids)?)
+}
+
+/// Write the facts `rule_ids` as one JSON envelope whose `meta.entity` is `entity`, a
+/// constructor's NAME. A constructor applied to type arguments is written by
+/// [`serialize_json_at`], which takes its type.
+pub fn serialize_json(kb: &KnowledgeBase, entity: &str, rule_ids: &[RuleId]) -> Result<String, SerError> {
+    to_json_text(&facts_to_value(kb, &row_type_by_name(kb, entity)?, rule_ids)?)
+}
+
+/// [`serialize_toml`] at a constructor's TYPE (`test.Box[T = Int64]`, from [`type_from_text`]
+/// or the KB), written as `meta.entity` by its text ([`type_to_text`]).
+pub fn serialize_toml_at(kb: &KnowledgeBase, entity: &impl TermView, rule_ids: &[RuleId]) -> Result<String, SerError> {
+    to_toml_text(&facts_to_value(kb, &row_type_at(kb, owned(entity))?, rule_ids)?)
+}
+
+/// [`serialize_json`] at a constructor's TYPE (`test.Box[T = Int64]`, from [`type_from_text`]
+/// or the KB), written as `meta.entity` by its text ([`type_to_text`]).
+pub fn serialize_json_at(kb: &KnowledgeBase, entity: &impl TermView, rule_ids: &[RuleId]) -> Result<String, SerError> {
+    to_json_text(&facts_to_value(kb, &row_type_at(kb, owned(entity))?, rule_ids)?)
+}
+
+fn to_json_text(v: &serde_json::Value) -> Result<String, SerError> {
+    serde_json::to_string_pretty(v).map_err(|e| SerError::Format(e.to_string()))
+}
+
+fn to_toml_text(v: &serde_json::Value) -> Result<String, SerError> {
+    let toml_val = json_to_toml(v).map_err(|e| SerError::Format(format!("TOML conversion: {e}")))?;
     toml::to_string_pretty(&toml_val).map_err(|e| SerError::Format(e.to_string()))
 }
 
-/// Serialize facts of a given entity type to JSON.
-pub fn serialize_json(
-    kb: &KnowledgeBase,
-    entity_name: &str,
-    rule_ids: &[RuleId],
-) -> Result<String, SerError> {
-    let json_val = facts_to_value(kb, entity_name, rule_ids)?;
-    serde_json::to_string_pretty(&json_val).map_err(|e| SerError::Format(e.to_string()))
+/// The constructor a section's rows are, and the type that types its fields.
+struct RowType {
+    /// `meta.entity` as it is written.
+    entity: String,
+    ctor: Symbol,
+    ty: Ty,
+    env: Env,
 }
 
-// ── TOML ↔ JSON conversion ────────────────────────────────────
+/// A `meta.entity` NAME: read by THE NAME LADDER AT `<global>` (WI-912), the question a
+/// host-supplied extent-owner name asks (WI-908). A data file is KB-external text written in
+/// no scope, so it gets the same reading and the same three refusals: absent, ambiguous, or
+/// hidden by `internal`; and a constructor reserved to the runtime is refused. There is NO
+/// short-name fallback: `a.b.Rec`, declared nowhere, does not load onto a top-level `Rec`.
+fn resolve_entity_functor(kb: &KnowledgeBase, name: &str) -> Result<Symbol, SerError> {
+    let sym = match kb.resolve_name_in_global(name) {
+        ResolveResult::Found(sym) => sym,
+        ResolveResult::Ambiguous(cands, contested) => {
+            return Err(SerError::AmbiguousName {
+                name: name.to_owned(),
+                candidates: kb.candidate_names(&cands),
+                contested,
+            })
+        }
+        ResolveResult::NotFound => {
+            return Err(match kb.hidden_internal_in_global(name) {
+                Some(declared_in) => SerError::ForbiddenInternalEntity {
+                    entity: name.to_owned(),
+                    declared_in,
+                },
+                None => SerError::UnknownEntity(name.to_owned()),
+            })
+        }
+    };
+    if kb.runtime_account_of(sym).is_some() {
+        return Err(SerError::RuntimeAccount(kb.qualified_name_of(sym).to_string()));
+    }
+    // A MISS IS FATAL (WI-926): a name that declares no fields — a sort with several
+    // constructors — has no row shape, and reading against an empty schema is a different
+    // reconstruction, not a degraded one.
+    if kb.entity_field_names(sym).is_none() {
+        return Err(SerError::NoFieldSchema {
+            entity: name.to_owned(),
+            constructors: kb
+                .constructors_of_sort(sym)
+                .iter()
+                .map(|c| kb.qualified_name_of(*c).to_string())
+                .collect(),
+        });
+    }
+    Ok(sym)
+}
 
-fn toml_to_json(val: toml::Value) -> serde_json::Value {
+/// The row type of a constructor NAME: the constructor's type, its parameters at their
+/// defaults.
+fn row_type_by_name(kb: &KnowledgeBase, entity: &str) -> Result<RowType, SerError> {
+    if entity.contains('[') {
+        return Err(SerError::Format(format!(
+            "meta.entity '{entity}' applies its constructor to type arguments; a writer is given \
+             that type as a term (`serialize_json_at`, `serialize_toml_at`)"
+        )));
+    }
+    let ctor = resolve_entity_functor(kb, entity)?;
+    row_type(kb, entity.to_owned(), ctor, Value::SymbolRef(kb.type_face_of(ctor)))
+}
+
+/// The row type of a constructor's TYPE: the type's head names the constructor.
+fn row_type_at(kb: &KnowledgeBase, ty: Value) -> Result<RowType, SerError> {
+    let entity = type_to_text(kb, &ty).map_err(|error| SerError::EntityType {
+        entity: describe_value(kb, &ty),
+        error,
+    })?;
+    let head = match ty.head(kb) {
+        ViewHead::Functor { functor, .. } => functor.plain(),
+        _ => {
+            return Err(SerError::UnknownEntity(entity));
+        }
+    };
+    let ctor = resolve_entity_functor(kb, kb.qualified_name_of(head))?;
+    row_type(kb, entity, ctor, ty)
+}
+
+/// The row type of a `meta.entity` as a data file writes it: a NAME, or a name applied to
+/// type arguments (`test.Box[T = anthill.prelude.Int64]`), read as a type.
+fn row_type_of_text(kb: &mut KnowledgeBase, entity: &str) -> Result<RowType, SerError> {
+    let Some((name, _)) = entity.split_once('[') else {
+        return row_type_by_name(kb, entity);
+    };
+    let ctor = resolve_entity_functor(kb, name.trim())?;
+    let entity_error = |error| SerError::EntityType {
+        entity: entity.to_owned(),
+        error,
+    };
+    let ty = type_from_text(kb, entity).map_err(entity_error)?;
+    row_type(kb, entity.to_owned(), ctor, Value::term(ty))
+}
+
+fn row_type(kb: &KnowledgeBase, entity: String, ctor: Symbol, view: Value) -> Result<RowType, SerError> {
+    let ty = Ty::closed(view);
+    let refused = |problem| SerError::EntityType {
+        entity: entity.clone(),
+        error: ValueError {
+            path: JsonPath::default(),
+            expected: kb.qualified_name_of(ctor).to_owned(),
+            problem,
+        },
+    };
+    match classify(kb, &ty).map_err(refused)? {
+        // The row's constructor is the one `meta.entity` names, even at a type that admits
+        // others beside it (`sort Mix { entity Mix(…)  entity Other }`).
+        Shape::Data { ctors, env, .. } if ctors.contains(&ctor) => Ok(RowType {
+            entity,
+            ctor,
+            ty,
+            env,
+        }),
+        _ => Err(refused(ValueProblem::WrongShape {
+            found: format!("the type {}", describe_value(kb, &ty.view)),
+        })),
+    }
+}
+
+/// Core deserializer: serde_json::Value → KB facts. `nonfinite` are the places of the TOML
+/// floats with no JSON value, from the file's root.
+fn load_value(
+    kb: &mut KnowledgeBase,
+    value: serde_json::Value,
+    domain: Symbol,
+    nonfinite: &[(Vec<PathStep>, f64)],
+) -> Result<usize, Vec<SerError>> {
+    let obj = match value {
+        serde_json::Value::Object(map) => map,
+        _ => {
+            return Err(vec![SerError::Format(
+                "top-level value must be an object".into(),
+            )])
+        }
+    };
+
+    // Check for single-section (meta + data) vs multi-section layout
+    if obj.contains_key("meta") && obj.contains_key("data") {
+        load_section(kb, &obj, domain, &[], nonfinite)
+    } else {
+        // Multi-section: each key is a section with .meta + .data
+        let mut total = 0;
+        let mut errors = Vec::new();
+        for (section_name, section_val) in &obj {
+            match section_val {
+                serde_json::Value::Object(section_map) => {
+                    let at = [PathStep::Key(section_name.clone())];
+                    match load_section(kb, section_map, domain, &at, nonfinite) {
+                        Ok(n) => total += n,
+                        Err(mut errs) => errors.append(&mut errs),
+                    }
+                }
+                _ => {
+                    errors.push(SerError::Format(
+                        "each section must be an object with meta + data".into(),
+                    ));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(total)
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// Load a single section: expects "meta" and "data" keys. Each row is the object of the
+/// fields of the constructor `meta.entity` names, untagged since `meta.entity` names it,
+/// decoded with variables on in its own variable scope, and asserted as a FACT (WI-922),
+/// unlabeled: a data file's rows are a program's, read back (WI-20261121-G8E02).
+fn load_section(
+    kb: &mut KnowledgeBase,
+    obj: &serde_json::Map<String, serde_json::Value>,
+    domain: Symbol,
+    at: &[PathStep],
+    nonfinite: &[(Vec<PathStep>, f64)],
+) -> Result<usize, Vec<SerError>> {
+    let meta = obj
+        .get("meta")
+        .ok_or_else(|| vec![SerError::MissingMeta("section has no 'meta' key".into())])?;
+    let entity = meta
+        .get("entity")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| vec![SerError::MissingMeta("meta.entity must be a string".into())])?;
+    let row = row_type_of_text(kb, entity).map_err(|e| vec![e])?;
+
+    let data = obj
+        .get("data")
+        .ok_or_else(|| vec![SerError::MissingMeta("section has no 'data' key".into())])?;
+    let entries: Vec<(Option<usize>, &serde_json::Value)> = match data {
+        serde_json::Value::Array(arr) => arr.iter().enumerate().map(|(i, e)| (Some(i), e)).collect(),
+        serde_json::Value::Object(_) => vec![(None, data)],
+        _ => {
+            return Err(vec![SerError::Format(
+                "data must be an array or object".into(),
+            )])
+        }
+    };
+
+    let mut count = 0;
+    let mut errors = Vec::new();
+    for (index, entry) in entries {
+        // A row is an object: with variables on, `data = ["?row"]` would otherwise be a row
+        // holding a variable, of no constructor at all.
+        let mut decoder = Decoder::new(kb, CodecOptions::data_file());
+        // The places, under this row, of the floats TOML holds and JSON does not.
+        let mut place: Vec<PathStep> = at.to_vec();
+        place.push(PathStep::Key("data".to_owned()));
+        place.extend(index.map(PathStep::Index));
+        decoder.nonfinite = nonfinite
+            .iter()
+            .filter_map(|(p, f)| p.strip_prefix(place.as_slice()).map(|rest| (rest.to_vec(), *f)))
+            .collect();
+        let decoded = match entry.as_object() {
+            Some(fields) => decoder.fields(row.ctor, &row.env, fields, &row.ty),
+            None => Err(decoder.err(
+                &row.ty,
+                ValueProblem::WrongShape {
+                    found: describe_json(entry),
+                },
+            )),
+        };
+        match decoded {
+            Ok(term) => {
+                kb.assert_fact(term, ClauseKind::Fact, domain, None, crate::kb::ClauseLabel::Runtime);
+                count += 1;
+            }
+            Err(error) => errors.push(SerError::Row { index, error }),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(count)
+    } else {
+        Err(errors)
+    }
+}
+
+/// Core serializer: KB facts → serde_json::Value. Each fact is a row of the row type's
+/// constructor, written as the object of its fields; a fact of another constructor is
+/// refused.
+fn facts_to_value(kb: &KnowledgeBase, row: &RowType, rule_ids: &[RuleId]) -> Result<serde_json::Value, SerError> {
+    let mut data = Vec::with_capacity(rule_ids.len());
+    for (index, &rid) in rule_ids.iter().enumerate() {
+        let head = Value::term(kb.rule_head(rid));
+        let mut encoder = Encoder::new(kb, CodecOptions::data_file(), &head);
+        let refused = |encoder: &Encoder, problem| SerError::Row {
+            index: Some(index),
+            error: encoder.err(&row.ty, problem),
+        };
+        match head.head(kb) {
+            ViewHead::Functor { functor, .. } if functor == row.ctor => {}
+            ViewHead::Functor { functor, .. } => {
+                return Err(refused(
+                    &encoder,
+                    ValueProblem::UnknownConstructor {
+                        name: kb.qualified_name_of(functor).to_owned(),
+                        sort: kb.qualified_name_of(row.ctor).to_owned(),
+                    },
+                ))
+            }
+            _ => {
+                return Err(refused(
+                    &encoder,
+                    ValueProblem::WrongShape {
+                        found: describe_value(kb, &head),
+                    },
+                ))
+            }
+        }
+        encoder
+            .declared_only(&head, row.ctor, &row.ty)
+            .map_err(|error| SerError::Row {
+                index: Some(index),
+                error,
+            })?;
+        let fields = encoder
+            .fields(&head, row.ctor, &row.env, &row.ty)
+            .map_err(|error| SerError::Row {
+                index: Some(index),
+                error,
+            })?;
+        data.push(serde_json::Value::Object(fields));
+    }
+
+    let mut meta = serde_json::Map::new();
+    meta.insert("entity".into(), serde_json::Value::String(row.entity.clone()));
+    let mut result = serde_json::Map::new();
+    result.insert("meta".into(), serde_json::Value::Object(meta));
+    let data = if data.len() == 1 {
+        data.pop().expect("one row")
+    } else {
+        serde_json::Value::Array(data)
+    };
+    result.insert("data".into(), data);
+    Ok(serde_json::Value::Object(result))
+}
+
+// ── TOML ↔ JSON ───────────────────────────────────────────────
+
+/// TOML as the JSON the mapping reads. A TOML `nan` or `inf` has no JSON value: its place is
+/// recorded in `nonfinite` and the JSON holds `null` there, which the row's decoder never
+/// reads, refusing the float at its place instead. So it is the error of its row, beside the
+/// other rows' (021: every row's error is reported). It used to become a `null` that was
+/// read, so `f = nan` under `Option[T = Float]` loaded as `none()`.
+fn toml_to_json(
+    val: toml::Value,
+    path: &mut Vec<PathStep>,
+    nonfinite: &mut Vec<(Vec<PathStep>, f64)>,
+) -> serde_json::Value {
     match val {
         toml::Value::String(s) => serde_json::Value::String(s),
         toml::Value::Integer(n) => serde_json::Value::Number(n.into()),
-        toml::Value::Float(f) => serde_json::Number::from_f64(f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
+        toml::Value::Float(f) => match serde_json::Number::from_f64(f) {
+            Some(n) => serde_json::Value::Number(n),
+            None => {
+                nonfinite.push((path.clone(), f));
+                serde_json::Value::Null
+            }
+        },
         toml::Value::Boolean(b) => serde_json::Value::Bool(b),
         toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
         toml::Value::Array(arr) => {
-            serde_json::Value::Array(arr.into_iter().map(toml_to_json).collect())
+            let mut items = Vec::with_capacity(arr.len());
+            for (i, v) in arr.into_iter().enumerate() {
+                path.push(PathStep::Index(i));
+                items.push(toml_to_json(v, path, nonfinite));
+                path.pop();
+            }
+            serde_json::Value::Array(items)
         }
         toml::Value::Table(tbl) => {
-            let map = tbl.into_iter().map(|(k, v)| (k, toml_to_json(v))).collect();
+            let mut map = serde_json::Map::new();
+            for (k, v) in tbl {
+                path.push(PathStep::Key(k.clone()));
+                map.insert(k.clone(), toml_to_json(v, path, nonfinite));
+                path.pop();
+            }
             serde_json::Value::Object(map)
         }
     }
 }
 
+/// A non-finite float as TOML writes it.
+fn toml_float_text(f: f64) -> &'static str {
+    match (f.is_nan(), f > 0.0) {
+        (true, _) => "nan",
+        (false, true) => "inf",
+        (false, false) => "-inf",
+    }
+}
+
 fn json_to_toml(val: &serde_json::Value) -> Result<toml::Value, String> {
     match val {
-        // WI-501: TOML has no null. A `none()` field is dropped before reaching
-        // here (an absent field reloads as none), so the only null that arrives
-        // is a `none()` sitting INSIDE a list/tuple — which TOML genuinely cannot
-        // represent. Erroring loudly beats the old silent `null → ""`, which
-        // reloaded as `some(value: "")` and corrupted the round-trip. (Use JSON
-        // for stores with none-valued list elements.)
+        // WI-501: TOML has no null. A `none()` field is omitted (an absent field reloads as
+        // none), so the only null that arrives is a `none()` where nothing can be omitted — a
+        // list element, a tuple component — which TOML cannot represent. (Use JSON for it.)
         serde_json::Value::Null => Err(
-            "cannot serialize a none()/null inside a list to TOML (TOML has no null); \
-             use JSON for this entity"
+            "cannot serialize a none()/null inside a list or a tuple to TOML (TOML has no \
+             null); use JSON for this entity"
                 .into(),
         ),
         serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
@@ -250,990 +2116,5 @@ fn json_to_toml(val: &serde_json::Value) -> Result<toml::Value, String> {
             }
             Ok(toml::Value::Table(tbl))
         }
-    }
-}
-
-// ── Core deserializer ──────────────────────────────────────────
-
-/// The file extensions this module can read: [`load_toml`] and [`load_json`].
-///
-/// Exported because whatever NAMES data files must key off the same list. The
-/// CLI builds its conventional `anthill.{ext}` names from it (WI-746), so a
-/// format it looks for is always one there is a reader for, and a format there
-/// is a reader for is always one it looks for.
-pub const DATA_EXTENSIONS: [&str; 2] = ["toml", "json"];
-
-/// Core deserializer: serde_json::Value → KB terms.
-fn load_value(
-    kb: &mut KnowledgeBase,
-    value: serde_json::Value,
-    domain: Symbol,
-) -> Result<usize, Vec<SerError>> {
-    let obj = match value {
-        serde_json::Value::Object(map) => map,
-        _ => {
-            return Err(vec![SerError::Format(
-                "top-level value must be an object".into(),
-            )])
-        }
-    };
-
-    // Check for single-section (meta + data) vs multi-section layout
-    if obj.contains_key("meta") && obj.contains_key("data") {
-        // Single section
-        load_section(kb, &obj, domain)
-    } else {
-        // Multi-section: each key is a section with .meta + .data
-        let mut total = 0;
-        let mut errors = Vec::new();
-        for (_section_name, section_val) in &obj {
-            match section_val {
-                serde_json::Value::Object(section_map) => {
-                    match load_section(kb, section_map, domain) {
-                        Ok(n) => total += n,
-                        Err(mut errs) => errors.append(&mut errs),
-                    }
-                }
-                _ => {
-                    errors.push(SerError::Format(
-                        "each section must be an object with meta + data".into(),
-                    ));
-                }
-            }
-        }
-        if errors.is_empty() {
-            Ok(total)
-        } else {
-            Err(errors)
-        }
-    }
-}
-
-/// Load a single section: expects "meta" and "data" keys.
-fn load_section(
-    kb: &mut KnowledgeBase,
-    obj: &serde_json::Map<String, serde_json::Value>,
-    domain: Symbol,
-) -> Result<usize, Vec<SerError>> {
-    let meta = obj
-        .get("meta")
-        .ok_or_else(|| vec![SerError::MissingMeta("section has no 'meta' key".into())])?;
-
-    let entity_name = meta
-        .get("entity")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| vec![SerError::MissingMeta("meta.entity must be a string".into())])?;
-
-    // Resolve entity functor in KB
-    let functor = resolve_entity_functor(kb, entity_name).map_err(|e| vec![e])?;
-
-    // Get field schema. A MISS IS FATAL (WI-926).
-    //
-    // This used to `unwrap_or_default()`, deserializing the whole section against
-    // an EMPTY schema, and it missed for the commonest shape: `sort S { entity
-    // S(…) }` gave the SORT the qualified name `…S` and the constructor the
-    // nested `…S.S`, so this landed on the sort, which carried no schema. An
-    // empty schema is not a degraded reconstruction, it is a different one —
-    // WI-501's whole point is that reload consults each field's DECLARED type, so
-    // a `status: Status` field arrived as the bare String `"Open"` where the
-    // source-loaded fact holds the entity `Open`, and the two never
-    // discrim-matched. §6.3 now gives that shape ONE symbol
-    // (`eponymous_sort_symbol`), so the name a data file writes is the name that
-    // carries the schema and this lookup hits. What is left is a genuine miss —
-    // a multi-constructor sort, which has no single row shape — and it is an
-    // error, not an empty list.
-    let fields = match kb.entity_field_names(functor) {
-        Some(f) => f.to_vec(),
-        None => {
-            let constructors = kb
-                .constructors_of_sort(functor)
-                .iter()
-                .map(|c| kb.qualified_name_of(*c).to_string())
-                .collect();
-            return Err(vec![SerError::NoFieldSchema {
-                entity: entity_name.into(),
-                constructors,
-            }]);
-        }
-    };
-
-    let data = obj
-        .get("data")
-        .ok_or_else(|| vec![SerError::MissingMeta("section has no 'data' key".into())])?;
-
-    // WI-922: a persisted data row is a FACT, unconditionally. This used to
-    // call `entity_sort`, which answered a DIFFERENT question — the functor's
-    // declared parent SORT — and on a miss substituted the `Fact` clause-kind
-    // tag, so which classification the KB stored depended on whether the
-    // constructor happened to be registered yet.
-    //
-    // Dropping the fallback must not also drop the condition it absorbed — that
-    // check now lives on the field schema above, which is what this function
-    // actually needs. Note it is NOT "has a parent sort": a free-standing
-    // `entity` declared at namespace level has no parent and is perfectly
-    // deserializable, which is exactly why the old `unwrap_or(Fact)` had a
-    // legitimate case to hide behind.
-    let clause_kind = ClauseKind::Fact;
-
-    let entries: Vec<&serde_json::Value> = match data {
-        serde_json::Value::Array(arr) => arr.iter().collect(),
-        serde_json::Value::Object(_) => vec![data],
-        _ => {
-            return Err(vec![SerError::Format(
-                "data must be an array or object".into(),
-            )])
-        }
-    };
-
-    let mut count = 0;
-    let mut errors = Vec::new();
-
-    for entry in entries {
-        match load_entry(kb, entry, functor, &fields, entity_name) {
-            Ok(term) => {
-                // A data file's rows are a program's, read back: not the loader's, and
-                // unlabeled (WI-20261121-G8E02).
-                kb.assert_fact(term, clause_kind, domain, None, crate::kb::ClauseLabel::Runtime);
-                count += 1;
-            }
-            Err(e) => errors.push(e),
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(count)
-    } else {
-        Err(errors)
-    }
-}
-
-/// A data file holding one of the runtime's accounts is refused: the bridge reads a raise's
-/// cause off its payload's constructor, and a program does not construct one, by writing it
-/// or by reading it from outside ([`crate::kb::RuntimeAccount`]).
-fn refuse_runtime_account(kb: &KnowledgeBase, ctor: Symbol) -> Result<Symbol, SerError> {
-    match kb.runtime_account_of(ctor) {
-        Some(_) => Err(SerError::RuntimeAccount(kb.qualified_name_of(ctor).to_string())),
-        None => Ok(ctor),
-    }
-}
-
-/// Resolve a `meta.entity` name to its functor Symbol — by THE NAME LADDER AT
-/// `<global>` (WI-912), the question a host-supplied extent-owner name asks (WI-908).
-/// A data file is KB-external text written in no scope, so it gets the same reading and
-/// the same three refusals: absent, ambiguous, or hidden by `internal`.
-///
-/// There is NO short-name fallback. This used to retry the name's LAST SEGMENT as a
-/// qualified name — the WI-476 global scan — so `a.b.Rec`, declared nowhere, loaded its
-/// rows onto a top-level `Rec` the file never named.
-fn resolve_entity_functor(kb: &KnowledgeBase, name: &str) -> Result<Symbol, SerError> {
-    match kb.resolve_name_in_global(name) {
-        ResolveResult::Found(sym) => refuse_runtime_account(kb, sym),
-        ResolveResult::Ambiguous(cands, contested) => Err(SerError::AmbiguousName {
-            name: name.to_owned(),
-            candidates: kb.candidate_names(&cands),
-            contested,
-        }),
-        ResolveResult::NotFound => Err(match kb.hidden_internal_in_global(name) {
-            Some(declared_in) => SerError::ForbiddenInternalEntity {
-                entity: name.to_owned(),
-                declared_in,
-            },
-            None => SerError::UnknownEntity(name.to_owned()),
-        }),
-    }
-}
-
-/// Load a single data entry into a KB term, reconstructing each field
-/// type-directedly (WI-501). The serializer is lossy without types — it strips
-/// `some(value: x)` to `x`, DROPS `none()` entirely (the field becomes absent),
-/// renders nullary entities (`Open`, enum variants) as bare strings, and flattens
-/// lists — so reload MUST consult each field's DECLARED type to rebuild the
-/// `Option` wrapper, the entity `Ref`, the cons-list, or the literal, or the
-/// reloaded term silently fails to hash-cons- / discrim-match the source-loaded
-/// form (the named-arg ORDER fix, WI-498, is necessary but not sufficient — the
-/// VALUES must reconstruct too). An absent declared Option field is `none()`; an
-/// absent required field is store corruption — a loud error.
-fn load_entry(
-    kb: &mut KnowledgeBase,
-    entry: &serde_json::Value,
-    functor: Symbol,
-    fields: &[Symbol],
-    entity_name: &str,
-) -> Result<TermId, SerError> {
-    let obj = entry
-        .as_object()
-        .ok_or_else(|| SerError::InvalidValue("data entry must be an object".into()))?;
-
-    let field_types = entity_field_type_map(kb, functor);
-    let mut var_map: HashMap<String, VarId> = HashMap::new();
-    let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-
-    for (key, value) in obj {
-        let field_sym = find_field_sym(kb, fields, key);
-
-        // WI-926: no `fields.is_empty()` escape. `fields` is now always the
-        // DECLARED schema (the caller errors if there is none), so an empty one
-        // means a genuinely 0-field entity — for which every written key IS
-        // unknown. The guard existed only to keep the old schema-less path from
-        // rejecting every row.
-        if !fields.contains(&field_sym) {
-            return Err(SerError::UnknownField {
-                entity: entity_name.into(),
-                field: key.clone(),
-            });
-        }
-
-        let ty = field_type_of(&field_types, field_sym);
-        let term = value_to_term_typed(kb, value, ty, &mut var_map)?;
-        named_args.push((field_sym, term));
-    }
-
-    backfill_absent_fields(kb, fields, &field_types, &mut named_args, entity_name)?;
-
-    // WI-498: canonicalize named args to DECLARED field order via the WI-299
-    // funnel (not `Symbol::index()` interning order). The loader canonicalizes
-    // source-loaded facts to declared order and the discrim matcher descends
-    // named keys positionally, so a fact reloaded from a persisted store must
-    // use the same order or it silently fails to hash-cons- / discrim-match the
-    // same fact loaded from .anthill source.
-    Ok(kb.make_entity_term(functor, SmallVec::new(), named_args))
-}
-
-/// An entity's declared field types as `(field, type)` pairs, each on the carrier it
-/// rides. Empty when the functor has no registered schema (a schema-less functor keeps
-/// the untyped reconstruction path, preserving prior behavior).
-fn entity_field_type_map(kb: &KnowledgeBase, functor: Symbol) -> Vec<(Symbol, Value)> {
-    kb.entity_field_types(functor)
-        .map(<[_]>::to_vec)
-        .unwrap_or_default()
-}
-
-fn field_type_of(field_types: &[(Symbol, Value)], field: Symbol) -> Option<&Value> {
-    field_types
-        .iter()
-        .find(|(s, _)| *s == field)
-        .map(|(_, t)| t)
-}
-
-/// Backfill declared fields that are ABSENT from the persisted data: an Option
-/// field is restored to `none()` (the value the serializer dropped); any other
-/// (required) field is store corruption — a loud error, not a silent partial.
-/// No-op for a schema-less functor (`fields` empty).
-fn backfill_absent_fields(
-    kb: &mut KnowledgeBase,
-    fields: &[Symbol],
-    field_types: &[(Symbol, Value)],
-    named_args: &mut SmallVec<[(Symbol, TermId); 2]>,
-    entity_name: &str,
-) -> Result<(), SerError> {
-    if fields.is_empty() {
-        return Ok(());
-    }
-    let option_sym = kb.try_resolve_symbol("anthill.prelude.Option");
-    let absent: Vec<Symbol> = fields
-        .iter()
-        .copied()
-        .filter(|f| !named_args.iter().any(|(s, _)| s == f))
-        .collect();
-    for field in absent {
-        let is_option = field_type_of(field_types, field).is_some_and(|t| {
-            let (head, _) = type_head_and_inner(kb, t);
-            head.is_some() && head == option_sym
-        });
-        if is_option {
-            let none = option_none_ref(kb);
-            named_args.push((field, none));
-        } else {
-            return Err(SerError::MissingField {
-                entity: entity_name.into(),
-                field: kb.local_name_of(field).to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Convert a JSON value to a KB term, reconstructing it to match the source-
-/// loaded form using the declared type `ty` (WI-501). An `Option[T = U]` field
-/// stores `some(value: x)` as the bare `x` and `none()` as JSON null / an absent
-/// field, so a present value is re-wrapped in `some(...)` (recursing on `U`) and
-/// a null is `none()`. Lists, entity variants, and literals are reconstructed by
-/// [`value_to_term_typed`]'s kind dispatch below. With `ty = None` this is the
-/// prior untyped behavior, except nullary entities now rebuild as `Ref` (the
-/// loader's form) rather than `Fn` so they hash-cons-match.
-fn value_to_term_typed(
-    kb: &mut KnowledgeBase,
-    value: &serde_json::Value,
-    ty: Option<&Value>,
-    var_map: &mut HashMap<String, VarId>,
-) -> Result<TermId, SerError> {
-    if let Some(t) = ty {
-        let (head, inner) = type_head_and_inner(kb, t);
-        if head.is_some() && head == kb.try_resolve_symbol("anthill.prelude.Option") {
-            if value.is_null() {
-                return Ok(option_none_ref(kb));
-            }
-            let inner_term = value_to_term_typed(kb, value, inner.as_ref(), var_map)?;
-            return Ok(some_wrap(kb, inner_term));
-        }
-        // WI-20261109-5VM2G: a `BigInt` field reads back as a `BigInt` — written as a JSON
-        // number where it fits one, and as its digits past that ([`literal_to_json`]). Read
-        // by the number's shape, one that fits an `Int64` came back as an `Int64`, and the
-        // digits as a `String`.
-        if head.is_some() && head == kb.try_resolve_symbol("anthill.prelude.BigInt") {
-            let digits = match value {
-                serde_json::Value::Number(n) if n.is_i64() || n.is_u64() => Some(n.to_string()),
-                serde_json::Value::String(s) => Some(s.clone()),
-                _ => None,
-            };
-            return match digits.and_then(|d| d.parse::<num_bigint::BigInt>().ok()) {
-                Some(n) => Ok(kb.alloc(Term::Const(Literal::BigInt(n)))),
-                None => Err(SerError::InvalidValue(format!(
-                    "{value} under a BigInt field: expected an integer or its digits"
-                ))),
-            };
-        }
-    }
-    match value {
-        // A null is `none()` only for an Option field (handled by the peel above)
-        // or when the type is unknown (schema-less, can't tell). A null under a
-        // KNOWN non-Option type is store corruption — loud error, not a silent
-        // wrong-typed none() (loud-error principle).
-        serde_json::Value::Null => {
-            if ty.is_some() {
-                Err(SerError::InvalidValue(
-                    "null value for a non-Option field".into(),
-                ))
-            } else {
-                Ok(option_none_ref(kb))
-            }
-        }
-        serde_json::Value::Bool(b) => Ok(kb.alloc(Term::Const(Literal::Bool(*b)))),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(kb.alloc(Term::Const(Literal::Int(i))))
-            } else if let Some(f) = n.as_f64() {
-                Ok(kb.alloc(Term::Const(Literal::Float(OrderedFloat(f)))))
-            } else {
-                Err(SerError::InvalidValue(format!("unsupported number: {n}")))
-            }
-        }
-        serde_json::Value::String(s) => string_to_term_typed(kb, s, ty, var_map),
-        serde_json::Value::Array(arr) => {
-            // Thread the element type for a `List[T = U]` field so list elements
-            // (entity variants, options, nested lists) reconstruct correctly.
-            let elem_ty = ty.and_then(|t| {
-                let (head, inner) = type_head_and_inner(kb, t);
-                if head.is_some() && head == kb.try_resolve_symbol("anthill.prelude.List") {
-                    inner
-                } else {
-                    None
-                }
-            });
-            let mut items = Vec::with_capacity(arr.len());
-            for it in arr {
-                items.push(value_to_term_typed(kb, it, elem_ty.as_ref(), var_map)?);
-            }
-            Ok(build_cons_list(kb, &items))
-        }
-        serde_json::Value::Object(map) => object_to_term_typed(kb, map, ty, var_map),
-    }
-}
-
-/// Build a cons/nil list, preferring the canonical `anthill.prelude.List.cons/nil`
-/// symbols (matching the source loader so the list hash-cons-matches) but falling
-/// back to bare interned `cons`/`nil` when the prelude `List` is not loaded — so a
-/// schema-less deserialize never panics (unlike [`KnowledgeBase::build_list`],
-/// which resolves-or-panics).
-fn build_cons_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
-    let nil_sym = match kb.try_resolve_symbol(LIST_NIL) {
-        Some(s) => s,
-        None => resolve_or_intern(kb, "nil"),
-    };
-    let cons_sym = match kb.try_resolve_symbol(LIST_CONS) {
-        Some(s) => s,
-        None => resolve_or_intern(kb, "cons"),
-    };
-    // The SYMBOL POLICY is all this function is; the spine is shared with
-    // `KnowledgeBase::build_list`, whose only difference is that it resolves-or-panics.
-    kb.build_list_with(nil_sym, cons_sym, items)
-}
-
-/// Convert a string value, handling `?name` variables, `\?` escapes, and (WI-501)
-/// type-directed nullary entity / enum-variant references: a string whose declared
-/// sort has a variant named `s` is that variant as a `Ref` (the loader's form),
-/// not a string literal.
-fn string_to_term_typed(
-    kb: &mut KnowledgeBase,
-    s: &str,
-    ty: Option<&Value>,
-    var_map: &mut HashMap<String, VarId>,
-) -> Result<TermId, SerError> {
-    if let Some(var_name) = s.strip_prefix('?') {
-        if var_name.is_empty() {
-            // Anonymous variable `?`
-            let anon_sym = kb.intern("_");
-            let vid = kb.fresh_var(anon_sym);
-            return Ok(kb.alloc(Term::Var(Var::Global(vid))));
-        }
-        let vid = *var_map.entry(var_name.to_string()).or_insert_with(|| {
-            let sym = kb.intern(var_name);
-            kb.fresh_var(sym)
-        });
-        return Ok(kb.alloc(Term::Var(Var::Global(vid))));
-    }
-    if let Some(rest) = s.strip_prefix("\\?") {
-        // Escaped: literal string starting with ?
-        return Ok(kb.alloc(Term::Const(Literal::String(format!("?{rest}")))));
-    }
-    // Type-directed: a string under a declared entity/enum sort is a nullary
-    // variant of that sort, resolved within the sort's namespace → `Ref(variant)`.
-    // When the declared type IS known, it is authoritative: if the string is not
-    // a variant of that sort it is a plain literal (a `String`-typed field whose
-    // value happens to equal a qualified entity name stays a literal — we do NOT
-    // fall through to the global entity heuristic below, which would mis-type it).
-    if let Some(t) = ty {
-        if let (Some(sort), _) = type_head_and_inner(kb, t) {
-            // WI-20260902-JB6RS — under a field declared `Type` the string is a TYPE's name,
-            // and reads back as the type it names, built as every type producer builds it
-            // (an entity's by its type face): the writer spells a constructor's type by its
-            // qualified name. A name that denotes no sort stays the literal it is.
-            if kb.local_name_of(sort) == "Type"
-                && kb.try_resolve_symbol("anthill.prelude.Type") == Some(sort.plain())
-            {
-                return match type_named(kb, s) {
-                    Some(named) => Ok(kb.make_sort_ref(named)),
-                    None => Err(SerError::InvalidValue(format!(
-                        "`{s}` under a field declared `Type` names no sort or entity"
-                    ))),
-                };
-            }
-            if let Some(vsym) = constructor_of_sort_named(kb, sort, s) {
-                return Ok(kb.alloc(Term::Ref(vsym)));
-            }
-        }
-        return Ok(kb.alloc(Term::Const(Literal::String(s.to_string()))));
-    }
-    // No declared type (schema-less): a nullary entity the name denotes at `<global>`
-    // is a `Ref` (matching the loader); otherwise a plain string literal. The ladder,
-    // not an absolute lookup, for `resolve_entity_functor`'s reason (WI-912).
-    if let ResolveResult::Found(sym) = kb.resolve_name_in_global(s) {
-        if kb.entity_field_names(sym).map_or(false, |f| f.is_empty()) {
-            return Ok(kb.alloc(Term::Ref(sym)));
-        }
-    }
-    Ok(kb.alloc(Term::Const(Literal::String(s.to_string()))))
-}
-
-/// The sort or entity a persisted `Type` value names, by the qualified name the writer
-/// gives every type. `None` for a name that is no type — refused by the caller, not read
-/// as a string: a `Type` field holds a type.
-fn type_named(kb: &KnowledgeBase, s: &str) -> Option<Symbol> {
-    let sym = kb.try_resolve_symbol(s)?;
-    (kb.has_kind(sym, SymbolKind::Sort) || kb.has_kind(sym, SymbolKind::Entity)).then_some(sym)
-}
-
-/// Head sort symbol + first type-argument of a declared type, read through the view on
-/// whichever carrier it rides: for `Option[T = U]` / `List[T = U]` returns
-/// `(Option/List, Some(U))`; for a bare `S` returns `(S, None)`.
-fn type_head_and_inner(kb: &KnowledgeBase, ty: &Value) -> (Option<Symbol>, Option<Value>) {
-    match ty.head(kb) {
-        ViewHead::Functor {
-            functor: head,
-            ..
-        } => {
-            let inner = ty
-                .named_keys(kb)
-                .first()
-                .and_then(|key| ty.named_arg(kb, *key))
-                .map(|arg| arg.to_value());
-            (Some(head), inner)
-        }
-        _ => (None, None),
-    }
-}
-
-/// `anthill.prelude.Option.none` as a `Ref` — the SAME form the source loader
-/// emits for a written `none`, so a backfilled / null-derived none hash-cons-
-/// matches the source.
-fn option_none_ref(kb: &mut KnowledgeBase) -> TermId {
-    let none_sym = match kb.try_resolve_symbol(OPTION_NONE) {
-        Some(s) => s,
-        None => resolve_or_intern(kb, "none"),
-    };
-    kb.alloc(Term::Ref(none_sym))
-}
-
-/// Wrap `inner` as `anthill.prelude.Option.some(value: inner)` — the SAME form
-/// the loader emits, so a re-wrapped Option value hash-cons-matches the source.
-fn some_wrap(kb: &mut KnowledgeBase, inner: TermId) -> TermId {
-    let some_sym = match kb.try_resolve_symbol(OPTION_SOME) {
-        Some(s) => s,
-        None => resolve_or_intern(kb, "some"),
-    };
-    let value_sym = kb.intern("value");
-    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    named.push((value_sym, inner));
-    kb.make_entity_term(some_sym, SmallVec::new(), named)
-}
-
-/// Convert a single-key JSON object `{ Variant: payload }` to a constructor /
-/// enum-variant term (WI-501, type-directed). The variant name is resolved
-/// among the declared sort `ty`'s constructors (so `{ Verified: … }` under a
-/// `WorkStatus` field becomes `anthill.stage0.WorkStatus.Verified`), or at
-/// `<global>` when there is no declared sort — see [`resolve_variant_sym`].
-fn object_to_term_typed(
-    kb: &mut KnowledgeBase,
-    map: &serde_json::Map<String, serde_json::Value>,
-    ty: Option<&Value>,
-    var_map: &mut HashMap<String, VarId>,
-) -> Result<TermId, SerError> {
-    if map.len() == 1 {
-        let (key, value) = map.iter().next().unwrap();
-        let ctor_sym = resolve_variant_sym(kb, key, ty)?;
-        return build_constructor_term_typed(kb, ctor_sym, value, var_map);
-    }
-
-    // Multiple keys: not a standard pattern in the envelope format.
-    Err(SerError::InvalidValue(
-        "inline object with multiple keys must be inside a data entry".into(),
-    ))
-}
-
-/// Resolve a constructor/variant KEY (WI-912).
-///
-/// UNDER A DECLARED SORT the question is not a name lookup at all: the key must be one of
-/// THAT sort's constructors, which the serializer wrote by local name. So it is asked of
-/// the constructor set ([`constructor_of_sort_named`]) — never as a `"<sort>.<key>"`
-/// string join, and never re-asked globally on a miss: a key outside the declared sort
-/// is a wrong-typed value, and taking a same-spelled top-level entity instead put a
-/// foreign constructor into a sort-typed field.
-///
-/// WITH NO DECLARED SORT the key is a name read at `<global>`, like `meta.entity`.
-///
-/// Either way a miss is LOUD. It used to `intern` the key — WI-894's hazard: a bare
-/// global symbol that two scopes' same-spelled names collapse onto, and that no source
-/// fact is written with, so the row loaded clean and matched nothing.
-fn resolve_variant_sym(
-    kb: &KnowledgeBase,
-    key: &str,
-    ty: Option<&Value>,
-) -> Result<Symbol, SerError> {
-    if let Some(sort) = ty.and_then(|t| type_head_and_inner(kb, t).0) {
-        let ctor = constructor_of_sort_named(kb, sort, key).ok_or_else(|| {
-            SerError::UnknownConstructor {
-                name: key.to_owned(),
-                sort: Some(kb.qualified_name_of(sort).to_string()),
-            }
-        })?;
-        return refuse_runtime_account(kb, ctor);
-    }
-    match kb.resolve_name_in_global(key) {
-        ResolveResult::Found(sym) => refuse_runtime_account(kb, sym),
-        ResolveResult::Ambiguous(cands, contested) => Err(SerError::AmbiguousName {
-            name: key.to_owned(),
-            candidates: kb.candidate_names(&cands),
-            contested,
-        }),
-        ResolveResult::NotFound => Err(SerError::UnknownConstructor {
-            name: key.to_owned(),
-            sort: None,
-        }),
-    }
-}
-
-/// The constructor of `sort` whose local name is `name` — the one question a persisted
-/// variant under a declared sort asks. `field_constructors_of_sort` so a free-standing
-/// or eponymous entity (§6.3: `sort S { entity S(…) }` is ONE symbol) answers for itself.
-fn constructor_of_sort_named(kb: &KnowledgeBase, sort: Symbol, name: &str) -> Option<Symbol> {
-    kb.field_constructors_of_sort(sort)
-        .into_iter()
-        .find(|c| kb.local_name_of(*c) == name)
-}
-
-/// Build a constructor term, reconstructing each field type-directedly from the
-/// constructor's own declared field types (WI-501) and backfilling its absent
-/// Option fields. The single-field shorthand (`{ ToolPasses: "cargo-test" }`)
-/// fills the lone declared field; with no schema it falls back to positional.
-fn build_constructor_term_typed(
-    kb: &mut KnowledgeBase,
-    ctor_sym: Symbol,
-    value: &serde_json::Value,
-    var_map: &mut HashMap<String, VarId>,
-) -> Result<TermId, SerError> {
-    let fields = kb
-        .entity_field_names(ctor_sym)
-        .map(|f| f.to_vec())
-        .unwrap_or_default();
-    let field_types = entity_field_type_map(kb, ctor_sym);
-    match value {
-        serde_json::Value::Object(inner) => {
-            // Constructor with named fields: { "Verified": { "at": "2027" } }
-            let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-            for (k, v) in inner {
-                let field_sym = find_field_sym(kb, &fields, k);
-                let fty = field_type_of(&field_types, field_sym);
-                let term = value_to_term_typed(kb, v, fty, var_map)?;
-                named_args.push((field_sym, term));
-            }
-            let ctor_name = kb.local_name_of(ctor_sym).to_string();
-            backfill_absent_fields(kb, &fields, &field_types, &mut named_args, &ctor_name)?;
-            // WI-498: canonicalize named-constructor / enum-variant args to
-            // declared field order via the funnel (not interning order).
-            Ok(kb.make_entity_term(ctor_sym, SmallVec::new(), named_args))
-        }
-        _ => {
-            // Single-field shorthand: { "ToolPasses": "cargo-test" }
-            if fields.len() == 1 {
-                let fty = field_type_of(&field_types, fields[0]);
-                let inner_term = value_to_term_typed(kb, value, fty, var_map)?;
-                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-                named_args.push((fields[0], inner_term));
-                Ok(kb.make_entity_term(ctor_sym, SmallVec::new(), named_args))
-            } else if fields.len() > 1 {
-                // WI-503 gap (3): a multi-field constructor needs its named fields,
-                // which only an object payload carries. A scalar/array payload
-                // (foreign / hand-authored store only — our serializer never emits
-                // one) would build a positional `Term::Fn` that never discrim-matches
-                // the named pattern (and an array silently drops all but its first
-                // element). Error loudly rather than build a fact that can never match.
-                Err(SerError::InvalidValue(format!(
-                    "constructor '{}' has {} named fields but the persisted payload is a \
-                     scalar/array, not an object — cannot reconstruct its named fields",
-                    kb.local_name_of(ctor_sym),
-                    fields.len(),
-                )))
-            } else {
-                // No field schema (`fields` empty) — nothing better than positional.
-                let inner_term = value_to_term_typed(kb, value, None, var_map)?;
-                Ok(kb.alloc(Term::Fn {
-                    functor: ctor_sym,
-                    pos_args: SmallVec::from_elem(inner_term, 1),
-                    named_args: SmallVec::new(),
-                }))
-            }
-        }
-    }
-}
-
-/// Find a field Symbol by name, falling back to intern if not in the schema.
-fn find_field_sym(kb: &mut KnowledgeBase, fields: &[Symbol], key: &str) -> Symbol {
-    fields
-        .iter()
-        .find(|&&f| kb.local_name_of(f) == key)
-        .copied()
-        .unwrap_or_else(|| kb.intern(key))
-}
-
-/// Resolve a name in KB, falling back to intern.
-fn resolve_or_intern(kb: &mut KnowledgeBase, name: &str) -> Symbol {
-    kb.try_resolve_symbol(name)
-        .unwrap_or_else(|| kb.intern(name))
-}
-
-// ── Core serializer ────────────────────────────────────────────
-
-/// Core serializer: KB facts → serde_json::Value.
-fn facts_to_value(
-    kb: &KnowledgeBase,
-    entity_name: &str,
-    rule_ids: &[RuleId],
-) -> Result<serde_json::Value, SerError> {
-    let mut data = Vec::new();
-
-    for &rid in rule_ids {
-        let head = kb.rule_head(rid);
-        let val = term_to_value(kb, head)?;
-        // Extract named fields from the term — skip the functor wrapper
-        match val {
-            serde_json::Value::Object(map) if map.len() == 1 => {
-                // The term serialized as { "EntityName": { fields } }
-                // Unwrap to just the fields
-                let (_, inner) = map.into_iter().next().unwrap();
-                data.push(inner);
-            }
-            _ => data.push(val),
-        }
-    }
-
-    let mut result = serde_json::Map::new();
-    let mut meta = serde_json::Map::new();
-    meta.insert(
-        "entity".into(),
-        serde_json::Value::String(entity_name.into()),
-    );
-    result.insert("meta".into(), serde_json::Value::Object(meta));
-
-    if data.len() == 1 {
-        result.insert("data".into(), data.into_iter().next().unwrap());
-    } else {
-        result.insert("data".into(), serde_json::Value::Array(data));
-    }
-
-    Ok(serde_json::Value::Object(result))
-}
-
-/// WI-503: detect the prelude `Option`/`List` wrappers by QUALIFIED name. The
-/// deserializer resolves `some`/`none`/`cons`/`nil` by qualified name; the
-/// serializer must too, or a user entity literally named `some`/`none`/`cons`/
-/// `nil` in another namespace is mis-flattened as a prelude wrapper. (The
-/// `none`-Ref serialize check already gates on the qualified name — these extend
-/// the same discipline to the `Fn` forms.)
-fn is_prelude(kb: &KnowledgeBase, sym: Symbol, qualified: &str) -> bool {
-    kb.qualified_name_of(sym) == qualified
-}
-
-/// Convert a KB term to a JSON value.
-fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, SerError> {
-    match kb.get_term(term) {
-        Term::Const(lit) => literal_to_json(lit),
-        Term::Var(Var::Global(vid)) => {
-            let name = kb.local_name_of(vid.name());
-            if name == "_" {
-                Ok(serde_json::Value::String("?".into()))
-            } else {
-                Ok(serde_json::Value::String(format!("?{name}")))
-            }
-        }
-        Term::Var(Var::DeBruijn(n)) => {
-            Ok(serde_json::Value::String(format!("?#{n}")))
-        }
-        Term::Var(Var::Rigid(vid)) => {
-            Ok(serde_json::Value::String(format!("!{}", kb.local_name_of(vid.name()))))
-        }
-        Term::Fn { functor, pos_args, named_args } => {
-            let functor = *functor;
-            // WI-20260902-JB6RS — a TYPE with bindings (`Foo[X = Int64]`, headed by a
-            // constructor's type face) has no form in this flattened format: written as
-            // the entity object an instance is, it would reload as an instance. Refused,
-            // as `some(none())` is below, rather than round-tripped to the wrong value.
-            if functor.is_type_face() {
-                return Err(SerError::InvalidValue(format!(
-                    "the type `{}[…]` cannot be represented in the flattened persistence \
-                     format, which holds a type only by its name",
-                    kb.qualified_name_of(functor)
-                )));
-            }
-            let pos_args = pos_args.clone();
-            let named_args = named_args.clone();
-            let name = kb.local_name_of(functor);
-
-            // Check for list cons/nil (WI-503: qualified-gated, see `is_prelude`).
-            if is_prelude(kb, functor, LIST_NIL)
-                && pos_args.is_empty() && named_args.is_empty() {
-                return Ok(serde_json::Value::Array(vec![]));
-            }
-            if is_prelude(kb, functor, LIST_CONS) {
-                return cons_to_json_array(kb, term);
-            }
-
-            // Check for Option some/none (WI-503: qualified-gated).
-            if is_prelude(kb, functor, OPTION_SOME) {
-                let inner_id = named_args.iter()
-                    .find(|(s, _)| kb.local_name_of(*s) == "value")
-                    .map(|(_, id)| *id)
-                    .or_else(|| (pos_args.len() == 1).then(|| pos_args[0]));
-                if let Some(inner_id) = inner_id {
-                    let inner = term_to_value(kb, inner_id)?;
-                    // WI-503 gap (1): `some(none())` (present-but-empty) collapses —
-                    // the inner `none` serializes to JSON null, the field is dropped,
-                    // and reload restores `none()` (absent), silently losing the
-                    // present/absent distinction for `Option[T = Option[U]]`. The
-                    // flattened TOML/JSON format genuinely cannot represent it (the
-                    // self-describing redesign was declined for WI-501), so error
-                    // loudly rather than round-trip to the wrong value.
-                    if inner.is_null() {
-                        return Err(SerError::InvalidValue(
-                            "Option[T = Option[U]] value some(none()) cannot be represented \
-                             in the flattened persistence format — it would round-trip to \
-                             none(), silently dropping the present-but-empty distinction; \
-                             this nested-Option shape is unsupported".into(),
-                        ));
-                    }
-                    return Ok(inner);
-                }
-                // A `some` with neither a `value` field nor a single positional arg is
-                // malformed; fall through to the generic entity handling below.
-            }
-            if is_prelude(kb, functor, OPTION_NONE)
-                && pos_args.is_empty() && named_args.is_empty() {
-                return Ok(serde_json::Value::Null);
-            }
-
-            // Nullary functor → string (e.g. "Open")
-            if pos_args.is_empty() && named_args.is_empty() {
-                return Ok(serde_json::Value::String(name.to_string()));
-            }
-
-            // Entity with named fields only
-            if pos_args.is_empty() && !named_args.is_empty() {
-                let mut fields = serde_json::Map::new();
-                for &(sym, val_id) in &named_args {
-                    let field_name = kb.local_name_of(sym).to_string();
-                    let val = term_to_value(kb, val_id)?;
-                    // Skip none() values (Option absent)
-                    if val != serde_json::Value::Null {
-                        fields.insert(field_name, val);
-                    }
-                }
-
-                // Check if this functor is a constructor (entity with parent sort)
-                if kb.is_constructor_symbol(functor) {
-                    // Single-field shorthand
-                    if named_args.len() == 1 {
-                        let val = term_to_value(kb, named_args[0].1)?;
-                        let mut wrapper = serde_json::Map::new();
-                        wrapper.insert(name.to_string(), val);
-                        return Ok(serde_json::Value::Object(wrapper));
-                    }
-                    // Multi-field constructor
-                    let mut wrapper = serde_json::Map::new();
-                    wrapper.insert(name.to_string(), serde_json::Value::Object(fields));
-                    return Ok(serde_json::Value::Object(wrapper));
-                }
-
-                // Top-level entity: just return the fields
-                return Ok(serde_json::Value::Object(fields));
-            }
-
-            // Positional args only
-            if !pos_args.is_empty() && named_args.is_empty() {
-                if pos_args.len() == 1 {
-                    let val = term_to_value(kb, pos_args[0])?;
-                    let mut wrapper = serde_json::Map::new();
-                    wrapper.insert(name.to_string(), val);
-                    return Ok(serde_json::Value::Object(wrapper));
-                }
-                let arr: Result<Vec<_>, _> = pos_args.iter().map(|&id| term_to_value(kb, id)).collect();
-                let mut wrapper = serde_json::Map::new();
-                wrapper.insert(name.to_string(), serde_json::Value::Array(arr?));
-                return Ok(serde_json::Value::Object(wrapper));
-            }
-
-            // Mixed positional + named — serialize as object with all args.
-            // WI-790: the positional keys are the 1-BASED `_1, _2, …` convention
-            // (`positional_label`), which is what every reader of a `_N` key
-            // interprets — `field_access` (eval/builtins.rs) and
-            // `field_step_in_value` (kb/load.rs) both map `_N` to slot N-1, and the
-            // type-directed loader below re-slots by NAME. This minted `_0`-based
-            // keys until WI-790: `_0` was outside every reader's domain, and the
-            // keys that did parse denoted a slot one to the left of what they named.
-            let mut all_fields = serde_json::Map::new();
-            for (i, &pos_id) in pos_args.iter().enumerate() {
-                let val = term_to_value(kb, pos_id)?;
-                all_fields.insert(positional_label(i), val);
-            }
-            for &(sym, val_id) in &named_args {
-                let field_name = kb.local_name_of(sym).to_string();
-                let val = term_to_value(kb, val_id)?;
-                all_fields.insert(field_name, val);
-            }
-            let mut wrapper = serde_json::Map::new();
-            wrapper.insert(name.to_string(), serde_json::Value::Object(all_fields));
-            Ok(serde_json::Value::Object(wrapper))
-        }
-        Term::Ref(sym) => {
-            // WI-501: a written `none` loads as `Ref(anthill.prelude.Option.none)`
-            // (a nullary entity is a `Ref`, not a `Fn`). Render it to JSON null so
-            // the entity-field loop DROPS it — an absent field means `none` and is
-            // restored by the type-directed deserializer's backfill (see
-            // `value_to_term_typed`). Any other nullary entity (`Open`, an enum
-            // variant) stays its short-name string and is rebuilt type-directedly.
-            // WI-20260902-JB6RS — a TYPE is its name, QUALIFIED: it is read back under a field
-            // declared `Type`, where no sort scopes a short name (`string_to_term_typed`).
-            // A constructor's type (`WorkItem[]`, the face) and a sort with no constructor of
-            // its name (`Int64`); asked FIRST, since the face of `Option.none` is the type
-            // `none[]` and not the absent value. Any other reference is an instance — a
-            // nullary variant, written by its short name and rebuilt type-directedly.
-            if sym.is_type_face()
-                || (kb.has_kind(*sym, SymbolKind::Sort) && !kb.is_entity_constructor(*sym))
-            {
-                return Ok(serde_json::Value::String(kb.qualified_name_of(*sym).to_string()));
-            }
-            if is_prelude(kb, *sym, OPTION_NONE) {
-                return Ok(serde_json::Value::Null);
-            }
-            let name = kb.local_name_of(*sym);
-            Ok(serde_json::Value::String(name.to_string()))
-        }
-        Term::Ident(sym) => {
-            let name = kb.local_name_of(*sym);
-            Ok(serde_json::Value::String(name.to_string()))
-        }
-        Term::Bottom => Ok(serde_json::Value::Null),
-        Term::ParseAux(_) => Err(SerError::InvalidValue(
-            "parse-only Term::ParseAux variant reached term_to_value (should never happen post-load)".into(),
-        )),
-    }
-}
-
-/// Flatten a cons-list to a JSON array.
-fn cons_to_json_array(kb: &KnowledgeBase, mut term: TermId) -> Result<serde_json::Value, SerError> {
-    let mut items = Vec::new();
-    loop {
-        // Extract head/tail TermIds from the cons cell without holding the borrow
-        let cell = match kb.get_term(term) {
-            Term::Fn {
-                functor,
-                named_args,
-                ..
-            } => {
-                if is_prelude(kb, *functor, LIST_NIL) {
-                    break;
-                }
-                if is_prelude(kb, *functor, LIST_CONS) {
-                    let head = named_args
-                        .iter()
-                        .find(|(s, _)| kb.local_name_of(*s) == "head")
-                        .map(|(_, id)| *id);
-                    let tail = named_args
-                        .iter()
-                        .find(|(s, _)| kb.local_name_of(*s) == "tail")
-                        .map(|(_, id)| *id);
-                    Some((head, tail))
-                } else {
-                    None
-                }
-            }
-            // WI-511: the canonical nullary `nil` terminator is `Ref(nil)`.
-            Term::Ref(s) if is_prelude(kb, *s, LIST_NIL) => break,
-            _ => None,
-        };
-        match cell {
-            Some((head, tail)) => {
-                if let Some(h) = head {
-                    items.push(term_to_value(kb, h)?);
-                }
-                if let Some(t) = tail {
-                    term = t;
-                } else {
-                    break;
-                }
-            }
-            None => {
-                items.push(term_to_value(kb, term)?);
-                break;
-            }
-        }
-    }
-    Ok(serde_json::Value::Array(items))
-}
-
-/// Convert a Literal to JSON.
-fn literal_to_json(lit: &Literal) -> Result<serde_json::Value, SerError> {
-    match lit {
-        Literal::String(s) => Ok(serde_json::Value::String(s.clone())),
-        Literal::Int(n) => Ok(serde_json::Value::Number((*n).into())),
-        Literal::BigInt(n) => {
-            if let Ok(i) = i64::try_from(n) {
-                Ok(serde_json::Value::Number(i.into()))
-            } else {
-                Ok(serde_json::Value::String(n.to_string()))
-            }
-        }
-        Literal::Float(f) => serde_json::Number::from_f64(f.into_inner())
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| SerError::InvalidValue(format!("non-finite float: {f}"))),
-        Literal::Bool(b) => Ok(serde_json::Value::Bool(*b)),
     }
 }

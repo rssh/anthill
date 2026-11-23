@@ -12509,9 +12509,10 @@ impl KnowledgeBase {
     /// `node_occurrence::build_list_termid` — the last one's own doc calling itself a
     /// "mirror of `load.rs::build_list`"), and a shape with four constructors is one
     /// edit away from four shapes. Only the symbol POLICY genuinely varied, so that is
-    /// all that is left: this function and `term_ser::build_cons_list` (which falls
-    /// back to a bare `intern` for a schema-less deserialize) each pick their symbols
-    /// and hand the spine to [`Self::build_list_with`].
+    /// all that is left: this function picks its symbols and hands the spine to
+    /// [`Self::build_list_with`]. (`term_ser::build_cons_list`, which fell back to a bare
+    /// `intern` for a schema-less deserialize, went with that path in WI-20261122-WC18Y:
+    /// the codec reads a list only at a declared `List`, and builds it here.)
     ///
     /// The three merged copies allocated `Fn{cons, [(head, x), (tail, acc)]}` RAW,
     /// while the spine goes through [`Self::make_entity_term`] and so canonicalizes

@@ -12,8 +12,12 @@ indexmap = "2"
 tree-sitter = "0.25"
 tree-sitter-anthill = { path = "../../tree-sitter-anthill" }
 serde = "1"
-serde_json = "1"
-toml = "0.8"
+# WI-20261122-WC18Y (proposal 021, "Key order"): an encoded value's keys are in DECLARED
+# order, the order the encoder inserts them in. Without `preserve_order` a map is sorted,
+# and whether it is would turn on whether some other crate in the build enabled the
+# feature. Features only add, so no crate linking this one can turn it off.
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = { version = "0.8", features = ["preserve_order"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 imbl = "7.0.0"
 

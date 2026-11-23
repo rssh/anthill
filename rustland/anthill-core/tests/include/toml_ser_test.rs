@@ -763,8 +763,17 @@ end
     let err = term_ser::serialize_json(&kb, "test.Box", &[rid])
         .expect_err("some(none()) must error loudly, not silently collapse");
     assert!(
-        matches!(err, term_ser::SerError::InvalidValue(_)),
-        "expected InvalidValue for nested-Option collapse, got: {err:?}"
+        matches!(
+            err,
+            term_ser::SerError::Row {
+                error: term_ser::ValueError {
+                    problem: term_ser::ValueProblem::Unrepresentable { .. },
+                    ..
+                },
+                ..
+            }
+        ),
+        "expected Unrepresentable for nested-Option collapse, got: {err:?}"
     );
 }
 
@@ -812,8 +821,13 @@ end
         .try_resolve_symbol("test.Holder")
         .expect("Holder resolved");
     let c_sym = kb.intern("c");
+    // Every declared field: since WI-20261122-WC18Y the writer refuses a fact that lacks a
+    // required one (`MissingField`), where it used to write the fields it found.
+    let tags_sym = kb.intern("tags");
+    let no_tags = kb.build_list(&[]);
     let mut holder_named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
     holder_named.push((c_sym, cons_term));
+    holder_named.push((tags_sym, no_tags));
     let holder_term = kb.alloc(Term::Fn {
         functor: holder_sym,
         pos_args: SmallVec::new(),
@@ -862,7 +876,16 @@ end
         .expect_err("multi-field ctor with a scalar payload must error loudly");
     assert!(
         errs.iter()
-            .any(|e| matches!(e, term_ser::SerError::InvalidValue(_))),
-        "expected InvalidValue for foreign positional payload, got: {errs:?}"
+            .any(|e| matches!(
+                e,
+                term_ser::SerError::Row {
+                    error: term_ser::ValueError {
+                        problem: term_ser::ValueProblem::NotOneField { fields: 2, .. },
+                        ..
+                    },
+                    ..
+                }
+            )),
+        "expected NotOneField for foreign positional payload, got: {errs:?}"
     );
 }

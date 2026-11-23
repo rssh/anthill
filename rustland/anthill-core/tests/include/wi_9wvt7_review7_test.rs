@@ -167,8 +167,19 @@ fn a_data_file_does_not_hold_an_account() {
         domain,
     );
     let errors = refused.expect_err("an account in a data file is refused");
+    // The refusal is the codec's (WI-20261122-WC18Y), so it holds for one value decoded
+    // outside a file as for a row.
     assert!(
-        errors.iter().any(|e| e.to_string().contains("a data file does not hold one")),
+        errors.iter().any(|e| matches!(
+            e,
+            term_ser::SerError::Row {
+                error: term_ser::ValueError {
+                    problem: term_ser::ValueProblem::RuntimeAccount { constructor },
+                    ..
+                },
+                ..
+            } if constructor == "anthill.reflect.LoadFailed.load_failed"
+        )),
         "{:?}",
         errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
     );

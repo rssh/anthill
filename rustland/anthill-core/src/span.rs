@@ -236,6 +236,22 @@ impl SourceRegistry {
         id
     }
 
+    /// WI-20261122-WC18Y — the one name-only source the synthetic texts called `name` are
+    /// lowered under, registered the first time it is asked for. A text the host hands in on
+    /// every call (a type read from its text, `term_ser::type_from_text`) would otherwise bank
+    /// an entry per call, for as long as the KB lives. Its spans render degraded, as any
+    /// name-only source's do: they index a text no file holds.
+    pub fn synthetic(&mut self, name: &str) -> SourceId {
+        let existing = self
+            .entries
+            .iter()
+            .position(|e| e.name == name && e.path.is_none() && e.source.is_empty());
+        match existing {
+            Some(i) => SourceId(i as u32),
+            None => self.register(name.to_owned()),
+        }
+    }
+
     /// WI-745: register a source WITH its on-disk path and full text, so a load
     /// error carrying the returned `SourceId` renders `path:line:col: message`.
     pub fn register_file(

@@ -34,7 +34,7 @@ A value is written at a DECLARED TYPE. The type is a term, the same term the KB 
 Everything below is public in `anthill_core::persistence::term_ser`. The names are proposals.
 
 ```rust
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CodecOptions {
     pub variables: bool,             // false
     pub entity_tags: EntityTags,     // Always
@@ -62,12 +62,15 @@ pub fn type_from_text(kb: &mut KnowledgeBase, text: &str) -> Result<TermId, Valu
 
 pub fn type_to_text(kb: &KnowledgeBase, ty: &impl TermView) -> Result<String, ValueError>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValueError {
-    pub path: JsonPath,        // where, e.g. `$.steps[3].output`
+    pub path: JsonPath,        // where, e.g. `$.order.Order.lines[1]`
     pub expected: String,      // the type declared there, printed as the KB prints a type
     pub problem: ValueProblem, // what was wrong
 }
+
+pub struct JsonPath(/* steps */);              // `steps() -> &[PathStep]`
+pub enum PathStep { Key(String), Index(usize) }
 ```
 
 **`CodecOptions`** configures the mapping. Each default is the mapping as the rest of this proposal states it. The JSON does not record which options wrote it, so a value is read with the options it was written with. Where an option chooses between two spellings, the reader takes the chosen one and refuses the other, except `big_int`, whose reader takes both.
@@ -80,7 +83,7 @@ pub struct ValueError {
 | `big_int` | `NumberWhenItFits`: a number in the `i64` range, digits past it | `AlwaysDigits`: always its digits, for a reader that loses integers past 2^53 |
 | `wider_tuple` | `Project`: a wider tuple value is written at the declared labels (see [Tuples](#tuples)) | `Refuse`: it is an error (`ValueProblem::WiderThanDeclared`) |
 
-The file readers and writers use the defaults with `variables` on, so a data file has one format.
+The file readers and writers use the defaults with `variables` on and `wider_tuple: Refuse` (`CodecOptions::data_file()`), so a data file has one format and a fact is written whole: a fact may hold a tuple wider than its field's type (kernel §4.5), and projected it would reload as another fact.
 
 **`decode_value`** reads `json` as one value of type `ty` and returns its term. The term is hash-consed into `kb`'s term store. With `variables` on, its variables are fresh, and their scope is this one call. Nothing is asserted, so the KB's facts and rules are as they were. To pass the result to an operation, wrap it as `Value::term(id)`.
 
@@ -90,7 +93,7 @@ The file readers and writers use the defaults with `variables` on, so a data fil
 
 **`type_from_text` / `type_to_text`** read and write a type as text, which is how a `Type` value is spelled (see [Mapping rules](#mapping-rules)). They are public because a type kept as text is read back by the same rule, whether it is a trace's record of a declared type or `meta.entity`. `type_to_text` writes every name qualified, one text per type. `type_from_text` resolves names at `<global>` and refuses one that is absent, ambiguous or `internal`.
 
-**`ValueError`** says where the problem is, what type was expected there, and what went wrong. `Display` renders `{path}: expected {expected}: {problem}`. The `problem` is one of:
+**`ValueError`** says where the problem is, what type was expected there, and what went wrong. `Display` renders `{path}: expected {expected}, {problem}`. The path is a path into the JSON value as written, so it passes through a constructor's tag. The `problem` is one of:
 
 | `ValueProblem` | when |
 |---|---|
@@ -99,7 +102,8 @@ The file readers and writers use the defaults with `variables` on, so a data fil
 | `UnknownField { name }` | a key that names no field of the constructor, or no label of the tuple |
 | `MissingField { name }` | a required field or tuple component is absent |
 | `UnknownConstructor { name, sort }` | a tag that is no constructor of the declared type |
-| `NotOneField { constructor }` | a shorthand payload for a constructor without exactly one field, or a bare tag for one with fields |
+| `NotTagged { found, tags }` | an object where a constructed value is expected that is not the object of one key, its constructor's tag; `tags` are the ones the declared type admits |
+| `NotOneField { constructor, fields }` | a shorthand payload for a constructor without exactly one field, or a bare tag for one with fields |
 | `RuntimeAccount { constructor }` | a constructor reserved to the runtime, at any depth |
 | `NoDataSpelling` | the declared type has no data spelling (`Set`, `Map`, a function type) |
 | `WiderThanDeclared { labels }` | with `wider_tuple: Refuse`, a tuple value with components its declared type does not name |
@@ -107,6 +111,7 @@ The file readers and writers use the defaults with `variables` on, so a data fil
 | `Variable` | a variable where none has a spelling: any with variables off, a rigid or de Bruijn one, one standing for a whole `Option` |
 | `Unrepresentable { what }` | a value with no spelling: `some(none())`, a list with a variable tail, a non-finite float |
 | `UnknownName`, `AmbiguousName`, `InternalName` | a name in a type's text that is absent, ambiguous or `internal` at `<global>` |
+| `NotAType { text, reason }` | a type's text that does not parse as one type, or that the loader refuses as a type for another reason |
 
 **The file readers and writers** keep their signatures:
 
@@ -115,9 +120,11 @@ pub fn load_json(kb: &mut KnowledgeBase, source: &str, domain: Symbol) -> Result
 pub fn load_toml(kb: &mut KnowledgeBase, source: &str, domain: Symbol) -> Result<usize, Vec<SerError>>;
 pub fn serialize_json(kb: &KnowledgeBase, entity: &str, rule_ids: &[RuleId]) -> Result<String, SerError>;
 pub fn serialize_toml(kb: &KnowledgeBase, entity: &str, rule_ids: &[RuleId]) -> Result<String, SerError>;
+pub fn serialize_json_at(kb: &KnowledgeBase, entity: &impl TermView, rule_ids: &[RuleId]) -> Result<String, SerError>;
+pub fn serialize_toml_at(kb: &KnowledgeBase, entity: &impl TermView, rule_ids: &[RuleId]) -> Result<String, SerError>;
 ```
 
-`load_json` and `load_toml` read the envelope, decode each row with variables on, assert it as a fact in `domain`, and return the number of rows. Every row's error is reported, not only the first. `serialize_json` and `serialize_toml` write the facts `rule_ids` as one envelope whose `meta.entity` is `entity`, the text of their constructor's type. A fact of another constructor is refused. `SerError` keeps its envelope errors (`Format`, `MissingMeta`, `UnknownEntity`, `AmbiguousName`, `ForbiddenInternalEntity`, `NoFieldSchema`) and gains `Row { index, error: ValueError }` for an error inside a row. The value errors it held (`UnknownField`, `MissingField`, `UnknownConstructor`, `InvalidValue`, `RuntimeAccount`) move into `ValueProblem`.
+`load_json` and `load_toml` read the envelope, decode each row with variables on, assert it as a fact in `domain`, and return the number of rows. Every row's error is reported, not only the first. `serialize_json` and `serialize_toml` write the facts `rule_ids` as one envelope whose `meta.entity` is `entity`, a constructor's name. A constructor applied to type arguments is a type, and reading a type's text lowers it into the KB, which a writer given `&KnowledgeBase` cannot do: `serialize_json_at` and `serialize_toml_at` take the type as a term (from `type_from_text`, or from the KB) and write its text as `meta.entity`; the writers taking a name refuse a bracket, naming them. A fact of another constructor is refused. `SerError` keeps its envelope errors (`Format`, `MissingMeta`, `UnknownEntity`, `AmbiguousName`, `ForbiddenInternalEntity`, `NoFieldSchema`, and `RuntimeAccount` for a `meta.entity` that names one) and gains `EntityType { entity, error: ValueError }` for the type arguments of a `meta.entity`, and `Row { index: Option<usize>, error: ValueError }` for an error inside a row, rendered with the row as the root of the path: `data[2].status: …`, or `data.status: …` where `data` is one object and the row has no index. The value errors it held (`UnknownField`, `MissingField`, `UnknownConstructor`, `InvalidValue`, and `RuntimeAccount` at depth) move into `ValueProblem`.
 
 ### Mapping rules
 
@@ -136,9 +143,9 @@ The declared type decides how a JSON value is read. A JSON value of a shape the 
 | a tuple type | array, or object keyed by label | `[1, "a"]`, `{"state": …, "order": …}` |
 | a sort or an entity | the constructor's tag | `"Open"`, `{"Verified": {"at": "2027-03-15"}}`, `{"Point": {"x": 1, "y": 2}}` |
 
-Under `Int64`, `3.5`, `3.0` and `1e3` are errors: a number written with a fraction or an exponent is not read as an integer, since past 2^53 it cannot be read exactly. Under `Float`, NaN and ±∞ have no JSON spelling and are refused when encoding. A `BigInt` is written as a number where it fits `i64` and as its digits past that. An unquoted integer past the `u64` range is refused under `BigInt`: the JSON parser has already rounded it to a float before the mapping sees it, so it must be written as its digits.
+Under `Int64`, `3.5`, `3.0` and `1e3` are errors: a number written with a fraction or an exponent is not read as an integer, since past 2^53 it cannot be read exactly. A number past the range is out of range however it is written: the JSON parser rounds an integer past it to a float and keeps no trace of how the number was spelled, so `1e19` and `10000000000000000000000` are one refusal. Under `Float`, NaN and ±∞ have no JSON spelling and are refused when encoding. A `BigInt` is written as a number where it fits `i64` and as its digits past that. An unquoted integer past the `u64` range is refused under `BigInt`: the JSON parser has already rounded it to a float before the mapping sees it, so it must be written as its digits.
 
-A value whose declared type is `Type` is a type, and a type is a term, so it is written as the text the language writes it in. Every name is qualified and an application's bindings are in the order of their keys' names, so one type has one text in every load: `anthill.prelude.Int64`, `anthill.prelude.List[T = test.shop.Order]`, `(state: test.shop.ShopState, order: test.shop.Order)`. The reader parses the text with the grammar's type rule and resolves its names at `<global>`, as `meta.entity` is resolved. A type holding a variable is refused.
+A value whose declared type is `Type` is a type, and a type is a term, so it is written as the text the language writes it in. Every name is qualified and an application's bindings are in the order of their keys' names, so one type has one text in every load: `anthill.prelude.Int64`, `anthill.prelude.List[T = test.shop.Order]`, `(state: test.shop.ShopState, order: test.shop.Order)`. The reader parses the text with the grammar's type rule and lowers it as a declaration's type is lowered, resolving its names at `<global>`, as `meta.entity` is resolved. So the type read back is the term the same type is in a declaration, and an anonymous binding is what it is there: `List[T = ?]` leaves `T` open and is the bare `List`. A type holding a variable (`List[T = ?x]`) is refused.
 
 The declared type's arguments are substituted into each field's type, at any depth: `cons.head` at `List[T = Stock]` is a `Stock`, and over `entity Box(items: List[T = T])` the field `items` at `Box[T = Int64]` is a `List[T = Int64]`. A parameter the declared type leaves unwritten takes its declared default (`sort T = ? default Int64`). A field whose type still holds a parameter after both is an error naming the parameter.
 
@@ -170,7 +177,7 @@ p = Point(x: 1, y: 2)         →  p = { Point = { x = 1, y = 2 } }
 
 In the object of fields, a key that names no field is an error, and so is an absent required field. An absent `Option` field is `none()`.
 
-The declared type does not decide the spelling, so adding a constructor to a sort re-spells nothing written before. A sort that declares its eponymous constructor beside others (`sort Mix { entity Mix(x: Int64)  entity Other }`) is the same rule: a value at type `Mix` is `{"Mix": {"x": 3}}` or `"Other"`. Only a row of a data file is written without its tag, since `meta.entity` names its constructor (see [File structure](#file-structure-meta--data-envelope)).
+The declared type does not decide the spelling, so adding a constructor to a sort re-spells nothing written before. A sort that declares its eponymous constructor beside others (`sort Mix { entity Mix(x: Int64)  entity Other }`) is the same rule: a value at type `Mix` is `{"Mix": {"x": 3}}` or `"Other"`, and the writer writes the first as the shorthand `{"Mix": 3}` (below). Only a row of a data file is written without its tag, since `meta.entity` names its constructor (see [File structure](#file-structure-meta--data-envelope)).
 
 **The payload is read by its JSON shape alone.** An object payload is the constructor's fields object, as above. Any other payload is the single-field shorthand, the value of the constructor's one field. It is an error for a constructor that does not have exactly one field:
 
@@ -195,17 +202,17 @@ In an object of fields an `Option` field may be absent, which is `none()`, or `n
 
 Under `Option[T = Option[T = U]]`, `null` is the outer `none()`, and any other value is `some(…)` of the inner reading. `some(none())` has no spelling and is refused when encoding.
 
-TOML has no `null`. A `none()` where a field cannot be omitted, as in a list or a tuple, is refused when writing TOML. TOML has `nan` and `inf`, which JSON does not, and the TOML reader refuses them, naming the field's path. It used to turn them into `null`, so `f = nan` under `Option[T = Float]` read as `none()`.
+TOML has no `null`. A `none()` where a field cannot be omitted, as in a list or a tuple, is refused when writing TOML. TOML has `nan` and `inf`, which JSON does not, and the TOML reader refuses them as an error of the row that holds them, at their path and its declared type, beside the other rows' errors. It used to turn them into `null`, so `f = nan` under `Option[T = Float]` read as `none()`.
 
 #### Tuples
 
 A tuple type is `NamedTuple` applied to its components, one per label, in the type's order.
 
 - If every label is positional (`_1`, `_2`, …), the value is an ARRAY with exactly that many elements: `(1, "a")` is `[1, "a"]`.
-- Otherwise the value is an OBJECT keyed by its labels, with any positional components under their `_N` label: `(state: s, order: o)` is `{"state": …, "order": …}`, and `(_1: 1, b: 2)` is `{"_1": 1, "b": 2}`.
+- Otherwise the value is an OBJECT keyed by its labels, with any positional components under their `_N` label: `(state: s, order: o)` is `{"state": …, "order": …}`, and `(_1: 1, b: 2)` is `{"_1": 1, "b": 2}`. Its keys are in the VALUE's order, and the reader builds the tuple in the order the object writes them: a labelled tuple's order is its identity (kernel §4.5), so `(n: 3, state: Open)`, which conforms to `(state: Status, n: Int64)`, is `{"n": 3, "state": "Open"}` and reads back as itself. Written in the type's order it would read back as another tuple, and a fact holding it as another fact.
 - The tuple of no components, `()`, which `Unit` is, is `[]`.
 
-Encoding writes the components the declared type names and no others. An operation declared to return `(a: Int64)` may return `(b: 2, a: 1)`, which conforms to it by width (kernel §4.5). At that type the value is written `{"a": 1}`. A value carries no type of its own, so the declared type is all a reader of the trace can know of it.
+Encoding writes the components the declared type names and no others. An operation declared to return `(a: Int64)` may return `(b: 2, a: 1)`, which conforms to it by width (kernel §4.5). At that type the value is written `{"a": 1}`. A value carries no type of its own, so the declared type is all a reader of the trace can know of it. The file writers refuse such a value instead (`WiderTuple::Refuse`, above).
 
 #### Types with no data spelling
 
@@ -234,14 +241,14 @@ Variable scope is one `decode_value` call. A file of facts decodes each `[[data]
 Every error names where it occurred, as a path into the JSON value, and the type expected there, printed as the KB prints a type:
 
 ```
-$.steps[3].output.stocks[1].reserved: expected Int64, found 3.5
+$.steps[3].output.ShopState.stocks[1].Stock.reserved: expected Int64, found 3.5, which is not written as an integer
 ```
 
-A key that is not an identifier is written `["a key"]`. The file readers prefix the entry: `data[2].status: 'Opne' is not a constructor of sort 'app.Status'`.
+A key that is not an identifier is written `["a key"]`. The file readers put the entry at the root: `data[2].status: expected app.Status, 'Opne' is not a constructor of sort 'app.Status'`.
 
 ### Key order
 
-An encoded object's keys are in DECLARED order: an entity's fields in the order the entity declares them, a tuple's labels in the type's order. `anthill-core` enables `serde_json`'s `preserve_order` feature itself. Cargo features only add, so no crate in a build that links `anthill-core` can switch it off, and the bytes of an encoding do not depend on the dependency graph.
+An encoded object's keys are in DECLARED order for an entity, its fields in the order the entity declares them, and in the VALUE's order for a labelled tuple, which is the tuple's identity (see [Tuples](#tuples)). `anthill-core` enables `serde_json`'s `preserve_order` feature itself. Cargo features only add, so no crate in a build that links `anthill-core` can switch it off, and the bytes of an encoding do not depend on the dependency graph.
 
 ### File structure: `meta` + `data` envelope
 
@@ -454,10 +461,10 @@ Two commands deliberately do **not** read data files, for reasons specific to ea
 
 ## Implementation
 
-1. **The pair** (`term_ser::decode_value` / `encode_value`): one walk directed by the declared type, reading the value through `TermView`. The type arguments reach the fields through `typing::field_type_at`.
+1. **The pair** (`term_ser::decode_value` / `encode_value`): one walk directed by the declared type, reading the value through `TermView` and the type through `typing::extract_type`. The type arguments reach the fields through an environment: a constructor's field type is read with each of its sort's parameters (their canonical variables) bound to the type the declared type writes there, or to the parameter's default, and that binding is itself read in the bindings of the place it was written in. So a parameter is substituted at any depth without building a type term, which the encoder, given `&KnowledgeBase`, could not.
 2. **The file readers and writers** (`load_json` / `load_toml`, `serialize_json` / `serialize_toml`): the envelope, and one call of the pair per entry with variables on. TOML is converted to and from `serde_json::Value`.
 3. **Schema lookup**: the entity's declared field names and types (`entity_field_names`, `entity_field_types`); a tag is looked up among the declared sort's constructors.
-4. **Type text**: written by `typing::type_qualified_text`, the text a proof record's name is made of; read by a new entry point that parses one type and converts it at `<global>`, as a query's goal is converted (`load::convert_query_term`).
+4. **Type text**: written by `typing::type_qualified_text`, the text a proof record's name is made of; read by `load::lower_type_text`, which lends the loader's own type lowering (`Loader::type_expr_to_value`) to the one type of a host-supplied `const` the text is wrapped in, at `<global>`.
 5. **Key order**: `serde_json` with `preserve_order` in `anthill-core/Cargo.toml`.
 
 ## Not in this proposal
@@ -485,5 +492,6 @@ What changes for a file that loaded before:
 - A type with bindings is written and read as its text. `meta.entity` can apply a generic entity to its type arguments. A parameter its fields use that it leaves unwritten takes its default, and one with no default is refused, where its fields were read with no type.
 - An unquoted integer past `u64` under `BigInt`, and a TOML `nan` or `inf`, are refused.
 - The writer escapes `?` strings, writes a one-field entity's entry as its object, writes keys in declared order, and refuses a list with a variable tail and a variable that is not a flex one.
+- A labelled tuple is written in its own order, which it reads back in (measured before: `H(p: (n: 3, state: Open))` reloaded as a second fact, in the type's order), and a tuple wider than its field's type is refused by the writer, where its extra components were dropped.
 
 An earlier example of this proposal loaded provisions (`entity = "anthill.prelude.Eq"`, `T = "Int64"`, as `fact Eq[T = Int64]`). It has been refused since WI-926, because `Eq` declares no fields, and is removed: a provision is a declaration, not data.
