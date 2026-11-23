@@ -439,6 +439,8 @@ pub(crate) struct ProvisionAt {
     pub(crate) row: RuleId,
     /// The `sort_ref`, raw: who provides — not where the provision is.
     pub(crate) provider: Symbol,
+    /// The `spec` field, as the row holds it ([`ProvisionsOfSpec::carrier_binding`] reads it).
+    spec_view: Value,
 }
 
 /// The provisions of one spec, each filed by its carrier — "the provisions of `S` at a
@@ -494,7 +496,7 @@ impl ProvisionsOfSpec {
             if let Some(b) = bucket {
                 out.by_bucket.entry(b).or_default().push(at);
             }
-            out.rows.push(ProvisionAt { row: row.rid, provider: row.provider });
+            out.rows.push(ProvisionAt { row: row.rid, provider: row.provider, spec_view: row.spec_view });
         }
         out
     }
@@ -531,6 +533,28 @@ impl ProvisionsOfSpec {
         self.by_bucket
             .get(&CarrierBucket::Sort(kb.canonical_sort_sym(sort)))
             .is_some_and(|at| !at.is_empty())
+    }
+
+    /// WI-20261121-DBR8V — the type `p` binds the spec's one type-var to: `Box[T = A]` for
+    /// `W2 provides Eq[T = Box[T = A]]`, the carrier `S[T = …]` it stands at read as the type
+    /// `…`. `None` where it binds none — a binding left out, which reads as the provider
+    /// ([`dictionary_carrier_bucket`]) — and for any other shape of spec.
+    pub(crate) fn carrier_binding(&self, kb: &KnowledgeBase, p: &ProvisionAt) -> Option<Value> {
+        let Shape::OneTypeVar(tv) = self.shape else {
+            return None;
+        };
+        view_is_sort_view(kb, &p.spec_view)
+            .then(|| provision_binding_value_at_param(kb, tv, &p.spec_view))
+            .flatten()
+    }
+
+    /// How many provisions of the spec `provider` writes, at any carrier.
+    pub(crate) fn rows_by(&self, kb: &KnowledgeBase, provider: Symbol) -> usize {
+        let provider = kb.canonical_sort_sym(provider);
+        self.rows
+            .iter()
+            .filter(|p| kb.canonical_sort_sym(p.provider) == provider)
+            .count()
     }
 
     /// A spec with NO provision answers "none" at every carrier, whatever its shape — a KB

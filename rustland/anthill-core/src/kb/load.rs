@@ -19189,6 +19189,21 @@ fn load_phase_inner(
     mark!("register_induction_axiom_witnesses");
     register_specialization_witnesses(kb);
     mark!("register_specialization_witnesses");
+    // WI-20261121-DBR8V — the forwarded rows of the WRITTEN provisions, before the first
+    // reader of the relation as it will stand: the sort-operations table and the judgement of
+    // which members supply nothing, which the eq-dispatch index, the equality classification
+    // and the derivation read. A witness that writes `Eq` alone supplies `PartialEq.eq`
+    // through the `PartialEq` row `Eq provides PartialEq[T = T]` forwards. With that row
+    // written below the derivation, `W.eq` was judged at `W` (`eq(a: W, b: W)`, which it does
+    // not fit) and read as supplying nothing, so `C`'s `eq` was not the witness's to the
+    // classifier, and a composite holding a `C` with a `Float` in it was `Partial` and found no
+    // `PartialEq` of `C` to derive its own through (`wi_dbr8v_witnessed_field_test`). The pass
+    // runs again below the derivation, for the rows it adds; it fills silence only, so what
+    // this one wrote it leaves.
+    kb.invalidate_requires_chain_cache();
+    super::typing::derive_forwarded_provisions(kb);
+    kb.invalidate_requires_chain_cache();
+    mark!("derive_forwarded_provisions (written)");
     // WI-240 — precompute the per-impl-sort operations table before
     // typing, so the typer's spec-op dispatch reads it via
     // `kb.sort_ops_lookup` instead of the string-concat fallback.
@@ -19313,7 +19328,9 @@ fn load_phase_inner(
     all_errors.extend(super::typing::written_tuple_provisions(kb));
     mark!("type_value_derive::run");
     // WI-1109 — materialize forwarded provision rows (`Ord provides WeakOrd[T = T]` ⇒
-    // every `Ord` carrier gets a `WeakOrd` row at its own bindings). HERE, beside the
+    // every `Ord` carrier gets a `WeakOrd` row at its own bindings). The written rows were
+    // forwarded above the sort-operations table (WI-20261121-DBR8V); this run forwards the
+    // rows the derivations just asserted. HERE, beside the
     // TOTAL eq derivation, for the reason its comment above states and this pass
     // rediscovered the hard way: "a provision reaches a call site only through the
     // typer's `CallClass` tagging and `req_insertion`'s rewrite, so a derived [row]

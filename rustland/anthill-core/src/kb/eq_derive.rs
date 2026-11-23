@@ -310,7 +310,7 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
                 spec == partial_eq || !c.partial.contains(&kb.canonical_sort_sym(s))
             })
             .collect();
-        let derived = conditional_rows(kb, &candidates, spec, &c.unbacked_eq);
+        let derived = conditional_rows(kb, &candidates, spec, &c.unbacked_eq, &spoken_for);
         for &s in &candidates {
             let Some(conds) = derived.get(&kb.canonical_sort_sym(s)).cloned() else {
                 continue;
@@ -342,6 +342,7 @@ fn conditional_rows(
     candidates: &[Symbol],
     spec: Symbol,
     unbacked_eq: &HashSet<Symbol>,
+    equality_family: &EqualityProvisions,
 ) -> std::collections::HashMap<Symbol, Vec<Condition>> {
     let mut derived: std::collections::HashMap<Symbol, Vec<Condition>> = candidates
         .iter()
@@ -362,7 +363,7 @@ fn conditional_rows(
                     continue;
                 };
                 for (_, ftype) in fields.to_vec() {
-                    match field_conditions(kb, &ftype, spec, &params, &derived, unbacked_eq) {
+                    match field_conditions(kb, &ftype, spec, &params, &derived, unbacked_eq, equality_family) {
                         Some(fc) => {
                             for x in fc {
                                 if !conds.contains(&x) {
@@ -425,7 +426,8 @@ pub(crate) fn derive_hash(kb: &mut KnowledgeBase, c: &EqClassification, given: &
                 && kb.try_resolve_symbol(&format!("{}.hash", kb.qualified_name_of(s))).is_none()
         })
         .collect();
-    let derived = conditional_rows(kb, &candidates, hash, &c.unbacked_eq);
+    let equality_family = EqualityProvisions::of(kb);
+    let derived = conditional_rows(kb, &candidates, hash, &c.unbacked_eq, &equality_family);
     let mut out = Vec::new();
     for &s in &candidates {
         let Some(conds) = derived.get(&kb.canonical_sort_sym(s)).cloned() else {
@@ -474,7 +476,8 @@ pub(crate) fn written_without_member(
     // `PartialEq` compares through its member.
     let mut candidates = written.clone();
     candidates.extend(given.iter().copied());
-    let derived = conditional_rows(kb, &candidates, partial_eq, &c.unbacked_eq);
+    let equality_family = EqualityProvisions::of(kb);
+    let derived = conditional_rows(kb, &candidates, partial_eq, &c.unbacked_eq, &equality_family);
     let mut refusals = Vec::new();
     let mut members = Vec::new();
     for s in written {
@@ -518,7 +521,7 @@ pub(crate) fn written_without_member(
                 let at_a_boundary = super::typing::sort_functor_of_view(kb, ty)
                     .is_some_and(|h| c.boundary.contains(&kb.canonical_sort_sym(h)));
                 (!at_a_boundary
-                    && field_conditions(kb, ty, partial_eq, &params, &derived, &c.unbacked_eq).is_none())
+                    && field_conditions(kb, ty, partial_eq, &params, &derived, &c.unbacked_eq, &equality_family).is_none())
                 .then(|| (*name, ty.clone()))
             })
         });
@@ -1018,13 +1021,14 @@ fn field_conditions(
     params: &[Symbol],
     derived: &std::collections::HashMap<Symbol, Vec<Condition>>,
     unbacked_eq: &HashSet<Symbol>,
+    equality_family: &EqualityProvisions,
 ) -> Option<Vec<Condition>> {
     // A field typed by a tuple: its conditions are its components', from which the tuple's
     // instance is built (proposal 004's extension), and the unit's holds outright.
     if let Some(components) = super::typing::schema_fields(kb, ty) {
         let mut out: Vec<Condition> = Vec::new();
         for (_, component) in components {
-            for x in field_conditions(kb, &component, spec, params, derived, unbacked_eq)? {
+            for x in field_conditions(kb, &component, spec, params, derived, unbacked_eq, equality_family)? {
                 if !out.contains(&x) {
                     out.push(x);
                 }
@@ -1065,11 +1069,14 @@ fn field_conditions(
     if h_params.iter().any(|q| !written.iter().any(|w| w == kb.local_name_of(*q))) {
         return None;
     }
-    // `head`'s own conditions for `spec`, over ITS parameters: a candidate's current
-    // verdict, else a written/derived provision (unconditional, or ONE conditional
-    // clause — alternatives are not translated), else nothing.
-    let h_conds: Vec<Condition> = if let Some(dc) = derived.get(&kb.canonical_sort_sym(head)) {
-        dc.clone()
+    // What `head`'s `spec` equality needs, over ITS parameters, each `(spec, parameter, may
+    // rest on a parameter)`: a candidate's current verdict, else a written/derived provision
+    // (unconditional, or ONE conditional clause — alternatives are not translated), else a
+    // witness's ([`EqualityProvisions::witnessed`]), else nothing.
+    let mut needs_of_head: Vec<(Symbol, Symbol, bool)> = if let Some(dc) =
+        derived.get(&kb.canonical_sort_sym(head))
+    {
+        dc.iter().map(|&(cspec, q)| (cspec, q, true)).collect()
     } else if super::typing::sort_provides(kb, head, spec) {
         let spec_canon = kb.canonical_sort_sym(spec);
         let clauses: Vec<Vec<Value>> = super::typing::provision_conditions(kb, head)
@@ -1086,25 +1093,22 @@ fn field_conditions(
                     let q = bindings.iter().find_map(|(_, t)| {
                         super::typing::sort_functor_of_view(kb, t).filter(|q| h_params.contains(q))
                     })?;
-                    out.push((base, q));
+                    out.push((base, q, true));
                 }
                 out
             }
             _ => return None,
         }
     } else {
-        return None;
+        match equality_family.witnessed(kb, head, spec) {
+            Witnessed::At(needs) => needs,
+            Witnessed::None | Witnessed::Undecided => return None,
+        }
     };
     // `head`'s own `requires` hold at the field's arguments too: a dispatch to its `eq`
     // there builds its sort's dictionary (`Set[T = X]` asks `Eq[X]`). One of the equality
     // family over a parameter is a condition; any other must hold outright.
-    let equality: Vec<Symbol> = ["PartialEq", "Eq"]
-        .into_iter()
-        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
-        .map(|s| kb.canonical_sort_sym(s))
-        .collect();
-    let mut needs_of_head: Vec<(Symbol, Symbol, bool)> =
-        h_conds.into_iter().map(|(cspec, q)| (cspec, q, true)).collect();
+    let equality = equality_bases(kb);
     for entry in super::typing::direct_requires(kb, head) {
         let (base, bindings) = super::typing::unwrap_spec_view_value(kb, &entry.spec)?;
         let Some(q) = bindings.iter().find_map(|(_, t)| {
@@ -1127,7 +1131,7 @@ fn field_conditions(
             .map(|it| it.to_value())?;
         // A tuple as a type argument is read as a field typed by it is: its components'
         // conditions, the tuple's instance built from theirs (proposal 004's extension).
-        let needs = field_conditions(kb, &arg, cspec, params, derived, unbacked_eq)?;
+        let needs = field_conditions(kb, &arg, cspec, params, derived, unbacked_eq, equality_family)?;
         if !may_rest_on_a_parameter && !needs.is_empty() {
             return None;
         }
@@ -1348,6 +1352,135 @@ impl EqualityProvisions {
     fn speak_for(&self, kb: &KnowledgeBase, sort: Symbol) -> bool {
         self.0.iter().any(|(_, provisions)| provisions.any_at_sort(kb, sort))
     }
+
+    /// WI-20261121-DBR8V — what the provisions of ANOTHER provider at `sort`'s carrier (a
+    /// witness's) say of `sort`'s `spec` equality, for a composite with a field of that sort:
+    /// what the field's equality needs, over `sort`'s own parameters, as [`field_conditions`]
+    /// reads a sort's own provision. A carrier's own provisions are `sort_provides`' to read,
+    /// and the derivation reads them there; a witness's row is filed under the witness, so a
+    /// field of a sort whose equality a witness gives was a field nothing decides: `sort D {
+    /// entity d(c: C) }` beside `sort W { provides Eq[T = C]; operation eq(…) }` derived `D` no
+    /// equality, and `eq(d(…), d(…))` was refused at the call, "`D` provides no `PartialEq`"
+    /// (MEASURED, 31b367def). A witness that writes `Eq` alone has its `PartialEq` row by now:
+    /// the forwarding writes it before the derivation (`load::load_phase_inner`).
+    ///
+    /// A witness at a parametric sort is read through its binding: `W2 provides Eq[T = Box[T =
+    /// A]] :- Eq[T = A]` puts `Box`'s `T` at `W2`'s `A`, so a field `Box[T = X]` needs `Eq[X]`,
+    /// and what `W2` requires of `A` it requires of `X`. Read only where that is all the
+    /// provision says ([`witness_needs`]); any other shape leaves the field undecided.
+    fn witnessed(&self, kb: &KnowledgeBase, sort: Symbol, spec: Symbol) -> Witnessed {
+        let spec_canon = kb.canonical_sort_sym(spec);
+        let Some((_, provisions)) = self.0.iter().find(|(s, _)| kb.canonical_sort_sym(*s) == spec_canon)
+        else {
+            return Witnessed::None;
+        };
+        let sort_canon = kb.canonical_sort_sym(sort);
+        let mut verdict = Witnessed::None;
+        for p in provisions.at_sort(kb, sort) {
+            if kb.canonical_sort_sym(p.provider) == sort_canon {
+                continue;
+            }
+            match witness_needs(kb, provisions, p, sort, spec) {
+                Some(needs) => return Witnessed::At(needs),
+                None => verdict = Witnessed::Undecided,
+            }
+        }
+        verdict
+    }
+}
+
+/// What [`EqualityProvisions::witnessed`] reads of a field's sort.
+enum Witnessed {
+    /// No provision of another provider is at the sort's carrier.
+    None,
+    /// One is, and the field's equality needs these, each `(spec, parameter of the sort, may
+    /// rest on a parameter)`: none, for a provision that holds outright.
+    At(Vec<(Symbol, Symbol, bool)>),
+    /// One is, and does not say what the field's equality needs.
+    Undecided,
+}
+
+/// The equality family a requirement may rest on a parameter at, canonical: `PartialEq` and
+/// `Eq` ([`field_conditions`]).
+fn equality_bases(kb: &KnowledgeBase) -> Vec<Symbol> {
+    ["PartialEq", "Eq"]
+        .into_iter()
+        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect()
+}
+
+/// WI-20261121-DBR8V — what the witness provision `p` of `spec`, at `head`'s carrier, needs of
+/// `head`'s own parameters for a field of `head`'s type: its condition and the witness's own
+/// `requires`, each read through the binding `head[Q = A, …]`, which puts each parameter `Q`
+/// of `head` at a distinct parameter `A` of the witness. `None` for a provision that says more:
+/// a binding at anything but `head` applied to the witness's parameters (`Box[T = Int64]`, which
+/// the field's arguments would have to match, not condition), a condition or a requirement over
+/// a parameter that binding does not name, and conditions that cannot be told apart — filed per
+/// provider and spec, a witness's condition is read only where it writes this one provision of
+/// the spec, in one clause, as a sort's own is.
+fn witness_needs(
+    kb: &KnowledgeBase,
+    provisions: &super::typing::ProvisionsOfSpec,
+    p: &super::typing::ProvisionAt,
+    head: Symbol,
+    spec: Symbol,
+) -> Option<Vec<(Symbol, Symbol, bool)>> {
+    let h_params: Vec<Symbol> = kb.type_param_syms_of(head).to_vec();
+    let w_params: Vec<Symbol> = kb.type_param_syms_of(p.provider).to_vec();
+    let binding = provisions.carrier_binding(kb, p)?;
+    // Each of `head`'s parameters at a distinct parameter of the witness: (witness's, head's).
+    let keys = binding.named_keys(kb);
+    if keys.len() != h_params.len() {
+        return None;
+    }
+    let mut at: Vec<(Symbol, Symbol)> = Vec::with_capacity(h_params.len());
+    for &q in &h_params {
+        let key = keys.iter().copied().find(|&k| kb.local_name_of(k) == kb.local_name_of(q))?;
+        let a = own_param_of(kb, &binding.named_arg(kb, key)?.to_value(), &w_params)?;
+        if at.iter().any(|&(b, _)| b == a) {
+            return None;
+        }
+        at.push((a, q));
+    }
+    // The parameter of `head` a spec application over a parameter of the witness is at.
+    let head_param = |v: &Value| -> Option<(Symbol, Symbol)> {
+        let (base, bindings) = super::typing::unwrap_spec_view_value(kb, v)?;
+        let a = bindings.iter().find_map(|(_, t)| own_param_of(kb, t, &w_params))?;
+        at.iter().find(|&&(b, _)| b == a).map(|&(_, q)| (base, q))
+    };
+    let mut needs: Vec<(Symbol, Symbol, bool)> = Vec::new();
+    if super::typing::provision_is_conditional(kb, p.provider, spec) {
+        if provisions.rows_by(kb, p.provider) != 1 {
+            return None;
+        }
+        let spec_canon = kb.canonical_sort_sym(spec);
+        let clauses: Vec<Vec<Value>> = super::typing::provision_conditions(kb, p.provider)
+            .into_iter()
+            .filter(|g| kb.canonical_sort_sym(g.provided) == spec_canon)
+            .map(|g| g.conditions)
+            .collect();
+        let [one] = clauses.as_slice() else {
+            return None;
+        };
+        for cv in one {
+            let (base, q) = head_param(cv)?;
+            needs.push((base, q, true));
+        }
+    }
+    // A dispatch to the witness's `eq` builds the witness's dictionary, so what it requires of
+    // a parameter it requires at the field's argument there. One over none of its parameters
+    // holds or not whatever the field's arguments are, and is the witness's own load's to check.
+    let equality = equality_bases(kb);
+    for entry in super::typing::direct_requires(kb, p.provider) {
+        let (_, bindings) = super::typing::unwrap_spec_view_value(kb, &entry.spec)?;
+        if !bindings.iter().any(|(_, t)| own_param_of(kb, t, &w_params).is_some()) {
+            continue;
+        }
+        let (base, q) = head_param(&entry.spec)?;
+        needs.push((base, q, equality.contains(&kb.canonical_sort_sym(base))));
+    }
+    Some(needs)
 }
 
 /// The [`EqualitySignature`] of every composite the KB holds now, by canonical sort.
@@ -1368,8 +1501,8 @@ fn equality_signatures(
         std::collections::HashMap::new();
     // Read per composite: a provision at a primitive, an abstract sort or a spec's own
     // parameter is out of this check's domain — see [`later_equality_refusals`].
-    let family = EqualityProvisions::of(kb);
-    for (spec, provisions) in &family.0 {
+    let equality_family = EqualityProvisions::of(kb);
+    for (spec, provisions) in &equality_family.0 {
         let spec = *spec;
         let spec_canon = kb.canonical_sort_sym(spec);
         for &composite in &composites {
@@ -1643,6 +1776,20 @@ fn derive_conditional_noneq(kb: &mut KnowledgeBase, noneq: Symbol, partial_eq: S
             // so a `NonEq` row could not discharge its `requires PartialEq` and is not
             // derived at all.
             let base = kb.conditional_eq_conditions.get(&(cs, partial_eq))?.clone();
+            // A parameter whose `Eq` the `PartialEq` row itself needs gives no clause:
+            // `NonEq[T]` beside `Eq[T]` holds nowhere (`Eq` ⊥ `NonEq`). A field compared
+            // through a witness that needs `Eq` of its argument (`W2 provides Eq[T = Box[T =
+            // A]] :- Eq[T = A]`, WI-20261121-DBR8V) puts `Eq[U]` there, and the holder is then
+            // partial at no `U`: where `Eq[U]` fails it has no equality at all. So does a field
+            // of a sort that requires `Eq` of its argument (`xs: Set[T = T]`), whose holder
+            // provided such a `NonEq` before (MEASURED) and now provides none.
+            let eq_canon = kb.canonical_sort_sym(eq);
+            disjuncts.retain(|&p| {
+                !base.iter().any(|&(c, q)| q == p && kb.canonical_sort_sym(c) == eq_canon)
+            });
+            if disjuncts.is_empty() {
+                return None;
+            }
             Some((s, disjuncts, base))
         })
         .collect();
@@ -1788,10 +1935,14 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
             if !total.contains(cs) {
                 continue;
             }
+            // A field of a sort whose `Eq` a witness gives with no condition is decided as one
+            // whose own `Eq` is ([`EqualityProvisions::witnessed`], WI-20261121-DBR8V).
             if fsorts.iter().any(|&f| {
                 parametric(kb, f)
                     || unbacked_eq.contains(&f)
-                    || !(provides_eq(kb, f) || total.contains(&f))
+                    || !(provides_eq(kb, f)
+                        || total.contains(&f)
+                        || matches!(spoken_for.witnessed(kb, f, eq_sym), Witnessed::At(n) if n.is_empty()))
             }) {
                 total.remove(cs);
                 changed = true;

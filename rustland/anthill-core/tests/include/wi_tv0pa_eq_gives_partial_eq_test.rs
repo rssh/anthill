@@ -47,10 +47,9 @@
 //! [`the_carriers_own_equality_is_unchanged`] passes under all four, by design: the rows that
 //! answered before this ticket answer the same.
 //!
-//! NOT COVERED: a composite HOLDING a sort whose equality is a witness's (`d(c: C)`) derives no
-//! equality, its field's being one the derivation does not read — as before this ticket for a
-//! `PartialEq` witness, and now for an `Eq` one too, where `D` used to derive through `C`'s own
-//! derived equality and ignore the witness. A comparison of two `D`s is refused at the call.
+//! A composite HOLDING a sort whose equality is a witness's (`d(c: C)`) derived no equality, its
+//! field's being one the derivation did not read, and a comparison of two `D`s was refused at the
+//! call: WI-20261121-DBR8V, `wi_dbr8v_witnessed_field_test`.
 
 use crate::common::{assert_refused_naming, load_errors_of as load_errors, load_kb_with, run_int64};
 
