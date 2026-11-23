@@ -1419,6 +1419,7 @@ fn composed_dictionary_node(
             impl_sort: *impl_sort,
             subs: Vec::new(),
             labels: None,
+            at: dictionary_application_view(kb, tree),
         })),
         ResolvedRequiresNode::Conditional {
             impl_sort,
@@ -1434,6 +1435,7 @@ fn composed_dictionary_node(
                 impl_sort: *impl_sort,
                 subs,
                 labels: labels.clone(),
+                at: dictionary_application_view(kb, tree),
             }))
         }
     }

@@ -2571,6 +2571,7 @@ pub(crate) fn dictionary_of_tree(
     // symbol in a marker slot is the one `emit_tree_as_projection` mints for the same
     // node, so the two producers still spell one tree one way.
     fn build(kb: &mut KnowledgeBase, tree: &ResolvedRequiresNode) -> Option<Dictionary> {
+        let at = dictionary_application_view(kb, tree);
         let (impl_sort, subs, labels): (Symbol, Vec<Dictionary>, Option<&[Symbol]>) = match tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. } => (*impl_sort, Vec::new(), None),
             ResolvedRequiresNode::Conditional {
@@ -2588,7 +2589,7 @@ pub(crate) fn dictionary_of_tree(
             ),
             ResolvedRequiresNode::FromScope { .. } => return None,
         };
-        Dictionary::build_labelled(kb, impl_sort, subs, labels)
+        Dictionary::build_at(kb, impl_sort, subs, labels, at)
     }
     build(kb, tree)
 }

@@ -46,6 +46,7 @@ use std::rc::Rc;
 
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
+use crate::kb::term::TermId;
 
 use super::value::Value;
 
@@ -55,8 +56,11 @@ use super::value::Value;
 /// `anthill.realization.runtime.Dictionary` sort symbol, whose positional
 /// children are themselves dictionaries, and whose named children are
 /// `impl → Value::SymbolRef(S)` and, for a tuple's `TypeValue` instance only, `labels`, one
-/// label per positional child ([`Dictionary::build_labelled`]). Every constructor here
-/// establishes that, so the accessors below are total.
+/// label per positional child ([`Dictionary::build_labelled`]), and, where its provider
+/// provides the spec at more than one application, `at → Value::Term(SortView(Spec, …))`, the
+/// application it is for ([`Dictionary::build_at`]). The three are told apart by their
+/// carriers — a symbol, a tuple of symbols, a term — as the accessors below read them. Every
+/// constructor here establishes that, so the accessors below are total.
 #[derive(Clone, Debug)]
 pub struct Dictionary(Value);
 
@@ -111,6 +115,21 @@ impl Dictionary {
         subs: impl IntoIterator<Item = Dictionary>,
         labels: Option<&[Symbol]>,
     ) -> Option<Dictionary> {
+        Self::build_at(kb, impl_sort, subs, labels, None)
+    }
+
+    /// [`Self::build_labelled`], with the application the dictionary is for, `at`, the spec
+    /// view `SortView(Spec, K = V, …)`, where its provider provides the spec at more than one
+    /// (WI-20261122-CXR5B; [`crate::kb::typing::dictionary_application_view`] decides it): a
+    /// dispatch through the dictionary reads the operation off the provision at that
+    /// application ([`Self::application_for`]). `None` for every other dictionary.
+    pub(crate) fn build_at(
+        kb: &KnowledgeBase,
+        impl_sort: Symbol,
+        subs: impl IntoIterator<Item = Dictionary>,
+        labels: Option<&[Symbol]>,
+        at: Option<TermId>,
+    ) -> Option<Dictionary> {
         let (ctor, impl_key) = crate::kb::term_view::dictionary_view_syms(kb)?;
         let pos: Vec<Value> = subs.into_iter().map(|d| d.0).collect();
         let mut named = vec![(impl_key, Value::SymbolRef(impl_sort))];
@@ -122,6 +141,12 @@ impl Dictionary {
             );
             let labels_key = crate::kb::term_view::dictionary_labels_key(kb)?;
             named.push((labels_key, labels_value(labels)));
+        }
+        if let Some(at) = at {
+            let at_key = crate::kb::term_view::dictionary_at_key(kb)?;
+            named.push((at_key, Value::term(at)));
+        }
+        if named.len() > 1 {
             kb.canonicalize_record_named_args(ctor, &mut named);
         }
         Some(Dictionary(Value::Entity {
@@ -134,8 +159,8 @@ impl Dictionary {
     /// Recognize a dictionary in a `Value` of unknown provenance — the ONE
     /// boundary check, and the only place the shape is tested.
     ///
-    /// Validates the WHOLE tree (functor, the `impl` named child and a tuple's `labels`, and
-    /// every positional child recursively), which is what makes [`Self::sub`]
+    /// Validates the WHOLE tree (functor, the `impl` named child, a tuple's `labels` and an
+    /// application's `at`, and every positional child recursively), which is what makes [`Self::sub`]
     /// total rather than fallible-per-read. A dictionary is tiny — arity 0–2,
     /// depth 1–3 — so the walk costs less than threading an `Option` through
     /// every projection would.
@@ -160,20 +185,34 @@ impl Dictionary {
         if *functor != ctor {
             return None;
         }
-        // One `impl` naming a symbol, and a tuple's `labels`, one symbol per sub, beside it.
+        // One `impl` naming a symbol, and beside it a tuple's `labels`, one symbol per sub, and
+        // an application's `at`, a term — each at most once. The two optional keys are looked
+        // up only where a dictionary holds more than `impl`, which almost none does.
         let impl_ok = |(k, v): &(Symbol, Value)| *k == impl_key && matches!(v, Value::SymbolRef(_));
         match named.as_ref() {
             [i] if impl_ok(i) => {}
-            [a, b] => {
-                let labels_key = crate::kb::term_view::dictionary_labels_key(kb)?;
-                let labels_ok = |(k, v): &(Symbol, Value)| {
-                    *k == labels_key && labels_of_value(v).is_some_and(|l| l.len() == pos.len())
-                };
-                if !((impl_ok(a) && labels_ok(b)) || (labels_ok(a) && impl_ok(b))) {
+            [_] => return None,
+            more => {
+                let labels_key = crate::kb::term_view::dictionary_labels_key(kb);
+                let at_key = crate::kb::term_view::dictionary_at_key(kb);
+                let (mut impls, mut labels, mut ats) = (0, 0, 0);
+                for child @ (k, v) in more {
+                    if impl_ok(child) {
+                        impls += 1;
+                    } else if Some(*k) == labels_key
+                        && labels_of_value(v).is_some_and(|l| l.len() == pos.len())
+                    {
+                        labels += 1;
+                    } else if Some(*k) == at_key && matches!(v, Value::Term { .. }) {
+                        ats += 1;
+                    } else {
+                        return None;
+                    }
+                }
+                if impls != 1 || labels > 1 || ats > 1 {
                     return None;
                 }
             }
-            _ => return None,
         }
         for sub in pos.iter() {
             Self::from_value_with(kb, ctor, impl_key, sub)?;
@@ -206,8 +245,8 @@ impl Dictionary {
     /// provenance goes through that function, not `from_value` alone. So the two are
     /// kept apart, and what stops them drifting is
     /// that they answer the same question about the same three carriers: any change to
-    /// the SHAPE — the functor, the `impl` child and a tuple's `labels`, sub-dictionaries
-    /// positional —
+    /// the SHAPE — the functor, the `impl` child, a tuple's `labels` and an application's
+    /// `at`, sub-dictionaries positional —
     /// must land in both, and each names the other.
     ///
     /// `None` for anything that is not a whole dictionary, on the same rule
@@ -221,7 +260,7 @@ impl Dictionary {
         let ViewHead::Functor {
             functor: f,
             pos_arity,
-            named_arity: named_arity @ (1 | 2),
+            named_arity: named_arity @ (1..=3),
         } = v.head(kb)
         else {
             return None;
@@ -229,13 +268,28 @@ impl Dictionary {
         if f != ctor {
             return None;
         }
-        // A tuple's `labels` (see [`Self::build_labelled`]), the one other key there is.
-        let labels = match named_arity {
-            1 => None,
+        // A tuple's `labels` (see [`Self::build_labelled`]) and an application's `at` ([`Self::
+        // build_at`]), the two other keys there are; every key beside `impl` is one of them.
+        let (labels, at) = match named_arity {
+            1 => (None, None),
             _ => {
-                let key = crate::kb::term_view::dictionary_labels_key(kb)?;
-                let labels = crate::kb::term_view::labels_of_view(kb, &v.named_arg(kb, key)?)?;
-                (labels.len() == pos_arity).then_some(labels)?.into()
+                let labels = match crate::kb::term_view::dictionary_labels_key(kb)
+                    .and_then(|key| v.named_arg(kb, key))
+                {
+                    None => None,
+                    Some(child) => {
+                        let labels = crate::kb::term_view::labels_of_view(kb, &child)?;
+                        Some((labels.len() == pos_arity).then_some(labels)?)
+                    }
+                };
+                let at = match crate::kb::term_view::dictionary_at_key(kb).and_then(|key| v.named_arg(kb, key)) {
+                    None => None,
+                    Some(child) => Some(child.as_term_id()?),
+                };
+                if 1 + usize::from(labels.is_some()) + usize::from(at.is_some()) != named_arity {
+                    return None;
+                }
+                (labels, at)
             }
         };
         // The `impl` child is a SYMBOL on every carrier — `Value::SymbolRef` on the
@@ -255,7 +309,7 @@ impl Dictionary {
         for i in 0..pos_arity {
             subs.push(Self::from_view(kb, &v.pos_arg(kb, i)?)?);
         }
-        Self::build_labelled(kb, impl_sort, subs, labels.as_deref())
+        Self::build_at(kb, impl_sort, subs, labels.as_deref(), at)
     }
 
     /// The impl this dictionary pins — the `impl` named child.
@@ -263,7 +317,8 @@ impl Dictionary {
     /// Total: every constructor above established the `impl → SymbolRef` named child. This is what `RequirementHandle::functor` was.
     pub fn impl_sort(&self) -> Symbol {
         match &self.0 {
-            // The one child naming a symbol: a tuple's `labels` is a tuple of them.
+            // The one child naming a symbol: a tuple's `labels` is a tuple of them, and an
+            // application's `at` a term.
             Value::Entity { named, .. } => named
                 .iter()
                 .find_map(|(_, v)| match v {
@@ -283,15 +338,42 @@ impl Dictionary {
         labels_of_value(self.labels_child()?)
     }
 
-    /// The `labels` child, the one named child that is no symbol ([`Self::build_labelled`]).
+    /// The `labels` child, the one named child that is a tuple ([`Self::build_labelled`]):
+    /// `impl` is a symbol and `at` a term.
     fn labels_child(&self) -> Option<&Value> {
         match &self.0 {
             Value::Entity { named, .. } => named
                 .iter()
                 .map(|(_, v)| v)
-                .find(|v| !matches!(v, Value::SymbolRef(_))),
+                .find(|v| matches!(v, Value::Tuple { .. } | Value::Unit)),
             other => unreachable!("a Dictionary wraps a Value::Entity, got {other:?}"),
         }
+    }
+
+    /// The application this dictionary is for, the spec view under its `at` key ([`Self::
+    /// build_at`]), the one named child that is a term; `None` for a dictionary whose provider
+    /// provides its spec at one application.
+    pub fn at(&self) -> Option<TermId> {
+        match &self.0 {
+            Value::Entity { named, .. } => named.iter().find_map(|(_, v)| match v {
+                Value::Term { id, .. } => Some(*id),
+                _ => None,
+            }),
+            other => unreachable!("a Dictionary wraps a Value::Entity, got {other:?}"),
+        }
+    }
+
+    /// The application of `spec_op`'s spec this dictionary is for, as the resolution of the
+    /// operation reads one ([`crate::kb::typing::resolve_op_target_at`]): its `at`, read at the
+    /// spec the view names, where that spec is the operation's own. `None` where it holds none,
+    /// or one of another spec — whose type-vars are not the operation's spec's, so it says
+    /// nothing about which of that spec's applications the provider is asked at.
+    pub(crate) fn application_for(
+        &self,
+        kb: &KnowledgeBase,
+        spec_op: Symbol,
+    ) -> Option<crate::kb::typing::SpecApplication> {
+        crate::kb::typing::application_of_view_for_op(kb, self.at()?, spec_op)
     }
 
     /// How many sub-dictionaries this one bundles — its POSITIONAL arity.
@@ -328,13 +410,14 @@ impl Dictionary {
     }
 }
 
-/// Structural equality — the `(impl, ordered subs)` tree, which is all a
+/// Structural equality — the `(impl, labels, at, ordered subs)` tree, which is all a
 /// dictionary is. No arena half to drop (the mistake WI-1019 recorded at
 /// [`Value::opaque_carrier_eq`]) because there is no arena.
 impl PartialEq for Dictionary {
     fn eq(&self, other: &Self) -> bool {
         self.impl_sort() == other.impl_sort()
             && same_labels(self.labels_child(), other.labels_child())
+            && self.at() == other.at()
             && self.arity() == other.arity()
             && (0..self.arity()).all(|k| self.sub(k) == other.sub(k))
     }

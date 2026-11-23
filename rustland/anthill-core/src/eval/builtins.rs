@@ -383,6 +383,7 @@ const HOST_FNS: &[(
     // dictionary and a resolved operation reference (WI-1045) (`runtime.anthill`).
     ("dict_impl", 1, dict_impl),
     ("dict_labels", 1, dict_labels),
+    ("dict_at", 1, dict_at),
     ("dict_arity", 1, dict_arity),
     ("dict_sub", 2, dict_sub),
     ("dict_resolve_op", 2, dict_resolve_op),
@@ -6202,6 +6203,21 @@ fn dict_labels(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     }
 }
 
+/// WI-20261122-CXR5B — `Dictionary.at(d) -> Option[Term]`: the application the dictionary is
+/// for, the spec view `SortView(Spec, K = V, …)`, where its provider provides the spec at more
+/// than one ([`Dictionary::build_at`]); none() for every other dictionary.
+fn dict_at(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [d] = expect_args::<1>("Dictionary.at", args)?;
+    let at = expect_dictionary(interp, &d)?.at();
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+    Ok(match at {
+        Some(at) => option_some(some_sym, value_key, Value::term(at)),
+        None => option_none(none_sym),
+    })
+}
+
 /// WI-20260919-HXGXF (proposal 065 §2) — `anthill.reflect.type_value_of_self() -> Type`:
 /// the `Type` named by the dispatching dictionary of the `TypeValue.type_value` call
 /// currently running. The sole implementation of `TypeValue`, reached from that spec op's
@@ -6294,7 +6310,6 @@ fn dict_sub(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
 /// its captured dict (`spread_eta_args` reads a body-less op's arity from its
 /// signature, so a native-builtin-backed resolved op like `PartialEq.eq` is callable).
 fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::kb::typing::resolve_op_target_checked;
     let [d, spec_op] = expect_args::<2>("Dictionary.resolveOp", args)?;
     let h = expect_dictionary(interp, &d)?;
     let Some(spec_op_sym) = interp.kb.value_symbol(&spec_op) else {
@@ -6303,7 +6318,8 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // WI-857: refuses a `NoProvider` marker — `resolveOp` MINTS A CALLABLE, so it is
     // a dispatch face, and letting it hand back an `OpRef` on the spec op is the
     // silent fall-through the marker exists to prevent.
-    let target = resolve_op_target_checked(&interp.kb, h.impl_sort(), spec_op_sym)
+    // WI-20261122-CXR5B: at the application the dictionary is for, where it carries one.
+    let target = crate::kb::typing::resolve_dictionary_op(&interp.kb, &h, spec_op_sym)
         .map_err(|refusal| {
             EvalError::dispatch_refused(&interp.kb, spec_op_sym, h.impl_sort(), refusal)
         })?;
@@ -6349,7 +6365,6 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
 /// materialized up front today. Each element is a callable OpRef, same as a
 /// `resolveOp` result.
 fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::kb::typing::resolve_op_target_checked;
     let [d] = expect_args::<1>("Dictionary.ops", args)?;
     let h = Rc::new(expect_dictionary(interp, &d)?);
     let impl_sym = h.impl_sort();
@@ -6366,8 +6381,9 @@ fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
     }
     let rows = interp.kb.sort_ops_for_impl(impl_sym);
     let mut elems: Vec<Value> = Vec::with_capacity(rows.len());
+    // WI-20261122-CXR5B: at the application the dictionary is for, as `resolveOp` reads it.
     let resolve = |interp: &Interpreter, op: crate::intern::Symbol| {
-        resolve_op_target_checked(&interp.kb, impl_sym, op)
+        crate::kb::typing::resolve_dictionary_op(&interp.kb, &h, op)
             .map_err(|refusal| EvalError::dispatch_refused(&interp.kb, op, impl_sym, refusal))
     };
     for row in rows {
@@ -6646,7 +6662,7 @@ fn map_empty(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
         .kb
         .try_resolve_symbol("anthill.prelude.Hash.hash")
         .ok_or_else(|| EvalError::Internal("this KB declares no `Hash.hash`".to_string()))?;
-    crate::kb::typing::resolve_op_target_checked(&interp.kb, key_hash.impl_sort(), hash_op)
+    crate::kb::typing::resolve_dictionary_op(&interp.kb, &key_hash, hash_op)
         .map_err(|refusal| EvalError::dispatch_refused(&interp.kb, hash_op, key_hash.impl_sort(), refusal))?;
     let structural = keys_compare_as_structure(interp.kb_mut(), &key_hash);
     let handle = interp.alloc_map(super::map_arena::MapBody::keyed_by(key_hash, structural));

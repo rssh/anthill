@@ -11,6 +11,7 @@ namespace anthill.realization.runtime
     operation_map {
       impl: "dict_impl",
       labels: "dict_labels",
+      at: "dict_at",
       arity: "dict_arity",
       sub: "dict_sub",
       resolveOp: "dict_resolve_op",

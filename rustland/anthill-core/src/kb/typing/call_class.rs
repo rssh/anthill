@@ -847,13 +847,24 @@ pub(crate) fn resolve_op_target_checked(
     impl_sym: Symbol,
     spec_op: Symbol,
 ) -> Result<Symbol, DispatchRefusal> {
+    resolve_op_target_checked_at(kb, impl_sym, spec_op, None)
+}
+
+/// [`resolve_op_target_checked`], told the application the dictionary is for
+/// ([`resolve_dictionary_op`]).
+fn resolve_op_target_checked_at(
+    kb: &KnowledgeBase,
+    impl_sym: Symbol,
+    spec_op: Symbol,
+    application: Option<&SpecApplication>,
+) -> Result<Symbol, DispatchRefusal> {
     if let Err(msg) = marker_refusal(kb, impl_sym) {
         return Err(DispatchRefusal::Unpinned(format!(
             "cannot dispatch `{}`: {msg}",
             kb.qualified_name_of(spec_op),
         )));
     }
-    resolve_op_target(kb, impl_sym, spec_op).map_err(DispatchRefusal::Supply)
+    resolve_op_target_at(kb, impl_sym, spec_op, application).map_err(DispatchRefusal::Supply)
 }
 
 /// Why a dictionary cannot be dispatched through ([`resolve_op_target_checked`]). Two
@@ -1413,6 +1424,124 @@ pub(crate) fn tree_application(kb: &KnowledgeBase, tree: &ResolvedRequiresNode) 
         return None;
     };
     Some(SpecApplication::of_bindings(kb, tree.spec_sort(), bindings))
+}
+
+/// WI-20261122-CXR5B — the application the dictionary built from `tree` carries under its `at`
+/// key (`eval::dictionary::Dictionary::build_at`): the spec view `SortView(Spec, K = V, …)` of
+/// its head's binding of every type-var of the spec, where the provider provides the spec at
+/// more than one application. A dictionary names its provider, and such a provider's operations
+/// may be supplied apart at its applications ([`ProviderSupply::PerApplication`]); without the
+/// application, a dispatch through the dictionary of `W provides Tag[T = Foo, tag = tagFoo]` and
+/// `Tag[T = Bar, tag = tagBar]` could not say which `tag` to run, and refused at run. `None` for
+/// a provider that provides the spec at one application — its dictionary says which it is for —
+/// for a tree read from scope, and for a binding that is no ground term.
+///
+/// Only the producers over a resolved tree set it (the term emission, the value and eval
+/// walks, a clause's dictionary). A dictionary built from a head alone — a data sort's domain
+/// route, a derived `fill` clause, `TypeValue` evidence, a host's unchecked build — carries
+/// none: none of those heads is a provider of one spec at two applications.
+///
+/// THE PROVISIONS, NOT THE SUPPLY. What a provider supplies at each application depends on
+/// bodies and host mappings a load is still setting while its typer builds dictionaries
+/// ([`resolve_op_target`]'s cost note), so the question here is one the declarations answer.
+pub(crate) fn dictionary_application_view(kb: &mut KnowledgeBase, tree: &ResolvedRequiresNode) -> Option<TermId> {
+    let (ResolvedRequiresNode::Leaf {
+        impl_sort,
+        spec_sort,
+        bindings,
+    }
+    | ResolvedRequiresNode::Conditional {
+        impl_sort,
+        spec_sort,
+        bindings,
+        ..
+    }) = tree
+    else {
+        return None;
+    };
+    if !provides_spec_at_several_applications(kb, *impl_sort, *spec_sort) {
+        return None;
+    }
+    let view = kb.try_resolve_symbol("anthill.reflect.SortView")?;
+    let canon = kb.canonical_sort_sym(*spec_sort);
+    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for tv in sort_carrier(kb, canon).type_vars.clone() {
+        let short = short_name_of(kb.local_name_of(tv)).to_owned();
+        let Some((_, value)) = bindings
+            .iter()
+            .find(|(p, _)| *p == tv || short_name_of(kb.local_name_of(*p)) == short)
+        else {
+            continue;
+        };
+        // A dictionary is ground after the typing pass (`requirement-channel.md` §9), and so is
+        // what it carries: a binding naming a clause variable or a caller's type parameter would
+        // ride the `at` child unopened. Such a dictionary carries none, and a dispatch needing
+        // the application refuses as it did.
+        let Value::Term { id, .. } = value else {
+            return None;
+        };
+        let id = *id;
+        if !type_value_is_ground(kb, id) {
+            return None;
+        }
+        named.push((kb.intern(&short), id));
+    }
+    kb.canonicalize_record_named_args(view, &mut named);
+    let name = kb.make_name_term_from_sym(canon);
+    Some(kb.alloc(Term::Fn {
+        functor: view,
+        pos_args: SmallVec::from_elem(name, 1),
+        named_args: named,
+    }))
+}
+
+/// Does `provider` provide `spec` at more than one application ([`SpecApplication::same`])?
+fn provides_spec_at_several_applications(kb: &KnowledgeBase, provider: Symbol, spec: Symbol) -> bool {
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let mut first: Option<SpecApplication> = None;
+    for row in provides_rows_of_provider(kb, provider) {
+        if kb.canonical_sort_sym(row.spec_base) != spec_canon {
+            continue;
+        }
+        let application = SpecApplication::of_view(kb, spec, &row.spec_view);
+        match &first {
+            None => first = Some(application),
+            Some(seen) if !seen.same(kb, &application) => return true,
+            Some(_) => {}
+        }
+    }
+    false
+}
+
+/// WI-20261122-CXR5B — the application of `spec_op`'s spec a dictionary's `at` view names
+/// ([`dictionary_application_view`]), as [`resolve_op_target_at`] is told one. `None` where the
+/// view is of another spec: its type-vars are not the operation's spec's.
+pub(crate) fn application_of_view_for_op(kb: &KnowledgeBase, view: TermId, spec_op: Symbol) -> Option<SpecApplication> {
+    let spec = impl_parent_sort_of_op(kb, spec_op)?;
+    let named = match TermIdView(view).pos_arg(kb, 0)?.head(kb) {
+        ViewHead::Ident(s) => s,
+        ViewHead::Functor {
+            functor: s,
+            pos_arity: 0,
+            ..
+        } => s,
+        _ => return None,
+    };
+    (kb.canonical_sort_sym(named) == kb.canonical_sort_sym(spec))
+        .then(|| SpecApplication::of_view(kb, spec, &Value::term(view)))
+}
+
+/// WI-20261122-CXR5B — [`resolve_op_target_checked`] for a dispatch through `dict`, told the
+/// application the dictionary is for where it carries one ([`dictionary_application_view`]):
+/// the interpreter's dispatch and the reflect `Dictionary.resolveOp` / `ops` faces, which must
+/// answer alike.
+pub(crate) fn resolve_dictionary_op(
+    kb: &KnowledgeBase,
+    dict: &crate::eval::value::Dictionary,
+    spec_op: Symbol,
+) -> Result<Symbol, DispatchRefusal> {
+    let application = dict.application_for(kb, spec_op);
+    resolve_op_target_checked_at(kb, dict.impl_sort(), spec_op, application.as_ref())
 }
 
 /// WI-20261025-ZAWX9 — the spec operation that `member`, an own member of `provider`, backs

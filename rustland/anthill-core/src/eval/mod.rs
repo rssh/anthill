@@ -2057,18 +2057,19 @@ impl Interpreter {
         impl_sort: Symbol,
         subs: impl IntoIterator<Item = value::Dictionary>,
     ) -> Result<value::Dictionary, EvalError> {
-        self.build_dictionary_labelled(impl_sort, subs, None)
+        self.build_dictionary_at(impl_sort, subs, None, None)
     }
 
-    /// [`Self::build_dictionary`] with a tuple's labels
-    /// ([`value::Dictionary::build_labelled`]).
-    pub(crate) fn build_dictionary_labelled(
+    /// [`Self::build_dictionary`] with a tuple's labels and the application the dictionary is
+    /// for ([`value::Dictionary::build_at`]).
+    pub(crate) fn build_dictionary_at(
         &self,
         impl_sort: Symbol,
         subs: impl IntoIterator<Item = value::Dictionary>,
         labels: Option<&[Symbol]>,
+        at: Option<crate::kb::term::TermId>,
     ) -> Result<value::Dictionary, EvalError> {
-        value::Dictionary::build_labelled(&self.kb, impl_sort, subs, labels).ok_or_else(|| {
+        value::Dictionary::build_at(&self.kb, impl_sort, subs, labels, at).ok_or_else(|| {
             EvalError::Internal(format!(
                 "cannot build a requirement dictionary for `{}`: this KB never loaded \
                  `anthill.realization.runtime.Dictionary`",

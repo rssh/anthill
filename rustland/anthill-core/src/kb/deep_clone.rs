@@ -674,10 +674,12 @@ impl Copier {
                 impl_sort,
                 subs,
                 labels,
+                at,
             } => Expr::Dictionary {
                 impl_sort: plain(impl_sort),
                 subs: self.nodes(subs),
                 labels: labels.as_deref().map(std::rc::Rc::from),
+                at: plain(at),
             },
             Expr::VarRef { name } => Expr::VarRef { name: plain(name) },
             Expr::Var(var) => Expr::Var(plain(var)),

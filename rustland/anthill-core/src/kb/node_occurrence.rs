@@ -2127,6 +2127,10 @@ pub enum Expr {
         /// A tuple's `TypeValue` instance's labels, one per sub, in the tuple type's order
         /// (`eval::dictionary::Dictionary::build_labelled`); `None` for every other.
         labels: Option<Rc<[Symbol]>>,
+        /// The application the dictionary is for, the spec view `SortView(Spec, …)`, where its
+        /// provider provides the spec at more than one (`eval::dictionary::Dictionary::
+        /// build_at`); `None` for every other.
+        at: Option<TermId>,
     },
     /// `var_ref(name)` — a body reading a `__req_*` requirement param.
     VarRef {
@@ -8319,6 +8323,7 @@ pub(crate) enum BuildFrame {
         impl_sort: Symbol,
         sub_count: usize,
         labels: Option<Rc<[Symbol]>>,
+        at: Option<TermId>,
     },
     ListLit {
         span: SourceSpan,
@@ -8728,12 +8733,14 @@ fn visit_fn(
                 .and_then(|v| v.symbol(kb))
                 .expect("is_dictionary_src just read `impl` off this node");
             let labels = dictionary_src_labels(kb, src).map(Rc::from);
+            let at = dictionary_src_at(kb, src);
             let visits: Vec<WorkOp> = src.pos_args(kb).into_iter().map(WorkOp::Visit).collect();
             work.push(WorkOp::Build(BuildFrame::Dictionary {
                 span,
                 impl_sort,
                 sub_count: visits.len(),
                 labels,
+                at,
             }));
             for v in visits.into_iter().rev() {
                 work.push(v);
@@ -9229,6 +9236,7 @@ pub(crate) fn build_frame(
             impl_sort,
             sub_count,
             labels,
+            at,
         } => {
             let mut subs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(sub_count);
             for _ in 0..sub_count {
@@ -9239,6 +9247,7 @@ pub(crate) fn build_frame(
                 impl_sort,
                 subs,
                 labels,
+                at,
             };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
@@ -9500,9 +9509,23 @@ fn is_dictionary_src(kb: &KnowledgeBase, functor: Symbol, src: &Src) -> bool {
         && src.field(kb, "impl").and_then(|v| v.symbol(kb)).is_some()
         && match src.named_keys(kb).len() {
             1 => true,
-            2 => dictionary_src_labels(kb, src).is_some(),
+            // Every key beside `impl` a tuple's `labels` or an application's `at`.
+            n @ (2 | 3) => {
+                1 + usize::from(dictionary_src_labels(kb, src).is_some())
+                    + usize::from(dictionary_src_at(kb, src).is_some())
+                    == n
+            }
             _ => false,
         }
+}
+
+/// The application a dictionary construction is for, the spec view under its `at` key
+/// (`eval::dictionary::Dictionary::build_at`); `None` where it holds none.
+fn dictionary_src_at(kb: &KnowledgeBase, src: &Src) -> Option<TermId> {
+    match src.named_arg(kb, super::term_view::dictionary_at_key(kb)?)? {
+        Src::Term(t) => Some(t),
+        Src::Node(_) => None,
+    }
 }
 
 /// The labels a tuple's dictionary construction holds under its `labels` key

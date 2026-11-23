@@ -1282,10 +1282,10 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // That is the third carrier of the one representation
         // (`requirement-channel.md` §9) — a `TermId`, a `Value` and a
         // `NodeOccurrence` spelling one dictionary must not present three heads.
-        Some(Expr::Dictionary { subs, labels, .. }) => ViewHead::Functor {
+        Some(Expr::Dictionary { subs, labels, at, .. }) => ViewHead::Functor {
             functor: dictionary_ctor_sym(kb),
             pos_arity: subs.len(),
-            named_arity: 1 + usize::from(labels.is_some()),
+            named_arity: 1 + usize::from(labels.is_some()) + usize::from(at.is_some()),
         },
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
         // WI-714: a `Spliced` occurrence carries a structured `Value` (which
@@ -1625,12 +1625,17 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
             keys
         }
         // WI-1045 — the keys the head counted, the symbols the value's `named_keys`
-        // answers: `impl`, and a tuple's `labels`.
-        Some(Expr::Dictionary { labels, .. }) => {
+        // answers: `impl`, a tuple's `labels` and an application's `at`.
+        Some(Expr::Dictionary { labels, at, .. }) => {
             let mut keys = vec![(dictionary_impl_key(kb), ())];
             if labels.is_some() {
                 keys.push((dictionary_labels_key(kb).expect("a dictionary node holds labels"), ()));
-                // In the order the value's are (`Dictionary::build_labelled`).
+            }
+            if at.is_some() {
+                keys.push((dictionary_at_key(kb).expect("a dictionary node holds an application"), ()));
+            }
+            if keys.len() > 1 {
+                // In the order the value's are (`Dictionary::build_at`).
                 kb.canonicalize_record_named_args(dictionary_ctor_sym(kb), &mut keys);
             }
             keys.into_iter().map(|(k, ())| k).collect()
@@ -2802,6 +2807,13 @@ pub(crate) fn dictionary_labels_key(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.realization.runtime.Dictionary.labels")
 }
 
+/// The `at` key of a dictionary whose provider provides its spec at more than one application
+/// ([`crate::eval::dictionary::Dictionary::build_at`]): the declared accessor `Dictionary.at`.
+/// `None` in a KB that never loaded it.
+pub(crate) fn dictionary_at_key(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.realization.runtime.Dictionary.at")
+}
+
 /// The labels a tuple's dictionary holds under its `labels` key, on any carrier: a tuple of
 /// symbols, which views as `TupleLiteral(_1: a, _2: b)`. `None` for anything else.
 pub(crate) fn labels_of_view<V: TermView + ?Sized>(kb: &KnowledgeBase, v: &V) -> Option<Vec<Symbol>> {
@@ -3248,9 +3260,12 @@ fn occ_view_named_arg<'a>(
     // the `Rc<NodeOccurrence>` channel `occ_named_child` returns. Answered as an
     // owned `Value::SymbolRef`, which views as `ViewHead::Ref` — the same head the
     // term twin's `Term::Ref(impl)` child gives.
-    if let Some(Expr::Dictionary { impl_sort, labels, .. }) = occ.as_expr() {
+    if let Some(Expr::Dictionary { impl_sort, labels, at, .. }) = occ.as_expr() {
         if dictionary_impl_key(kb) == sym {
             return Some(ViewItem::Owned(Value::SymbolRef(*impl_sort)));
+        }
+        if let Some(at) = at.filter(|_| dictionary_at_key(kb) == Some(sym)) {
+            return Some(ViewItem::Term(at));
         }
         return labels
             .as_ref()

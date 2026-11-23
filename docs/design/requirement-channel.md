@@ -604,6 +604,19 @@ the same head. The `Expr.construct_requirement` entity is gone from
 `stdlib/anthill/reflect/reflect.anthill`; `dictionary_view_syms` owns both names for
 every side.
 
+**Two optional keys beside `impl`, each a declared accessor of the sort.** A tuple's
+`TypeValue`, `Fillable` or `PartialEq` instance holds its components' `labels`
+(WI-20261116-411A7, `Dictionary.labels`), and a dictionary whose provider provides its spec
+at more than one application holds the application it is for under `at`, the spec view
+`SortView(Spec, K = V, …)` of its ground bindings (WI-20261122-CXR5B, `Dictionary.at`;
+`docs/design/spec-carrier-set.md`, decision 1): `Dictionary(impl: W, at: SortView(Tag, T:
+Foo))`. A provider supplying an operation apart at its applications is then dispatched at
+the one the dictionary is for, where it named the provider alone and the dispatch refused.
+Both keys ride all three carriers — the value (`Dictionary::build_at`), the term
+(`dictionary_term_at`) and the occurrence (`Expr::Dictionary`'s `labels`, `at`) — and both
+are part of the identity. Neither widens the value past this rule: each is a key the sort
+declares, ground, and set only where the instance needs it.
+
 **What this rule is NOT resting on.** An earlier version of this section argued for
 the term from *partial* dictionaries: a conditional provision `provides Eq[Pair[A,
 B]] :- Eq[A], Eq[B]` (058 §3.8, WI-869) makes `Eq[Pair[Int64, ?B]]` reachable with

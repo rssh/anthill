@@ -360,8 +360,10 @@ const REFLECT_SET: [&str; 24] = [
 /// before this ticket (`register_if_present`), each now an `operation_map` entry: 46 then,
 /// 44 since WI-200 retired `ModifyRuntime.get` and `.set` with their sort, 43 since
 /// WI-20261109-5BP39 left `PartialEq.eq` with no host implementation (each scalar carrier
-/// maps its own `eq`), 42 since WI-20261109-JEE0E made `PartialEq.neq` a body in the spec.
-const MIGRATED: [&str; 43] = [
+/// maps its own `eq`), 42 since WI-20261109-JEE0E made `PartialEq.neq` a body in the spec, and
+/// with the dictionary readers added since, `Dictionary.labels` (WI-20261116-411A7) and
+/// `Dictionary.at` (WI-20261122-CXR5B), 44.
+const MIGRATED: [&str; 44] = [
     "anthill.kernel.struct_eq",
     "anthill.prelude.Map.empty",
     "anthill.prelude.Map.put",
@@ -396,6 +398,7 @@ const MIGRATED: [&str; 43] = [
     "anthill.reflect.TypeValue.type_value",
     "anthill.realization.runtime.Dictionary.impl",
     "anthill.realization.runtime.Dictionary.labels",
+    "anthill.realization.runtime.Dictionary.at",
     "anthill.realization.runtime.Dictionary.arity",
     "anthill.realization.runtime.Dictionary.sub",
     "anthill.realization.runtime.Dictionary.resolveOp",

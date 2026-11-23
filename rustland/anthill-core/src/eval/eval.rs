@@ -826,7 +826,8 @@ impl Interpreter {
                 impl_sort,
                 subs,
                 labels,
-            } => self.reduce_dictionary_node(*impl_sort, subs, labels.as_deref()),
+                at,
+            } => self.reduce_dictionary_node(*impl_sort, subs, labels.as_deref(), *at),
             // `ListLit` / `SetLit` / `TupleLit` are the literal nodes of a rule's own
             // term. In an operation body, and in a lambda a rule body writes, the typer
             // has read one as the constructor written there
@@ -1768,13 +1769,14 @@ impl Interpreter {
         impl_sort: Symbol,
         sub_occs: &[Rc<NodeOccurrence>],
         labels: Option<&[Symbol]>,
+        at: Option<crate::kb::term::TermId>,
     ) -> Result<StepOutcome, EvalError> {
         let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
         for occ in sub_occs.iter() {
             subs.push(self.eval_requirement_chain_node(occ)?);
         }
         Ok(StepOutcome::Deliver(
-            self.build_dictionary_labelled(impl_sort, subs, labels)?.into_value(),
+            self.build_dictionary_at(impl_sort, subs, labels, at)?.into_value(),
         ))
     }
 
@@ -1812,12 +1814,13 @@ impl Interpreter {
                 impl_sort,
                 subs: sub_occs,
                 labels,
+                at,
             } => {
                 let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
                 for r in sub_occs.iter() {
                     subs.push(self.eval_requirement_chain_node(r)?);
                 }
-                self.build_dictionary_labelled(*impl_sort, subs, labels.as_deref())
+                self.build_dictionary_at(*impl_sort, subs, labels.as_deref(), *at)
             }
             Expr::VarRef { name } => {
                 let top = self.stack.top().ok_or_else(|| {
@@ -1929,6 +1932,7 @@ impl Interpreter {
                 impl_sort,
                 subs: sub_occs,
                 labels,
+                at,
             } => {
                 let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
                 for r in sub_occs.iter() {
@@ -1939,7 +1943,7 @@ impl Interpreter {
                     };
                     subs.push(s);
                 }
-                self.build_dictionary_labelled(*impl_sort, subs, labels.as_deref()).map(Some)
+                self.build_dictionary_at(*impl_sort, subs, labels.as_deref(), *at).map(Some)
             }
             // No frame binds nothing: the bridge reads a call's stamps before it pushes
             // one, and a stamp that forwards the caller's own slot names a frame it has not
@@ -1974,9 +1978,11 @@ impl Interpreter {
         fn_sym: Symbol,
         dispatching_dict: &super::value::Dictionary,
     ) -> Result<Symbol, EvalError> {
-        let impl_sort = dispatching_dict.impl_sort();
-        crate::kb::typing::resolve_op_target_checked(&self.kb, impl_sort, fn_sym)
-            .map_err(|refusal| EvalError::dispatch_refused(&self.kb, fn_sym, impl_sort, refusal))
+        // WI-20261122-CXR5B: at the application the dictionary is for, where it carries one
+        // (`typing::dictionary_application_view`).
+        crate::kb::typing::resolve_dictionary_op(&self.kb, dispatching_dict, fn_sym).map_err(|refusal| {
+            EvalError::dispatch_refused(&self.kb, fn_sym, dispatching_dict.impl_sort(), refusal)
+        })
     }
 
     /// WI-350 — value-directed dispatch for a body-less spec op the typer
@@ -3269,7 +3275,8 @@ impl Interpreter {
                 Some(d)
             }
             ResolvedRequiresNode::Leaf { impl_sort, .. } => {
-                super::value::Dictionary::build(&mut self.kb, *impl_sort, Vec::new())
+                let at = crate::kb::typing::dictionary_application_view(&mut self.kb, tree);
+                super::value::Dictionary::build_at(&self.kb, *impl_sort, Vec::new(), None, at)
             }
             ResolvedRequiresNode::Conditional {
                 impl_sort,
@@ -3281,7 +3288,8 @@ impl Interpreter {
                     .iter()
                     .map(|s| self.dictionary_of_tree_in(s, dict, base))
                     .collect::<Option<Vec<_>>>()?;
-                super::value::Dictionary::build_labelled(&self.kb, *impl_sort, subs, labels.as_deref())
+                let at = crate::kb::typing::dictionary_application_view(&mut self.kb, tree);
+                super::value::Dictionary::build_at(&self.kb, *impl_sort, subs, labels.as_deref(), at)
             }
         }
     }

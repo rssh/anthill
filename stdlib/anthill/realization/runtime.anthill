@@ -12,7 +12,7 @@
 -- A pure structural VIEW, not new storage. WI-1045 went further and removed
 -- the storage entirely: a dictionary IS an ordinary value in this shape --
 -- `Dictionary(sub0 .. subN, impl: S)`, positional sub-dictionaries and one
--- named `impl` (and a tuple's `TypeValue` instance's `labels` beside it) -- carried by sigma, by an eval frame and by a closure alike,
+-- named `impl` (and a tuple's `TypeValue` instance's `labels`, and the application `at`, beside it) -- carried by sigma, by an eval frame and by a closure alike,
 -- with no arena behind it and no conversion at a crossing. Each operation
 -- below is a native Rust builtin reading that value's own children. No
 -- pattern-match face (anthill has no user-defined extractors) — the accessor
@@ -24,7 +24,7 @@
 -- Design: docs/design/requirement-dictionaries.md §2 (runtime sorts) / §2.5
 -- (two-type split). WI-577.
 namespace anthill.realization.runtime
-  import anthill.reflect.Symbol
+  import anthill.reflect.{Symbol, Term}
   import anthill.prelude.{Option, Int64, FiniteStream, List}
 
   -- The runtime requirement dictionary: a resolved spec impl, materialized as
@@ -33,9 +33,10 @@ namespace anthill.realization.runtime
   -- Parameterized by S — the spec instance this dict witnesses (e.g.
   -- `Dictionary[Eq[Int64]]`). S is the DENOTED type of the two-type split: it
   -- rides as an ordinary type parameter, tracked STATICALLY by the typer, never
-  -- read off the value (the value carries only the impl and its sub-dictionaries,
-  -- and the impl is a multi-spec carrier, so the witnessed
-  -- spec is not recoverable from the value — it lives in the type). Bare
+  -- read off the value (the value carries the impl and its sub-dictionaries, and the impl is
+  -- a multi-spec carrier, so the witnessed spec lives in the type — except where the impl
+  -- provides that spec at more than one application, and the value names the application
+  -- under `at`). Bare
   -- `Dictionary` (S unknown) is the existential form.
   --
   -- A program writes a dictionary `Dictionary.instance[Additive[T = Int64]]()` and types
@@ -68,6 +69,14 @@ namespace anthill.realization.runtime
     -- (a, b))`, one label per sub-dictionary, in the order the subs are listed. none() for every
     -- other dictionary.
     operation labels(d: Self) -> Option[T = List[T = Symbol]] @[host_implemented]
+
+    -- The application of the spec the dictionary is for, where its provider provides that
+    -- spec at more than one (`W provides Tag[T = Foo]` and `Tag[T = Bar]`): the spec view
+    -- `SortView(Tag, T = Foo)`, under the `at` key, `Dictionary(impl: W, at: SortView(Tag,
+    -- T = Foo))`. A dispatch through the dictionary reads its operation off the provision at
+    -- that application (kernel-language §8.7). none() for every other dictionary: one naming
+    -- its provider says which application it is for.
+    operation at(d: Self) -> Option[T = Term] @[host_implemented]
 
     -- Number of sub-requirement dicts.
     operation arity(d: Self) -> Int64 @[host_implemented]

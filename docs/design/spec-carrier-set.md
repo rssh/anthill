@@ -1229,3 +1229,26 @@ a1–a3, b2 and c1–c3 only. a4–a7, b1 and b3–b8 were not run under them.
   nothing"). The sweep then differs nowhere. Rows: `wi_cxr5b_order_swap_test` (3), the first two
   failing with `src/` at `a7d4cf8d0`, the selection half alone failing the second; the control
   passing.
+- **2026-11-22, stage 2's eleventh step (WI-20261122-CXR5B): a dictionary carries the
+  application it is for** (decided with the user before the P readers). A dictionary named its
+  provider alone, `Dictionary(impl: W)`. Since step 3 the suppliers are grouped by every
+  binding, so a provider binding an operation apart at two applications — `WB provides
+  Coll[C = Foo, Elem = Int64, first = f1]` and `Coll[C = Foo, Elem = String, first = f2]` (d5),
+  or `WT provides Tag[T = Foo, tag = tagFoo]` and `Tag[T = Bar, tag = tagBar]` (d14) — loaded,
+  and a call of it through a generic `requires` died at run: "a dictionary names its provider,
+  not the application it is for". Now such a dictionary holds the application under an `at`
+  key, the spec view of its ground bindings, `Dictionary(impl: WT, at: SortView(Tag, T: Foo))`,
+  on all three carriers (`requirement-channel.md` §9), and the run-time dispatch, the Hash and
+  Eq bridges and the reflect `Dictionary.resolveOp` / `ops` resolve the operation at it
+  (`typing::resolve_dictionary_op`); `Dictionary.at` reads it. It is set where the provider
+  provides the spec at more than one application — a question the declarations answer, where
+  what the provider supplies at each depends on bodies a load is still setting — and only by
+  the producers over a resolved tree; a binding that is no ground type sets none, and a dispatch
+  needing it refuses as before. The generic calls of d5 and d14 answer 1 and 21. Rows:
+  `wi_cxr5b_dictionary_application_test` (6), four call rows and the reflect row failing with
+  `src/` and the stdlib backed out; the one-application control failing only at the new
+  accessor; the alike control passing. /code-review (high): 5 findings; 3 fixed (a binding
+  that is no ground type set an `at` that opening never renames; the two texts that described
+  a dictionary without it; which producers set it, said at the decision), 2 kept (the walk of
+  the provider's rows at a run-time construction; an `at` on the node carrier, which no
+  producer makes). Gate 12602 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1.

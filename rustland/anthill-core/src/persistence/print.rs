@@ -161,15 +161,21 @@ pub trait PrintView: TermSource {
 /// `Dictionary(impl: Int64)`, its sub-dictionaries positional before `impl` — where the
 /// type's bracket made it `Dictionary[impl = Int64]`, the type of a sort applied. Told
 /// apart by the `impl` key, which the type has not; a tuple's `TypeValue` instance holds its
-/// `labels` beside it.
+/// `labels` beside it, and a dictionary whose provider provides its spec at more than one
+/// application its `at`.
 fn is_dictionary_value(kb: &KnowledgeBase, item: &ViewItem<'static>, sym: Symbol) -> bool {
     crate::kb::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, impl_key)| {
-        let labels_key = crate::kb::term_view::dictionary_labels_key(kb);
         ctor == sym
             && match item.named_keys(kb).as_slice() {
                 [k] => *k == impl_key,
-                [a, b] => {
-                    (*a == impl_key && Some(*b) == labels_key) || (Some(*a) == labels_key && *b == impl_key)
+                keys @ ([_, _] | [_, _, _]) => {
+                    let labels_key = crate::kb::term_view::dictionary_labels_key(kb);
+                    let at_key = crate::kb::term_view::dictionary_at_key(kb);
+                    let count = |key: Option<Symbol>| keys.iter().filter(|k| Some(**k) == key).count();
+                    count(Some(impl_key)) == 1
+                        && count(labels_key) <= 1
+                        && count(at_key) <= 1
+                        && count(Some(impl_key)) + count(labels_key) + count(at_key) == keys.len()
                 }
                 _ => false,
             }
@@ -941,6 +947,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 impl_sort,
                 subs,
                 labels,
+                at,
             } => {
                 buf.push_str("Dictionary(");
                 for sub in subs.iter() {
@@ -960,6 +967,10 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                         )),
                         _ => buf.push_str(&format!(", labels: ({})", names.join(", "))),
                     }
+                }
+                if let Some(at) = at {
+                    buf.push_str(", at: ");
+                    self.write_item(&ViewItem::Term(*at), buf);
                 }
                 buf.push(')');
             }

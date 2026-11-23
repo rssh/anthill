@@ -10824,7 +10824,7 @@ impl KnowledgeBase {
         let mut pins = Vec::with_capacity(pos_args.len());
         for (k, sub) in pos_args.into_iter().enumerate() {
             let d = whole.sub(k)?;
-            let member = super::typing::resolve_op_target_checked(self, d.impl_sort(), eq).ok()?;
+            let member = super::typing::resolve_dictionary_op(self, &d, eq).ok()?;
             pins.push(PinnedEq {
                 member,
                 entry: Some((spec_op, sub)),
@@ -14900,7 +14900,7 @@ impl KnowledgeBase {
         let spec_op = self.try_resolve_symbol("anthill.prelude.Hash.hash").ok_or_else(|| {
             EvalError::Internal("a hash through a dictionary, in a KB that declares no `Hash`".to_string())
         })?;
-        let member = super::typing::resolve_op_target_checked(self, dict.impl_sort(), spec_op)
+        let member = super::typing::resolve_dictionary_op(self, dict, spec_op)
             .map_err(|refusal| EvalError::dispatch_refused(self, spec_op, dict.impl_sort(), refusal))?;
         let Some(outcome) = self.run_in_bridge_interp(|interp| {
             interp.call_op_bridged(member, &[x], Some((spec_op, dict)), &[])
@@ -14928,7 +14928,7 @@ impl KnowledgeBase {
         b: Value,
     ) -> Result<BridgeEqOutcome, EvalError> {
         let spec_op = self.eq_functor();
-        let member = super::typing::resolve_op_target_checked(self, dict.impl_sort(), spec_op)
+        let member = super::typing::resolve_dictionary_op(self, dict, spec_op)
             .map_err(|refusal| EvalError::dispatch_refused(self, spec_op, dict.impl_sort(), refusal))?;
         let Some(outcome) = self.run_in_bridge_interp(|interp| {
             interp.call_op_bridged(member, &[a, b], Some((spec_op, dict)), &[])
@@ -16415,6 +16415,7 @@ impl KnowledgeBase {
                 impl_sort,
                 subs,
                 labels,
+                at,
             }) => {
                 let mut built = Vec::with_capacity(subs.len());
                 for sub in subs {
@@ -16423,7 +16424,7 @@ impl KnowledgeBase {
                         _ => return UnfoldSlot::Unknown,
                     }
                 }
-                Dictionary::build_labelled(self, *impl_sort, built, labels.as_deref())
+                Dictionary::build_at(self, *impl_sort, built, labels.as_deref(), *at)
                     .map_or(UnfoldSlot::Unknown, UnfoldSlot::Supplied)
             }
             Some(Expr::RequirementAtSort { chain, slot }) => match self.stamp_slot(chain, frame) {

@@ -1663,9 +1663,12 @@ pub(super) fn emit_tree_as_projection(
             }
             Some(t)
         }
-        ResolvedRequiresNode::Leaf { impl_sort, .. } => {
-            Some(build_empty_bundle(kb, syms, *impl_sort))
-        }
+        // WI-20261122-CXR5B — the application the dictionary is for, where its provider
+        // provides the spec at more than one ([`dictionary_application_view`]).
+        ResolvedRequiresNode::Leaf { impl_sort, .. } => match dictionary_application_view(kb, tree) {
+            None => Some(build_empty_bundle(kb, syms, *impl_sort)),
+            at @ Some(_) => dictionary_term_at(kb, (syms.dict_ctor, syms.dict_impl), *impl_sort, &[], None, at),
+        },
         ResolvedRequiresNode::Conditional {
             impl_sort,
             sub_resolutions,
@@ -1676,9 +1679,17 @@ pub(super) fn emit_tree_as_projection(
             for sub in sub_resolutions {
                 sub_terms.push(emit_tree_as_projection(kb, caller, sub, syms)?);
             }
-            match labels {
-                None => Some(build_dictionary_term(kb, syms, *impl_sort, &sub_terms)),
-                Some(labels) => labelled_dictionary_term(kb, (syms.dict_ctor, syms.dict_impl), *impl_sort, &sub_terms, labels),
+            let at = dictionary_application_view(kb, tree);
+            match (labels, at) {
+                (None, None) => Some(build_dictionary_term(kb, syms, *impl_sort, &sub_terms)),
+                (labels, at) => dictionary_term_at(
+                    kb,
+                    (syms.dict_ctor, syms.dict_impl),
+                    *impl_sort,
+                    &sub_terms,
+                    labels.as_deref(),
+                    at,
+                ),
             }
         }
     }
@@ -1766,18 +1777,40 @@ pub(crate) fn dictionary_term(
 /// with no `Dictionary.labels`.
 pub(crate) fn labelled_dictionary_term(
     kb: &mut KnowledgeBase,
-    (ctor, impl_key): (Symbol, Symbol),
+    ctor_and_impl_key: (Symbol, Symbol),
     impl_sym: Symbol,
     subs: &[TermId],
     labels: &[Symbol],
 ) -> Option<TermId> {
-    let labels_key = crate::kb::term_view::dictionary_labels_key(kb)?;
+    dictionary_term_at(kb, ctor_and_impl_key, impl_sym, subs, Some(labels), None)
+}
+
+/// [`dictionary_term`] with a tuple's `labels` ([`labelled_dictionary_term`]) and the
+/// application the dictionary is for, `at` ([`dictionary_application_view`]), each where there
+/// is one: the term twin of `eval::dictionary::Dictionary::build_at`. `None` in a KB that
+/// declares no key a child needs.
+pub(crate) fn dictionary_term_at(
+    kb: &mut KnowledgeBase,
+    (ctor, impl_key): (Symbol, Symbol),
+    impl_sym: Symbol,
+    subs: &[TermId],
+    labels: Option<&[Symbol]>,
+    at: Option<TermId>,
+) -> Option<TermId> {
     let impl_ref = kb.alloc(Term::Ref(impl_sym));
-    let labels_term =
-        crate::kb::node_occurrence::value_to_term(kb, &crate::eval::dictionary::labels_value(labels)).ok()?;
-    let mut named_args: SmallVec<[(Symbol, TermId); 2]> =
-        SmallVec::from_slice(&[(impl_key, impl_ref), (labels_key, labels_term)]);
-    kb.canonicalize_record_named_args(ctor, &mut named_args);
+    let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[(impl_key, impl_ref)]);
+    if let Some(labels) = labels {
+        let labels_key = crate::kb::term_view::dictionary_labels_key(kb)?;
+        let labels_term =
+            crate::kb::node_occurrence::value_to_term(kb, &crate::eval::dictionary::labels_value(labels)).ok()?;
+        named_args.push((labels_key, labels_term));
+    }
+    if let Some(at) = at {
+        named_args.push((crate::kb::term_view::dictionary_at_key(kb)?, at));
+    }
+    if named_args.len() > 1 {
+        kb.canonicalize_record_named_args(ctor, &mut named_args);
+    }
     Some(kb.alloc(Term::Fn {
         functor: ctor,
         pos_args: SmallVec::from_slice(subs),

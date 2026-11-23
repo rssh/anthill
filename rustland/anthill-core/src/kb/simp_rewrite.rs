@@ -2477,10 +2477,12 @@ pub(super) fn reassemble(
             impl_sort,
             subs,
             labels,
+            at,
         } => Expr::Dictionary {
             impl_sort: *impl_sort,
             subs: cur.take_vec(subs),
             labels: labels.clone(),
+            at: *at,
         },
         // WI-538: an in-body proof — consume children in `for_each_child`
         // order [conclude?, body] so a `@[simp]` rewrite (or a WI-408
