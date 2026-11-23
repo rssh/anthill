@@ -411,10 +411,10 @@ end
         // `Quiet` provides `Desc[T = Box[B = E]] :- Desc[T = E]`, so `Box` HAS a
         // provider and `Mystery` is where the chain runs out. The refusal says exactly
         // that — see `typing::UnprovidedProvision`, whose first cut said "`Box` provides
-        // no `Desc`" and would have sent the author to duplicate an existing row.
+        // no `Desc`" and would have sent the author to duplicate an existing row — and
+        // names `Quiet` as who provides it (2026-11-23: "`Box` does provide" was false).
         assert!(
-            msg.contains(&format!("{ns}.Box"))
-                && msg.contains("does provide")
+            msg.contains(&format!("`{ns}.Quiet` provides `{ns}.Desc` at `{ns}.Box`"))
                 && msg.contains("conditional"),
             "{which}: the refusal must name the carrier and say its CONDITION failed; \
              got {msg}"

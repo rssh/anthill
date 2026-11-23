@@ -271,7 +271,9 @@ fn an_unmet_witness_condition_is_still_refused() {
     assert!(
         errs.iter().any(|e| e.contains("requirement `n01py.Cap[C = n01py.Wrap[S = n01py.Opaque]")
             && e.contains("cannot be supplied for call to `n01py.sink`")
-            && e.contains("`n01py.Wrap` does provide `n01py.Cap`, but no row of it answers")),
+            && e.contains(
+                "`n01py.WrapWitness` provides `n01py.Cap` at `n01py.Wrap`, but no such row answers"
+            )),
         "`Opaque` provides no `Cap`, so the witness's condition cannot be discharged and \
          `Cap` is not supplied at `Wrap[S = Opaque]`; got: {errs:#?}",
     );
@@ -581,8 +583,8 @@ end
         errs.iter().any(|e| e.contains("cannot be supplied for call to `n01pyinf.total`")
             && e.contains("Source = n01pyinf.Nats")
             && e.contains(
-                "`anthill.prelude.MappedStream` does provide `anthill.prelude.FiniteCollection`, \
-                 but no row of it answers at these bindings"
+                "`anthill.prelude.MappedStreamFinite` provides `anthill.prelude.FiniteCollection` \
+                 at `anthill.prelude.MappedStream`, but no such row answers at these bindings"
             )),
         "the witness's `requires FiniteCollection[C = S]` is unmet at `S = Nats`, so the \
          requirement is not supplied at the mapped stream; got: {errs:#?}",

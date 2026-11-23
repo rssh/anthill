@@ -410,7 +410,11 @@ fn an_arrow_inside_another_type_is_matched_the_same() {
         &refusal("wi0gyw1.inside_applied_other", &boxed(OTHER), "via(box(n: 1))"),
         &[
             "Apply[F = wi0gyw1.inside_applied_other.Box[T = (p: Int64, q: Int64) -> Int64]]",
-            "no row of it answers at these bindings",
+            // The two providers are witnesses at `Box`, and are named (2026-11-23; the
+            // sentence said "`Box` does provide `Apply`").
+            "`wi0gyw1.inside_applied_other.P1` and `wi0gyw1.inside_applied_other.P2` provide \
+             `wi0gyw1.inside_applied_other.Apply` at `wi0gyw1.inside_applied_other.Box`, but no \
+             such row answers at these bindings",
         ],
         "a `Box` of an arrow of other names is matched by neither provider",
     );

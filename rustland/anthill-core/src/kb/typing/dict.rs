@@ -273,7 +273,7 @@ impl DictRefusal {
 /// is built on a path that already holds the `kb` for its other names; there is no list
 /// here to pre-render.
 ///
-/// `has_a_row` IS THE DIFFERENCE BETWEEN A CLAIM AND AN ASSERTION, and the first cut of
+/// `providers_at` IS THE DIFFERENCE BETWEEN A CLAIM AND AN ASSERTION, and the first cut of
 /// this ticket got it wrong (found by /code-review): "the goal ended `NoMatch`" is NOT
 /// "this carrier provides nothing". A CONDITIONAL provision (058 §3.8) whose side
 /// condition fails produces the identical `NoMatch` at the top goal — `wi855`'s `Quiet`
@@ -301,10 +301,14 @@ pub struct UnprovidedProvision {
     pub(super) carrier: Symbol,
     /// The spec the requirement names.
     pub(super) spec: Symbol,
-    /// Does `carrier` already have a provision row for `spec` — by any route
-    /// ([`carrier_has_provision_row`])? `true` ⇒ the row exists and its CONDITION failed
-    /// at these bindings, so the advice must point at the bindings and not at this sort.
-    has_a_row: bool,
+    /// The providers whose provision of `spec` is filed at `carrier` — by any route
+    /// ([`providers_at_carrier`]): `carrier` itself for its own provision, a witness for
+    /// its. Not empty ⇒ a row exists and its CONDITION failed at these bindings, so the
+    /// advice must point at the bindings and not at this sort; and the sentence names
+    /// WHO provides — a witness's row is no provision BY `carrier`, and "`Box` does
+    /// provide `Desc`" was false of `W provides Desc[T = Box[V = Int64]]` (decided with the
+    /// user 2026-11-23).
+    providers_at: SmallVec<[Symbol; 2]>,
     /// The provision as a clause the author can paste — `Spec[T = Int64]`, each binding the
     /// type it is and never the alias a `requires` wrote it through, which need not be in
     /// scope where the provision goes. `None` where the requirement does not write every
@@ -336,28 +340,6 @@ fn failed_spec(failure: &ResolutionResult, requirement: Symbol) -> Symbol {
     }
 }
 
-/// WI-1102 — does any provision of `spec` dispatch at `carrier`?
-///
-/// The question the refusal's sentence asserts, asked of the relation rather than
-/// inferred from a failed goal. BOTH provenances count, because both are rows the author
-/// would be told to duplicate: a SELF-provision / instance fact, whose dispatch carrier
-/// is the provider itself, and a WITNESS, whose carrier is in the spec's own binding
-/// (WI-1069 — provider and carrier are two questions, and [`witness_dispatch_carrier`]
-/// is the reader that keeps them apart). Keyed by BASE, so a row for `Box[B = E]`
-/// answers for `Box[B = Mystery]`: the question is whether this SORT has a provision,
-/// not whether this instantiation resolves — the goal already answered that, with `No`.
-/// That is also the limit of what the `true` answer licenses, and the message it selects
-/// says no more than it (see the `has_a_row` arm in [`RequirementRefusal::render`]).
-///
-/// IT MUST DECODE THE CARRIER ON THE SAME LADDER AS [`unprovided_provision`], which is
-/// why it reads [`spec_carrier_param_or_sole`] rather than calling
-/// [`witness_dispatch_carrier`]. That reader stops at rung 1
-/// ([`provision_carrier_binding`] → [`spec_carrier_param`]) and is right to: its other
-/// callers must not take rung 2 (WI-1076). But here rung 1 answers `None` for exactly
-/// the lawfulness family this diagnostic serves — `Eq`, `NonEq` — so every witness row
-/// for one would decode to the PROVIDER, `has_a_row` could never be `true`, and a
-/// carrier whose provision is a witness elsewhere would be told to write a row it
-/// already has. The two questions "which parameter holds the carrier" get ONE answer.
 /// WI-456 — is `carrier` itself the PROVIDER of `spec` at `carrier`, with no rival?
 ///
 /// NOT [`carrier_has_provision_row`], and the difference is the whole soundness of
@@ -405,17 +387,70 @@ pub(super) fn carrier_is_its_own_sole_provider(
     saw_self
 }
 
+/// WI-1102 — does any provision of `spec` dispatch at `carrier`?
+///
+/// The question the refusal's sentence asserts, asked of the relation rather than
+/// inferred from a failed goal. BOTH provenances count, because both are rows the author
+/// would be told to duplicate: a SELF-provision / instance fact, whose dispatch carrier
+/// is the provider itself, and a WITNESS, whose carrier is in the spec's own binding
+/// (WI-1069 — provider and carrier are two questions, and [`witness_dispatch_carrier`]
+/// is the reader that keeps them apart). Keyed by BASE, so a row for `Box[B = E]`
+/// answers for `Box[B = Mystery]`: the question is whether this SORT has a provision,
+/// not whether this instantiation resolves — the goal already answered that, with `No`.
+/// That is also the limit of what the `true` answer licenses, and the message it selects
+/// says no more than it (see the `providers_at` arm in [`RequirementRefusal::render`]).
+///
+/// IT MUST DECODE THE CARRIER ON THE SAME LADDER AS [`unprovided_provision`], which is
+/// why it reads [`spec_carrier_param_or_sole`] rather than calling
+/// [`witness_dispatch_carrier`]. That reader stops at rung 1
+/// ([`provision_carrier_binding`] → [`spec_carrier_param`]) and is right to: its other
+/// callers must not take rung 2 (WI-1076). But here rung 1 answers `None` for exactly
+/// the lawfulness family this diagnostic serves — `Eq`, `NonEq` — so every witness row
+/// for one would decode to the PROVIDER, `providers_at` could never be filled, and a
+/// carrier whose provision is a witness elsewhere would be told to write a row it
+/// already has. The two questions "which parameter holds the carrier" get ONE answer.
 pub(super) fn carrier_has_provision_row(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
     let carrier_param = spec_carrier_param_or_sole(kb, spec);
-    provides_rows_of_spec(kb, spec).any(|row| {
-        // No carrier parameter to read ⇒ the provision's dispatch carrier IS the
-        // provider (a self-provision, an instance fact, or a row that names no other
-        // sort) — the same default `witness_dispatch_carrier`'s `None` stands for.
-        let dispatch_carrier = carrier_param
-            .and_then(|p| provision_binding_at_param(kb, p, &row.spec_view))
-            .map_or(row.provider, |(_, base)| base);
-        same_sort_canonical(kb, dispatch_carrier, carrier)
-    })
+    provides_rows_of_spec(kb, spec).any(|row| row_dispatches_at(kb, carrier_param, &row, carrier))
+}
+
+/// [`carrier_has_provision_row`]'s rows, by WHO provides them: each provider of a row of
+/// `spec` that dispatches at `carrier`, once, in the order filed — `carrier` itself for its
+/// own provision (or an instance fact), a witness for its. What the refusal names
+/// ([`UnprovidedProvision::providers_at`]). Built only where a refusal is: the predicate
+/// above stops at the first row, and is asked of `TypeValue`'s rows per rendered part.
+pub(super) fn providers_at_carrier(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+) -> SmallVec<[Symbol; 2]> {
+    let carrier_param = spec_carrier_param_or_sole(kb, spec);
+    let mut providers: SmallVec<[Symbol; 2]> = SmallVec::new();
+    for row in provides_rows_of_spec(kb, spec) {
+        if row_dispatches_at(kb, carrier_param, &row, carrier)
+            && !providers.iter().any(|&p| same_sort_canonical(kb, p, row.provider))
+        {
+            providers.push(row.provider);
+        }
+    }
+    providers
+}
+
+/// Does `row` dispatch at `carrier`, its carrier read at `carrier_param` — the one reading
+/// [`carrier_has_provision_row`] and [`providers_at_carrier`] share.
+fn row_dispatches_at(
+    kb: &KnowledgeBase,
+    carrier_param: Option<Symbol>,
+    row: &ProvidesRow,
+    carrier: Symbol,
+) -> bool {
+    // No carrier parameter to read ⇒ the provision's dispatch carrier IS the provider (a
+    // self-provision, an instance fact, or a row that names no other sort) — the same
+    // default `witness_dispatch_carrier`'s `None` stands for.
+    let dispatch_carrier = carrier_param
+        .and_then(|p| provision_binding_at_param(kb, p, &row.spec_view))
+        .map_or(row.provider, |(_, base)| base);
+    same_sort_canonical(kb, dispatch_carrier, carrier)
 }
 
 impl RequirementRefusal {
@@ -579,12 +614,33 @@ impl RequirementRefusal {
             // needs `Desc[Box[B = String]]`), where a second row on `Box` IS the repair
             // the old sentence explicitly ruled out. So it points at the bindings and
             // names both repairs, which is the whole of what is known here.
-            msg.push_str(&if u.has_a_row {
+            //
+            // And it names WHO provides (decided with the user 2026-11-23): only the
+            // carrier's own row makes "`Box` does provide `Desc`" true. Where the rows at
+            // `Box` are witnesses' (`W provides Desc[T = Box[V = Int64]]`), the sentence
+            // names them, and the repair is a row on `Box` or on a witness sort.
+            let own = u.providers_at.iter().any(|&p| same_sort_canonical(kb, p, u.carrier));
+            msg.push_str(&if own {
                 format!(
                     "; `{carrier}` does provide `{spec}`, but no row of it answers at \
                      these bindings — check the type arguments above: either one of them \
                      lacks the provision a conditional row requires, or `{carrier}` needs \
                      a row at this instantiation"
+                )
+            } else if let Some((last, rest)) = u.providers_at.split_last() {
+                let name = |p: &Symbol| format!("`{}`", kb.qualified_name_of(*p));
+                let witnesses = if rest.is_empty() {
+                    name(last)
+                } else {
+                    let rest: Vec<String> = rest.iter().map(name).collect();
+                    format!("{} and {}", rest.join(", "), name(last))
+                };
+                let verb = if rest.is_empty() { "provides" } else { "provide" };
+                format!(
+                    "; {witnesses} {verb} `{spec}` at `{carrier}`, but no such row answers \
+                     at these bindings — check the type arguments above: either one of them \
+                     lacks the provision a conditional row requires, or a row at this \
+                     instantiation is missing, on `{carrier}` or on a witness sort"
                 )
             } else {
                 // EVERY place a provision can be written, and NOT `fact`: since
@@ -1478,7 +1534,7 @@ fn build_dispatching_dict_from_chain(
                             UnprovidedProvision {
                                 carrier,
                                 spec: dep.required_sort,
-                                has_a_row: false,
+                                providers_at: SmallVec::new(),
                                 provision_in_full: None,
                                 contract_unheld: None,
                                 failed_at: dep.required_sort,
@@ -3466,7 +3522,7 @@ pub(super) fn unconstrained_for_want_of_a_provision(
             unprovided: Some(UnprovidedProvision {
                 carrier,
                 spec,
-                has_a_row: carrier_has_provision_row(kb, carrier, spec),
+                providers_at: providers_at_carrier(kb, carrier, spec),
                 provision_in_full: None,
                 contract_unheld: None,
                 failed_at: spec,
@@ -4218,7 +4274,7 @@ fn open_slot_refusal(
         unprovided: Some(UnprovidedProvision {
             carrier,
             spec: dep.required_sort,
-            has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
+            providers_at: providers_at_carrier(kb, carrier, dep.required_sort),
             provision_in_full: None,
             contract_unheld: None,
             failed_at: failed_spec(nomatch, dep.required_sort),
@@ -4263,7 +4319,7 @@ fn unprovided_provision(
     Some(UnprovidedProvision {
         carrier,
         spec: dep.required_sort,
-        has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
+        providers_at: providers_at_carrier(kb, carrier, dep.required_sort),
         provision_in_full: Some(format_goal(kb, &goal)),
         contract_unheld,
         failed_at,
@@ -4703,7 +4759,7 @@ pub(super) fn unprovided_spec_at_carrier(
 }
 
 /// The refusal of a call of `callee_op` whose goal no provision answers at `carrier` — also
-/// where the carrier has rows of the spec that answer at other types (`has_a_row`).
+/// where the carrier has rows of the spec that answer at other types (`providers_at`).
 pub(super) fn unprovided_spec_at(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -4730,7 +4786,7 @@ pub(super) fn unprovided_spec_at(
             unprovided: Some(UnprovidedProvision {
                 carrier,
                 spec: goal.spec_sort,
-                has_a_row: carrier_has_provision_row(kb, carrier, goal.spec_sort),
+                providers_at: providers_at_carrier(kb, carrier, goal.spec_sort),
                 provision_in_full: in_full.then(|| format_goal(kb, goal)),
                 contract_unheld,
                 failed_at: goal.spec_sort,

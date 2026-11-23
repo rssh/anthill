@@ -32,6 +32,16 @@
 //! provision whose side condition fails ends `NoMatch` at the top goal exactly as a
 //! missing one does.
 //!
+//! Backing out WHO PROVIDES (2026-11-23: the row-exists sentence chosen by whether any row
+//! is at the carrier, `UnprovidedProvision::providers_at` not read for the carrier's own)
+//! fails `the_row_exists_sentence_names_who_provides`,
+//! `a_failing_conditional_provision_is_not_reported_as_a_missing_one` and
+//! `a_witness_row_is_found_for_a_carrier_param_less_spec` here, and outside it wi855's row
+//! above, n01py's `an_unmet_witness_condition_is_still_refused` and
+//! `an_infinite_source_is_still_refused`, and wi_sqzpq's
+//! `an_open_slot_of_a_programs_spec_gets_the_left_out_account` — each a witness's row at
+//! the carrier, told "`Box` does provide".
+//!
 //! Backing out the BUILTIN gate in `OpSlotParkSite::for_call` fails
 //! `control_a_builtin_comparison_at_a_no_instance_carrier_still_loads` here, and outside
 //! this file `wi642_rule_body_requires_test::builtin_comparison_op_on_concrete_no_
@@ -588,11 +598,10 @@ end
          a carrier that already has one; got:\n{text}"
     );
     assert!(
-        text.contains("wi1102.cond.Box")
-            && text.contains("does provide")
+        text.contains("`wi1102.cond.Quiet` provides `wi1102.cond.Desc` at `wi1102.cond.Box`")
             && text.contains("conditional"),
-        "the refusal must still name `Box` and say the CONDITION is what failed, so the \
-         author looks at the type argument; got:\n{text}"
+        "the refusal must still name `Box`, name `Quiet` as who provides there, and say the \
+         CONDITION is what failed, so the author looks at the type argument; got:\n{text}"
     );
 
     // THE NEIGHBOUR, one line different: the same program at an argument that DOES
@@ -827,9 +836,83 @@ end
          sends the author to write a row on `Box` is the wrong one; got:\n{text}"
     );
     assert!(
-        text.contains("wi1102.witnessrow.Box") && text.contains("does provide"),
-        "the refusal must still name `Box` and select the row-exists sentence; \
-         got:\n{text}"
+        text.contains(
+            "`wi1102.witnessrow.Quiet` provides `wi1102.witnessrow.Lawful` at \
+             `wi1102.witnessrow.Box`, but no such row answers"
+        ),
+        "the refusal must still name `Box` and select the row-exists sentence, naming \
+         `Quiet` as who provides there; got:\n{text}"
+    );
+    assert!(
+        !text.contains("`wi1102.witnessrow.Box` does provide"),
+        "`Box` provides nothing itself — the row at it is `Quiet`'s; got:\n{text}"
+    );
+}
+
+/// THE ROW-EXISTS SENTENCE NAMES WHO PROVIDES (decided with the user 2026-11-23). A
+/// witness's row at a carrier is no provision BY the carrier: beside `W provides Desc[T =
+/// Box[V = Int64]]` alone, a call at `Box[V = String]` was refused "`Box` does provide
+/// `Desc`, but no row of it answers", and `Box` provides nothing. Now the witness is named —
+/// "`W` provides `Desc` at `Box`, but no such row answers" — two witnesses both, and the
+/// carrier's own row, beside a witness's, keeps "`Box` does provide".
+///
+/// FAILS backed out (the sentence chosen by whether ANY row is at the carrier, as before):
+/// the first two programs, each refused "`…Box` does provide `…Desc`". The third passes
+/// either way by design: the carrier's own row is the case the old sentence was true of.
+#[test]
+fn the_row_exists_sentence_names_who_provides() {
+    let program = |witnesses: &str, own: &str| {
+        format!(
+            r#"
+namespace wi1102.who
+  import anthill.prelude.{{Int64, String, Bool}}
+  sort Desc
+    sort T = ?
+    operation d(x: T) -> Int64
+  end
+  sort Box
+    sort V = ?
+    entity box(v: V)
+{own}  end
+{witnesses}  operation mk() -> Box[V = String] = box(v: "s")
+  operation go() -> Int64 = Desc.d(mk())
+end
+"#
+        )
+    };
+    let witness = |name: &str, at: &str| {
+        format!(
+            "  sort {name}\n    import wi1102.who.{{Desc, Box}}\n    provides Desc[T = Box[V = {at}]]\n    \
+             operation d(x: Box[V = {at}]) -> Int64 = 1\n  end\n"
+        )
+    };
+    let one = refusal(&program(&witness("W", "Int64"), ""), "one witness at `Box`");
+    assert!(
+        one.contains(
+            "`wi1102.who.W` provides `wi1102.who.Desc` at `wi1102.who.Box`, but no such row \
+             answers at these bindings"
+        ) && one.contains("on `wi1102.who.Box` or on a witness sort"),
+        "one witness: named as who provides, both repairs named; got:\n{one}"
+    );
+    assert!(!one.contains("`wi1102.who.Box` does provide"), "`Box` provides nothing:\n{one}");
+    let two = refusal(
+        &program(&format!("{}{}", witness("W1", "Int64"), witness("W2", "Bool")), ""),
+        "two witnesses at `Box`",
+    );
+    assert!(
+        two.contains("`wi1102.who.W1` and `wi1102.who.W2` provide `wi1102.who.Desc` at `wi1102.who.Box`"),
+        "two witnesses: both named; got:\n{two}"
+    );
+    let own = refusal(
+        &program(
+            &witness("W", "Bool"),
+            "    provides Desc[T = Box[V = Int64]]\n    operation d(x: Box[V = Int64]) -> Int64 = 2\n",
+        ),
+        "the carrier's own row beside a witness's",
+    );
+    assert!(
+        own.contains("`wi1102.who.Box` does provide `wi1102.who.Desc`, but no row of it answers"),
+        "the carrier's own row: the carrier does provide; got:\n{own}"
     );
 }
 

@@ -139,7 +139,10 @@ fn wi768_a_provider_for_a_different_schema_is_not_dispatched() {
         &crate::common::load_errors_of(&src),
         &[
             "Labelled[T = anthill.prelude.Relation[T = (name: String, age: Int64)",
-            "no row of it answers at these bindings",
+            // The provider is a witness at `Relation`, and is named (2026-11-23; the
+            // sentence said "`Relation` does provide `Labelled`").
+            "`test.wi768wrong.PersonRelLabel` provides `test.wi768wrong.Labelled` at \
+             `anthill.prelude.Relation`, but no such row answers at these bindings",
         ],
         "a provider claiming `name: Int64`, a relation whose `name` is a String",
     );

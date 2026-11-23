@@ -513,7 +513,10 @@ end
     );
     let errs = refusals(&at_an_instance);
     assert!(
-        errs.iter().any(|e| e.contains("does provide `wisqzpq.open.Show`, but no row of it answers at these bindings")),
+        errs.iter().any(|e| e.contains(
+            "`wisqzpq.open.W1` provides `wisqzpq.open.Show` at `wisqzpq.open.Boom`, but no such row \
+             answers at these bindings"
+        )),
         "a provision at an instance answers no open slot; got {errs:?}"
     );
     let none = src("");
