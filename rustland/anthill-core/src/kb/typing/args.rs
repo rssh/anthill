@@ -123,10 +123,22 @@ pub(super) fn validate_arg_against_param(
     } else {
         let deep_a = walk_type_deep_value(kb, subst, &actual_g);
         let deep_d = walk_type_deep_value(kb, subst, &declared_g);
+        // WI-20261024-XGRKZ — a parameter whose type a higher-kinded parameter heads
+        // (`x: F[T = Int64]`) is taken at the constructor σ fills it with: `F := Option`
+        // makes it `Option[T = Int64]`, and the argument is checked there. The pure walk
+        // leaves the head as written, so the pair read as open and `Lift.lift(car(n: 1),
+        // some("s"))` was checked against nothing (MEASURED). Only the head is filled
+        // ([`fill_higher_kinded_heads`]): a projection stays the neutral it is, and a
+        // callback's row is not walked. IN BOTH BRANCHES: a pair holding a callable keeps its
+        // shallow form, and the head rule below then reads the filled head too —
+        // `[lambda …]` where `F[T = (Int64) -> Int64]` is `Option[…]` is refused at
+        // `Option`/`List`; left `F`, the rule declined it and the call loaded (MEASURED).
+        let fill = |kb: &mut KnowledgeBase, d: Value| fill_higher_kinded_heads(kb, subst, &d).unwrap_or(d);
         if type_contains_callable(kb, &deep_a) || type_contains_callable(kb, &deep_d) {
             holds_callable = true;
-            (actual_g, declared_g)
+            (actual_g, fill(kb, declared_g))
         } else {
+            let deep_d = fill(kb, deep_d);
             both_ground = resolved_type_is_determined(kb, &deep_a)
                 && resolved_type_is_determined(kb, &deep_d);
             (deep_a, deep_d)

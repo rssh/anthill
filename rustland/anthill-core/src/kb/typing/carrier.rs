@@ -3412,6 +3412,22 @@ pub(super) fn bind_spec_params_from_carrier_param(
                 {
                     Some(expand_sorts_deep(kb, &binding, SlotVar::Flexible))
                 }
+                // WI-20261024-XGRKZ — A HIGHER-KINDED SLOT TAKES THE CONSTRUCTOR UNAPPLIED
+                // (`F = Option` of `Car provides Lift[C = Self, F = Option]`): bound as written,
+                // the bare sort, which is what unification binds `F` to from an argument
+                // `Option[T = Int64]` at `F[T = Int64]`. So an argument typed by `F[T = …]` is
+                // checked at the constructor's application (`validate_arg_against_param`).
+                // Left to the late pass, an argument that does not itself name the constructor
+                // was typed with `F` free and compared with nothing: the bare `5` of
+                // `Lift.lift(car(n: 1), 5)` reached `Car`'s member unwrapped, where `Option[T =
+                // Int64]` wraps it (MEASURED). A sort that is no constructor of the slot's kind
+                // (`F = Int64`, declaring no parameter) is not bound here: applied, it would be
+                // the malformed `Int64[T = Int64]` an argument is checked against.
+                None if extract_sort_ref_sym(kb, &binding)
+                    .is_some_and(|s| constructor_fits_slot(kb, spec_sort, spec_param_sym, s)) =>
+                {
+                    Some(binding.clone())
+                }
                 // A ref-shaped CONCRETE leaf (`Int64`) that is not one of the carrier's
                 // params: skip here — WI-383 reserves ground value-params to the late pass.
                 None => None,
@@ -3489,6 +3505,22 @@ pub(super) fn bind_spec_params_from_carrier_param(
         }
     }
     any
+}
+
+/// WI-20261024-XGRKZ — is `ctor` a constructor of the kind of `spec_sort`'s parameter `slot`:
+/// a higher-kinded slot (`F` of `Lift[C, F[T]]`), and a concrete sort declaring as many
+/// parameters as it does — the kind kernel-language §5.2 asks of a higher-kinded parameter's
+/// default, "a sort declaring as many parameters, written bare"?
+fn constructor_fits_slot(kb: &KnowledgeBase, spec_sort: Symbol, slot: Symbol, ctor: Symbol) -> bool {
+    !is_sort_param_symbol(kb, ctor)
+        && kb.has_kind(ctor, crate::intern::SymbolKind::Sort)
+        && kb
+            .type_arg_owner(spec_sort)
+            .and_then(|sort| kb.type_param_sym_of(sort, short_name_of(kb.local_name_of(slot))))
+            .is_some_and(|param| {
+                let arity = kb.type_param_syms_of(param).len();
+                arity > 0 && arity == kb.type_param_syms_of(ctor).len()
+            })
 }
 
 /// WI-593 — substitute a carrier's receiver-side type-args into a COMPOUND

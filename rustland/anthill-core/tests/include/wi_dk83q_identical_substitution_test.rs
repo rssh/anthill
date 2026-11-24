@@ -398,15 +398,18 @@ fn a_host_raise_at_a_type_parameter_is_threaded() {
 
 /// A HIGHER-KINDED SLOT TAKES A CONSTRUCTOR UNAPPLIED: behind `provides Lift[C = Self, F =
 /// Option]`, `F = Option` leaves no slot open, and is not bound as the instance `Option[T =
-/// ?]` a slot left out elsewhere is. So `Lift.lift(car(n: 1), 5)` is refused, as before the
-/// open-slot arm. BACK-OUT: with `slot_is_higher_kinded` not asked at the carrier binding
-/// (`bind_spec_params_from_carrier_param`), `F` binds `Option[T = ?]` and the call LOADS,
-/// the `Int64` passed where an `F[T = Int64]` is taken (MEASURED).
+/// ?]` a slot left out elsewhere is: it is the constructor, and `F[T = Int64]` is `Option[T =
+/// Int64]` at the call. So the well-typed `Lift.lift(car(n: 1), some(1))` runs, answering 1;
+/// `some("s")` is refused naming the argument; and a bare `5` is `some(5)`, as the
+/// some-coercion makes it at `Option[T = Int64]` and at `Car.lift`'s own call (decided with the
+/// user, 2026-11-23). Until WI-20261024-XGRKZ every one of the three was refused alike, "no
+/// impl matches", and this row pinned only that the `5` was; `wi_xgrkz_higher_kinded_dispatch_test`
+/// has the dispatch's rows.
 ///
-/// NOT THE CAPABILITY'S VERDICT: the well-typed `Lift.lift(car(n: 1), some(1))` is refused as
-/// well ("no impl matches"), before this ticket and after — a dispatch at a bare
-/// higher-kinded binding finds no impl. The row pins only that the ill-typed call stays
-/// refused.
+/// BACK-OUT: with `slot_is_higher_kinded` not asked at the carrier binding
+/// (`bind_spec_params_from_carrier_param`), `F` binds `Option[T = ?]`, an instance whose head the
+/// argument check does not fill: `some("s")` LOADS, and the bare `5` reaches `Car.lift` unwrapped
+/// (MEASURED 2026-11-23; before XGRKZ the same back-out loaded the `5`).
 #[test]
 fn a_higher_kinded_binding_is_no_open_slot() {
     let src = |arg: &str| {
@@ -414,7 +417,7 @@ fn a_higher_kinded_binding_is_no_open_slot() {
             r#"
 namespace test.dkhk
   import anthill.prelude.Option.{{none, some}}
-  import anthill.prelude.{{Option, Int64}}
+  import anthill.prelude.{{Option, Int64, String}}
   sort Lift[C, F[T]]
     operation lift(c: C, x: F[T = Int64]) -> Int64
   end
@@ -428,8 +431,21 @@ end
 "#
         )
     };
-    let errs = crate::common::load_errors_of(&src("5"));
-    assert!(!errs.is_empty(), "an `Int64` where an `F[T = Int64]` is taken is refused");
+    let runs = |arg: &str| {
+        let mut interp = crate::common::interp_for(&src(arg));
+        interp
+            .call("test.dkhk.go", &anthill_core::eval::HostValue::all(&[]))
+            .map(|h| h.value)
+            .unwrap_or_else(|e| panic!("`go` over `{arg}` runs: {e}"))
+    };
+    assert!(matches!(runs("some(1)"), anthill_core::eval::Value::Int(1)), "the well-typed call runs `Car.lift`");
+    assert!(matches!(runs("5"), anthill_core::eval::Value::Int(1)), "a bare `5` is `some(5)` at `Option[T = Int64]`");
+    let errs = crate::common::load_errors_of(&src("some(\"s\")"));
+    assert!(
+        errs.len() == 1
+            && errs[0].ends_with("lift.x (op-arg): expected Option[T = Int64], got Option[T = String]"),
+        "a payload of another type is refused naming the argument; got {errs:?}"
+    );
 }
 
 /// …AND THE BARE-SPEC SUGAR NARROWS THROUGH ONE, at a higher-kinded member and beneath a

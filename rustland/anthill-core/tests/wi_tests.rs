@@ -2113,6 +2113,8 @@ mod wi_96qkw_execute_options_test;
 
 #[path = "include/wi_5mmgp_query_refutation_test.rs"]
 mod wi_5mmgp_query_refutation_test;
+#[path = "include/wi_xgrkz_higher_kinded_dispatch_test.rs"]
+mod wi_xgrkz_higher_kinded_dispatch_test;
 #[path = "include/wi_517y5_contract_as_written_test.rs"]
 mod wi_517y5_contract_as_written_test;
 #[path = "include/wi_yr3n7_domain_check_test.rs"]

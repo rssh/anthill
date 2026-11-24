@@ -1707,6 +1707,24 @@ fn filled_carrier_sort(
     genuine_concrete_sort(kb, extract_sort_ref_sym(kb, &walked)?)
 }
 
+/// WI-20261024-XGRKZ — `ty` with each application headed by a higher-kinded parameter that
+/// `subst` fills with a concrete sort read as that sort's application: `F[T = Int64]` with `F
+/// := Option` is `Option[T = Int64]`. The WI-453 fill of the grounding walk
+/// ([`walk_type_deep_g`] with `ground` set) ALONE — no projection is δ-grounded — for a check
+/// that reads the pure σ walk and must still see the type an argument is taken at. Sound for
+/// the reason the fill is: the application is injective. `None` where nothing is filled.
+pub(super) fn fill_higher_kinded_heads(kb: &mut KnowledgeBase, subst: &Substitution, ty: &Value) -> Option<Value> {
+    map_type_bottom_up(kb, ty, &mut |kb, node| {
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, node) else {
+            return None;
+        };
+        let filled = filled_carrier_sort(kb, subst, base)?;
+        let (span, owner) = site_of(node);
+        let base_ref = kb.make_sort_ref(filled);
+        Some(parameterized_value(kb, base_ref, &bindings, span, owner))
+    })
+}
+
 /// WI-956 — "`s` is a GENUINE CONCRETE sort": not a sort-type-param (an abstract
 /// carrier, which must stay abstract and forward), and a name that really plays the
 /// sort role. Two readers ask it in the same two lines — [`filled_carrier_sort`] on a
