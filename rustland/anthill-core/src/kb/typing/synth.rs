@@ -1940,6 +1940,90 @@ pub(super) fn resolve_inner<'a>(
         }
     }
 
+    // Proposal 074 stage 4 (WI-20261113-5CZ9F; kernel-language §8.7): THE BRACKET'S TYPE
+    // ARGUMENTS FIX THE WITNESS'S PARAMETERS the goal leaves free. `Additive[Additive =
+    // ProjAdditive[X = Int64, Y = Meters]]` at `Additive[T = Meters]` matches `Y` from the goal and
+    // takes `X = Int64` from the bracket, after which `ProjAdditive`'s `requires Additive[T = X]`
+    // is `Int64`'s and its construction finite. MEASURED before the stage: every call that reached
+    // `ProjAdditive` was refused "construction is cyclic", the witness's arguments dropped where
+    // the selection was read (`selection_witness_sym` keeps the head). A parameter the goal's
+    // match already bound keeps the goal's value. A parameter its `requires` read that neither
+    // fixes is refused here, naming it.
+    if let (Some(witness), Some(pin)) = (pinned, pin) {
+        let wqn = kb.qualified_name_of(witness).to_string();
+        let fixed: Vec<(Symbol, Value)> = pin
+            .args
+            .iter()
+            .filter_map(|(short, arg)| {
+                kb.try_resolve_symbol(&format!("{wqn}.{}", kb.local_name_of(*short)))
+                    .map(|sym| (sym, arg.value.clone()))
+            })
+            .collect();
+        // A parameter the goal's match bound to a type keeps it, and a bracket writing ANOTHER
+        // there is refused, never ignored: `ProjAdditive[X = Int64, Y = Tens]` at `Additive[T =
+        // Meters]` MEASURED, before this check, answering through `Y = Meters` in silence. One
+        // the goal left an open variable takes the bracket's.
+        let mut conflict: Option<(Symbol, Value, Value)> = None;
+        for c in candidates.iter_mut() {
+            for (sym, value) in &fixed {
+                match c.impl_subst.iter().position(|(k, _)| same_sort_canonical(kb, *k, *sym)) {
+                    None => c.impl_subst.push((*sym, value.clone())),
+                    Some(i) if matches!(c.impl_subst[i].1.head(kb), ViewHead::Var(_)) => {
+                        c.impl_subst[i].1 = value.clone();
+                    }
+                    Some(i) => {
+                        let bound = c.impl_subst[i].1.clone();
+                        if conflict.is_none()
+                            && !crate::kb::term_view::views_structurally_equal(kb, &bound, value)
+                        {
+                            conflict = Some((*sym, value.clone(), bound));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((sym, written, bound)) = conflict {
+            stack.pop();
+            return ResolutionResult::NoMatch {
+                goal_text: format_goal(kb, goal),
+                hint: format!(
+                    "the call selected `{w}` for {spec} with `{p} = {written}`, where the goal \
+                     fixes its `{p}` at `{bound}`",
+                    w = kb.local_name_of(witness),
+                    spec = kb.qualified_name_of(goal.spec_sort),
+                    p = short_name_of(kb.local_name_of(sym)),
+                    written = type_display_name_value(kb, &written),
+                    bound = type_display_name_value(kb, &bound),
+                ),
+                spec: goal.spec_sort,
+                forwarded: false,
+            };
+        }
+        if let Some(open) = candidates
+            .first()
+            .map(|c| open_parameters_read(kb, c, goal.spec_sort))
+            .filter(|open| !open.is_empty())
+        {
+            stack.pop();
+            return ResolutionResult::NoMatch {
+                goal_text: format_goal(kb, goal),
+                hint: format!(
+                    "the call selected `{w}` for {spec}, and nothing fixes its {params}, \
+                     which its `requires` read and the goal does not give: write {them} in the \
+                     bracket, `{spec_short} = {w}[{written}]`",
+                    w = kb.local_name_of(witness),
+                    spec = kb.qualified_name_of(goal.spec_sort),
+                    params = open.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", "),
+                    them = if open.len() == 1 { "it" } else { "them" },
+                    spec_short = short_name_of(kb.qualified_name_of(goal.spec_sort)),
+                    written = open.iter().map(|p| format!("{p} = …")).collect::<Vec<_>>().join(", "),
+                ),
+                spec: goal.spec_sort,
+                forwarded: false,
+            };
+        }
+    }
+
     // WI-857 LOCALITY (058 §3.8): inside provider `W`'s dictionary, a sub-goal `W`
     // itself provides IS `W`'s — its own provision beats every rival. A filter, like
     // step 0's pin, so the head has already been matched against THIS sub-goal's
@@ -1978,6 +2062,53 @@ pub(super) fn resolve_inner<'a>(
                 keep
             });
         }
+    }
+
+    // Proposal 074 stage 4 (WI-20261113-5CZ9F; kernel-language §8.7): §8.7'S ORDER PASSES OVER
+    // A PROVIDER WHOSE `provides` LEAVES OPEN A PARAMETER ITS `requires` READ — it is chosen only
+    // where a bracket writes it ([`open_parameters_read`]). `ProjAdditive provides Additive[T =
+    // Y]`, with `requires Additive[T = X]`, was a candidate at every `Y`: MEASURED before the
+    // stage, `m(v: 2) + m(v: 3)` and even `Additive.add(true, false)` were refused "construction
+    // is cyclic", the open `X` reaching `ProjAdditive` again. A goal it alone answered is refused
+    // naming it and the bracket that chooses it.
+    let mut passed_over: Vec<(Symbol, Vec<String>)> = Vec::new();
+    if pinned.is_none() {
+        let mut kept: Vec<Candidate> = Vec::with_capacity(candidates.len());
+        for c in std::mem::take(&mut candidates) {
+            let open = open_parameters_read(kb, &c, goal.spec_sort);
+            if open.is_empty() {
+                kept.push(c);
+            } else if !passed_over.iter().any(|(p, _)| same_sort_canonical(kb, *p, c.impl_sort))
+                && could_answer_named(kb, &c, goal.spec_sort)
+            {
+                passed_over.push((c.impl_sort, open));
+            }
+        }
+        candidates = kept;
+    }
+    if candidates.is_empty() && !passed_over.is_empty() {
+        stack.pop();
+        let spec_short = short_name_of(kb.qualified_name_of(goal.spec_sort)).to_string();
+        let named: Vec<String> = passed_over
+            .iter()
+            .map(|(p, open)| {
+                format!(
+                    "`{}` provides it but leaves {} open, which its `requires` read and its \
+                     `provides` does not bind, so it is chosen only where a bracket names it: \
+                     `{spec_short} = {}[{}]`",
+                    kb.qualified_name_of(*p),
+                    open.iter().map(|x| format!("`{x}`")).collect::<Vec<_>>().join(", "),
+                    kb.local_name_of(*p),
+                    open.iter().map(|x| format!("{x} = …")).collect::<Vec<_>>().join(", "),
+                )
+            })
+            .collect();
+        return ResolutionResult::NoMatch {
+            goal_text: format_goal(kb, goal),
+            hint: format!("no provider is chosen here: {}", named.join("; ")),
+            spec: goal.spec_sort,
+            forwarded: false,
+        };
     }
 
     if candidates.is_empty() {
@@ -3304,4 +3435,115 @@ fn open_part_advice(kb: &KnowledgeBase, spec: Symbol, lead: &str) -> String {
          write every type argument of that type",
         kb.qualified_name_of(spec)
     )
+}
+
+/// Proposal 074 stage 4 (WI-20261113-5CZ9F; kernel-language §8.7) — the parameters of the
+/// provider `c` stands for that its provision's head does not name and that its `requires` or
+/// its conditions at `spec` read, none of them fixed by the goal's match or a bracket
+/// (`c.impl_subst`): the construction of its dictionary would ask for them at a type nothing
+/// gives. `ProjAdditive`'s `X`, under `provides Additive[T = Y]` and `requires Additive[T = X]`.
+///
+/// Empty for a provider with values of its own — constructors, or an operation receiving on or
+/// returning it — whose value's type fixes its parameters (`Mid`, whose `splitFirst(m: Self)`
+/// receives on it, takes `Src` from the value); for a parameter nothing reads, which leaves no
+/// construction open (`sort P { sort A = ?  sort B = ?  provides Apply[F = (A) -> A] }`); and
+/// for a named requirement slot, which a sub-goal or a bracket's value position answers
+/// (058 §3.4). Narrowed so with the user 2026-11-24, after a census of the full gate: the
+/// stdlib and the examples meet none, and only `ProjAdditive`'s fixtures and `wi822`'s
+/// `Ghost` (a refusal row) did among the fixtures.
+pub(super) fn open_parameters_read(kb: &mut KnowledgeBase, c: &Candidate, spec: Symbol) -> Vec<String> {
+    if matches!(sort_class(kb, c.impl_sort), SortClass::Data | SortClass::OwnValues) {
+        return Vec::new();
+    }
+    let shorts = kb.type_params_of_sort(c.impl_sort);
+    if shorts.is_empty() {
+        return Vec::new();
+    }
+    let pqn = kb.qualified_name_of(c.impl_sort).to_string();
+    let slots: Vec<String> = kb
+        .named_requirement_slots(c.impl_sort)
+        .iter()
+        .map(|s| short_name_of(kb.local_name_of(s.binder)).to_string())
+        .collect();
+    let rows: Vec<ProvidesRow> = provides_rows_of_provider(kb, c.impl_sort)
+        .filter(|row| same_sort_canonical(kb, row.spec_base, spec))
+        .collect();
+    let own_row: Vec<Value> = rows
+        .iter()
+        .filter(|row| row.rid == c.row)
+        .map(|row| row.spec_view.clone())
+        .collect();
+    let heads: Vec<Value> = if own_row.is_empty() {
+        rows.iter().map(|row| row.spec_view.clone()).collect()
+    } else {
+        own_row
+    };
+    // An effect row's kind anchor (`EffectsRuntime[Effects = R]`, which the loader writes for
+    // `effects R = ?`) asks no provider of anything, and reads no parameter in this sense:
+    // MEASURED, counted, it passed over `wi_34822`'s `P`, whose `R` its head writes nowhere.
+    let mut reads: Vec<Value> = direct_requires(kb, c.impl_sort)
+        .into_iter()
+        .filter(|e| !is_effects_runtime(kb, e.required_sort))
+        .map(|e| e.spec)
+        .collect();
+    for p in provision_conditions(kb, c.impl_sort) {
+        if same_sort_canonical(kb, p.provided, spec) {
+            reads.extend(p.conditions);
+        }
+    }
+    shorts
+        .into_iter()
+        .filter(|short| {
+            if slots.contains(short) {
+                return false;
+            }
+            let Some(sym) = kb.try_resolve_symbol(&format!("{pqn}.{short}")) else {
+                return false;
+            };
+            !c.impl_subst.iter().any(|(k, _)| same_sort_canonical(kb, *k, sym))
+                && !heads.iter().any(|v| kb.view_names_param(v, sym))
+                && reads.iter().any(|v| kb.view_names_param(v, sym))
+        })
+        .collect()
+}
+
+/// Proposal 074 stage 4 — could the provider `c` stands for, passed over for a parameter it
+/// leaves open ([`open_parameters_read`]), answer the goal were a bracket to name it: each of
+/// its requirements at the types the goal fixed has some provision whose head fits, the open
+/// parameter left free. Asked only of what a refusal advises: `ProjAdditive` is advised at
+/// `Additive[T = Meters]`, where `MetersIso provides Iso[A = Int64, B = Meters]`, and not at
+/// `Additive[T = Bool]`, where no `Iso` reaches `Bool` — that goal is refused about `Bool`.
+fn could_answer_named(kb: &mut KnowledgeBase, c: &Candidate, spec: Symbol) -> bool {
+    // Each open parameter a fresh variable, as a bracket's unknown argument is.
+    let pqn = kb.qualified_name_of(c.impl_sort).to_string();
+    let mut subst = c.impl_subst.clone();
+    for short in open_parameters_read(kb, c, spec) {
+        let Some(sym) = kb.try_resolve_symbol(&format!("{pqn}.{short}")) else {
+            continue;
+        };
+        let name = kb.intern(&short);
+        subst.push((sym, Value::Var(Var::Global(kb.fresh_var(name)))));
+    }
+    // Read off the rows, a binding the goal leaves free fitting anything and a row's own
+    // parameter fitting any type: advice, not a dispatch, so no candidate is ranked here.
+    let goals = candidate_provider_sub_goals(kb, c.impl_sort, &subst, spec);
+    goals.iter().all(|g| {
+        let rows: Vec<ProvidesRow> = provides_rows_of_spec(kb, g.spec_sort).collect();
+        rows.iter().any(|row| {
+            let params = impl_param_symbols(kb, row.provider);
+            let row_bindings = row.bindings(kb);
+            g.bindings.iter().all(|(k, gv)| {
+                if matches!(gv.head(kb), ViewHead::Var(_)) {
+                    return true;
+                }
+                match row_bindings.iter().find(|(rk, _)| same_label(kb, *rk, *k)) {
+                    None => true,
+                    Some((_, rv)) => {
+                        impl_param_ref(kb, rv, &params).is_some()
+                            || crate::kb::term_view::views_structurally_equal(kb, rv, gv)
+                    }
+                }
+            })
+        })
+    })
 }

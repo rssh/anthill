@@ -1581,6 +1581,7 @@ pub(super) fn dictionary_instance_call(
                 slot: SelectedSlot::Unnamed,
                 provider: SelectedProvider::Witness(spec),
                 slots: Vec::new(),
+                args: Vec::new(),
             };
             build_spec_dictionary(kb, env, spec, keyed, Some(&own)).map_err(|_| first)
         }
@@ -1646,11 +1647,14 @@ fn provider_key_pin(
                 kb.local_name_of(provider)
             ));
         }
+        // Proposal 074 stage 4: the provider's own type arguments as the key writes them.
+        let args = witness_type_args(kb, provider, value);
         pin = Some(InstanceSelection {
             spec_sort: spec,
             slot: SelectedSlot::Unnamed,
             provider: SelectedProvider::Witness(provider),
             slots: Vec::new(),
+            args,
         });
     }
     Ok(pin)

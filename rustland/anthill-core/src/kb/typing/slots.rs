@@ -303,11 +303,12 @@ pub(super) fn seed_rule_citation_bracket(
         else {
             continue;
         };
-        let witness_slots = match provider {
-            SelectedProvider::Witness(witness) => {
-                witness_value_slot_selections(kb, relation, witness, &value, span)?
-            }
-            SelectedProvider::Enclosing(_) => Vec::new(),
+        let (witness_slots, args) = match provider {
+            SelectedProvider::Witness(witness) => (
+                witness_value_slot_selections(kb, relation, witness, &value, span)?,
+                witness_type_args(kb, witness, &value),
+            ),
+            SelectedProvider::Enclosing(_) => (Vec::new(), Vec::new()),
         };
         push_selection(
             kb,
@@ -316,6 +317,7 @@ pub(super) fn seed_rule_citation_bracket(
             SelectedSlot::Named(binder),
             provider,
             witness_slots,
+            args,
             relation,
             span,
         )?;
@@ -594,11 +596,12 @@ fn seed_bracket_bindings(
         };
         // WI-870: and what the value's OWN bracket bound on that witness (§3.3). A
         // requirement of the enclosing declaration is a name and takes no bracket.
-        let slots = match provider {
-            SelectedProvider::Witness(witness) => {
-                witness_value_slot_selections(kb, fn_sym, witness, value, span)?
-            }
-            SelectedProvider::Enclosing(_) => Vec::new(),
+        let (slots, args) = match provider {
+            SelectedProvider::Witness(witness) => (
+                witness_value_slot_selections(kb, fn_sym, witness, value, span)?,
+                witness_type_args(kb, witness, value),
+            ),
+            SelectedProvider::Enclosing(_) => (Vec::new(), Vec::new()),
         };
         push_selection(
             kb,
@@ -607,6 +610,7 @@ fn seed_bracket_bindings(
             slot,
             provider,
             slots,
+            args,
             fn_sym,
             span,
         )?;
@@ -1245,6 +1249,35 @@ fn value_slot_selections(
     Ok(out)
 }
 
+/// Proposal 074 stage 4 (WI-20261113-5CZ9F) — what a witness value binds the witness's
+/// PLAIN type parameters to (`ProjAdditive[X = Int64, Y = Meters]`; a positional arrives as
+/// the next declared parameter's name, as [`value_slot_selections`] reads it), keyed by short
+/// name, each the value it rides ([`InstanceSelection::args`]). A named slot is not a plain
+/// parameter and is not here.
+pub(super) fn witness_type_args(
+    kb: &mut KnowledgeBase,
+    witness: Symbol,
+    value: &Value,
+) -> Vec<(Symbol, WrittenTypeArg)> {
+    let plain: Vec<String> = kb.type_params_of_sort(witness);
+    if plain.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(Symbol, WrittenTypeArg)> = Vec::new();
+    for key in value.named_keys(kb) {
+        let short = short_name_of(kb.local_name_of(key)).to_string();
+        if !plain.contains(&short) || named_requirement_slot_of(kb, witness, key).is_some() {
+            continue;
+        }
+        let Some(bound) = named_child_value(kb, value, key) else {
+            continue;
+        };
+        let arg = WrittenTypeArg::of(kb, bound);
+        out.push((kb.intern(&short), arg));
+    }
+    out
+}
+
 /// One named slot of `owner` bound to `bound`, as a selection — or `None` when the
 /// binding selects nothing.
 pub(super) fn slot_selection_of(
@@ -1295,6 +1328,7 @@ pub(super) fn slot_selection_of(
             slot: SelectedSlot::Named(slot.binder),
             provider: SelectedProvider::Witness(sub_witness),
             slots: nested,
+            args: witness_type_args(kb, sub_witness, bound),
         },
     }))
 }
@@ -2458,6 +2492,7 @@ pub(super) fn push_selection(
     slot: SelectedSlot,
     provider: SelectedProvider,
     slots: Vec<SlotSelection>,
+    args: Vec<(Symbol, WrittenTypeArg)>,
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
@@ -2478,6 +2513,7 @@ pub(super) fn push_selection(
         slot,
         provider,
         slots,
+        args,
     });
     Ok(())
 }
@@ -2641,6 +2677,7 @@ pub(super) fn selections_from_slot_bindings(
         // every call after the construction site, which is the very asymmetry WI-844
         // built this producer to close.
         let slots = witness_value_slot_selections(kb, fn_sym, witness, &Value::term(bound), span)?;
+        let args = witness_type_args(kb, witness, &Value::term(bound));
         let slot = named_slot_key(kb, fn_sym, name, span)?;
         push_selection(
             kb,
@@ -2649,6 +2686,7 @@ pub(super) fn selections_from_slot_bindings(
             slot,
             SelectedProvider::Witness(witness),
             slots,
+            args,
             fn_sym,
             span,
         )?;
@@ -3368,6 +3406,45 @@ pub struct InstanceSelection {
     /// (`requires OA: Ord[A]`, `requires OB: Ord[B]`) are one spec and two
     /// answers.
     pub slots: Vec<SlotSelection>,
+    /// Proposal 074 stage 4 (WI-20261113-5CZ9F) — what the witness's own PLAIN type
+    /// parameters were bound to where the bracket wrote them (`ProjAdditive[X = Int64, Y =
+    /// Meters]`), keyed by the parameter's short name, each as its term. A named slot is
+    /// [`Self::slots`]' and not here. They fix what the goal does not: `ProjAdditive`'s
+    /// `provides Additive[T = Y]` binds `Y` from the goal and leaves `X`, which its `requires
+    /// Additive[T = X]` reads, to the bracket. Part of the key `resolve_cache` is read by, as
+    /// `slots` are: two sites naming `ProjAdditive` at two `X` are two dictionaries.
+    pub args: Vec<(Symbol, WrittenTypeArg)>,
+}
+
+/// Proposal 074 stage 4 — a type argument a bracket wrote on a witness, as the value it rides
+/// (a term, or an occurrence a type alias rides), compared and hashed by its carrier-agnostic
+/// structural fingerprint ([`crate::kb::term_view::GoalKey`]): one type on two carriers is one
+/// key, and nothing is lowered to a term to make one.
+#[derive(Clone, Debug)]
+pub struct WrittenTypeArg {
+    pub value: Value,
+    key: crate::kb::term_view::GoalKey,
+}
+
+impl WrittenTypeArg {
+    pub(super) fn of(kb: &KnowledgeBase, value: Value) -> Self {
+        let key = crate::kb::term_view::goal_fingerprint(kb, &value, &Substitution::new());
+        WrittenTypeArg { value, key }
+    }
+}
+
+impl PartialEq for WrittenTypeArg {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for WrittenTypeArg {}
+
+impl std::hash::Hash for WrittenTypeArg {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+    }
 }
 
 impl InstanceSelection {

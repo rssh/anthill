@@ -2692,6 +2692,7 @@ pub(super) fn build_op_scoped_dicts(
                             slot: SelectedSlot::Named(binder),
                             provider: SelectedProvider::Witness(witness),
                             slots,
+                            args: Vec::new(),
                         });
                         pinned_by_arg.as_ref()
                     }

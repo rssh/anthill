@@ -8937,6 +8937,30 @@ impl KnowledgeBase {
             .any(|child| self.mentions_var(child, pred))
     }
 
+    /// Proposal 074 stage 4 (WI-20261113-5CZ9F) — does `view`, on any carrier, name the type
+    /// parameter `param` anywhere in it: by name (a bare name or its nullary application), or
+    /// as the parameter's canonical variable — inside an arrow, a tuple and an effect row as at
+    /// the top. Walked as [`Self::mentions_var`] walks.
+    pub(crate) fn view_names_param<V: term_view::TermView>(&self, view: &V, param: Symbol) -> bool {
+        let param = self.canonical_sort_sym(param);
+        match view.head(self) {
+            term_view::ViewHead::Ident(s) | term_view::ViewHead::Functor { functor: s, .. }
+                if self.canonical_sort_sym(s) == param =>
+            {
+                return true;
+            }
+            term_view::ViewHead::Var(Var::Global(v))
+                if self.type_param_of_canonical_var(v).map(|p| self.canonical_sort_sym(p)) == Some(param) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        self.structural_child_views(view)
+            .iter()
+            .any(|child| self.view_names_param(child, param))
+    }
+
     /// Does `view` — on any carrier — hold a `Var::DeBruijn` anywhere in it?
     pub(crate) fn mentions_debruijn<V: term_view::TermView>(&self, view: &V) -> bool {
         self.mentions_var(view, &|v| matches!(v, Var::DeBruijn(_)))
