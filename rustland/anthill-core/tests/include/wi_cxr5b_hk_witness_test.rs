@@ -30,7 +30,7 @@ fn program(ns: &str, names: &[&str], own: bool, call: &str) -> String {
                    match m\n        case box(x) -> box(v: f(x))\n  end\n";
     let witnesses: String =
         names.iter().map(|w| format!("  sort {w}\n    provides Monad[M = Box]\n{members}")).collect();
-    let box_own = if own { format!("    provides Monad[M = Self]\n{members}") } else { "  end\n".into() };
+    let box_own = if own { format!("    provides Monad[M = Box]\n{members}") } else { "  end\n".into() };
     format!(
         r#"
 namespace {ns}
@@ -110,7 +110,7 @@ namespace {ns}
     sort T = ?
     entity box(v: T)
     entity empty
-    provides Monad[M = Self]
+    provides Monad[M = Box]
     operation pure[A](a: A) -> Box[T = A] = box(v: a)
     operation flatMap[A, B, EffP](m: Box[T = A], f: (A) -> Box[T = B] @ {{EffP}}) -> Box[T = B] effects {{EffP}} =
       match m
@@ -213,5 +213,5 @@ end
         assert!(text.contains(want), "`{want}` missing:\n{text}");
     }
     let ns = "wicxr5bhk.bound";
-    assert_eq!(go(&program(ns, "provides Wrap[W = Self]"), ns), 7);
+    assert_eq!(go(&program(ns, "provides Wrap[W = Box]"), ns), 7);
 }

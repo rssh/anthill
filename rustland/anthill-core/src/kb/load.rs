@@ -1919,6 +1919,30 @@ pub enum LoadError {
         /// rendering, so two files' refusals at equal offsets would collapse into one.
         site: String,
     },
+    /// Proposal 074 stage 8 (§6, H4's rule) — a `provides` clause binding a higher-kinded
+    /// parameter of its spec to a constructor whose open parameters are not as many as the
+    /// slot's: `provides Monad[M = Pair]` (two for `M[T]`'s one). Raised by
+    /// [`super::typing::check_provision_constructors`]; pre-rendered `site`, for the reason
+    /// [`Self::ProvisionNamesNoCarrier`] gives.
+    ConstructorArity {
+        /// The spec, qualified.
+        spec: String,
+        /// The higher-kinded parameter, by short name (`M`).
+        param: String,
+        /// The slot's own parameters, by short name (`[T]`).
+        slots: Vec<String>,
+        /// The binding as written (`Pair`).
+        constructor: String,
+        /// The parameters the binding leaves open, by short name (`[A, B]`).
+        open: Vec<String>,
+        /// The provider, qualified.
+        provider: String,
+        /// Where the binding is the provider at its own parameters (`Self`, `Option[T = T]`):
+        /// the constructor it meant (`Option`, `Result[E = E]`).
+        own: Option<String>,
+        /// The clause's `path:line:col`.
+        site: String,
+    },
     /// WI-20260923-ZBWMC — the bare-spec sugar `Spec.Member` (WI-201), written in an
     /// operation of a carrier that provides `Spec` with `Member` bound to MORE THAN ONE
     /// carrier, so it names no one type there. Design §5.3's "two carriers in scope",
@@ -4959,6 +4983,20 @@ impl LoadError {
                     provision_names_no_carrier_message(spec, carrier_param, taken_by, *dispatch, provider)
                 )
             }
+            LoadError::ConstructorArity {
+                spec,
+                param,
+                slots,
+                constructor,
+                open,
+                provider,
+                own,
+                site,
+            } => format!(
+                "{}: {}",
+                site,
+                constructor_arity_message(spec, param, slots, constructor, open, provider, own.as_deref())
+            ),
             LoadError::AmbiguousSpecMember {
                 spec,
                 member,
@@ -5535,6 +5573,21 @@ impl std::fmt::Display for LoadError {
                     site
                 )
             }
+            LoadError::ConstructorArity {
+                spec,
+                param,
+                slots,
+                constructor,
+                open,
+                provider,
+                own,
+                site,
+            } => write!(
+                f,
+                "{} at {}",
+                constructor_arity_message(spec, param, slots, constructor, open, provider, own.as_deref()),
+                site
+            ),
             LoadError::AmbiguousSpecMember {
                 spec,
                 member,
@@ -10184,6 +10237,53 @@ fn spec_alias_refused_message(alias: &str, reason: &str) -> String {
     format!(
         "'{alias}' is a type alias, which a spec clause reads as the spec it stands for — \
          {reason}"
+    )
+}
+
+/// Proposal 074 stage 8 — the sentence for [`LoadError::ConstructorArity`]: the slot, what the
+/// constructor leaves open, and how to make the two agree.
+fn constructor_arity_message(
+    spec: &str,
+    param: &str,
+    slots: &[String],
+    constructor: &str,
+    open: &[String],
+    provider: &str,
+    own: Option<&str>,
+) -> String {
+    let short = spec.rsplit('.').next().unwrap_or(spec);
+    let slot_list = slots.join(", ");
+    if let Some(meant) = own {
+        return format!(
+            "`provides {short}[{param} = {constructor}]` in '{provider}': `{param}` is a \
+             constructor of {} parameter{} (`{param}[{slot_list}]`), whose arguments fill the \
+             parameters the binding leaves open, in declaration order; `{constructor}` is \
+             '{provider}' at its own parameters and leaves none — write the constructor, \
+             `provides {short}[{param} = {meant}]`",
+            slots.len(),
+            if slots.len() == 1 { "" } else { "s" },
+        );
+    }
+    let left = if open.is_empty() {
+        "none".to_string()
+    } else {
+        open.iter().map(|o| format!("`{o}`")).collect::<Vec<_>>().join(", ")
+    };
+    let repair = if open.len() > slots.len() {
+        format!(
+            "write the parameters the constructor fixes, leaving {} open: `provides {short}[{param} = {constructor}[{} = …]]`",
+            slots.len(),
+            open[0]
+        )
+    } else {
+        format!("leave {} of its parameters unwritten, as `{param}[{slot_list}]` fills them", slots.len())
+    };
+    format!(
+        "`provides {short}[{param} = {constructor}]` in '{provider}': `{param}` is a constructor \
+         of {} parameter{} (`{param}[{slot_list}]`), whose arguments fill the parameters the \
+         binding leaves open, in declaration order; `{constructor}` leaves {left} — {repair}",
+        slots.len(),
+        if slots.len() == 1 { "" } else { "s" },
     )
 }
 
@@ -19706,6 +19806,10 @@ fn load_phase_inner(
     // makes `restore_load_check_marks`' truncate a real restore rather than a no-op.
     let written_provides = kb.take_written_provides_clauses();
     all_errors.extend(super::typing::check_provision_names_carrier(
+        kb,
+        &written_provides,
+    ));
+    all_errors.extend(super::typing::check_provision_constructors(
         kb,
         &written_provides,
     ));

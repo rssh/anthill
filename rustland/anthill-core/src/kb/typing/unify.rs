@@ -608,6 +608,20 @@ pub(super) fn unify_parameterized_view<A: TermView, B: TermView>(
     {
         return true;
     }
+    // Proposal 074 stage 8 (H4's rule): an application of a higher-kinded parameter against a
+    // concrete sort's is read BY ORDER ([`unify_constructor_application`]).
+    if a_base != b_base {
+        if let Some(verdict) =
+            unify_constructor_application(kb, subst, a_base, &a_bindings, b_base, &b_bindings)
+        {
+            return verdict;
+        }
+        if let Some(verdict) =
+            unify_constructor_application(kb, subst, b_base, &b_bindings, a_base, &a_bindings)
+        {
+            return verdict;
+        }
+    }
     // WI-453 (§5.4): when the two bases DIFFER, a type-param base (the marked
     // carrier `F`) resolves to its backing Var so `F[T=A] ≟ Option[T=X]` FILLS
     // `F := Option` (use-site) / skolem-compares (def-site). Same-functor unify
@@ -664,6 +678,157 @@ pub(super) fn unify_parameterized_view<A: TermView, B: TermView>(
         }
     }
     ok
+}
+
+/// Proposal 074 stage 8 (§6, H4's rule; kernel-language §5.4) — `M[T = A] ≟ S[…]`, where
+/// `carrier` (`M`) is a higher-kinded parameter and `other` (`S`) a concrete sort: `Some` of the
+/// verdict, `None` where `carrier` is no higher-kinded parameter or its variable is neither free
+/// nor filled with a constructor (a definition site's rigid, compared as written).
+///
+/// FILLED (`M := Box`, from a bracket or a provision): the constructor applied at `args` by
+/// order ([`apply_constructor`]) against `other`. FREE: the ways `S`'s parameters split into the
+/// constructor's and the application's. The application takes as many as `M` declares, in
+/// declaration order, none with a default; every other one `other` writes, and the constructor
+/// writes it too. `Box[V = Int64]` against `M[T]` is the one split `M := Box`, `A ≟ Int64`.
+/// `Result[E = Boom, T = Int64]` is two, `M := Result[E = Boom]` and `M := Result[T = Int64]`;
+/// where two remain, a parameter of `S` that is a row takes no argument of `M` (a type), and
+/// for a SPEC's own parameter the constructors its provisions at `S` write choose (decided with
+/// the user 2026-11-24): `Result provides Monad[M = Result[E = E]]` leaves the first. Any other
+/// count is no unification (an operation's own parameter, proposal 074 part 3, refuses two).
+/// MEASURED before: the keys were matched by name, so `Box`'s `V` was skipped and `Result`'s
+/// `T` was paired for the name alone.
+fn unify_constructor_application(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    carrier: Symbol,
+    args: &[(Symbol, Value)],
+    other: Symbol,
+    other_bindings: &[(Symbol, Value)],
+) -> Option<bool> {
+    if !is_higher_kinded_param(kb, carrier) {
+        return None;
+    }
+    genuine_concrete_sort(kb, other)?;
+    let var_t = resolve_sort_alias(kb, carrier)
+        .filter(|t| matches!(kb.get_term(*t), Term::Var(Var::Global(_))))?;
+    let walked = walk_term_to_resolved(kb, subst, var_t);
+    let empty = crate::kb::node_occurrence::empty_span();
+    if let Some(ctor) = constructor_of(kb, &walked) {
+        let other_base = kb.make_sort_ref(other);
+        let other_ty = parameterized_value(kb, other_base, other_bindings, empty, None);
+        return Some(match apply_constructor(kb, &ctor, carrier, args, empty, None) {
+            Some(applied) => unify_types(kb, subst, &applied, &other_ty),
+            None => false,
+        });
+    }
+    // Free, or nothing this reads.
+    kb.value_global_var(&walked)?;
+    let slots: Vec<Symbol> = kb.type_param_syms_of(carrier).to_vec();
+    let declared: Vec<Symbol> = kb.type_param_syms_of(other).to_vec();
+    let short = |kb: &KnowledgeBase, s: Symbol| short_name_of(kb.local_name_of(s)).to_string();
+    let written_at = |kb: &KnowledgeBase, q: Symbol| {
+        let want = short(kb, q);
+        other_bindings
+            .iter()
+            .find(|(k, _)| short(kb, *k) == want)
+            .map(|(_, v)| v.clone())
+    };
+    let defaulted = |kb: &KnowledgeBase, q: Symbol| kb.sort_param_defaults.contains_key(&q);
+    let mut candidates: Vec<Vec<usize>> = index_subsets(declared.len(), slots.len())
+        .into_iter()
+        .filter(|split| {
+            declared.iter().enumerate().all(|(j, q)| {
+                if split.contains(&j) {
+                    !defaulted(kb, *q)
+                } else {
+                    defaulted(kb, *q) || written_at(kb, *q).is_some()
+                }
+            })
+        })
+        .collect();
+    if candidates.len() > 1 {
+        let rows = declared_effect_row_params(kb, other);
+        let rows: Vec<String> = rows.iter().map(|r| short(kb, *r)).collect();
+        let typed: Vec<Vec<usize>> = candidates
+            .iter()
+            .filter(|split| split.iter().all(|j| !rows.contains(&short(kb, declared[*j]))))
+            .cloned()
+            .collect();
+        if !typed.is_empty() {
+            candidates = typed;
+        }
+    }
+    if candidates.len() > 1 {
+        if let Some(spec) = kb
+            .declaring_scope_symbol(carrier)
+            .filter(|s| kb.has_kind(*s, crate::intern::SymbolKind::Sort))
+        {
+            let bindings: Vec<Value> = provides_rows_of_spec(kb, spec)
+                .filter_map(|row| provision_binding_value_at_param(kb, carrier, &row.spec_view))
+                .collect();
+            let other_canon = kb.canonical_sort_sym(other);
+            let mut opens: Vec<Vec<String>> = Vec::new();
+            for b in bindings {
+                if let Some(c) = constructor_of(kb, &b) {
+                    if kb.canonical_sort_sym(c.base) == other_canon {
+                        opens.push(c.open.iter().map(|o| short(kb, *o)).collect());
+                    }
+                }
+            }
+            candidates.retain(|split| {
+                let names: Vec<String> = split.iter().map(|j| short(kb, declared[*j])).collect();
+                opens.contains(&names)
+            });
+        }
+    }
+    let [split] = candidates.as_slice() else {
+        return Some(false);
+    };
+    let ctor_bindings: Vec<(Symbol, Value)> = declared
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| !split.contains(j))
+        .filter_map(|(_, q)| {
+            let v = written_at(kb, *q)?;
+            let key = kb.intern(&short(kb, *q));
+            Some((key, v))
+        })
+        .collect();
+    let other_base = kb.make_sort_ref(other);
+    let ctor_value = if ctor_bindings.is_empty() {
+        Value::term(other_base)
+    } else {
+        parameterized_value(kb, other_base, &ctor_bindings, empty, None)
+    };
+    let mut ok = unify_types(kb, subst, &TermIdView(var_t), &ctor_value);
+    for (slot, j) in slots.iter().zip(split) {
+        let want = short(kb, *slot);
+        let arg = args.iter().find(|(k, _)| short(kb, *k) == want).map(|(_, v)| v.clone());
+        if let (Some(arg), Some(b)) = (arg, written_at(kb, declared[*j])) {
+            ok &= unify_types(kb, subst, &arg, &b);
+        }
+    }
+    Some(ok)
+}
+
+/// Every order-preserving choice of `k` indices out of `0..n`, in lexicographic order.
+fn index_subsets(n: usize, k: usize) -> Vec<Vec<usize>> {
+    fn go(start: usize, n: usize, k: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if cur.len() == k {
+            out.push(cur.clone());
+            return;
+        }
+        for i in start..n {
+            cur.push(i);
+            go(i + 1, n, k, cur, out);
+            cur.pop();
+        }
+    }
+    let mut out = Vec::new();
+    if k <= n {
+        go(0, n, k, &mut Vec::new(), &mut out);
+    }
+    out
 }
 
 /// THE ONE UNIFICATION OF TWO FUNCTION TYPES, whichever spelling each is written in — an
@@ -1688,23 +1853,25 @@ pub(super) fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: T
 }
 
 /// WI-453 (§5.4 concrete fill): if `functor` is a marked carrier (a type-param with a
-/// `SortAlias → Var`, WI-452) that has FILLED to a CONCRETE sort through `subst`
-/// (`F := Option`), return that sort. An unfilled / abstract / skolemized carrier — the
-/// var resolves to itself, a rigid skolem, or another sort-param — yields `None`, so the
-/// application keeps its symbol functor (def-site decomposition unaffected; the
-/// undischarged fill surfaces as a loud no-instance error at dispatch, not here).
-fn filled_carrier_sort(
-    kb: &KnowledgeBase,
-    subst: &Substitution,
-    functor: Symbol,
-) -> Option<Symbol> {
+/// `SortAlias → Var`, WI-452) that has FILLED to a CONCRETE constructor through `subst`
+/// (`F := Option`, `F := Pair[A = Int64]`), return that constructor ([`constructor_of`]). An
+/// unfilled / abstract / skolemized carrier — the var resolves to itself, a rigid skolem, or
+/// another sort-param — yields `None`, so the application keeps its symbol functor (def-site
+/// decomposition unaffected; the undischarged fill surfaces as a loud no-instance error at
+/// dispatch, not here).
+///
+/// Proposal 074 stage 8 (H4's rule): the constructor, not a bare sort — it is applied at the
+/// application's arguments BY ORDER ([`apply_constructor`]), so `M[T = A]` with `M := Box` is
+/// `Box[V = A]`. MEASURED before: the fill kept the application's keys under the sort, `Box[T =
+/// A]`, and a bracket's `[M = Pair[A = Int64]]` filled nothing.
+fn filled_constructor(kb: &mut KnowledgeBase, subst: &Substitution, functor: Symbol) -> Option<Constructor> {
     let var_t = resolve_sort_alias(kb, functor)
         .filter(|t| matches!(kb.get_term(*t), Term::Var(Var::Global(_))))?;
     // WI-394: walk to a `Value` so a non-`Term` (`Value::Node`) fill is seen
-    // through the view; a `Node` that is not a concrete `sort_ref` yields
-    // `None` ("not filled to a concrete sort"), the same as a bare var.
+    // through the view; a `Node` that is not a concrete sort application yields
+    // `None` ("not filled to a constructor"), the same as a bare var.
     let walked = walk_term_to_resolved(kb, subst, var_t);
-    genuine_concrete_sort(kb, extract_sort_ref_sym(kb, &walked)?)
+    constructor_of(kb, &walked)
 }
 
 /// WI-20261024-XGRKZ — `ty` with each application headed by a higher-kinded parameter that
@@ -1718,16 +1885,15 @@ pub(super) fn fill_higher_kinded_heads(kb: &mut KnowledgeBase, subst: &Substitut
         let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, node) else {
             return None;
         };
-        let filled = filled_carrier_sort(kb, subst, base)?;
+        let ctor = filled_constructor(kb, subst, base)?;
         let (span, owner) = site_of(node);
-        let base_ref = kb.make_sort_ref(filled);
-        Some(parameterized_value(kb, base_ref, &bindings, span, owner))
+        apply_constructor(kb, &ctor, base, &bindings, span, owner)
     })
 }
 
 /// WI-956 — "`s` is a GENUINE CONCRETE sort": not a sort-type-param (an abstract
 /// carrier, which must stay abstract and forward), and a name that really plays the
-/// sort role. Two readers ask it in the same two lines — [`filled_carrier_sort`] on a
+/// sort role. Two readers ask it in the same two lines — [`constructor_of`] on a
 /// marked carrier's fill and [`ground_rigid_projection_if_concrete`] on an op
 /// type-param's fill — and both mean it as "may I treat this as a carrier now".
 ///
@@ -1811,19 +1977,23 @@ pub(super) fn walk_type_deep_g(
                     Term::Fn { functor, .. } => Some(*functor),
                     _ => None,
                 };
-                if let Some(c) = functor.and_then(|f| filled_carrier_sort(kb, subst, f)) {
+                let filled = functor.and_then(|f| Some((f, filled_constructor(kb, subst, f)?)));
+                if let Some((carrier, ctor)) = filled {
                     let named: Vec<(Symbol, TermId)> = match kb.get_term(resolved) {
                         Term::Fn { named_args, .. } => {
                             named_args.iter().map(|(s, t)| (*s, *t)).collect()
                         }
                         _ => Vec::new(),
                     };
-                    let walked: Vec<(Symbol, TermId)> = named
+                    let walked: Vec<(Symbol, Value)> = named
                         .into_iter()
-                        .map(|(s, t)| (s, walk_type_deep_g(kb, subst, t, ground)))
+                        .map(|(s, t)| (s, Value::term(walk_type_deep_g(kb, subst, t, ground))))
                         .collect();
-                    let base = kb.alloc(Term::Ref(c));
-                    return kb.make_parameterized_type(base, &walked);
+                    let span = crate::kb::node_occurrence::empty_span();
+                    if let Some(applied) = apply_constructor(kb, &ctor, carrier, &walked, span, None) {
+                        return crate::kb::node_occurrence::value_to_term(kb, &applied)
+                            .expect("a constructor applied at types is a type, which has a term");
+                    }
                 }
             }
             kb.map_fn_children(resolved, |kb, child| {
@@ -1966,7 +2136,7 @@ fn ground_rigid_projection_if_concrete(
     let walked = walk_term_to_resolved(kb, subst, tp_var);
     // A genuine concrete sort only: never a sort-type-param (abstract carrier → forward),
     // and not an operation / other kind. WI-956 gave that test its one owner, shared with
-    // `filled_carrier_sort` which asked it in the same two lines.
+    // `constructor_of` which asks it in the same two lines.
     let s = genuine_concrete_sort(kb, extract_sort_ref_sym(kb, &walked)?)?;
     // SOUND grounding (WI-383 /code-review): read `member` ONLY through a spec that
     // LICENSES this projection — an op `requires Spec[C = subject]` clause that declares

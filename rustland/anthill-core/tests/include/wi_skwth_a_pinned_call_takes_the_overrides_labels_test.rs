@@ -183,7 +183,7 @@ end
 
 namespace anthill.prelude.Option
   import {ns}.CpsM
-  provides CpsM[F = Self, unit = {ns}.optionUnit]
+  provides CpsM[F = Option, unit = {ns}.optionUnit]
 end
 "#
     )

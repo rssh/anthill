@@ -1871,6 +1871,8 @@ mod wi_0fthq_handed_dictionary_test;
 mod wi_5cz9f_named_provider_test;
 #[path = "include/wi_fcmja_member_type_value_test.rs"]
 mod wi_fcmja_member_type_value_test;
+#[path = "include/wi_64272_constructor_slot_test.rs"]
+mod wi_64272_constructor_slot_test;
 #[path = "include/wi_2ksaa_dictionary_instance_test.rs"]
 mod wi_2ksaa_dictionary_instance_test;
 #[path = "include/wi_p85z7_paren_less_nullary_head_test.rs"]

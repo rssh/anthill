@@ -335,6 +335,83 @@ pub(crate) fn slot_is_higher_kinded(kb: &KnowledgeBase, head: Symbol, key: Symbo
         .is_some_and(|param| !kb.type_param_syms_of(param).is_empty())
 }
 
+/// Proposal 074 stage 8 (§6, H4's rule; kernel-language §5.4) — a CONSTRUCTOR, the value a
+/// higher-kinded slot takes: a sort with the parameters it writes (`Option`, `Box`, `Pair[A =
+/// Int64]`, `OptionT[F = F]`), and the ones it leaves OPEN — declared, unwritten, with no
+/// default (proposal 069) — in declaration order: `[T]`, `[V]`, `[B]`, `[T]`.
+#[derive(Clone, Debug)]
+pub(crate) struct Constructor {
+    pub(crate) base: Symbol,
+    pub(crate) written: Vec<(Symbol, Value)>,
+    pub(crate) open: Vec<Symbol>,
+}
+
+/// The constructor `v` is, where it is a concrete sort, bare or applied; `None` for anything
+/// else (a type parameter, a variable, a tuple, an arrow).
+pub(crate) fn constructor_of(kb: &mut KnowledgeBase, v: &Value) -> Option<Constructor> {
+    let (base, written) = sort_application_parts(kb, v)?;
+    genuine_concrete_sort(kb, base)?;
+    let open = kb
+        .type_param_syms_of(base)
+        .iter()
+        .copied()
+        .filter(|q| {
+            let short = kb.local_name_of(*q);
+            !written.iter().any(|(k, _)| kb.local_name_of(*k) == short)
+                && !kb.sort_param_defaults.contains_key(q)
+        })
+        .collect();
+    Some(Constructor { base, written, open })
+}
+
+/// `ctor` applied at the arguments `args` of an application headed by the higher-kinded
+/// parameter `carrier` (`M[T = A]`'s `[(T, A)]`): its open parameters take the carrier's
+/// parameters' arguments in declaration order, so `M[T = A]` with `M = Box` is `Box[V = A]`
+/// and with `M = Pair[A = Int64]` is `Pair[A = Int64, B = A]`. `None` where the counts differ
+/// (`Pair` and `Option[T = Int64]` at a slot of one parameter), which a provision and a bracket
+/// refuse where they are written. An argument the application leaves out stays open.
+pub(crate) fn apply_constructor(
+    kb: &mut KnowledgeBase,
+    ctor: &Constructor,
+    carrier: Symbol,
+    args: &[(Symbol, Value)],
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Option<Value> {
+    let slots = kb.type_param_syms_of(carrier).to_vec();
+    if slots.is_empty() || slots.len() != ctor.open.len() {
+        return None;
+    }
+    // Every key bare, as a written type keys its bindings: a written one may come back keyed by
+    // the parameter's qualified symbol, and one application with two spellings of its keys is a
+    // second term for one type.
+    let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(ctor.written.len() + slots.len());
+    for (k, v) in &ctor.written {
+        let bare = short_name_of(kb.local_name_of(*k)).to_string();
+        bindings.push((kb.intern(&bare), v.clone()));
+    }
+    for (slot, open) in slots.iter().zip(&ctor.open) {
+        let short = short_name_of(kb.local_name_of(*slot)).to_string();
+        let arg = args
+            .iter()
+            .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)
+            .map(|(_, v)| v.clone());
+        if let Some(arg) = arg {
+            let open_short = short_name_of(kb.local_name_of(*open)).to_string();
+            let key = kb.intern(&open_short);
+            bindings.push((key, arg));
+        }
+    }
+    let base = kb.make_sort_ref(ctor.base);
+    Some(parameterized_value(kb, base, &bindings, span, owner))
+}
+
+/// Is the type parameter `param` (its declared symbol) higher-kinded — one declaring
+/// parameters of its own, `M` of `sort Monad[M[T]]`?
+pub(crate) fn is_higher_kinded_param(kb: &KnowledgeBase, param: Symbol) -> bool {
+    !kb.type_param_syms_of(param).is_empty()
+}
+
 /// Does `ty` leave a slot of a sort application open — a declared slot it does not write,
 /// which [`expand_sorts_deep`] mints a variable for — at any depth that expansion reaches?
 /// `List`, `Pair[A = Int64]` and `Option[T = List]` do; `List[T = Int64]` does not, and

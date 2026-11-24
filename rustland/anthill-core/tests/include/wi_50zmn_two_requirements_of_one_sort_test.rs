@@ -1454,7 +1454,7 @@ end
 
 namespace anthill.prelude.Option
   import {ns}.CpsMonad
-  provides CpsMonad[F = Self, unit = {ns}.optionUnit]
+  provides CpsMonad[F = Option, unit = {ns}.optionUnit]
 end
 "
         )

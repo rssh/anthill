@@ -783,6 +783,112 @@ pub(crate) fn check_provision_names_carrier(
     errors
 }
 
+/// Proposal 074 stage 8 (§6, H4's rule; kernel-language §5.4) — a `provides` clause binding a
+/// HIGHER-KINDED parameter of its spec to a constructor whose open parameters do not line up
+/// with the slot's: `provides Monad[M = Pair]` leaves two open for `M[T]`'s one, and `Monad[M =
+/// Option[T = Int64]]` none. A constructor's open parameters take the slot's arguments in
+/// declaration order ([`apply_constructor`]), so the counts must agree. MEASURED before: both
+/// were refused only when a member was compared, "the member returns `Pair[A = ?A, B = ?A]`,
+/// which is not a subtype of the spec's `M[T = ?A]`", naming the member and not the clause. A
+/// binding that is a type parameter (`provides Monad[M = F]` in `OptionTMonad[F[T]]`) is no
+/// constructor here, and not judged.
+pub(crate) fn check_provision_constructors(
+    kb: &mut KnowledgeBase,
+    clauses: &[crate::kb::WrittenProvidesClause],
+) -> Vec<crate::kb::load::LoadError> {
+    let mut errors = Vec::new();
+    for clause in clauses {
+        let params: Vec<Symbol> = kb.type_param_syms_of(clause.spec).to_vec();
+        for param in params {
+            if !is_higher_kinded_param(kb, param) {
+                continue;
+            }
+            let Some(binding) = provision_binding_value_at_param(kb, param, &clause.spec_view) else {
+                continue;
+            };
+            let Some(ctor) = constructor_of(kb, &binding) else {
+                continue;
+            };
+            let slots: Vec<String> = kb
+                .type_param_syms_of(param)
+                .iter()
+                .map(|q| short_name_of(kb.local_name_of(*q)).to_string())
+                .collect();
+            if slots.len() == ctor.open.len() {
+                continue;
+            }
+            // The provider at its own parameters (`Self`, `Option[T = T]`): the spelling that
+            // matched the slot by name. The constructor is the sort with its leading parameters
+            // written as themselves and as many left open as the slot takes (`Option`,
+            // `Result[E = E]`), which the refusal names (decided with the user 2026-11-24).
+            let own = own_application_spelling(kb, clause.provider, &ctor, &slots);
+            errors.push(crate::kb::load::LoadError::ConstructorArity {
+                spec: kb.qualified_name_of(clause.spec).to_string(),
+                param: short_name_of(kb.local_name_of(param)).to_string(),
+                slots,
+                constructor: type_display_name_value(kb, &binding),
+                open: ctor
+                    .open
+                    .iter()
+                    .map(|q| short_name_of(kb.local_name_of(*q)).to_string())
+                    .collect(),
+                provider: kb.qualified_name_of(clause.provider).to_string(),
+                own,
+                site: crate::kb::load::render_decl_site(kb, clause.span),
+            });
+        }
+    }
+    errors
+}
+
+/// Where `ctor` is `provider` at its own parameters, each written as itself (`Self`, `Option[T =
+/// T]`, `Result[E = E, T = T]`): the constructor that provider meant at a slot whose parameters
+/// are `slots`. That spelling matched the slot BY NAME, so the parameters named as the slot's are
+/// the ones meant open, the others written as themselves (`Option`, `Result[E = E]`, and `R3[E =
+/// E]` for `R3[T = T, E = E]` at `M[T]`); where the names do not all match, the last ones are
+/// open. `None` otherwise, or where the provider declares fewer.
+fn own_application_spelling(
+    kb: &KnowledgeBase,
+    provider: Symbol,
+    ctor: &Constructor,
+    slots: &[String],
+) -> Option<String> {
+    if kb.canonical_sort_sym(ctor.base) != kb.canonical_sort_sym(provider) {
+        return None;
+    }
+    let own: Vec<Symbol> = kb.type_param_syms_of(ctor.base).to_vec();
+    let as_itself = ctor.written.iter().all(|(k, v)| {
+        let short = short_name_of(kb.local_name_of(*k));
+        own.iter().any(|q| {
+            short_name_of(kb.local_name_of(*q)) == short
+                && (declared_type_param_vid(kb, v).is_some_and(|vid| type_param_global_var(kb, *q) == Some(vid))
+                    || extract_sort_ref_sym(kb, v).is_some_and(|r| r == *q))
+        })
+    });
+    if !as_itself || own.len() < slots.len() {
+        return None;
+    }
+    let name = short_name_of(kb.local_name_of(ctor.base)).to_string();
+    let shorts: Vec<String> = own
+        .iter()
+        .map(|q| short_name_of(kb.local_name_of(*q)).to_string())
+        .collect();
+    let by_name = slots.iter().all(|s| shorts.contains(s));
+    let fixed: Vec<String> = shorts
+        .iter()
+        .enumerate()
+        .filter(|(i, s)| {
+            if by_name {
+                !slots.contains(s)
+            } else {
+                *i < shorts.len() - slots.len()
+            }
+        })
+        .map(|(_, s)| format!("{s} = {s}"))
+        .collect();
+    Some(if fixed.is_empty() { name } else { format!("{name}[{}]", fixed.join(", ")) })
+}
+
 /// WI-20260923-ZBWMC — a narrowed bare-spec member must be the carrier's ONE binding.
 ///
 /// Inside a carrier that provides `Spec[Member = X]`, WI-201's sugar reads `Spec.Member`

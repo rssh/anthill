@@ -174,9 +174,9 @@ end
 /// A PROVISION BINDING THE SLOT TO NO CONSTRUCTOR OF ITS KIND (`F = Int64`, a sort declaring no
 /// parameter, where `F[T]` takes one) is not applied: the call keeps the dispatch's refusal it
 /// had before this ticket, and no argument is checked against the malformed `Int64[T = Int64]`.
-/// That such a provision LOADS is older than this ticket, and is not decided here: §5.2 asks
-/// the kind of a higher-kinded parameter's default ("a sort declaring as many parameters"), and
-/// says nothing of a provision's binding.
+/// The provision itself is refused since proposal 074 stage 8 (H4's rule, WI-20261113-64272):
+/// a constructor's open parameters fill the slot's in order, and `Int64` leaves none. It loaded
+/// before, that being undecided here.
 ///
 /// FAILS WHEN BACKED OUT [A] (the arm binding any bare sort: refused "expected Int64[T =
 /// Int64], got Option[T = Int64]").
@@ -199,8 +199,13 @@ end
 "#;
     let errs = load_errors_of(src);
     assert!(
-        errs.len() == 1 && errs[0].ends_with("Lift.lift.dispatch: expected matching impl for per-call bindings, got no impl matches"),
+        errs.iter().any(|e| e.ends_with("Lift.lift.dispatch: expected matching impl for per-call bindings, got no impl matches")),
         "the call is refused at the dispatch, as before; got {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("`provides Lift[F = Int64]` in 'test.xga.Num': `F` is a constructor of 1 parameter (`F[T]`)")
+            && e.contains("`Int64` leaves none")),
+        "the provision is refused, its constructor leaving no parameter open; got {errs:?}"
     );
 }
 

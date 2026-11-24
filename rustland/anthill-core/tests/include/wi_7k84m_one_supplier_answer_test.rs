@@ -406,7 +406,7 @@ fn a_higher_kinded_carriers_member_beside_its_binding_is_refused() {
   end
   operation boxUnit[A](a: A) -> MyBox[T = A] = mybox(v: a)
   namespace MyBox
-    provides CpsMonad[F = Self, unit = {ns}.boxUnit]
+    provides CpsMonad[F = MyBox, unit = {ns}.boxUnit]
   end
   operation useResult() -> MyBox[T = Int64] = CpsMonad.unit(42)
 end

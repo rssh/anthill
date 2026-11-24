@@ -2094,6 +2094,49 @@ position (§8.1, *Expansion during unification*). A rule reads a default
 through `anthill.reflect.SortParamDefault(param, default)`, an earlier parameter
 it names written by reference.
 
+**A higher-kinded parameter takes a constructor** (proposal 074 stage 8).
+
+```anthill
+sort Mon[M[T]]
+  operation pure[A](a: A) -> M[A]
+end
+sort Box
+  sort V = ?
+  entity box(v: V)
+end
+sort BoxMon
+  provides Mon[M = Box]
+  operation pure[A](a: A) -> Box[A] = box(v: a)
+end
+sort PairMon
+  provides Mon[M = Pair[Int64]]
+  operation pure[X](a: X) -> Pair[Int64, X] = Pair.pair(fst: 0, snd: a)
+end
+
+operation viaBox() -> Box[Int64] = Mon.pure[M = Box](7)                   -- box(v: 7)
+operation viaExpected() -> Box[Int64] =
+  let b: Box[Int64] = Mon.pure(7)
+  b                                                                         -- box(v: 7)
+operation viaPair() -> Pair[Int64, Int64] = Mon.pure[M = Pair[Int64]](7)  -- pair(fst: 0, snd: 7)
+```
+
+`M` is bound to a constructor: a sort with the parameters it writes, over the
+ones it leaves unwritten — `Box` over `V`, `Pair[Int64]` over `B`. Those
+parameters, in declaration order, take the arguments of an application of `M`,
+and there are as many of them as `M` declares: `M[A]` is `Box[A]` at `M = Box`
+and `Pair[Int64, A]` at `M = Pair[Int64]`. The names do not decide it; `Box`'s
+`V` takes `M`'s `T`. A binding that leaves another count open is refused where
+it is written: `provides Mon[M = Pair]`, two open for `M`'s one;
+`Mon[M = Option[Int64]]` and `Mon[M = Self]`, none (`Self` is the sort at its
+own parameters, a type), the refusal naming the constructor to write,
+`Mon[M = Box]`; and a call's bracket, `Mon.pure[M = Pair](7)` or
+`Mon[M = Pair].pure(7)`. A call's bracket fixes the constructor, and so does the
+type the call's result or an argument is at. Where that type fits two
+constructors, the spec's provisions choose: `Result[Boom, Int64]` is
+`Result[Boom]` over `T` and `Result[T = Int64]` over `E`, and `Result provides
+Monad[M = Result[E = E]]` leaves `T` open, so `Monad.map(r, lambda (x: Int64) ->
+x * 2)` at `r = ok(value: 41)` answers `ok(value: 82)`.
+
 `effects E = ?` is the effect-row-specific spelling of such a sort parameter;
 `effects E = Row` binds it to a row.  It lowers to the corresponding sort
 declaration plus the effects-runtime requirement described in §5.5 (proposal

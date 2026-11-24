@@ -12,15 +12,13 @@
    IS the answer the caller wants: `KB.loaded` raises `load_failed(diagnostics)`
    and a checker's whole job is to report those diagnostics.
 
-   PARAMETER NAMES ARE FIXED BY `Monad`, not chosen. `Monad[M[T]]` requires the
-   carrier's member to be `T`, so the SUCCESS type is `T` and the payload is
-   `E` — the spelling `monad.anthill`'s header already uses. `Result[E = E]` in
-   the `provides` writes down which member the carrier is partially applied at;
-   MEASURED, that argument is INERT at dispatch (the bare `Result` that
-   `option.anthill` writes dispatches identically, and even a genuinely fixed
-   `Result[E = Boom]` still admits a receiver at another payload), so it is
-   documentation of the reading, not an enforcement of it. The short-circuit is
-   in the `match` bodies below and nowhere else. >}
+   THE CONSTRUCTOR FIXES THE PAYLOAD. A sort written at `Monad[M[T]]`'s `M` is a
+   constructor whose UNWRITTEN parameters take `M`'s arguments in declaration
+   order (proposal 074 stage 8): `Result[E = E]` writes the payload `E` and leaves
+   the SUCCESS type `T` open, so `M[T = A]` reads `Result[E = E, T = A]`. The
+   names do not decide it — the parameter left open does — and a bare `Result`,
+   leaving two open for `M`'s one, is refused at the provision. The short-circuit
+   is in the `match` bodies below and nowhere else. >}
 enum anthill.prelude.Result
   import anthill.prelude.{Monad, Error}
   import anthill.reflect.{TypeValue}
@@ -59,5 +57,5 @@ enum anthill.prelude.Result
       case ok(v)  -> v
       case err(e) -> Error.raise(e)
 
-  provides Monad[M = Result[E = E, T = T], pure = resultPure, flatMap = resultFlatMap, map = resultMap]
+  provides Monad[M = Result[E = E], pure = resultPure, flatMap = resultFlatMap, map = resultMap]
 end

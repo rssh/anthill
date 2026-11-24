@@ -164,7 +164,7 @@ end
         "W2 | Coll | Coll[C = Foo, Elem = String]",
         "BoxHolder | Holder | BoxHolder",
         "Bag | Holder | Bag",
-        "Option | Monad | Monad[M = Option[T = T]]",
+        "Option | Monad | Monad[M = Option]",
         "List | Stream | List[T = T]",
         "FiniteStream | Stream | FiniteStream[T = T, E = E]",
     ] {

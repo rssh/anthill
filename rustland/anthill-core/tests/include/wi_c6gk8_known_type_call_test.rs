@@ -1078,7 +1078,7 @@ namespace c6gk8.hk
     import c6gk8.hk.Sized
     sort T = ?
     entity bag(v: T)
-    provides Sized[F = Self]
+    provides Sized[F = Bag]
     operation size[A](x: Bag[T = A]) -> Int64 @[host_implemented]
   end
   provides Bag language rust

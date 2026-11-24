@@ -503,7 +503,26 @@ fn seed_bracket_bindings(
             // (`[T = List]`) erased whatever an argument said about its element. See
             // [`bracket_value_to_bind`]; the receiver spelling reads its value through the
             // same function at [`receiver_bracket_entries`], one rule at both writers.
-            let bound = &bracket_value_to_bind(kb, env, written, target.slot().is_some());
+            // Proposal 074 stage 8: a value at a higher-kinded parameter is a constructor,
+            // bound as written (`[M = Option]`, `[M = Pair[A = Int64]]`).
+            let at_constructor = target
+                .param()
+                .and_then(|v| match v {
+                    Var::Global(vid) => kb.type_param_of_canonical_var(vid),
+                    _ => None,
+                })
+                .filter(|p| is_higher_kinded_param(kb, *p));
+            let bound = &bracket_value_to_bind(
+                kb,
+                env,
+                written,
+                target.slot().is_some() || at_constructor.is_some(),
+            );
+            if let Some(param) = at_constructor {
+                if let Some(refused) = constructor_arity_refusal(kb, param, bound, fn_sym, span) {
+                    return Err(refused);
+                }
+            }
             // WI-20260911-7TN1Q — THE ONE FAULT THE DISCARD BELOW MUST NOT SWALLOW. A
             // value that MENTIONS the parameter it binds (`Box.empty[T = Option[T = T]]()`
             // where `Box`'s `T` is named but is not the body's own parameter — see
@@ -717,7 +736,12 @@ pub(super) fn receiver_bracket_entries(
             .iter()
             .find(|slot| kb.local_name_of(slot.binder) == short)
             .copied();
-        let value = bracket_value_to_bind(kb, env, &written_value, slot.is_some());
+        let value = bracket_value_to_bind(
+            kb,
+            env,
+            &written_value,
+            slot.is_some() || is_higher_kinded_param(kb, *param),
+        );
         entries.push(ReceiverBracketEntry {
             param: *param,
             var_term: *var_term,
@@ -816,6 +840,11 @@ pub(super) fn seed_receiver_type_args(
             value,
             slot,
         } = entry;
+        if is_higher_kinded_param(kb, param) {
+            if let Some(refused) = constructor_arity_refusal(kb, param, &value, fn_sym, span) {
+                return Err(refused);
+            }
+        }
         // READ BEFORE THE UNIFY, because it is what decides WHICH fault a `false` is.
         // [`seed_op_type_args`] is the only earlier writer, so a parameter that is
         // already BOUND can only have been bound by the callee's bracket — that is the
@@ -1054,6 +1083,52 @@ pub(super) fn pin_provider_receiver_arguments(
     Ok(())
 }
 
+/// Proposal 074 stage 8 (H4's rule) — a bracket's constructor at the higher-kinded parameter
+/// `param` whose open parameters are not as many as the slot's, refused at the call as at a
+/// provision ([`check_provision_constructors`]): `[M = Pair]` at `M[T]`, in the callee's bracket
+/// (`Mon.pure[M = Pair](7)`) and in the receiver's (`Mon[M = Pair].pure(7)`). MEASURED before:
+/// refused at the dispatch, "no impl matches". `None` for a value that is no constructor.
+fn constructor_arity_refusal(
+    kb: &mut KnowledgeBase,
+    param: Symbol,
+    bound: &Value,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    let ctor = constructor_of(kb, bound)?;
+    let slots: Vec<String> = kb
+        .type_param_syms_of(param)
+        .iter()
+        .map(|q| short_name_of(kb.local_name_of(*q)).to_string())
+        .collect();
+    if slots.len() == ctor.open.len() {
+        return None;
+    }
+    let name = short_name_of(kb.local_name_of(param)).to_string();
+    let left = if ctor.open.is_empty() {
+        "none".to_string()
+    } else {
+        ctor.open
+            .iter()
+            .map(|o| format!("`{}`", short_name_of(kb.local_name_of(*o))))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Some(TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
+        expected: format!(
+            "a constructor of {} parameter{} at `{name}` (`{name}[{}]`), whose arguments fill \
+             the parameters it leaves open, in declaration order",
+            slots.len(),
+            if slots.len() == 1 { "" } else { "s" },
+            slots.join(", "),
+        ),
+        actual: format!("`{}`, which leaves {left}", type_display_name_value(kb, bound)),
+    })
+}
+
 /// WI-20260911-RS2G4 — a bracket VALUE with a BARE parametric sort in it
 /// (`Box.mine[T = List](box(v: [1]))`) ERASES what an argument says about the inner
 /// element, in BOTH spellings. `[T = List]` seeds `?T := Ref(List)`; the argument's
@@ -1109,13 +1184,19 @@ pub(super) fn pin_provider_receiver_arguments(
 /// `Option` of this body's, where the two were one variable and the binding cyclic
 /// (WI-20260911-7TN1Q's refusal, which a bracket still gets where the parameter it names
 /// is not the body's own: [`bracket_binding_mentions_its_parameter`]).
+///
+/// NOR A CONSTRUCTOR (proposal 074 stage 8, H4's rule): a value at a HIGHER-KINDED parameter
+/// (`[M = Option]` over `sort Monad[M[T]]`) is a constructor, its unwritten parameters the
+/// slot's to fill by order ([`apply_constructor`]). Expanded, `[M = Option]` bound `M :=
+/// Option[T = ?f]`, a type and no constructor, and `Monad.pure[M = Option](7)` was typed
+/// `M[T = Int64]` (MEASURED). `as_written` covers both: a provider slot and a constructor.
 fn bracket_value_to_bind(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     value: &Value,
-    binds_a_provider_slot: bool,
+    as_written: bool,
 ) -> Value {
-    let expanded = if binds_a_provider_slot {
+    let expanded = if as_written {
         None
     } else {
         expand_sort_application(kb, value)

@@ -173,7 +173,7 @@ end
 
 namespace anthill.prelude.Option
   import test.hknest.Cnt
-  provides Cnt[M = Self, count = test.hknest.optCount, one = test.hknest.optOne]
+  provides Cnt[M = Option, count = test.hknest.optCount, one = test.hknest.optOne]
 end
 "#,
     );
