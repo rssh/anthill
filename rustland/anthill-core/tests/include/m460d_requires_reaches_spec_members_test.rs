@@ -24,17 +24,22 @@
 //! belongs to the other arm's measurement.
 //!
 //! ARM 1, the inward reach — restore `!parent.exposed.is_empty() &&
-//! !parent.exposed.contains(name)` on every non-enclosing edge. FOUR rows fail, all
+//! !parent.exposed.contains(name)` on every non-enclosing edge. FOUR rows failed, all
 //! of them here:
-//!         [`a_requires_caller_reaches_a_variant_bearing_specs_operation`]
+//!         `a_requires_caller_reaches_a_variant_bearing_specs_operation`
 //!         [`a_wildcard_import_reaches_the_sorts_operations_too`]
 //!         [`an_importing_file_reaches_the_sorts_operations_at_its_own_address`]
-//!         [`the_two_programs_agree`]
-//!   and FIVE pass either way, BY DESIGN — the controls:
+//!         `the_two_programs_agree`
+//!   The first and the last drove the `requires` edge, which proposal 074 stage 5
+//!   (WI-20261113-DY84V) closed: a `requires` naming a sort with constructors is refused
+//!   at load, so the ticket's second program is now
+//!   [`a_variant_bearing_spec_is_no_requires_target`], which passes either way, and the
+//!   two are removed. Inferred, not measured again: arm 1 now fails the two wildcard rows.
+//!   FIVE passed either way, BY DESIGN — the controls:
 //!         [`control_a_requires_caller_reaches_a_variant_less_specs_operation`]
 //!           the ticket's OTHER program, one `entity` line apart from the subject.
-//!           It is the whole acceptance: the two must AGREE, so a fix that broke
-//!           this one would satisfy the subject and still be wrong.
+//!           It was the whole acceptance while both loaded: the two had to AGREE, so a
+//!           fix that broke this one would satisfy the subject and still be wrong.
 //!         [`control_exposure_still_leaks_a_constructor_to_the_enclosing_scope`]
 //!         [`control_exposure_still_does_not_leak_an_operation_to_the_enclosing_scope`]
 //!         [`control_a_sibling_sorts_member_may_share_an_exposed_constructors_name`]
@@ -75,7 +80,9 @@
 //! by construction — a `provides` whose target declares constructors is already
 //! refused ("declares constructors, which makes it a DATA sort, and nothing is-a a
 //! data sort"), so no program can reach that edge with a non-empty `exposed`. It is
-//! fixed by the same re-keying and driven by nothing.
+//! fixed by the same re-keying and driven by nothing. Since proposal 074 stage 5 the
+//! `requires` edge is unreachable the same way, and for the same reason: a sort with
+//! constructors is closed to both clauses.
 
 use anthill_core::eval::Value;
 
@@ -130,32 +137,25 @@ fn control_a_requires_caller_reaches_a_variant_less_specs_operation() {
     assert_eq!(eval_int(&src, "m460d.plain.User.g", 5), 5);
 }
 
-/// THE SUBJECT. One `entity` line more than the control, and nothing else changed.
-/// Backed out, this fails at LOAD: "`f` is a member of sort Spec, not in scope as a
-/// bare name here".
+/// The ticket's SECOND program, refused at load since proposal 074 stage 5
+/// (WI-20261113-DY84V): one `entity` line makes `Spec` a data sort, a data sort is closed,
+/// and `requires` naming one is refused, naming both sorts (kernel-language §5.1). So the
+/// `requires` edge can no longer reach a variant-bearing sort, as the `provides` edge never
+/// could (the file header). Until the stage it loaded, and `User.g(5)` answered 5 — that
+/// row, and `the_two_programs_agree` beside it, drove arm 1 through this edge. Arm 1 is
+/// still driven through the wildcard edge, below.
 #[test]
-fn a_requires_caller_reaches_a_variant_bearing_specs_operation() {
+fn a_variant_bearing_spec_is_no_requires_target() {
     let src = spec_and_caller("m460d.variant", "    entity marker(n: Int64)\n");
-    assert_eq!(
-        eval_int(&src, "m460d.variant.User.g", 5),
-        5,
-        "an unrelated `entity` on the spec must not change what `requires` reaches"
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &[
+            "`requires m460d.variant.Spec` cannot hold",
+            "'m460d.variant.User'",
+            "DATA sort",
+        ],
+        "a `requires` naming a sort with constructors",
     );
-}
-
-/// The acceptance stated as one assertion rather than inferred from two green rows:
-/// the two programs must AGREE. Kept because "both pass" is a property of the pair,
-/// and a future change that made both wrong in the same way would still be caught by
-/// the value.
-#[test]
-fn the_two_programs_agree() {
-    let plain = eval_int(&spec_and_caller("m460d.agree_a", ""), "m460d.agree_a.User.g", 9);
-    let variant = eval_int(
-        &spec_and_caller("m460d.agree_b", "    entity marker(n: Int64)\n"),
-        "m460d.agree_b.User.g",
-        9,
-    );
-    assert_eq!((plain, variant), (9, 9), "adding an `entity` changed the answer");
 }
 
 // ── the wildcard form, the other half of §8.6's own sentence ────────────────

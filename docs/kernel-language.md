@@ -1700,11 +1700,25 @@ admitted on a provision. This paragraph states the **spelling**; what a default
 *means* at dispatch — at most one per carrier, `one_default`'s arbitration, and the
 rung a bracket-less call takes — is §8.7 *Instance coherence*.
 
-**A sort with constructors is a DATA sort, and nothing is-a one** (WI-407/WI-1106).
-A `provides` clause naming one is **refused at load**, naming the spec, the provider
-it would have let widen, and both repairs. The rule holds of a **parametric** sort
-exactly as it holds of a plain one, and it is asked of the **provided spec**, not of
-the enclosing provider — a provider with constructors is the ordinary concrete carrier.
+**A sort with constructors is a DATA sort, and nothing joins one** (WI-407/WI-1106;
+proposal 074 §2, stage 5). Written `sort` or `enum` alike, it is closed. A `provides`
+clause naming one is **refused at load**, naming the spec, the provider it would have let
+widen, and both repairs; and so is a sort's `requires` clause naming one, naming both
+sorts. A `requires` makes the sort it is written in a subtype of the sort it names (§8.2),
+and the demand it also is would be answered by the data sort itself, which provides itself
+and has no dictionary of its operations (§8.2): such a clause only opens a closed sort.
+Over `sort X { entity e1(k: Int64)  operation get(x: Self) -> Int64 = match x case e1(k)
+-> k }`, `sort X1 { requires X  entity e2(j: Int64) }` let `take(e2(j: 5))` over `take(x:
+X) = X.get(x)` load clean, and the match died at run time on `e2(j: 5)` (measured before
+the refusal). So a sort's `requires` names a sort without constructors: a spec or a marker.
+Each rule holds of a **parametric** sort exactly as of a plain one (`requires Option[T =
+Int64]`), reads a type alias as the next paragraph has it, and is asked of the sort the
+clause **names**, not of the one it is written in: a provider with constructors is the
+ordinary concrete carrier, and a data sort requiring a spec (`sort Dict { sort K = ?
+requires Eq[T = K]  entity dict(k: K) }`) the ordinary data sort, its requirement handed to
+its operations. An operation's `requires` is a goal and no refinement, and is not this
+rule's: `operation needs() -> Int64 requires Red` holds at a data sort `Red`, which provides
+itself (§5.3).
 
 *It used to be a CLASSIFIER on the other spelling, and that is worth recording because
 it was the sharpest edge the two-reading `fact` had.* While a `fact Spec[…]` could be a
@@ -2955,12 +2969,10 @@ value never does — and every sub-domain below it comes out of its slots: a
 recursive field is handed the same dictionary, a field typed by a parameter the
 condition's slot. A type builds a dictionary only where no caller hands one,
 never below one, so the sub-domain a caller handed for a rigid `X` is the one
-used (below). A value of a refining sort (§8.2) is a case of the DERIVED domain
-it refines, applied by the call: where the dictionary's provider is a derived
-domain and the value's constructor is not one of that sort's own, the value is
-filled at its own sort, with a dictionary put together from the handed one's
-slots. A hand-written or primitive provider's own clauses decide, and an
-unbound value is filled with the provider's own constructors.
+used (below). A DERIVED domain is its sort's own constructors: no sort refines a
+sort with constructors (§5.1), so a value another sort's constructor heads is in
+none, and an unbound value is filled with the sort's own constructors. A
+hand-written or primitive provider's own clauses decide.
 `List[T = Bit]` and `List[T = Letter]` are one provision, conditional on the
 element's `SortDomain`: the element's domain reaches `fill` as that condition's
 sub-dictionary, built from the type a column names or handed in by a citation.
@@ -6221,7 +6233,7 @@ Two positions do **not** yet admit a variant, and each has its own reason rather
 
 Entity subtyping does **not** arise from nesting. A sort `T` declared inside a namespace or sort body is a **parameter**, not an entity. Only the constructor-of relationship creates entity subtyping.
 
-Spec refinement (`requires` chains) is a separate relationship handled by `refines()` rules in `stdlib/anthill/reflect/typing.anthill`. A sort that refines another is a subtype of each instance of it that its `requires` clauses give it, read as `type_admits` reads them (§5.4): `sort Narrow requires Wide[W = Int64]` is a `Wide[W = Int64]` and not a `Wide[W = String]`. A call's type argument is read through the same instances: `takeAt[Y](x: Wide[W = Y])` called with a `Narrow` is at `Y = Int64`. Where two instances fit the argument, it fixes none (§5.4). A `requires` is read one way, as this subtyping and as a demand at once: a requirement passes the dictionary of the sort it names, whatever the requiring sort is, and a requirement of a sort with a dictionary and no parameter (`requires Ticker`) passes its provider as one with a parameter does. So a value of a refining sort used where a sort with a dictionary is expected holds the provider its requirement finds at load: with `enum Shape requires Desc[T = Int64]` and `IntDesc provides Desc[T = Int64]`, `probe(circle(r: 1))` over `probe(t: Desc[T = Int64])` hands `probe` IntDesc — the one provider with no conditions, else the default, as a construction's requirement is found — and one with no provider found, or two and no default, is a load error. Provider admissibility is the demand/supply twin of refinement: a value whose sort provides a spec is usable where a value of a sort that requires the spec is expected. Providing `F[X]` lets the operations of `F` be used on a value of `X`; it does not make a value of `X` a value of `F`. (`requires X` and `fact X[Y]` are the two ends of one relation: a position demanding the spec is discharged by the supplying fact.)
+Spec refinement (`requires` chains) is a separate relationship handled by `refines()` rules in `stdlib/anthill/reflect/typing.anthill`. A sort that refines another is a subtype of each instance of it that its `requires` clauses give it, read as `type_admits` reads them (§5.4): `sort Narrow requires Wide[W = Int64]` is a `Wide[W = Int64]` and not a `Wide[W = String]`. What a sort refines has no constructors, a spec or a marker — a `requires` naming a data sort is refused (§5.1) — while the refining sort may be a data sort, as `enum Shape requires Desc[T = Int64]` below is. A call's type argument is read through the same instances: `takeAt[Y](x: Wide[W = Y])` called with a `Narrow` is at `Y = Int64`. Where two instances fit the argument, it fixes none (§5.4). A `requires` is read one way, as this subtyping and as a demand at once: a requirement passes the dictionary of the sort it names, whatever the requiring sort is, and a requirement of a sort with a dictionary and no parameter (`requires Ticker`) passes its provider as one with a parameter does. So a value of a refining sort used where a sort with a dictionary is expected holds the provider its requirement finds at load: with `enum Shape requires Desc[T = Int64]` and `IntDesc provides Desc[T = Int64]`, `probe(circle(r: 1))` over `probe(t: Desc[T = Int64])` hands `probe` IntDesc — the one provider with no conditions, else the default, as a construction's requirement is found — and one with no provider found, or two and no default, is a load error. Provider admissibility is the demand/supply twin of refinement: a value whose sort provides a spec is usable where a value of a sort that requires the spec is expected. Providing `F[X]` lets the operations of `F` be used on a value of `X`; it does not make a value of `X` a value of `F`. (`requires X` and `fact X[Y]` are the two ends of one relation: a position demanding the spec is discharged by the supplying fact.)
 
 How a position asks for a provider depends on which class of sort the spec is. A sort with constructors is a data sort (§5.1); an **abstract sort** is one with no constructors: declared `sort X = ?`, or with a body that declares none. Which of three a sort is, is read off its declaration alone — its secondary entries included — and never off who provides it:
 

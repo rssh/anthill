@@ -353,8 +353,10 @@ const DESC_AT: &str = "  sort Desc\n    sort T = ?\n    operation describe(x: T)
 /// FAILS with the count ranking back: the two pairs load and pick, the chain is refused as a tie.
 #[test]
 fn incomparable_heads_tie_and_a_chain_is_ranked() {
-    let animals = "  sort Being\n    entity being\n  end\n  sort Animal\n    requires Being\n    \
-                   entity animal\n  end\n  sort Dog\n    requires Animal\n    entity dog\n  end\n";
+    // `Being` and `Animal` have no constructors: a `requires` naming a sort with constructors is
+    // refused (proposal 074 stage 5), and only `dog` is built here.
+    let animals = "  sort Being\n  end\n  sort Animal\n    requires Being\n  end\n  sort Dog\n    \
+                   requires Animal\n    entity dog\n  end\n";
     let tri = format!(
         "namespace test.r6.three\n  import anthill.prelude.{{Int64}}\n{DESC_AT}{animals}  sort Tri\n    \
          sort A = ?\n    sort B = ?\n    sort C = ?\n    entity tri(a: A, b: B, c: C)\n  end\n  \
@@ -519,7 +521,8 @@ end
 }
 
 /// AN ARROW'S PARAMETER IS MET AS ITSELF, ITS RESULT THROUGH THE SUBTYPE RELATION. A provision at
-/// `(Animal) -> Int64`, whose member hands the callback an `animal`, answered a callback taking a
+/// `(Animal) -> Int64`, whose member hands the callback an `Animal` (a `cat`: `Animal` has no
+/// constructors, and `Cat` requires it — proposal 074 stage 5), answered a callback taking a
 /// `Dog` or — once the bottom type no longer stopped it — `Nothing`, and one at `(List[T =
 /// Animal]) -> Int64` a callback taking a `List[T = Dog]`: each loaded and died at run time. A
 /// result below the provision's is still met (`a_raising_callback_meets_its_arrow_provision`). The
@@ -531,14 +534,15 @@ fn an_arrow_parameter_is_met_as_itself() {
     let program = |param: &str, arg: &str, callback: &str| {
         format!(
             "namespace test.r6.arrow\n  import anthill.prelude.{{Int64, String, List, Nothing}}\n  sort Runner\n    \
-             sort F = ?\n    operation run(f: F) -> Int64\n  end\n  sort Animal\n    entity animal\n  \
-             end\n  sort Dog\n    requires Animal\n    entity dog\n  end\n  sort AnimalRunner\n    \
+             sort F = ?\n    operation run(f: F) -> Int64\n  end\n  sort Animal\n  end\n  sort Cat\n    \
+             requires Animal\n    entity cat\n  end\n  sort Dog\n    requires Animal\n    entity dog\n  \
+             end\n  sort AnimalRunner\n    \
              provides Runner[F = ({param}) -> Int64]\n    operation run(f: ({param}) -> Int64) -> \
              Int64 = f({arg})\n  end\n  operation go() -> Int64 = Runner.run({callback})\nend\n"
         )
     };
-    let at_animal = |callback: &str| program("Animal", "animal", callback);
-    let at_animals = |callback: &str| program("List[T = Animal]", "[animal]", callback);
+    let at_animal = |callback: &str| program("Animal", "cat", callback);
+    let at_animals = |callback: &str| program("List[T = Animal]", "[cat]", callback);
     for (shape, src) in [
         ("a Dog parameter", at_animal("lambda (d: Dog) -> 1")),
         ("a Nothing parameter", at_animal("lambda (d: Nothing) -> 1")),

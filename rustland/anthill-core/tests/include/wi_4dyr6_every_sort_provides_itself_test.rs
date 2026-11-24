@@ -70,9 +70,13 @@
 //!
 //! (2) the constructor leg taken out of `clause_is_dispatchable` and `enclosing_is_spec`.
 //!   FAIL, each refused at load:
-//!     a_requirement_of_a_data_sort_with_a_parameter_is_a_refinement
-//!     a_requirement_written_before_its_data_sort_is_a_refinement
 //!     a_type_parameter_may_take_its_data_sorts_name
+//!   Measured with two more, `a_requirement_of_a_data_sort_with_a_parameter_is_a_refinement`
+//!   and `a_requirement_written_before_its_data_sort_is_a_refinement`, whose `requires Box[V =
+//!   Int64]` over a data sort proposal 074 stage 5 refuses at load (WI-20261113-DY84V): they
+//!   are replaced by `a_requirement_of_a_data_sort_is_refused_in_either_order`, which is that
+//!   stage's and passes under this back-out by design — its refusal is the loader's, made
+//!   before either leg is read. Not measured again since.
 //!
 //! (3) `signature_names_no_carrier` made to answer no.
 //!   FAIL, loading clean and dying `OperationBodyMissing`:
@@ -602,25 +606,26 @@ fn map_contains_asks_nothing_of_the_values() {
 
 // ── the readers that asked for a parameter alone ────────────────────────────
 
-/// A `requires` clause over a sort with constructors names no provider — nothing provides
-/// one — so it is a refinement, with a parameter as without. It was read as a dictionary
-/// slot and the construction refused for `no impl provides Box`.
+/// A `requires` clause over a sort with constructors is refused, with a parameter as without
+/// and whichever of the two sorts is declared first (proposal 074 stage 5,
+/// WI-20261113-DY84V; kernel-language §5.1): a data sort is closed, and the clause would
+/// make `Narrow` a subtype of `Box[V = Int64]`. Before the stage these two programs ran,
+/// `own()` 42 and `takes(narrow(n: 1))` 40 — the clause read as a refinement, where before
+/// this ticket it had been read as a dictionary slot and the construction refused for `no
+/// impl provides Box`. The declaration order is the row's own question: the refusal reads
+/// the named sort's constructors, which pass 1 has defined whichever comes first.
 #[test]
-fn a_requirement_of_a_data_sort_with_a_parameter_is_a_refinement() {
-    let src = "namespace test.dyr6refines\n  import anthill.prelude.Int64\n  sort Box\n    sort V = ?\n    entity mk(v: V)\n  end\n  sort Narrow\n    requires Box[V = Int64]\n    entity narrow(n: Int64)\n    operation get(x: Narrow) -> Int64 = 42\n  end\n  operation takes(b: Box[V = Int64]) -> Int64 = 40\n  operation own() -> Int64 = Narrow.get(narrow(n: 1))\n  operation asBox() -> Int64 = takes(narrow(n: 1))\nend\n";
-    assert_runs(src, "test.dyr6refines.own", 42);
-    assert_runs(src, "test.dyr6refines.asBox", 40);
-}
-
-/// The same with the requiring sort written FIRST: what a `requires` clause is does not
-/// follow the order the two sorts are declared in.
-#[test]
-fn a_requirement_written_before_its_data_sort_is_a_refinement() {
-    assert_runs(
-        "namespace test.dyr6forward\n  import anthill.prelude.Int64\n  sort Narrow\n    requires Box[V = Int64]\n    entity narrow(n: Int64)\n    operation get(x: Narrow) -> Int64 = 42\n  end\n  sort Box\n    sort V = ?\n    entity mk(v: V)\n  end\n  operation go() -> Int64 = Narrow.get(narrow(n: 1))\nend\n",
-        "test.dyr6forward.go",
-        42,
-    );
+fn a_requirement_of_a_data_sort_is_refused_in_either_order() {
+    let narrow = "  sort Narrow\n    requires Box[V = Int64]\n    entity narrow(n: Int64)\n    operation get(x: Narrow) -> Int64 = 42\n  end\n";
+    let bx = "  sort Box\n    sort V = ?\n    entity mk(v: V)\n  end\n";
+    for (ns, first, second) in [("dyr6refines", bx, narrow), ("dyr6forward", narrow, bx)] {
+        let src = format!(
+            "namespace test.{ns}\n  import anthill.prelude.Int64\n{first}{second}  operation go() -> Int64 = Narrow.get(narrow(n: 1))\nend\n"
+        );
+        let clause = format!("`requires test.{ns}.Box` cannot hold");
+        let requiring = format!("'test.{ns}.Narrow'");
+        assert_refused_naming(&load_errors_of(&src), &[&clause, &requiring, "DATA sort"], ns);
+    }
 }
 
 /// A call selects a provider by its sort's short name only where a witness for the sort

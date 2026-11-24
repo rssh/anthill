@@ -39,12 +39,17 @@ namespace test.wi369.bad
 end
 "#;
 
-/// Cross-scope BARE construction reached through `requires` (the variant is
-/// exposed by the sort, but `internal` hides it) — must error naming `mk`.
-const BAD_REQUIRES_SRC: &str = r#"
+/// Cross-scope BARE construction reached through a non-enclosing edge, a wildcard
+/// import of the sort (the variant is exposed by the sort, but `internal` hides it) —
+/// must error naming `mk`. It was written through `requires test.wi369.box.Box` until a
+/// `requires` naming a sort with constructors was refused at load (proposal 074 stage 5,
+/// WI-20261113-DY84V): a `requires` edge reaches no constructor any more, and the wildcard
+/// is the edge left that exposes one. With `mk` public, the same source loads clean.
+const BAD_WILDCARD_SRC: &str = r#"
 sort test.wi369.badreq.Q
   import anthill.prelude.Int64
-  requires test.wi369.box.Box
+  import test.wi369.box.Box
+  import test.wi369.box.Box.*
   operation sneak2(x: Int64) -> Box
   =
     mk(v: x)
@@ -76,15 +81,15 @@ end
 "#;
 
 /// A Box with an internal `mk` AND a PUBLIC sibling entity `pubmk` and a nested
-/// `Child` sort. Used by the selectivity control and the transitive-leak guard.
+/// `Child` sort. Used by the selectivity control and the transitive-leak guard. `Child`
+/// declares no constructor, so a `requires` may name it (proposal 074 stage 5,
+/// WI-20261113-DY84V, refuses one naming a sort with constructors; it had `entity leaf`).
 const BOX2_SRC: &str = r#"
 sort test.wi369.box2.Box
   import anthill.prelude.Int64
   internal entity mk(v: Int64)
   entity pubmk(v: Int64)
   sort Child
-    import anthill.prelude.Int64
-    entity leaf(n: Int64)
   end
 end
 "#;
@@ -169,15 +174,15 @@ fn cross_scope_qualified_construction_of_internal_errors() {
     );
 }
 
-/// Cross-scope BARE construction reached via `requires` (variant exposure) is
-/// hidden by `internal` — must error naming `mk`.
+/// Cross-scope BARE construction reached via a wildcard import (variant exposure)
+/// is hidden by `internal` — must error naming `mk`.
 #[test]
-fn cross_scope_bare_construction_via_requires_errors() {
-    let errs = errors_of(&[BOX_SRC, BAD_REQUIRES_SRC]);
+fn cross_scope_bare_construction_via_wildcard_import_errors() {
+    let errs = errors_of(&[BOX_SRC, BAD_WILDCARD_SRC]);
     assert!(
         errs.iter()
             .any(|e| e.contains("internal") && e.contains("mk")),
-        "bare `mk` reached through `requires` must be hidden by internal; got: {errs:?}",
+        "bare `mk` reached through a wildcard import must be hidden by internal; got: {errs:?}",
     );
 }
 

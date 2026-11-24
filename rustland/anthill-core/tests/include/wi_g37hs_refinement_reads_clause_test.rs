@@ -8,7 +8,10 @@
 //!
 //! ── WHICH ROWS FAIL WHEN EACH PART IS BACKED OUT ──────────────────────────────────
 //!
-//! MEASURED with a temporary switch per part, both in one build:
+//! MEASURED with a temporary switch per part, both in one build — on the fixture before
+//! WI-20261113-DY84V, where `Animal` had a constructor and `Narrower` required the data sort
+//! `Narrow2`; the rewritten fixture (constructor-less `Animal` and `Mid`) was not measured
+//! again:
 //!
 //! * The bare actual's arm (`bare_nominal_admits_applied`, admitting by name again):
 //!   `a_refining_sort_is_refused_where_its_clause_gives_another_instance` (loads, answers 21),
@@ -33,10 +36,12 @@ use anthill_core::eval::value::Value;
 use crate::common::{assert_refused_naming, interp_for, load_errors_of};
 
 /// The sorts every row compares: `Wide` refined at a fixed argument (`Narrow`), at the
-/// refining sort's own parameter (`Narrow2`), two clauses down (`Narrower`), inside an
-/// argument (`NestedQ`), at a contravariant parameter (`AnimalSink`, `CatSink`), and through
-/// a cycle of clauses (`CycA`, `CycB`). `WInt` and `WStr` supply the requirement a
-/// construction owes.
+/// refining sort's own parameter (`Narrow2`), two clauses down (`Narrower`, through `Mid`),
+/// inside an argument (`NestedQ`), at a contravariant parameter (`AnimalSink`, `CatSink`), and
+/// through a cycle of clauses (`CycA`, `CycB`). `WInt` and `WStr` supply the requirement a
+/// construction owes. A sort a `requires` names has no constructors (proposal 074 stage 5,
+/// WI-20261113-DY84V): `Mid` is the middle clause `Narrow2` was, and `Animal` has none, no
+/// row building an `Animal` of its own.
 fn program(body: &str) -> String {
     format!(
         r#"
@@ -56,15 +61,18 @@ namespace wig37hs
     requires Wide[W = Q]
     entity narrow2
   end
+  sort Mid
+    sort Q = ?
+    requires Wide[W = Q]
+  end
   sort Narrower
-    requires Narrow2[Q = String]
+    requires Mid[Q = String]
   end
   sort NestedQ
     sort Q = ?
     requires Wide[W = Option[T = Q]]
   end
   sort Animal
-    entity animal
   end
   sort Cat
     requires Animal
@@ -234,7 +242,7 @@ fn every_position_reads_the_clause() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
-/// `Narrower requires Narrow2[Q = String]`, and `Narrow2[Q] requires Wide[W = Q]`: the
+/// `Narrower requires Mid[Q = String]`, and `Mid[Q] requires Wide[W = Q]`: the
 /// instance is `Wide[W = String]`, read through the middle clause at the argument the first
 /// one writes. BACK-OUT (the bare arm): the refusal loads; the admission passes either way.
 #[test]

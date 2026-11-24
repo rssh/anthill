@@ -241,7 +241,6 @@ namespace test.r7.bundle
     operation cmp(a: T, b: T) -> Int64 = if POrd.lt(a, b) then 10 else 20
   end
   sort Animal
-    entity animal(n: Int64)
   end
   sort Dog
     requires Animal
@@ -288,7 +287,10 @@ namespace test.r7.nd
     operation qd(a: T) -> Int64 = 1
   end
   sort Animal
-    entity animal(n: Int64)
+  end
+  sort Cat
+    requires Animal
+    entity cat(n: Int64)
   end
   sort Dog
     requires Animal
@@ -298,7 +300,8 @@ namespace test.r7.nd
     provides QD[T = Animal]
     operation qd(a: Animal) -> Int64 = 6
   end
-  operation go() -> Int64 = QD.qd(dog(1)) * 10 + QD.qd(animal(1))
+  operation anAnimal() -> Animal = cat(1)
+  operation go() -> Int64 = QD.qd(dog(1)) * 10 + QD.qd(anAnimal())
 end
 "#;
     assert_eq!(run_int64(nodefault, "test.r7.nd.go"), Ok(66));
@@ -309,8 +312,10 @@ end
 /// A REQUIREMENT IN SCOPE COVERS AN ARROW ONLY AT ITS OWN BINDING: two arrows are one binding
 /// where their parameters relate and their results are the same (§5.2). `useR(f: (Dog) -> Int64)
 /// requires Runner[F = (Animal) -> Int64]` passed `f` on to `Runner.run`, whose member hands it an
-/// `animal`, and the run died "entity has no field n"; `requires Runner[F = (Int64) -> Dog]`
-/// covered a callback returning an `Animal` the same way. A result below the requirement's is
+/// `Animal` that is no `Dog`, and the run died "entity has no field n"; `requires Runner[F = (Int64)
+/// -> Dog]` covered a callback returning an `Animal` the same way. `Animal` has no constructors (a
+/// `requires` naming a sort with constructors is refused, proposal 074 stage 5): its values here
+/// are a `Cat`'s, a sort that requires it, and a `Dog`'s. A result below the requirement's is
 /// another binding as well. A provision is what answers a result below its own: `Runner.run` of a
 /// callback returning a `Dog` takes the provision at `(Int64) -> Animal`. The requirement at the
 /// call's own arrow is the other control.
@@ -321,14 +326,15 @@ fn a_requirement_in_scope_covers_an_arrow_only_at_its_own_binding() {
     let program = |provider: &str, param: &str, required: &str, callback: &str| {
         format!(
             "namespace test.r7.cover\n  import anthill.prelude.{{Int64}}\n  sort Runner\n    sort F = ?\n    \
-             operation run(f: F) -> Int64\n  end\n  sort Animal\n    entity animal(n: Int64)\n  end\n  sort \
-             Dog\n    requires Animal\n    entity dog(n: Int64)\n  end\n{provider}  operation useR(f: {param}) \
+             operation run(f: F) -> Int64\n  end\n  sort Animal\n  end\n  sort Cat\n    requires \
+             Animal\n    entity cat(n: Int64)\n  end\n  sort Dog\n    requires Animal\n    entity \
+             dog(n: Int64)\n  end\n{provider}  operation useR(f: {param}) \
              -> Int64 requires Runner[F = {required}] = Runner.run(f)\n  operation go() -> Int64 = \
              useR({callback})\nend\n"
         )
     };
     let animal_runner = "  sort AnimalRunner\n    provides Runner[F = (Animal) -> Int64]\n    operation \
-                         run(f: (Animal) -> Int64) -> Int64 = f(animal(n: 1))\n  end\n";
+                         run(f: (Animal) -> Int64) -> Int64 = f(cat(n: 1))\n  end\n";
     let dog_maker = "  sort DogMaker\n    provides Runner[F = (Int64) -> Dog]\n    operation run(f: \
                      (Int64) -> Dog) -> Int64 = f(1).n\n  end\n";
     for (shape, src, carrier) in [
@@ -339,7 +345,7 @@ fn a_requirement_in_scope_covers_an_arrow_only_at_its_own_binding() {
         ),
         (
             "a result above",
-            program(dog_maker, "(Int64) -> Animal", "(Int64) -> Dog", "lambda (k: Int64) -> animal(n: k)"),
+            program(dog_maker, "(Int64) -> Animal", "(Int64) -> Dog", "lambda (k: Int64) -> cat(n: k)"),
             "Runner[F = Int64 -> Animal]",
         ),
         (
@@ -355,10 +361,10 @@ fn a_requirement_in_scope_covers_an_arrow_only_at_its_own_binding() {
     let own_binding = program(dog_runner, "(Dog) -> Int64", "(Dog) -> Int64", "lambda (d: Dog) -> d.n");
     assert_eq!(run_int64(&own_binding, "test.r7.cover.go"), Ok(7));
     let provided_below = "namespace test.r7.below\n  import anthill.prelude.{Int64}\n  sort Runner\n    sort F = \
-                          ?\n    operation run(f: F) -> Int64\n  end\n  sort Animal\n    entity animal(n: Int64)\n  \
-                          end\n  sort Dog\n    requires Animal\n    entity dog(n: Int64)\n  end\n  sort AnimalMaker\n    \
-                          provides Runner[F = (Int64) -> Animal]\n    operation run(f: (Int64) -> Animal) -> Int64 = \
-                          f(4).n\n  end\n  operation go() -> Int64 = Runner.run(lambda (k: Int64) -> dog(n: k))\nend\n";
+                          ?\n    operation run(f: F) -> Int64\n  end\n  sort Animal\n  end\n  sort Dog\n    requires \
+                          Animal\n    entity dog(n: Int64)\n  end\n  sort AnimalMaker\n    provides Runner[F = \
+                          (Int64) -> Animal]\n    operation run(f: (Int64) -> Animal) -> Int64 = match f(4) case \
+                          dog(n) -> n case _ -> 0\n  end\n  operation go() -> Int64 = Runner.run(lambda (k: Int64) -> dog(n: k))\nend\n";
     assert_eq!(run_int64(provided_below, "test.r7.below.go"), Ok(4));
 }
 

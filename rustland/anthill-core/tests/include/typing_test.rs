@@ -3105,6 +3105,10 @@ fn variance_function_param_A_contravariant() {
 /// being a parameter already turned the relation round. MEASURED: declaring
 /// `Contravariant(Error, T)` applies the flip twice and refuses exactly row 1 below.
 ///
+/// `Wide` has no constructors: a sort with constructors is closed, and a `requires` naming
+/// one is refused at load (proposal 074 stage 5, WI-20261113-DY84V). The wide raise is a
+/// `Broad`'s, a second sort that requires `Wide`; until the stage `wide` was `Wide`'s own.
+///
 /// FAILS WHEN BACKED OUT, two independent ways: drop the fact from
 /// `stdlib/anthill/reflect/typing.anthill`, or delete the `labels_match_by_subsumption`
 /// leg from `labels_match_aligned`, and row 1 is refused as "the closed row does not
@@ -3121,6 +3125,9 @@ namespace test.labelvar
   import anthill.prelude.Result.{{ok, err}}
 
   sort Wide
+  end
+  sort Broad
+    requires Wide
     entity wide(why: String)
   end
   sort Narrow
@@ -3172,8 +3179,11 @@ end
 /// AT THE SOURCE LEVEL rather than through `types_compatible` like its neighbours,
 /// deliberately: the widening is met by a user at an ARGUMENT, so this drives
 /// parse → typer → `validate_arg_against_param` and not the compatibility predicate
-/// alone. `requires Narrow` is what makes `Wide` the supersort — the relation is spec
-/// satisfaction, and without it the top-level slot refuses too.
+/// alone. `Narrow`'s `requires Wide` is what makes `Wide` the supersort — the relation is
+/// spec satisfaction, and without it the top-level slot refuses too. `Wide` has no
+/// constructors, since a `requires` naming a sort with constructors is refused (proposal
+/// 074 stage 5, WI-20261113-DY84V): the wide values are a `Broad`'s, a second sort that
+/// requires it, typed `Wide` where the `mk…Wide` operations return them.
 ///
 /// FAILS WHEN BACKED OUT: drop either `fact Covariant(sort: Result, param: …)` from
 /// `stdlib/anthill/reflect/typing.anthill` and the matching row below is refused as
@@ -3190,6 +3200,9 @@ namespace test.resvar
   import anthill.prelude.Result.{{ok, err}}
 
   sort Wide
+  end
+  sort Broad
+    requires Wide
     entity wide(why: String)
   end
   sort Narrow

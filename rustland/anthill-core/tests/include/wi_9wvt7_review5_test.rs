@@ -74,11 +74,16 @@ use crate::common::{assert_refused_naming, fault_messages, load_errors_of, run_i
 
 // ── A. the subtype relation and a provider's own row ─────────────────────────────────────
 
-/// A REFINEMENT'S CONDITION TAKES THE REFINEMENT'S PROVISION. `Animal provides Desc[T = Animal]
-/// :- Desc[T = Dog]`, with `Dog` a subtype of `Animal` that provides `Desc[T = Dog]` itself:
-/// inside `Animal`'s dictionary the condition reached `Animal`'s own row through the subtype
+/// A REFINEMENT'S CONDITION TAKES THE REFINEMENT'S PROVISION. `AnimalDesc provides Desc[T =
+/// Animal] :- Desc[T = Dog]`, with `Dog` a subtype of `Animal` that provides `Desc[T = Dog]` itself:
+/// inside the dictionary at `Animal` the condition reached that provision's own row through the subtype
 /// relation, and locality kept it — a cycle the call left silent, so the program loaded and
-/// died "requirement param `__req_desc` not bound in caller frame".
+/// died "requirement param `__req_desc` not bound in caller frame". `Animal` has no
+/// constructors (a `requires` naming a sort with constructors is refused, proposal 074 stage
+/// 5), and no operation, so its values are its refinements': the value `viaAnimal` hands
+/// `probe` at `Animal` is a `Cat`'s, and the provision at `Animal` is a witness's, `AnimalDesc`
+/// (were it `Animal`'s own, `Animal` would have values of its own and a `Cat` would be no
+/// `Animal` without providing it).
 #[test]
 fn a_refinements_condition_takes_the_refinements_provision() {
     let src = r#"
@@ -89,9 +94,14 @@ namespace test.r5.refine
     operation describe(x: T) -> Int64
   end
   sort Animal
-    entity animal
+  end
+  sort AnimalDesc
     provides Desc[T = Animal] :- Desc[T = Dog]
     operation describe(x: Animal) -> Int64 = 1
+  end
+  sort Cat
+    requires Animal
+    entity cat
   end
   sort Dog
     requires Animal
@@ -103,7 +113,8 @@ namespace test.r5.refine
     sort HT = ?
     operation probe(x: HT) -> Int64 requires Desc[T = HT] = Desc.describe(x)
   end
-  operation viaAnimal() -> Int64 = Reader.probe(animal)
+  operation anAnimal() -> Animal = cat
+  operation viaAnimal() -> Int64 = Reader.probe(anAnimal())
   operation viaDog() -> Int64 = Reader.probe(dog)
 end
 "#;

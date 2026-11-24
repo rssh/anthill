@@ -27,17 +27,24 @@
 
 use anthill_core::eval::Value;
 
+/// `Wide` declares no constructor: a `requires` naming a sort with constructors is refused
+/// (proposal 074 stage 5, WI-20261113-DY84V), so the wider payload is a sort `Narrow` and
+/// `Broad` refine, and a raise typed at `Wide` itself is a `Broad` returned as one (`wideOf`).
 const SORTS: &str = r#"
 namespace test.rowcatch
   import anthill.prelude.{Int64, String, Option, Error, Nothing}
   import anthill.prelude.Result.{ok, err}
   sort Wide
+  end
+  sort Broad
+    requires Wide
     entity broad(n: Int64)
   end
   sort Narrow
     requires Wide
     entity slim(n: Int64)
   end
+  operation wideOf(n: Int64) -> Wide = broad(n)
   sort Boom
     sort Reason = ?
     entity boom(reason: Reason)
@@ -79,7 +86,7 @@ fn a_declared_label_admits_what_its_boundary_catches() {
         ),
         (
             "a slot denying another sort",
-            "  operation r() -> Int64 effects {Error, -Error[Narrow]} = Error.raise(broad(2))",
+            "  operation r() -> Int64 effects {Error, -Error[Narrow]} = Error.raise(wideOf(2))",
         ),
         (
             "a parameter's default",
@@ -171,7 +178,7 @@ fn a_denied_label_denies_what_its_boundary_catches() {
 #[test]
 fn a_label_its_boundary_does_not_catch_is_still_refused() {
     let errs = crate::common::load_errors_of(&program(
-        "  operation r() -> Int64 effects {Error[Narrow]} = Error.raise(broad(2))",
+        "  operation r() -> Int64 effects {Error[Narrow]} = Error.raise(wideOf(2))",
     ));
     crate::common::assert_refused_naming(
         &errs,

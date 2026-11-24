@@ -83,6 +83,18 @@ const PAIR: &str = "namespace test.gjvvw.pair
 end
 ";
 
+/// `PAIR`'s `Pos` and the operation of its name, with no constructor: what a `requires` may
+/// name, since a `requires` naming a sort with constructors is refused at load (proposal
+/// 074 stage 5, WI-20261113-DY84V). The `requires` row below read `PAIR` until the stage.
+const POS_MARKER: &str = "namespace test.gjvvw.mark
+  import anthill.prelude.{Int64}
+  sort Pos
+  end
+  operation Pos(c: Int64) -> Int64 = c
+  fact c(1)
+end
+";
+
 /// The definite answers of `relation(?x)` over `files` loaded in one call, each an `Int64`.
 fn answers(files: &[&str], relation: &str) -> Vec<i64> {
     let mut kb = try_load_kb_with_files(files).unwrap_or_else(|errs| panic!("{}", errs.join("\n")));
@@ -182,10 +194,15 @@ fn an_import_naming_an_operations_own_name_is_refused() {
 
 #[test]
 fn a_wildcard_or_a_requires_of_a_sort_named_like_an_operation_reaches_no_parameter() {
-    for clause in ["import test.gjvvw.pair.Pos.*", "requires test.gjvvw.pair.Pos"] {
+    for (lib, clause) in [
+        (PAIR, "import test.gjvvw.pair.Pos.*"),
+        (POS_MARKER, "requires test.gjvvw.mark.Pos"),
+    ] {
         let user = format!("namespace test.gjvvw.open\n  {clause}\n  rule r(?x) :- c(?x)\nend\n");
-        let errs = load_errors_of_files(&[PAIR, &user]);
+        let errs = load_errors_of_files(&[lib, &user]);
         assert_refused_naming(&errs, &["rule-body goal `c` names nothing"], clause);
+        // Refused for that goal alone: the clause itself is admitted.
+        assert_eq!(errs.len(), 1, "{clause}: {errs:?}");
     }
 }
 

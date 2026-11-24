@@ -365,6 +365,8 @@ fn dictionary_ops_and_resolve_op_agree() {
 /// `Dog` provides `TOrd` only through the subtype relation, so the call by name finds no
 /// supplier at `Dog` and resolves the instance — `AscW` — and the TYPER asks the dictionary
 /// question there (`defaulted_call_target`); `useT` and `twoLevel` ask it at eval.
+/// `Animal` declares no constructor — a `requires` naming one is refused (proposal 074 stage
+/// 5, WI-20261113-DY84V) — and no operation, so it has values of its own, its refinements'.
 fn subtype_program(ns: &str, cmp_effects: &str, direct_effects: &str) -> String {
     format!(
         r#"
@@ -384,7 +386,6 @@ namespace {ns}
     operation cmp(a: T, b: T) -> Int64 = if POrd.lt(a, b) then 10 else 20
   end
   sort Animal
-    entity animal(n: Int64)
   end
   sort Dog
     requires Animal
@@ -443,7 +444,9 @@ fn a_binding_reached_through_the_subtype_relation_brings_its_effects() {
 /// the by-name words: `Dog` supplies nothing, so the call resolves the instance — `Animal`,
 /// which writes its own runnable `cmp` and binds another in its provision — and the typer asks
 /// the dictionary's question there (`defaulted_call_target`). The tie is reported at the
-/// application the provision is about, `Animal`.
+/// application the provision is about, `Animal`. `Animal` declares no constructor (proposal
+/// 074 stage 5), and its own `cmp` receives on it, so it has values of its own, its
+/// refinements'.
 #[test]
 fn a_tie_at_a_provider_reached_through_the_subtype_relation_is_refused_at_load() {
     let ns = "test.zawx9.subtie";
@@ -455,7 +458,6 @@ fn a_tie_at_a_provider_reached_through_the_subtype_relation_is_refused_at_load()
     operation cmp(a: T, b: T) -> Int64 = 20
   end
   sort Animal
-    entity animal(n: Int64)
     provides TOrd[T = Animal]
     operation cmp(a: Animal, b: Animal) -> Int64 = 40
   end

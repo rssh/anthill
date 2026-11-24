@@ -7,9 +7,11 @@
 //! cell. It is now derived ONE CLAUSE PER CONSTRUCTOR, the constructor in the head (proposal 060
 //! §2.3, "The head decides the mode"): a bound value selects the one clause its constructor
 //! heads, and an unbound one matches every head in clause order. Every field is filled through
-//! the dispatching `apply_domain`, which costs neither depth nor fuel, and a value of a sort that
-//! REFINES the asked one is the case the call applies (`KnowledgeBase::lower_apply_domain`),
-//! filled at its own sort with a dictionary put together from the handed one's slots.
+//! the dispatching `apply_domain`, which costs neither depth nor fuel. This ticket also had the
+//! call apply a value of a sort that REFINES the asked one, filled at its own sort; proposal 074
+//! stage 5 (WI-20261113-DY84V) refuses the `requires` that made a sort with constructors
+//! refined, and that case and its two rows were removed with it (axes [C], [T], [H], [N] below
+//! are the record of what they measured).
 //!
 //! MEASURED on the CLI (the fewest `--max-steps` that answer, by bisection; first answer / the
 //! search exhausted), the ticket's fixture: a typed `List[T = Product]` of n elements cost
@@ -131,56 +133,6 @@ namespace yr3n7m
 end
 "#;
 
-/// Refining values reached past the guard in front of the body, which reads a non-parametric
-/// sort's top type alone: through a list element, from a column of mixed types (the ticket's
-/// row 7 device). `Twin[Q]` refines `Pair` at ONE type for both of its parameters; `Other2`
-/// refines `Base` with a tuple field, which a tuple's `SortDomain` fills (WI-20261116-HWD8A).
-const REFINE: &str = r#"
-namespace yr3n7f
-  import anthill.prelude.{List, Int64}
-  sort Colour
-    entity red
-    entity green
-  end
-  sort Letter
-    entity a
-    entity b
-  end
-  sort Pair
-    sort A = ?
-    sort B = ?
-    entity pair(a: A, b: B)
-  end
-  sort Twin
-    sort Q = ?
-    requires Pair[A = Q, B = Q]
-    entity twin(q: Q)
-  end
-  entity HL(ps: List[T = Pair[A = Colour, B = Letter]])
-  entity HC(ps: List[T = Pair[A = Colour, B = Colour]])
-  fact hp(twin(q: red))
-  fact hp(pair(a: red, b: a))
-  fact hp(pair(a: red, b: green))
-  rule mkL(?h) :- hp(?e), ?h <=> HL(ps: [?e])
-  rule mkC(?h) :- hp(?e), ?h <=> HC(ps: [?e])
-  rule atL(?h: HL) :- mkL(?h)
-  rule atC(?h: HC) :- mkC(?h)
-
-  sort Base
-    entity base
-  end
-  sort Other2
-    requires Base
-    entity o2(p: (Int64, Int64))
-  end
-  entity HB(bs: List[T = Base])
-  fact hv(2)
-  fact hv("s")
-  rule mkB(?h) :- hv(?e), ?h <=> HB(bs: [o2(p: (1, ?e))])
-  rule atB(?h: HB) :- mkB(?h)
-end
-"#;
-
 /// 060 §2.3's rigid fixture, and the bound reading it states: `hasAt[X](v)` hands the caller's
 /// dictionary to `el` with `?x` bound.
 const RIGID: &str = r#"
@@ -199,19 +151,6 @@ namespace yr3n7r
   sort Base
     entity base
   end
-  sort Other
-    requires Base
-    entity other(n: Int64)
-  end
-  sort Wide
-    sort W = ?
-    entity wide(w: W)
-  end
-  sort Narrow2
-    sort Q = ?
-    requires Wide[W = Q]
-    entity narrow2(q: Q)
-  end
   sort Driver
     operation countAt[X]() -> Int64 effects {Error} requires SortDomain[T = X] =
       Wrap[T = X].el.takeN(9).length()
@@ -219,10 +158,7 @@ namespace yr3n7r
       Wrap[T = X].el(v).takeN(9).length()
     operation wrappedRed() -> Int64 effects {Error} = hasAt[X = Wrap[T = Colour]](wrap(v: red))
     operation wrappedBlue() -> Int64 effects {Error} = hasAt[X = Wrap[T = Colour]](wrap(v: blue))
-    operation otherAtBase() -> Int64 effects {Error} = hasAt[X = Base](other(7))
     operation baseAtBase() -> Int64 effects {Error} = hasAt[X = Base](base)
-    operation narrowAtWide() -> Int64 effects {Error} =
-      hasAt[X = Wide[W = Colour]](narrow2(q: green))
     operation bases() -> Int64 effects {Error} = countAt[X = Base]()
     operation wraps() -> Int64 effects {Error} = countAt[X = Wrap[T = Colour]]()
   end
@@ -335,33 +271,10 @@ fn an_unbound_column_generates_in_declaration_order() {
     );
 }
 
-/// A REFINEMENT'S INSTANCE IS CHECKED WHOLE (`/code-review`): `Twin[Q] requires Pair[A = Q, B =
-/// Q]` names `Q` twice, so a `twin` is no `Pair[A = Colour, B = Letter]` — `Q` meets `Colour`
-/// at `A` and `Letter` at `B` — and is one at `Pair[A = Colour, B = Colour]`. FAILS with a
-/// parameter's later slot left uncompared (`atL` answers the `twin` too). And a refining value
-/// is FILLED at its own sort, to its fields' components: `o2(p: (1, "s"))` at `Base` is refused
-/// by the tuple's element, `o2(p: (1, 2))` admitted. FAILS under [C] (no refining value is in
-/// `Base`'s domain).
-#[test]
-fn a_refinements_instance_is_checked_whole() {
-    let mut kb = load_kb_with(REFINE);
-    assert_eq!(definite_unary(&mut kb, "yr3n7f.mkL").len(), 3, "untyped: every value");
-    let at_l = crate::common::shown_rows(&mut kb, "yr3n7f.atL");
-    assert_eq!(at_l.len(), 1, "the `pair(red, a)` alone: {at_l:?}");
-    assert!(at_l[0].0.contains("pair"), "{at_l:?}");
-    let at_c = crate::common::shown_rows(&mut kb, "yr3n7f.atC");
-    assert_eq!(at_c.len(), 2, "the `twin` and `pair(red, green)`: {at_c:?}");
-    assert!(at_c.iter().any(|(r, _)| r.contains("twin")), "{at_c:?}");
-    assert_eq!(definite_unary(&mut kb, "yr3n7f.mkB").len(), 2, "untyped: both values");
-    let at_b = crate::common::shown_rows(&mut kb, "yr3n7f.atB");
-    assert_eq!(at_b.len(), 1, "`o2(p: (1, 2))` alone: {at_b:?}");
-    assert!(!at_b[0].0.contains('"') && at_b[0].1, "{at_b:?}");
-}
-
 /// 060 §2.3's BOUND READING at a rigid type: `hasAt[X = Wrap[T = Colour]](wrap(v: red))` goes
 /// through `Wrap`'s one clause and `Colour`'s clause for `red` alone — one row, as for `blue`.
 /// And the generation rows beside it unchanged: `countAt` lists `Wrap`'s three and `Base`'s one,
-/// never a refining sort's value. Pass under every axis.
+/// its own sort's constructors. Pass under every axis.
 #[test]
 fn a_bound_value_at_a_rigid_type_is_checked() {
     assert_eq!(drive("wrappedRed"), Ok(1));
@@ -371,15 +284,3 @@ fn a_bound_value_at_a_rigid_type_is_checked() {
     assert_eq!(drive("bases"), Ok(1), "a domain lists its own sort's constructors");
 }
 
-/// A VALUE OF A REFINING SORT at a rigid type, filled at its own sort by the call: `other(7)`
-/// under `sort Other requires Base` at `Base`'s dictionary, and `narrow2(q: green)` under
-/// `requires Wide[W = Q]` at `Wide[W = Colour]`'s — `Narrow2`'s condition is the `Colour`
-/// dictionary the caller handed, the slot `Q` meets, not one its own type names. FAILS under
-/// [C]. Observably the same as a dictionary built from the value's type today — every
-/// dictionary the language builds names its type's own sort — and different once a provision can
-/// hand a sub-domain of another provider (WT8WG's item 2).
-#[test]
-fn a_refining_value_is_filled_at_its_own_sort() {
-    assert_eq!(drive("otherAtBase"), Ok(1));
-    assert_eq!(drive("narrowAtWide"), Ok(1));
-}

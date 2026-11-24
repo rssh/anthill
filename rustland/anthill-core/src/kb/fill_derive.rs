@@ -21,10 +21,10 @@
 //! same domain written a clause per constructor took 6 (YR3N7's measurements).
 //!
 //! **EVERY FIELD IS FILLED THROUGH `apply_domain`, NEVER A `fill` BY NAME**: the dictionary
-//! names whose `fill` runs, and a value of a sort that REFINES the asked one is the one case a
-//! derived domain adds — applied by the call, `KnowledgeBase::lower_apply_domain`, because no
-//! clause can hold it (an indexed head would list the refining sorts' values in generation, a
-//! variable head would be tried beside every value of the sort's own).
+//! names whose `fill` runs. A derived domain is its own sort's constructors and nothing else.
+//! YR3N7 added at the call (`KnowledgeBase::lower_apply_domain`) a value of a sort that REFINES
+//! the asked one, which no clause could hold; proposal 074 stage 5 (WI-20261113-DY84V) refuses
+//! the `requires` that made a sort with constructors refined, and the case went with it.
 //!
 //! **THE VALUE FACE `<Sort>.domain` IS A CLAUSE OF ITS OWN** over the fill, typed at the
 //! sort: a relation citation builds its query from its first clause's head and takes no
@@ -125,10 +125,6 @@ pub(crate) struct SortDomainEntry {
     /// (`typing::sort_domain_sub_offset`), which every `SortDomain` dictionary follows.
     pub(crate) sub_offset: usize,
     pub(crate) kind: SortDomainKind,
-    /// A DERIVED `fill`'s constructors, canonical: the values its clauses' heads select. A
-    /// bound value headed by any other constructor is the refinement case `apply_domain`
-    /// applies (`KnowledgeBase::lower_apply_domain`). Empty for any other kind.
-    pub(crate) ctors: Vec<Symbol>,
     /// How many of a DERIVED `fill`'s clauses read the dictionary — one read each, so the
     /// marker that hands the dictionary in carries this many copies of it, one per slot of
     /// the relation's layout (`resolve::bind_citation_reads`). 0 for a primitive's; a written
@@ -170,7 +166,6 @@ pub(crate) fn run(
                     conditions: Vec::new(),
                     sub_offset: 0,
                     kind: SortDomainKind::Written,
-                    ctors: Vec::new(),
                     reads: 0,
                 },
             );
@@ -277,12 +272,6 @@ pub(crate) fn run(
         } else {
             crate::kb::typing::sort_domain_sub_offset(kb, c.job.sort)
         };
-        let ctors: Vec<Symbol> = c
-            .job
-            .ctors
-            .iter()
-            .map(|d| kb.canonical_sort_sym(d.ctor))
-            .collect();
         kb.record_sort_domain(
             c.job.sort,
             SortDomainEntry {
@@ -291,7 +280,6 @@ pub(crate) fn run(
                 conditions: conds,
                 sub_offset,
                 kind: SortDomainKind::Derived,
-                ctors,
                 // Counted as the clauses are emitted, below.
                 reads: 0,
             },
@@ -427,7 +415,6 @@ fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
                 conditions: Vec::new(),
                 sub_offset: 0,
                 kind: SortDomainKind::Primitive,
-                ctors: Vec::new(),
                 reads: 0,
             },
         );

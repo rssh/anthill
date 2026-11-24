@@ -1813,6 +1813,18 @@ pub enum LoadError {
         provider: String,
         span: Span,
     },
+    /// Proposal 074 stage 5 (WI-20261113-DY84V) — a sort's `requires` clause naming a sort
+    /// with CONSTRUCTORS. A data sort is closed: nothing joins it by `provides`
+    /// ([`LoadError::ProvidesNamesDataSort`]) and nothing by `requires`, which is a
+    /// refinement (kernel-language §8.2) and would make the requiring sort a subtype of it.
+    /// The clause is not filed.
+    RequiresNamesDataSort {
+        /// The sort the clause names, qualified.
+        required: String,
+        /// The sort whose declaration the clause stands in, qualified.
+        requiring: String,
+        span: Span,
+    },
     /// WI-20260924-FS8M3 — a `provides` clause in a `namespace` at a type ALIAS's address.
     /// A clause names its provider by where it is written, so it would be filed about the
     /// alias, a name dispatch never searches: the program loaded and died at run time
@@ -3510,6 +3522,7 @@ impl LoadError {
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
             | LoadError::ProvidesNamesDataSort { span, .. }
+            | LoadError::RequiresNamesDataSort { span, .. }
             | LoadError::ProvidesAtAliasAddress { span, .. }
             | LoadError::SpecAliasRefused { span, .. }
             | LoadError::AliasArgumentRebound { span, .. }
@@ -4874,6 +4887,17 @@ impl LoadError {
                     provides_names_data_sort_message(spec, provider)
                 )
             }
+            LoadError::RequiresNamesDataSort {
+                required,
+                requiring,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    requires_names_data_sort_message(required, requiring)
+                )
+            }
             LoadError::ProvidesAtAliasAddress {
                 alias,
                 target,
@@ -5424,6 +5448,19 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     provides_names_data_sort_message(spec, provider),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::RequiresNamesDataSort {
+                required,
+                requiring,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    requires_names_data_sort_message(required, requiring),
                     span.start,
                     span.end
                 )
@@ -10017,6 +10054,22 @@ fn provides_needs_sort_message(namespace: &str) -> String {
          <Carrier>` block, a secondary entry to it (proposal 059) — since \
          WI-20260917-S8JYF retired the `fact Spec[Carrier]` spelling that used to \
          derive a carrier from a binding here."
+    )
+}
+
+/// Proposal 074 stage 5 (WI-20261113-DY84V) — the sentence for
+/// [`LoadError::RequiresNamesDataSort`]. One owner, for the reason
+/// [`provides_needs_sort_message`] states: two rendering paths, one under test. It names both
+/// repairs, as [`provides_names_data_sort_message`] does: a required sort that is meant as a
+/// spec or a marker, or a refining sort that should hold the data sort's value.
+fn requires_names_data_sort_message(required: &str, requiring: &str) -> String {
+    format!(
+        "`requires {required}` cannot hold: '{required}' declares constructors, which makes \
+         it a DATA sort, and a data sort is closed — a `requires` naming it would make \
+         '{requiring}' a subtype of it, a '{requiring}' taken where a '{required}' is \
+         expected. A `requires` names a sort without constructors, a spec or a marker: if \
+         '{required}' is meant as one, its constructors are what stop it being one; if a \
+         '{requiring}' should hold a '{required}', give it a field of that type."
     )
 }
 
@@ -51136,6 +51189,28 @@ impl<'a> Loader<'a> {
         // through the view.
         use crate::eval::value::Value;
         let spec_value = self.clause_spec_to_store(spec_value, "requires", &r.type_expr);
+        // A SORT WITH CONSTRUCTORS IS CLOSED (proposal 074 §2, stage 5, WI-20261113-DY84V;
+        // kernel-language §5.1): nothing joins it by `provides` (WI-1106, `load_provides_clause`)
+        // and nothing by `requires`, which is a refinement (§8.2) and made `domain` a subtype
+        // of it — MEASURED before the stage, `sort X1 { requires X  entity e2(j: Int64) }`
+        // over a data sort `X` let `take(e2(j: 0))` answer through `take(x: X)`. Asked of the
+        // NAMED sort, read off the lowered spec, so through an alias and at a parametric
+        // sort alike; never of `domain` — a data sort requiring a spec is the ordinary case.
+        // Refused before the fact is asserted, as a provision of a data sort is: the clause
+        // states nothing that holds.
+        //
+        // The census before the stage (a traced full gate): 48 such clauses in 22 test
+        // files, none in the standard library or the examples.
+        if let Some(required) = super::typing::spec_base_functor(self.kb, &spec_value) {
+            if self.kb.sort_has_constructors(required) {
+                self.errors.push(LoadError::RequiresNamesDataSort {
+                    required: self.kb.qualified_name_of(required).to_string(),
+                    requiring: self.kb.qualified_name_of(domain).to_string(),
+                    span: r.span,
+                });
+                return;
+            }
+        }
         // The `sort_ref` FIELD carries the requiring sort as a term (it is read as
         // a type by `direct_requires`); the DOMAIN beside it is the same name as a
         // symbol. Same name, two positions — data vs. index key.

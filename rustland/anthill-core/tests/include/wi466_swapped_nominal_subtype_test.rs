@@ -61,7 +61,12 @@ end
 /// `Refined2`. The swapped call accepted this (it asked "does Refined2 refine
 /// Base2?" = yes), an unsound upcast of a supertype value to a subtype. `Base2`
 /// does not `provide` `Refined2` either, so the corrected nominal check is the
-/// only path — and it now refuses.
+/// only path — and it now refuses, at `g`'s return.
+///
+/// `Base2` declares no constructor. It had `entity makeBase2(x: X)` until a `requires`
+/// naming a sort with constructors was refused at load (proposal 074 stage 5,
+/// WI-20261113-DY84V); the row asserted only that the load failed, so with the entity
+/// it passed on that refusal alone — hence the return named below.
 #[test]
 fn base_parameterized_actual_rejected_against_refining_expected() {
     let src = r#"
@@ -69,7 +74,6 @@ namespace test.wi466.refine_unsound
   import anthill.prelude.{Int64}
   sort Base2
     sort X = ?
-    entity makeBase2(x: X)
   end
   sort Refined2
     requires Base2
@@ -80,9 +84,10 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        !errs.is_empty(),
+        errs.iter().any(|e| e.contains("g.return") && e.contains("expected Refined2")),
         "Base2 does NOT refine Refined2 (the requires is the other way); returning a \
-         Base2[X = Int64] as Refined2 must be REJECTED (pre-WI-466 false-accept)",
+         Base2[X = Int64] as Refined2 must be REJECTED at the return (pre-WI-466 \
+         false-accept): {errs:?}",
     );
 }
 

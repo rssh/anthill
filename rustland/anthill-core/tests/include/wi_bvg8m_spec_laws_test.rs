@@ -35,7 +35,11 @@ use anthill_core::kb::{ClauseKind, KnowledgeBase};
 use crate::common::{load_kb_with, load_stdlib_kb, named_field_term, proof_record_heads};
 
 /// A spec with one clause of each kind a sort's body can hold, and a scope that
-/// requires it — and `Eq`, at another of its parameters.
+/// requires it — and `Eq`, at another of its parameters. The kinds that need a
+/// constructor — a fact of it, and the `domain` rule the loader derives for a sort that
+/// has one — are in `Sampled`, a data sort of their own: a sort with constructors is
+/// closed, and a `requires` naming one is refused at load (proposal 074 stage 5,
+/// WI-20261113-DY84V). Until the stage they were `Measured`'s, which `Scope` required.
 const SRC: &str = r#"
 namespace test.bvg8m.laws
   import anthill.prelude.{Int64}
@@ -49,9 +53,6 @@ namespace test.bvg8m.laws
       weight(a: T) -> Int64 = 0
       heavier(a: T, b: T) -> Bool = gt(weight(a), weight(b))
     }
-
-    entity Sample(n: Int64)
-    fact Sample(n: 1)
 
     rule weight_nonneg: gte(weight(?a), 0) <=> true
     rule heavier(?a, ?a) <=> false
@@ -73,6 +74,11 @@ namespace test.bvg8m.laws
 
   sort Bare
     sort T = ?
+  end
+
+  sort Sampled
+    entity Sample(n: Int64)
+    fact Sample(n: 1)
   end
 end
 "#;
@@ -128,10 +134,11 @@ fn count_and_labels(kb: &KnowledgeBase, spec_qn: &str) -> (usize, Vec<String>) {
 /// Eight clauses of `Measured` are laws: the labelled equation; the equation with no
 /// label; the rule written `head :- body` and the rule written `body -: head` — one
 /// stored form, the two; the rule of two heads, which is two clauses under one label;
-/// the equation written `fact`; and the constraint. Four things in the same sort are
+/// the equation written `fact`; and the constraint. Two things in the same sort are
 /// not: the default body of `heavier` (stored there as the equation
-/// `heavier(a, b) = gt(…)`), the fact `Sample(n: 1)`, the declaration `declared(?p)`,
-/// and the `domain` rule the loader derives for a sort that has an entity.
+/// `heavier(a, b) = gt(…)`) and the declaration `declared(?p)`; nor are the two of
+/// `Sampled`, the fact `Sample(n: 1)` and the `domain` rule the loader derives for a sort
+/// that has an entity.
 #[test]
 fn a_law_is_a_rule_or_a_constraint_written_in_the_spec() {
     let kb = load_kb_with(SRC);
@@ -166,6 +173,8 @@ fn a_law_is_a_rule_or_a_constraint_written_in_the_spec() {
 
     // A sort that requires a spec has none of the spec's laws for its own.
     assert_eq!(laws(&kb, "test.bvg8m.laws.Scope"), Vec::<String>::new());
+    // A fact of a constructor and the derived `domain` rule are no laws.
+    assert_eq!(laws(&kb, "test.bvg8m.laws.Sampled"), Vec::<String>::new());
 }
 
 /// The library's specs, for the shapes they hold. THE COUNTS ARE THE LIBRARY'S, on

@@ -1101,9 +1101,9 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
 }
 
 /// The `fill` of a variable typed at the ground type `bound`, which has a domain: through the
-/// type (`apply_domain`), the one dispatch — never the type's `fill` by name, which would skip
-/// the case a derived domain adds at the call, a value of a refining sort (WI-20261115-YR3N7).
-/// `None` where the kernel has no `apply_domain` to call.
+/// type (`apply_domain`), the one dispatch every fill takes (WI-20261115-YR3N7, which added at
+/// the call the case of a value of a refining sort; proposal 074 stage 5 removed it, no sort
+/// refining one with constructors). `None` where the kernel has no `apply_domain` to call.
 fn ground_fill_goals(
     kb: &mut KnowledgeBase,
     bound: TermId,

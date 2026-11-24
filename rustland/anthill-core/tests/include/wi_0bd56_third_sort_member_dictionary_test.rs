@@ -234,7 +234,9 @@ end
 /// answers by name on a `Dog` (refused at load before, "no dictionary can answer"), on an
 /// `Animal`, and through a requirement (`Internal` at the frame push before). A provision of
 /// two clauses still lays out nothing and is still refused
-/// (`wi_zawx9_…::a_binding_the_instance_cannot_enter_…`).
+/// (`wi_zawx9_…::a_binding_the_instance_cannot_enter_…`). `Animal` declares no constructor —
+/// a `requires` naming one is refused (proposal 074 stage 5, WI-20261113-DY84V) — so an
+/// `Animal` is a `Cat` typed at `Animal` by the operation `animal`.
 #[test]
 fn a_defaulted_operations_binding_enters_with_the_members_requirements() {
     let src = r#"
@@ -254,8 +256,12 @@ namespace test.bd56.zawx9
     operation tag() -> Int64 = 7
   end
   sort Animal
-    entity animal(n: Int64)
   end
+  sort Cat
+    requires Animal
+    entity cat(n: Int64)
+  end
+  operation animal(n: Int64) -> Animal = cat(n)
   sort Dog
     requires Animal
     entity dog(n: Int64)

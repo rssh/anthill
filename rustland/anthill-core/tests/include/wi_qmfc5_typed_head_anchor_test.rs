@@ -76,7 +76,10 @@ fn program(tail: &str) -> String {
 
 /// `Sub` REFINES `Leaf` (the `requires` chain) and provides nothing. `sort_refines` is
 /// an edge `bare_sort_compatible` walks and `sort_provides` does not, which is what made
-/// the deleted load-time verdict discharge a requirement no carrier met.
+/// the deleted load-time verdict discharge a requirement no carrier met. A sort a `requires`
+/// names has no constructors (proposal 074 stage 5, WI-20261113-DY84V), so this `Leaf` has
+/// none: an operation receives on it and it provides `Desc` at itself, so it has values of its
+/// own, its own carrier, as the data sort it replaces was.
 fn refining(tail: &str) -> String {
     format!(
         r#"namespace test.qmfc5r
@@ -90,7 +93,6 @@ fn refining(tail: &str) -> String {
 
   sort Leaf
     import anthill.prelude.Int64
-    entity leaf
     provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 7
     operation tag() -> Int64 = 7
@@ -517,16 +519,17 @@ fn a_witness_supplied_provision_anchors_too() {
 
 /// AN EQUATION-HEADED RULE WITH A GUARD keeps its body: the guard folds into the head's bound,
 /// and the rewrite answers. (It was `requires(Desc[T = Leaf])` on an equation, which the
-/// check tier's goal kept from panicking.)
+/// check tier's goal kept from panicking.) Over [`program`]'s `Leaf`, which has the `leaf()`
+/// it calls `f` at; it was written over [`refining`], whose refinement it does not read.
 #[test]
 fn equation_headed_anchor_keeps_its_body() {
-    let src = refining(
+    let src = program(
         "  rule answer(?r) :- f(leaf(), ?r)\n  \
          operation f(x: Leaf) -> Int64\n  \
          rule fe: f[A](?x: A) <=> 1 :- Desc[T = A] @[simp]\n",
     );
     let mut kb = crate::common::load_kb_with(&src);
-    let _ = crate::common::query_unary(&mut kb, "test.qmfc5r.answer");
+    let _ = crate::common::query_unary(&mut kb, "test.qmfc5.answer");
 }
 
 // ── multi-parameter specs ────────────────────────────────────────────────────

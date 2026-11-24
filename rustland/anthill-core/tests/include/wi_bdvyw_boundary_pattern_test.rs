@@ -62,13 +62,19 @@ namespace test.bdvyw
     sort Reason = ?
     entity boom(reason: Reason)
   end
+  -- `Wide` declares no constructor (a `requires` naming one is refused, proposal 074 stage 5):
+  -- its raise is a `Broad`, typed at `Wide` by `wideOf`.
   sort Wide
+  end
+  sort Broad
+    requires Wide
     entity broad(n: Int64)
   end
   sort Narrow
     requires Wide
     entity slim(n: Int64)
   end
+  operation wideOf(n: Int64) -> Wide = broad(n)
 
   operation both(n: Int64) -> Int64
       effects {Error[Boom[Reason = String]], Error[Boom[Reason = Int64]]} =
@@ -109,7 +115,7 @@ namespace test.bdvyw
 
   -- The wider sort where one refines the other.
   operation wideOrNarrow(n: Int64) -> Int64 effects {Error[Narrow], Error[Wide]} =
-    if n < 0 then Error.raise(slim(1)) else if n > 0 then Error.raise(broad(2)) else 0
+    if n < 0 then Error.raise(slim(1)) else if n > 0 then Error.raise(wideOf(2)) else 0
   operation refined(n: Int64) -> String =
     match Error.reify(lambda () -> wideOrNarrow(n))
       case ok(_) -> "ok"
@@ -189,12 +195,13 @@ fn a_brackets_open_slot_over_one_label_is_that_label() {
 }
 
 /// THE WIDER SORT WHERE ONE REFINES THE OTHER: over `Error[Narrow]` and `Error[Wide]`, `sort
-/// Narrow requires Wide`, the pattern is `Wide`, which admits both.
+/// Narrow requires Wide`, the pattern is `Wide`, which admits both — the `Wide` raised a
+/// `Broad` typed at `Wide`, `Wide` declaring no constructor.
 #[test]
 fn a_boundary_over_a_sort_and_its_refinement_is_at_the_wider() {
     let mut interp = crate::common::interp_for(PROGRAM);
     assert_eq!(answers(&mut interp, "refined", -1), "caught", "slim(1)");
-    assert_eq!(answers(&mut interp, "refined", 1), "caught", "broad(2)");
+    assert_eq!(answers(&mut interp, "refined", 1), "caught", "wideOf(2)");
 }
 
 /// A BRACKET'S SLOT NOTHING FILLS IS OPEN, and its evidence is built: `Error.reify[T1 =
@@ -329,7 +336,6 @@ fn two_refinements_of_one_sort_are_refused() {
 namespace test.bdvyw.sib
   import anthill.prelude.{Int64, Error, Result}
   sort Wide
-    entity wide(n: Int64)
   end
   sort Left
     requires Wide

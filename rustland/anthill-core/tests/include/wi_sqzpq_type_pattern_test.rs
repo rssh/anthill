@@ -45,7 +45,9 @@
 use anthill_core::eval::value::Value;
 
 /// The harness: the slot every `admits` row dispatches through, and the sorts the rows
-/// compare.
+/// compare. A sort a `requires` names has no constructors (proposal 074 stage 5,
+/// WI-20261113-DY84V), so `IoError` and `Animal`, which `FileNotFound` and `Cat` refine, have
+/// none: no row builds a value of either.
 fn program(ops: &str) -> String {
     format!(
         r#"
@@ -60,14 +62,12 @@ namespace wisqzpq.tp
     entity boom(reason: Reason)
   end
   sort IoError
-    entity io_error
   end
   sort FileNotFound
     requires IoError
     entity file_not_found
   end
   sort Animal
-    entity animal
   end
   sort Cat
     requires Animal
@@ -582,7 +582,6 @@ namespace wisqzpq.tp
     end
   end
   sort IoError
-    entity io_error
   end
   sort FileNotFound
     requires IoError

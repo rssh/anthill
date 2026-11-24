@@ -469,12 +469,14 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// the dictionary of its own bodies, as a module's requirement was answered before the stage. A
 /// sort with no type parameter and values of its own (`NonMonotonicStore provides Store`,
 /// whose operations receive on `Store`) gives a clause nothing to select one by: a call of its
-/// operation is answered by its receiver's own sort. And nothing provides a sort with
-/// constructors, with a parameter or without (kernel-language.md §5.1): `sort Narrow requires
-/// Box[V = Int64]` over a data sort `Box` names no provider either. Both are refinements
-/// alone. MEASURED before stage 3, when `requires Ticker` was one too: `use() requires Ticker
-/// = Ticker.now()` loaded and died `OperationBodyMissing`, its caller building
-/// `Dictionary(impl: Ticker)`.
+/// operation is answered by its receiver's own sort. And nothing but itself provides a sort
+/// with constructors, with a parameter or without (kernel-language.md §5.1), and a data sort
+/// has no dictionary of its operations: a goal at one — an operation's `requires Red`
+/// (WI-20261107-FDJ0E) — is discharged as the sort provides itself, a leaf. A SORT's `requires`
+/// naming one, the refinement `sort Narrow requires Box[V = Int64]`, is refused at load since
+/// proposal 074 stage 5 (WI-20261113-DY84V). MEASURED before stage 3, when `requires Ticker`
+/// was a refinement too: `use() requires Ticker = Ticker.now()` loaded and died
+/// `OperationBodyMissing`, its caller building `Dictionary(impl: Ticker)`.
 ///
 /// WHAT THE CONFLATION COST, measured. `sort Narrow requires Boom` put an unfillable
 /// `Boom` slot in `Narrow`'s dictionary chain, so building ANY dictionary whose impl is
@@ -488,8 +490,9 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 ///
 /// FILTERED HERE, on the DICTIONARY side alone. `transitive_required_sorts` — which
 /// [`sort_refines`] and [`check_obligations`] read — is built from the tree by its own
-/// path and is deliberately left whole, so `Narrow` still refines `Boom` and the
-/// subsumption a boundary written at `Boom` performs on a `Narrow` payload is unchanged.
+/// path and is deliberately left whole. (`sort Narrow requires Boom` over a data sort `Boom`,
+/// the case measured above, is refused at load since proposal 074 stage 5; the fixture's
+/// boundary refines a constructor-less sort now.)
 pub(crate) fn clause_is_dispatchable(kb: &KnowledgeBase, required: Symbol) -> bool {
     let canon = kb.canonical_sort_sym(required);
     !sort_is_data(kb, canon)

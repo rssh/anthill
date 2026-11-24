@@ -1598,10 +1598,13 @@ pub(super) fn resolve_inner<'a>(
     report: &mut Option<TopFailure>,
 ) -> ResolutionResult {
     // WI-20260921-28TAT — A REFINEMENT GOAL IS ALREADY DISCHARGED, and asking the
-    // provider search about it can only fail. `sort Narrow requires Boom` names a DATA
-    // sort — no type parameter, so nothing can `provides` it and no member could be
-    // reached through a slot held for it — and the clause declares `Narrow <: Boom`
-    // rather than demanding a dictionary ([`clause_is_dispatchable`]). Reaching the
+    // provider search about it can only fail. `sort Narrow requires Boom` names a sort
+    // with no type parameter and no dictionary — no member could be reached through a
+    // slot held for it — and the clause declares `Narrow <: Boom` rather than demanding a
+    // dictionary ([`clause_is_dispatchable`]). (`Boom` was a DATA sort when this was
+    // measured; a sort's `requires` naming one is refused at load since proposal 074
+    // stage 5, and a goal at one, an operation's `requires Red`, is discharged here as
+    // the sort provides itself.) Reaching the
     // search, it produced "no impl provides test.reify.Boom; declare `provides
     // test.reify.Boom[…]`", advice no author can act on, and it made EVERY derived
     // instance of a refinement sort unresolvable: `TypeValue[T = Narrow]` failed on it,

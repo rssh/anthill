@@ -535,8 +535,8 @@ namespace atvc1.pat
   import anthill.reflect.{TypeValue, TypePattern}
   import anthill.prelude.{Int64, String, List, Error, Result}
 
+  -- `Base` declares no constructor: a `requires` naming one is refused (proposal 074 stage 5).
   sort Base
-    entity base
   end
   sort Boom
     requires Base
@@ -607,10 +607,12 @@ fn other_escapes(interp: &mut anthill_core::eval::Interpreter, ns: &str, op: &st
 /// `outer`, and the caught `err(error: other(n: 7))` is a `Result[E = Base]`, the clause's `P`
 /// being the citation's (060.1 §8.10). FAILS under [P] and [D]: through `outer` the clause reads
 /// the pattern off the value, `Boom`, and `other(n: 7)` escapes, as on the binary before this
-/// ticket. FAILS with the refining case of a derived `fill` backed out
-/// (`wi_j9ssg_refined_value_in_domain_test`'s [R]): `wideDirect` and `wideOuter` answer 0, the
-/// result column's test refusing the caught `Other` at `Base`. `narrowOuter` (`P = Boom`, the
-/// `Other` not caught) passes under every axis.
+/// ticket. `Base` declares no constructor since proposal 074 stage 5 (WI-20261113-DY84V), so
+/// it has no derived domain and the result column checks the caught `Other` as a value of an
+/// abstract sort is checked, its conformance; with constructors, `Base` was a derived domain
+/// and the row went through the refining case of its `fill`, removed with the stage (it failed,
+/// `wideDirect` and `wideOuter` answering 0, with that case backed out). `narrowOuter` (`P =
+/// Boom`, the `Other` not caught) passes under every axis.
 #[test]
 fn a_callers_wider_pattern_reaches_a_reify_through_a_rule() {
     let mut interp = crate::common::interp_for(PATTERN);

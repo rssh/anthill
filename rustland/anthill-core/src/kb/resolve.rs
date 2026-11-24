@@ -484,9 +484,7 @@ pub enum BuiltinTag {
     /// no second clause opener exists (§4.2); a parametric provider's clauses are handed the
     /// dictionary as their implicit argument, on the marker a citation's arguments ride
     /// ([`WITHIN_REQUIREMENTS`]). The replacement is asked in the same step, so the dispatch
-    /// costs neither depth nor fuel; and where the provider is a DERIVED domain and the value a
-    /// constructor of a sort that refines it, the replacement is that sort's `fill`
-    /// (WI-20261115-YR3N7, `KnowledgeBase::lower_refining_value`).
+    /// costs neither depth nor fuel.
     ///
     /// Reached here only when the lowering could not decide: the evidence is not readable
     /// yet — a variable, a condition whose type is unpinned — so the goal DELAYS and rotation
@@ -8933,19 +8931,12 @@ impl KnowledgeBase {
                         self.qualified_name_of(impl_sort),
                     ));
                 };
-                // A DERIVED domain's one added case, A VALUE OF A REFINING SORT, is the call's
-                // (060 §2.3): no clause can hold it — indexed, its head would list the refining
-                // sorts' values in generation; a variable head would be tried, and refuted,
-                // beside every value of the sort's own. A hand-written or primitive provider's
-                // own clauses decide.
-                if kind == super::fill_derive::SortDomainKind::Derived {
-                    let x_now = self.walk_arg(goal.pos_arg(self, 1), scratch);
-                    if let Some((x_now, owner)) =
-                        x_now.and_then(|x| self.refining_sort_of(x, impl_sort))
-                    {
-                        return self.lower_refining_value(x_now, owner, impl_sort, &value, scratch, pin);
-                    }
-                }
+                // A DERIVED domain is its own sort's constructors and nothing else: no sort
+                // refines a sort with constructors (proposal 074 stage 5, WI-20261113-DY84V,
+                // refuses the `requires`; WI-1106 the `provides`), so the case WI-20261115-YR3N7
+                // added here at the call — a value of a refining sort, filled at its own sort —
+                // has nothing left to admit, and was removed with the refusal. A value another
+                // sort's constructor heads matches no clause of the fill.
                 ApplyDomainLowering::Goal {
                     goal: self.fill_goal(fill, kind, reads, x, value),
                     pin,
@@ -8985,307 +8976,6 @@ impl KnowledgeBase {
                 ApplyDomainLowering::Error(format!("apply_domain: {why}"))
             }
         }
-    }
-
-    /// The sort of `x`, a value bound to a constructor of ANOTHER sort than the derived domain
-    /// `impl_sort` — the refinement case of [`Self::lower_apply_domain`] — with `x` itself; `None`
-    /// for an unbound `x`, a value no constructor heads (a literal: no clause of the fill takes
-    /// it), and a constructor of `impl_sort`'s own.
-    fn refining_sort_of(&self, x: Value, impl_sort: Symbol) -> Option<(Value, Symbol)> {
-        if self.value_is_unbound_var(&x) {
-            return None;
-        }
-        let functor = match x.head(self) {
-            ViewHead::Functor { functor, .. } | ViewHead::Ident(functor) => functor,
-            _ => return None,
-        };
-        let owner = self.canonical_sort_sym(self.type_arg_owner(functor)?);
-        if owner == impl_sort {
-            return None;
-        }
-        let ctor = self.canonical_sort_sym(functor);
-        let own = self
-            .sort_domain(impl_sort)
-            .is_some_and(|e| e.ctors.contains(&ctor));
-        (!own).then_some((x, owner))
-    }
-
-    /// The refinement case of a derived domain (060 §2.3; kernel-language §5.3, §8.2): `x`, a
-    /// value of `owner`, at the dictionary `dict` of `impl_sort`, which `owner` refines. It is
-    /// filled at `owner`, with a dictionary PUT TOGETHER FROM `dict`'S SLOTS — never one its own
-    /// type names, which would replace a sub-domain a rigid caller handed: each instance of
-    /// `impl_sort` the `requires` clauses give `owner` is matched against `dict`
-    /// ([`Self::evidence_admits`]), and the slot each of `owner`'s parameters meets is that
-    /// parameter's condition. A parameter no slot reaches is a fresh type, pinned from the value
-    /// where the fill reads it. No instance admitted — `owner` does not refine `impl_sort`, or
-    /// does at another instance (`Narrow requires Wide[W = Int64]` at `Wide[W = String]`'s
-    /// dictionary) — and the value is not in the domain. A refining sort with NO DOMAIN of its
-    /// own has nothing to fill: the value is checked against its own type, the conformance a
-    /// type with no domain answers (`DomainEvidence::NoDomainType`).
-    fn lower_refining_value(
-        &mut self,
-        x: Value,
-        owner: Symbol,
-        impl_sort: Symbol,
-        dict: &Value,
-        subst: &Substitution,
-        pin: Option<Substitution>,
-    ) -> ApplyDomainLowering {
-        let entry = self.sort_domain(owner).cloned();
-        let params: Vec<super::fill_derive::DomainParam> = entry
-            .as_ref()
-            .map(|e| e.params.clone())
-            .or_else(|| self.domain_params_of(owner))
-            .unwrap_or_default();
-        // `owner` at its canonical parameters, so the instances come back in terms of them.
-        let own_type = if params.is_empty() {
-            Value::SymbolRef(owner)
-        } else {
-            Value::Entity {
-                functor: owner,
-                pos: Vec::new().into(),
-                named: params
-                    .iter()
-                    .map(|p| (p.key, Value::term(p.var)))
-                    .collect::<Vec<_>>()
-                    .into(),
-            }
-        };
-        let instances =
-            match super::typing::instances_through_requires(self, &own_type, owner, impl_sort, 0) {
-                Ok(instances) => instances,
-                Err(_) => {
-                    return ApplyDomainLowering::Error(format!(
-                        "apply_domain: the `requires` clauses through which `{}` refines `{}` \
-                         nest too deep to read",
-                        self.qualified_name_of(owner),
-                        self.qualified_name_of(impl_sort),
-                    ))
-                }
-            };
-        // Per parameter, its canonical variable — the one the instances are written in.
-        let param_vars: Vec<Option<VarId>> = params
-            .iter()
-            .map(|p| match self.get_term(p.var) {
-                Term::Var(Var::Global(v)) => Some(*v),
-                _ => None,
-            })
-            .collect();
-        let known: Vec<VarId> = param_vars.iter().flatten().copied().collect();
-        for instance in &instances {
-            let mut met: Vec<(VarId, Value)> = Vec::new();
-            match self.evidence_admits(instance, dict.clone(), &known, subst, &mut met) {
-                Ok(true) => {}
-                Ok(false) => continue,
-                Err(why) => return ApplyDomainLowering::Error(format!("apply_domain: {why}")),
-            }
-            let Some(entry) = entry else {
-                let Some(own) = super::typing::value_type_open(self, subst, &x) else {
-                    return ApplyDomainLowering::NotYet;
-                };
-                return match super::typing::type_bound_verdict_view(self, subst, &x, &own) {
-                    super::typing::TypeBoundVerdict::Holds => ApplyDomainLowering::Holds { pin },
-                    super::typing::TypeBoundVerdict::Refuted => ApplyDomainLowering::Fail,
-                    super::typing::TypeBoundVerdict::Suspend => ApplyDomainLowering::NotYet,
-                };
-            };
-            let Some((ctor, impl_key)) = crate::kb::term_view::dictionary_view_syms(self) else {
-                return ApplyDomainLowering::Error(
-                    "apply_domain: this KB never loaded `anthill.realization.runtime.Dictionary`"
-                        .to_string(),
-                );
-            };
-            // THE TYPER'S LAYOUT, as `domain_evidence_of_type` builds it: placeholders for the
-            // slots no `fill` reads, then a condition per parameter a field fills.
-            let mut subs: Vec<Value> = vec![Value::Unit; entry.sub_offset];
-            for &j in &entry.conditions {
-                let sub = param_vars
-                    .get(j)
-                    .copied()
-                    .flatten()
-                    .and_then(|v| met.iter().find(|(w, _)| *w == v))
-                    .map(|(_, ev)| ev.clone())
-                    .unwrap_or_else(|| {
-                        let name = self.intern("T");
-                        Value::Var(Var::Global(self.fresh_var(name)))
-                    });
-                subs.push(sub);
-            }
-            let own_dict = Value::Entity {
-                functor: ctor,
-                pos: subs.into(),
-                named: vec![(impl_key, Value::SymbolRef(owner))].into(),
-            };
-            return ApplyDomainLowering::Goal {
-                goal: self.fill_goal(entry.fill, entry.kind, entry.reads, x, own_dict),
-                pin,
-            };
-        }
-        ApplyDomainLowering::Fail
-    }
-
-    /// Does the dictionary or type `ev` describe the type `pattern` — an instance of the refined
-    /// sort, in terms of the refining sort's parameters `params` — and which slot does each of
-    /// those parameters meet (`met`)? A dictionary is read at its conditions, a slot at a time,
-    /// as a `fill` reads it: its `impl` names the pattern's sort, and each condition's slot
-    /// describes the pattern's argument there. A parameter met TWICE (`requires Pair[A = Q, B =
-    /// Q]`) is one type, so its later slot must describe the type its first slot does. A tuple or
-    /// function type is held in a slot as a type, and is compared as one.
-    ///
-    /// What admits without being compared, each because nothing in the dictionary says otherwise:
-    /// a parameter the dictionary does not lay out (no field fills it), a slot not pinned yet
-    /// (its type is pinned from the value where the fill reads it), and a pattern variable that
-    /// is no parameter of the refining sort's. A dictionary with no `impl`, or missing a slot its
-    /// provider lays out, is malformed: an `Err`, never an answer.
-    fn evidence_admits(
-        &mut self,
-        pattern: &Value,
-        ev: Value,
-        params: &[VarId],
-        subst: &Substitution,
-        met: &mut Vec<(VarId, Value)>,
-    ) -> Result<bool, String> {
-        let ph = match pattern.head(self) {
-            ViewHead::Var(_) => {
-                let Some(v) = self.value_global_var(pattern).filter(|v| params.contains(v)) else {
-                    return Ok(true);
-                };
-                let first = met.iter().find(|(w, _)| *w == v).map(|(_, first)| first.clone());
-                return match first {
-                    None => {
-                        met.push((v, ev));
-                        Ok(true)
-                    }
-                    Some(first) => match self.evidence_type(first, subst)? {
-                        Some(ty) => self.evidence_admits(&ty, ev, &[], subst, &mut Vec::new()),
-                        None => Ok(true),
-                    },
-                };
-            }
-            ViewHead::Functor { functor, .. } | ViewHead::Ident(functor) => {
-                self.canonical_sort_sym(functor)
-            }
-            _ => {
-                return match self.bound_evidence(ev, subst) {
-                    Err(_) => Ok(true),
-                    Ok(ev) if self.is_dictionary_value(&ev) => Ok(false),
-                    Ok(ev) => Ok(super::typing::types_compatible(
-                        self,
-                        &mut Substitution::new(),
-                        &ev,
-                        pattern,
-                    )),
-                };
-            }
-        };
-        let ev = match self.bound_evidence(ev, subst) {
-            Ok(ev) => ev,
-            Err(_) => return Ok(true),
-        };
-        let eh = match ev.head(self) {
-            ViewHead::Functor { functor, .. } | ViewHead::Ident(functor) => functor,
-            ViewHead::Var(_) => return Ok(true),
-            _ => return Ok(false),
-        };
-        if let Some((ctor, impl_key)) = crate::kb::term_view::dictionary_view_syms(self) {
-            if eh == ctor {
-                let impl_sort = self.dictionary_impl(&ev, impl_key).map_err(evidence_fault)?;
-                if self.canonical_sort_sym(impl_sort) != ph {
-                    return Ok(false);
-                }
-                let Some((conditions, cond_params, offset)) = self.sort_domain(ph).map(|e| {
-                    let ps: Vec<_> = e.conditions.iter().map(|&j| e.params[j]).collect();
-                    (e.conditions.len(), ps, e.sub_offset)
-                }) else {
-                    return Ok(true);
-                };
-                for (k, p) in cond_params.iter().enumerate().take(conditions) {
-                    let Some(arg) =
-                        super::fill_derive::condition_arg(self, pattern, p).map(|a| a.to_value())
-                    else {
-                        continue;
-                    };
-                    let Some(sub) = self.walk_arg(ev.pos_arg(self, offset + k), subst) else {
-                        return Err(format!(
-                            "a `{}` dictionary has no sub-dictionary {}",
-                            self.qualified_name_of(ph),
-                            offset + k,
-                        ));
-                    };
-                    if !self.evidence_admits(&arg, sub, params, subst, met)? {
-                        return Ok(false);
-                    }
-                }
-                return Ok(true);
-            }
-        }
-        // A TYPE: its head is the pattern's, and each argument it writes describes the
-        // pattern's argument of that name (by SHORT name, as `condition_arg` reads one).
-        if self.canonical_sort_sym(eh) != ph {
-            return Ok(false);
-        }
-        for key in pattern.named_keys(self) {
-            let name = self.local_name_of(key).to_string();
-            let pair = (
-                pattern.named_field(self, &name).map(|a| a.to_value()),
-                ev.named_field(self, &name).map(|a| a.to_value()),
-            );
-            if let (Some(arg), Some(sub)) = pair {
-                if !self.evidence_admits(&arg, sub, params, subst, met)? {
-                    return Ok(false);
-                }
-            }
-        }
-        Ok(true)
-    }
-
-    /// The TYPE the evidence `ev` describes — a dictionary as its provider's sort at the types
-    /// its conditions describe, a type as itself — or `None` while it is not pinned. Where a
-    /// parameter met twice is compared ([`Self::evidence_admits`]).
-    fn evidence_type(&self, ev: Value, subst: &Substitution) -> Result<Option<Value>, String> {
-        let ev = match self.bound_evidence(ev, subst) {
-            Ok(ev) => ev,
-            Err(_) => return Ok(None),
-        };
-        let Some((_, impl_key)) = crate::kb::term_view::dictionary_view_syms(self)
-            .filter(|_| self.is_dictionary_value(&ev))
-        else {
-            return Ok(Some(ev));
-        };
-        let impl_sort = self.dictionary_impl(&ev, impl_key).map_err(evidence_fault)?;
-        let impl_sort = self.canonical_sort_sym(impl_sort);
-        let Some(entry) = self.sort_domain(impl_sort) else {
-            return Ok(Some(Value::SymbolRef(impl_sort)));
-        };
-        let mut named: Vec<(Symbol, Value)> = Vec::new();
-        for (k, &j) in entry.conditions.iter().enumerate() {
-            let Some(sub) = self.walk_arg(ev.pos_arg(self, entry.sub_offset + k), subst) else {
-                return Err(format!(
-                    "a `{}` dictionary has no sub-dictionary {}",
-                    self.qualified_name_of(impl_sort),
-                    entry.sub_offset + k,
-                ));
-            };
-            if let Some(ty) = self.evidence_type(sub, subst)? {
-                named.push((entry.params[j].key, ty));
-            }
-        }
-        Ok(Some(if named.is_empty() {
-            Value::SymbolRef(impl_sort)
-        } else {
-            Value::Entity {
-                functor: impl_sort,
-                pos: Vec::new().into(),
-                named: named.into(),
-            }
-        }))
-    }
-
-    /// Is `v` headed by the runtime `Dictionary` constructor?
-    fn is_dictionary_value(&self, v: &Value) -> bool {
-        crate::kb::term_view::dictionary_view_syms(self).is_some_and(|(ctor, _)| {
-            matches!(v.head(self), ViewHead::Functor { functor, .. } if functor == ctor)
-        })
     }
 
     /// `fill(?x)`, wrapped so each of the relation's `SortDomain` reads is handed `dict`
@@ -9585,8 +9275,7 @@ impl KnowledgeBase {
     /// An unbound `x` is the tuple of fresh components in the type's order, each filled in turn.
     /// A bound one is read BY LABEL, as a tuple is read (`kernel-language.md` §4.5): a value of
     /// the type by width and permutation — `(b: "s", a: 1, c: true)` at `(a: Int64, b: String)`
-    /// — is a member, as a value of a sort that refines another is (`__refined_domain`). A value
-    /// that is no tuple, or lacks a label, is none.
+    /// — is a member. A value that is no tuple, or lacks a label, is none.
     fn tuple_fill_goal(&mut self, x: Value, dict: Value, subst: &Substitution) -> TupleFill {
         let dict = match self.tuple_fillable_dictionary(dict, subst) {
             Ok(dict) => dict,
@@ -18098,18 +17787,6 @@ pub(crate) enum ApplyDomainLowering {
     NotYet,
     /// The goal is malformed or names no domain — the builtin arm reports it.
     Error(String),
-}
-
-/// The message a malformed dictionary's [`DomainEvidence`] carries, for a reader that reports it
-/// rather than answers with it ([`KnowledgeBase::evidence_admits`]).
-fn evidence_fault(e: DomainEvidence) -> String {
-    match e {
-        DomainEvidence::NoDomain(why) => why,
-        DomainEvidence::NotYet(_) => "a dictionary whose `impl` is not bound yet".to_string(),
-        DomainEvidence::NoDomainType(_) | DomainEvidence::Dict { .. } => {
-            "a dictionary that names no provider".to_string()
-        }
-    }
 }
 
 /// What [`KnowledgeBase::tuple_fill_goal`] makes of a fill at a tuple.

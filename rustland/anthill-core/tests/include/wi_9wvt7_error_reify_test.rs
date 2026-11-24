@@ -285,26 +285,30 @@ namespace test.reify
   rule viaGenericRule(?r) :- catchIt(lambda () -> mayFail(0 - 1), ?r)
   rule viaPlainRule(?r) :- caught(?r)
 
-  -- SUBSUMPTION AT THE BOUNDARY. `Narrow` refines `Boom`, and `Error`'s payload is
+  -- SUBSUMPTION AT THE BOUNDARY. `Narrow` refines `Wide`, and `Error`'s payload is
   -- declared `Covariant`, so a body raising `Error[Narrow]` conforms to a boundary
-  -- WRITTEN at `Boom` and the typer DISCHARGES the label — `wideCatch` declares no
+  -- WRITTEN at `Wide` and the typer DISCHARGES the label — `wideCatch` declares no
   -- effects and the fixture loads. A runtime decline would then let the raise escape an
-  -- operation already typed effect-free.
+  -- operation already typed effect-free. `Wide` has no constructors: a sort with
+  -- constructors is closed, and a `requires` naming one is refused (proposal 074 stage 5,
+  -- WI-20261113-DY84V), so the refined payload is a marker, as an error family's root is.
+  sort Wide
+  end
   sort Narrow
-    requires Boom
+    requires Wide
     entity narrow(n: Int64)
   end
 
   operation raisesNarrow() -> Int64 effects {Error[Narrow]} =
     Error.raise(narrow(3))
 
-  -- `[T1 = Boom]` is what makes the boundary WIDER than the raiser. Left to inference,
+  -- `[T1 = Wide]` is what makes the boundary WIDER than the raiser. Left to inference,
   -- `T1` comes from the body's row and the boundary is at `Narrow` — which is the
   -- control below.
-  operation wideCatch() -> Result[E = Boom, T = Int64] =
-    Error.reify[T1 = Boom](lambda () -> raisesNarrow())
+  operation wideCatch() -> Result[E = Wide, T = Int64] =
+    Error.reify[T1 = Wide](lambda () -> raisesNarrow())
 
-  operation narrowCatch() -> Result[E = Boom, T = Int64] =
+  operation narrowCatch() -> Result[E = Wide, T = Int64] =
     Error.reify(lambda () -> raisesNarrow())
 end
 "#;
@@ -938,7 +942,7 @@ fn evidence_that_names_no_payload_sort_is_refused() {
 
 /// A WIDER BOUNDARY ADMITS A NARROWER RAISE, because the ROW already does.
 /// `Error`'s payload is declared `Covariant`, so `raisesNarrow`'s `Error[Narrow]`
-/// conforms to a `reify` typed at `Error[Boom]` and the typer DISCHARGES it —
+/// conforms to a `reify` typed at `Error[Wide]` and the typer DISCHARGES it —
 /// `wideCatch` declares no effects and the fixture loads. Equality at the runtime
 /// boundary would therefore be unsound rather than merely strict: the raise would
 /// escape an operation the typer has already typed effect-free.
@@ -950,18 +954,19 @@ fn evidence_that_names_no_payload_sort_is_refused() {
 /// INFERRED from the body's row unless written, so a plain `Error.reify(…)` around a body
 /// declaring `Error[Narrow]` is typed at `Narrow` and plain equality answers —
 /// `narrowCatch` passes with or without the refinement leg, as does every other row
-/// in this file. Only the WRITTEN `Error.reify[T1 = Boom]` puts a wider boundary around a
+/// in this file. Only the WRITTEN `Error.reify[T1 = Wide]` puts a wider boundary around a
 /// narrower raiser, which is the same shape
 /// `an_effect_labels_argument_subsumes_where_its_sort_declares_variance` loads at the
 /// type level. Measured: with the refinement leg backed out of `sort_sym_compatible`'s
 /// answer here, `wideCatch`
-/// fails and `narrowCatch` still passes.
+/// fails and `narrowCatch` still passes — over the data sort `Boom`, before
+/// WI-20261113-DY84V moved the refinement to the constructor-less `Wide`; not measured again.
 #[test]
 fn a_boundary_catches_a_payload_whose_sort_refines_its_own() {
     let mut interp = interp();
     let caught = interp
         .call("test.reify.wideCatch", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value)
-        .expect("a `Narrow` value is caught by a boundary typed at `Boom`, which it refines");
+        .expect("a `Narrow` value is caught by a boundary typed at `Wide`, which it refines");
     assert_eq!(short_name(&interp, &caught), "err");
     let payload = field(&interp, &caught, "error", 0);
     assert_eq!(
