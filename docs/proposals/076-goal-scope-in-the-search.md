@@ -1,6 +1,6 @@
 # Proposal 076: A goal's scope in the search — its call, its exit, and the alternatives it leaves
 
-## Status: Draft, written with the user 2026-11-24, revised the same day after two reviews (History 2 to 4). Not approved. Nothing here is implemented, and the spec is not changed by it (§9 says what it would change).
+## Status: Draft, written with the user 2026-11-24, revised the same day after reviews (History 2 to 6). Not approved. Nothing here is implemented, and the spec is not changed by it (§9 says what it would change).
 
 ## Tracked by: WI-20261122-P6G1P (commit to the first definite proof of a ground goal), WI-20261122-VT9S7 (dependency-directed backtracking). No ticket of its own.
 
@@ -55,13 +55,13 @@ control, ?n: Int64                498 MB     1.63 GB
 growing resolvent, untyped        439 MB     1.41 GB
 ```
 
-- **An untyped recursion with a short resolvent is LINEAR**, about 4.4 KB a level, in memory and in time (wall 9.0 / 10.0 / 11.9 s at n = 8000 / 16000 / 32000). That is the retained frame per call (no last-alternative release).
+- **An untyped recursion with a short resolvent is LINEAR**, near enough, in memory and in time (wall 9.0 / 10.0 / 11.9 s at n = 8000 / 16000 / 32000). With the stdlib's 103 MB taken off, a level costs about 4.3 KB at n = 8000, 4.7 KB at 16000 and 5.5 KB at 32000: a log factor (σ's path copies, one version per retained frame) is not excluded. That is the retained frame per call (no last-alternative release).
 - **A growing resolvent is quadratic.** That is the tail copy: each level's frames each hold a copy of a tail one goal longer.
 - **A typed head makes the resolvent grow.** `?n: Int64` appends a fill after the body (`install_typed_head_domain_goals`, YFD7F), still pending when the recursion opens the next level. So the typed deterministic recursion and the typed control are the growing-resolvent case.
 
-The first draft of this proposal recorded the control at 475 MB / 1.6 GB (n = 1000 / 2000) and the deterministic recursion at 181 / 487 MB (debug), read them as "quadratic even when the resolvent is short", and left the cause "not identified". Those numbers match the TYPED rows above and not the untyped ones. The draft's probes were not kept, so that they had typed heads is inferred from the match, not read from them. **On that reading there is one quadratic cost, the copied flat resolvent, and one linear one, the retained frame.** No heap profile was needed (`malloc_history`, `heap` and `sample` are on the machine if one is wanted).
+The first draft of this proposal recorded the control at 475 MB / 1.6 GB (n = 1000 / 2000) and the deterministic recursion at 181 / 487 MB (debug), read them as "quadratic even when the resolvent is short", and left the cause "not identified". Those numbers match the TYPED rows above and not the untyped ones. The draft's probes were kept in the drafting session's scratch directory and READ there (2026-11-24): every one of them is typed, `chain(?n: Int64)` and `cnt(?n: Int64)`, with `ok(?x: Int64)` beside the chains. So the match is confirmed, not only inferred. **There is one quadratic cost, the copied flat resolvent, and one linear one, the retained frame.** No heap profile was needed (`malloc_history`, `heap` and `sample` are on the machine if one is wanted).
 
-Not explained, and not this proposal's: with the base clause written `rule cnt(0)` in place of `fact cnt(0)`, the query `cnt(0)` answers "no solutions".
+The draft's deterministic probe also wrote its base clause `rule cnt(0)`. A rule with no body DECLARES its predicate and asserts nothing (proposal 061: "No body ⇒ DECLARES. A body ⇒ asserts"; `fact` is a body-less assertion). So `cnt(0)` has no clause, the probe answered "no solutions" at every `n` (read again 2026-11-24), and its row measured a descent that then failed, not a recursion that holds. The probes above write `fact cnt(0)`, which answers `true`.
 
 ## 1. How other machines do it
 
@@ -80,8 +80,8 @@ Warren's abstract machine, as in Aït-Kaci's tutorial reconstruction. Teyjus (Qi
 **Do we come back to a choice point a finished rule pushed?** Yes, but only on a later FAILURE, never because the rule finished. A choice point left by a finished goal is its "give me your next answer". Over
 
 ```anthill
-rule q(1)
-rule q(2)
+fact q(1)
+fact q(2)
 rule p(?x) :- q(?x), r(?x)
 ```
 
@@ -135,6 +135,13 @@ At the exit there are three things to do with the segment:
 - **Each variable free in `g` is LOCAL to it:** a variable of the clause that occurs in this one body goal and nowhere else in the body or the head (or, at the top, in this one goal of the query). "Occurs in one goal only" is known when the clause is loaded. At the call the variable is fresh and aliased to nothing. The goal's other arguments are checked ground under σ.
 
 The second case is VT9S7's own example: `member(?c, [1, …, n])` followed by a failing goal that does not read `?c`.
+
+**Locality is read off the goal as it is ASKED, not only as it was written.** Two things put goals beside a written one, and either can read a variable that looks local in the source:
+
+- **The typer, at load.** A typed column gets a guard and a fill (`install_typed_head_domain_goals`, YFD7F), and so does a typed variable (C6VN0). So "occurs in one goal only" is read off the body as the resolver opens it, after every pass that adds goals to it, never off the parsed clause.
+- **Argument evaluation, at run time.** A call in an argument that cannot be evaluated yet becomes a pending equation SPLICED AFTER the goal, among the caller's goals (`evaluate_goal_arguments`). `q(?y, ?y + 1)` is asked as `q(?y, ?hole), ?hole <=> ?y + 1`, and the equation reads `?y` after `q` exits. MEASURED 2026-11-24 (debug build, from reading the code and one query): over `fact q(1, 3)` and `fact q(2, 3)`, the query `q(?y, ?y + 1)` answers `?y = 2`. `q`'s first proof fails only in the equation, and its second is needed. A guard that read `?y` as local to `q` would skip `q(2, 3)` and answer "no solutions". There is no guard yet, so that wrong answer is argued, not run.
+
+Proposed: **a goal's pending equations belong to its scope.** The scope holds the evaluated goal and its equations, at the goal's depth: a split, not a call, and depth is a field (§6 Stage A). The goal's exit then comes after its equations, and `?y` is local to that scope. The alternative keeps the splice where it is today and counts a variable a pending equation mentions as not local, which is sound and loses independence for every such goal. Open question 9.
 
 **And no assumption in scope has a free variable.** An assumption is a clause the goal's proof may use, and its variables are the CALLER's. MEASURED 2026-11-24 (review, reproduced):
 
@@ -242,8 +249,13 @@ Each stage is measured on its own and lands on both implementations. The first d
 - **One stack of choice points**, each (a continuation, σ, the store, the alternatives left). The live branch is not on it.
 - **A choice point is released at its last alternative:** a call with one candidate pushes none. "Last" has to be known: extent rows are matched lazily, and waiting clauses come after the candidates.
 - **That alone does not bound memory** (review, 2026-11-24). With no choice point left, each call of a deterministic recursion still links a scope to its caller's: at the base of `cnt(n)`, `n` scopes are live with the choice-point stack empty. A scope is small where today's retained frame is about 4.4 KB, but it is still one a level.
-- **A scope with nothing left to do at its exit is not kept.** When the goal selected is the LAST of its scope, and that scope has no duty at its exit (no assumption to drop, no guard or commit to decide, no proof record to close), the callee's scope links to the scope's CALLER, not to it. Depth is a field (Stage A), so eliding a scope changes no depth. `cnt` then runs in a bounded number of live scopes; a recursion that is not a last call (`chain` with `ok(1)` after it) keeps one a level, as it must.
-- **Measured separately:** peak live scopes and peak live choice points, on `cnt` (both bounded), the control and the growing chain (scopes linear, choice points bounded).
+- **A scope whose last goal is called is not kept.** When the goal selected is the LAST of its scope, the callee's scope links to the scope's CALLER, not to it. The two exits are then the same moment, so the scope's duties at its exit ride with the callee. Depth is a field (Stage A), so eliding a scope changes no depth.
+  - **Its duties are carried, each in O(1).** A guard to decide (§3): carried as (the scope's call height, the store at its call). Where several elided scopes each have one, the OUTERMOST is kept: its floor is the lowest and skips everything the inner ones would, and it is valid as that scope's own guard at its own exit. The commit (§4) is carried the same way. Assumptions to drop: carried as a count.
+  - **The one duty that does not compose is a proof record to close.** In proof mode each scope is a node of the record, so no scope is elided there.
+  - **Why carrying is needed** (review of revision 5, 2026-11-24): every ground call is independent and has a guard to decide at its exit. A rule that kept a scope with a duty would keep every such scope, and `cnt(4000)`, ground at every level, would hold 4000 scopes with the guard on, which is its default.
+
+  `cnt` then runs in a bounded number of live scopes; a recursion that is not a last call (`chain` with `ok(1)` after it) keeps one a level, as it must.
+- **Measured separately**, with the guard ON: peak live scopes and peak live choice points, on `cnt` (both bounded), the control and the growing chain (scopes linear, choice points bounded).
 - **The cut barrier is the scope's call height**, as in WAM and ELPI, not a tag found by scanning for a frame (`apply_cut`).
 - **The guard (§3)** is a choice point of its own kind, (floor: the call height, the solutions reached), pushed at the exit of an independent scope whose height is above its call's and whose store is its call's. Backtracking into it either cuts to the floor or pops it.
 - **The commit (§4)** cuts to the call height at the same exit.
@@ -298,6 +310,7 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
 6. **A scope that hands waiting goals to its caller: is it proved?** Stage B says it exits, not definitely, and the caller goes on. The other reading: a body with goals still waiting has not been proved until they are, and the caller's later goals should not run first. The first is today's behaviour seen from the caller (its goals run while the callee's wait). To confirm.
 7. **A goal woken from an outer scope.** It is asked next, in the middle of an inner scope's proof, and may fail it: today's behaviour, kept (068 §2.2). For an independent goal it cannot arise: nothing outside its proof can name its variables.
 8. **Local variables under a bounded quantifier or a `forall_impl`.** "Occurs in one goal only" is read off a clause body. What it is for the instance of a `some_in` or the consequent of a discharge is to be written down with Stage C.
+9. **A goal's pending equations (§3).** Proposed: they belong to the goal's scope, so its exit comes after them. The alternative: they stay spliced among the caller's goals, as today, and a variable they mention is not local. To choose with the user. Either way, the `q(?y, ?y + 1)` query of §3 answering `?y = 2` is an acceptance case of the guard, with its control (the guard reading `?y` as local answers "no solutions").
 
 ## History
 
@@ -319,3 +332,9 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
    - **5. Two of P6G1P's controls corrected** in §4: the `2^k` baseline needs the guard off too, and the binding branches are `<=>`, not `=`. A test that tells the commit from the guard added.
    - **6. Releasing a choice point does not bound memory.** Stage C gains the elision of a scope with no duty at its exit, and measures live scopes and live choice points separately.
 5. 2026-11-24 — the verdict of a skip decided. The user asked why a skipped alternative would make anything undecided; it does not: today's "undecided" for `!(dead(0))` comes from walking into a branch that could not have held a solution. A skip is a refutation and sets neither `truncated` nor a fault, for the guard and for the commit. Question 3 closed but for §8.3's wording.
+6. 2026-11-24 — five corrections from a reading of revision 5, applied at the user's word ("apply them").
+   - **The first draft's probes were read**, from the drafting session's scratch directory: all typed (`?n: Int64`), which confirms § MEASURED's inference. Its deterministic probe wrote `rule cnt(0)`, a declaration (061), so it answered "no solutions" at every `n`; the "not explained" note is withdrawn.
+   - **§1.1's example** wrote `rule q(1)`, `rule q(2)`, which declare and assert nothing; now `fact`.
+   - **§3: locality is read off the goal as asked.** A pending equation from argument evaluation is spliced after the goal and reads its "local" variable: `q(?y, ?y + 1)` answers `?y = 2` today and would answer "no solutions" under a guard that read `?y` as local. Proposed: the equations belong to the goal's scope (question 9). Locality is also read after the typer's added goals.
+   - **Stage C: a scope's exit duties ride with its last call.** Kept only for a scope with no duty, the elision would keep every ground call's scope for its guard, and `cnt` would not be bounded with the guard on. The guard and the commit are carried as the outermost elided scope's (call height, store), assumptions as a count; only a proof record pins a scope.
+   - **§ MEASURED's per-level cost** is 4.3 to 5.5 KB from n = 8000 to 32000, not a flat 4.4 KB: a log factor is not excluded.
