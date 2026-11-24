@@ -545,7 +545,10 @@ fn an_internal_member_off_a_value_is_refused() {
 /// under `let dd = D`, `List[T = x.T]` over `x: P[T = Int64]` and `List[pp.T]` under `let pp
 /// = P[T = Int64]` are `List[T = Int64]`. Each was refused, "unresolved name 'dd.T'": the
 /// entry is lowered as a type, one dotted name. A value's type member read as a value is the
-/// type it is where the value's type determines it, and refused where it leaves it open.
+/// type it is where the value's type determines it; where it leaves it open it is 065's
+/// dispatch, refused without the clause it needs (proposal 074 stage 6, WI-20261113-FCMJA:
+/// `vb2` was refused "the receiver's type leaves it open here", and is refused naming
+/// `requires anthill.reflect.TypeValue[T = x.T]`).
 #[test]
 fn a_type_member_in_a_value_bracket_is_the_member() {
     let decls = "  operation viaParam(x: P[T = Int64]) -> Int64 = bit(PartialEq.eq(List[T = x.T], \
@@ -557,7 +560,11 @@ fn a_type_member_in_a_value_bracket_is_the_member() {
         Ok(1 + 2 + 4 * 3)
     );
     for (ns, decls, token) in [
-        ("vb2", "  operation g(x: P) -> Type = x.T\n", "the receiver's type leaves it open here"),
+        (
+            "vb2",
+            "  operation g(x: P) -> Type = x.T\n",
+            "expected `requires anthill.reflect.TypeValue[T = x.T]`",
+        ),
         (
             "vb3",
             "  operation g(x: P[T = Int64]) -> Type = x.T()\n",

@@ -771,6 +771,14 @@ fn unnamed_argument(kb: &KnowledgeBase, denotation: &Rc<NodeOccurrence>) -> Stri
 /// `x.T` read as a value, where `x` is a value of `sort` and `T` a type member of it: the type
 /// value of the type the projection off `x` is, when it names no type parameter. A type
 /// member is no call: `called` refuses `x.T()`.
+///
+/// Proposal 074 stage 6 (WI-20261113-FCMJA; kernel-language §8.2): ONE THE RECEIVER'S TYPE LEAVES
+/// OPEN IS 065'S DISPATCH, as a type parameter read as a value is — the call
+/// `TypeValue.type_value[T = x.T]()`, typed as if written, so it needs `TypeValue` at `x.T` in
+/// scope and is refused otherwise. `receiver_path` is the stable path the receiver is (`x`,
+/// `h.s`); a receiver that is none (a call) names no type a later read could share, and its
+/// open member stays refused. MEASURED before the stage: `tOf(x: Additive) -> Type requires
+/// TypeValue[T = x.T] = x.T` was refused "it is no type value", where the spelled call answered.
 pub(super) fn type_member_as_value(
     kb: &mut KnowledgeBase,
     receiver_ty: &Value,
@@ -778,6 +786,8 @@ pub(super) fn type_member_as_value(
     member_short: &str,
     member: Symbol,
     called: bool,
+    receiver_path: Option<&[Symbol]>,
+    rigids: &[(VarId, TermId)],
     occ: &Rc<NodeOccurrence>,
 ) -> Result<Rc<NodeOccurrence>, TypeError> {
     let span = Some(occ.span.span);
@@ -802,7 +812,7 @@ pub(super) fn type_member_as_value(
             && !value_contains_projection(kb, ty)
             && !value_contains_rigid(kb, ty)
     };
-    match project_type_member(
+    let projected = project_type_member(
         kb,
         receiver_ty,
         member_short,
@@ -812,8 +822,41 @@ pub(super) fn type_member_as_value(
         RowReading::Ground,
         &ctx,
         span,
-    )? {
+    )?;
+    // A member the receiver's type writes as a type parameter of the body.
+    let rigid = match &projected {
+        ProjResult::Grounded(ty) if !known(kb, ty) => rigid_param_of(kb, ty, rigids),
+        _ => None,
+    };
+    match projected {
         ProjResult::Grounded(ty) if known(kb, &ty) => Ok(type_value_of(kb, &ty, occ)),
+        // A member the receiver's type writes as a type parameter of the body is that
+        // parameter, read as a value: 065's read, backed by `requires TypeValue[T = X]` (`x.T`
+        // under `x: Num[T = X]`, a lambda's `y.T` under `y: Num[T = X]` alike).
+        ProjResult::Grounded(_) if rigid.is_some() => {
+            let head = rigid.expect("checked");
+            let pass = crate::kb::simp_rewrite::simp_pass(kb);
+            Ok(NodeOccurrence::synthesized_expr(
+                Expr::TypeValue {
+                    head,
+                    pos_args: Vec::new(),
+                    named_args: Vec::new(),
+                },
+                Rc::clone(occ),
+                pass,
+                occ.owner,
+            ))
+        }
+        _ if receiver_path.is_some() => {
+            let path = receiver_path.and_then(ValuePath::of).expect("checked: a path has a head");
+            let at = build_projection_off(kb, path, member, occ.span);
+            type_value_call(kb, at, occ).ok_or_else(|| {
+                refused(
+                    "a knowledge base that holds `anthill.reflect.TypeValue`".into(),
+                    format!("`{member_short}` read as a value, which is `TypeValue`'s dispatch"),
+                )
+            })
+        }
         _ => Err(refused(
             format!("a type member of `{denoted}` the receiver's type determines"),
             format!(
@@ -821,6 +864,36 @@ pub(super) fn type_member_as_value(
             ),
         )),
     }
+}
+
+/// Proposal 074 stage 6 — the type parameter a type is, where it is the rigid of one the body
+/// reads (`X` in `f[X]`), by its declared symbol, the one a read of it is written with.
+/// `rigids` pairs each parameter's canonical variable with its rigid in the body.
+fn rigid_param_of(kb: &mut KnowledgeBase, ty: &Value, rigids: &[(VarId, TermId)]) -> Option<Symbol> {
+    let tid = crate::kb::node_occurrence::value_to_term(kb, ty).ok()?;
+    let (vid, _) = rigids.iter().find(|(_, r)| *r == tid)?;
+    kb.type_param_of_canonical_var(*vid)
+}
+
+/// Proposal 074 stage 6 — the call `TypeValue.type_value[T = at]()` where `occ` stands, typed as
+/// if it were written there (its pass is the rewriter's, so a type reader does not look through
+/// it to the dot it replaces). `None` where the knowledge base holds no `TypeValue`.
+fn type_value_call(kb: &mut KnowledgeBase, at: Value, occ: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
+    let functor = kb.try_resolve_symbol("anthill.reflect.TypeValue.type_value")?;
+    let key = kb.intern("T");
+    let pass = crate::kb::simp_rewrite::simp_pass(kb);
+    Some(NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor,
+            pos_args: Vec::new(),
+            named_args: Vec::new(),
+            type_args: vec![(Some(key), at)],
+        },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    ))
 }
 
 /// The type value of the type `ty`, built where `occ` stands: as the walks build a type written

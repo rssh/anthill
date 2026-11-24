@@ -1914,6 +1914,20 @@ fn unbacked_value_reads(
             });
         }
     }
+    if let Some((path, member, place, span)) = unwritten_member_value_read(kb, op_sym, node) {
+        let read = path
+            .iter()
+            .map(|s| short_name_of(kb.local_name_of(*s)).to_string())
+            .chain(std::iter::once(member))
+            .collect::<Vec<_>>()
+            .join(".");
+        out.push(TypeError::TypeValueMemberReadUnbacked {
+            span,
+            read,
+            place,
+            op: op_sym,
+        });
+    }
     // A structural type written as a bracket's entry is one type, read when the body is
     // loaded: see [`OpenStructuralEntry`].
     if let Some(OpenStructuralEntry { entry, name }) = open_entry {

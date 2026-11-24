@@ -980,6 +980,23 @@ pub enum TypeError {
         param: Symbol,
         op: Symbol,
     },
+    /// Proposal 074 stage 6 (WI-20261113-FCMJA; kernel-language §8.2) — a type member off a
+    /// parameter read as a VALUE (`x.T`, or `TypeValue.type_value[T = x.T]()` spelled) that
+    /// no clause the signature writes backs, the parameter's type leaving it open: 065's
+    /// rule at a member. Raised under `x: Num` too, whose dictionary would supply the clause:
+    /// the clause is written, not inferred. Found by [`unwritten_member_value_read`].
+    ///
+    /// `read` is the projection as written (`x.T`); `op` the operation whose signature must
+    /// gain the clause.
+    TypeValueMemberReadUnbacked {
+        span: Option<Span>,
+        read: String,
+        /// Where the path starts: off a parameter the clause backs it; off a field path
+        /// (`k.s.T`, a contract clause carrying a single reference) or a binder of the body no
+        /// clause can, and the refusal says where one can.
+        place: MemberReadPlace,
+        op: Symbol,
+    },
     /// WI-20261020-VQPRP (kernel-language.md §4.8) — a variable read as a VALUE in an
     /// executable body that nothing binds: an anonymous `?`, or a `?y` with no parameter
     /// and no `let`, `lambda` or `match` binder named `y` in scope. Loaded, it was read
@@ -2640,6 +2657,22 @@ impl TypeError {
                     short_name_of(kb.qualified_name_of(*op)),
                 )
             }
+            TypeError::TypeValueMemberReadUnbacked {
+                read,
+                place: MemberReadPlace::Parameter,
+                op,
+                ..
+            } => format!(
+                "`{read}` is read as a VALUE here, and no clause of `{}` requires \
+                 `TypeValue[T = {read}]` — so its signature promises nothing about whether it \
+                 inspects `{read}` (proposal 065). Add `requires anthill.reflect.TypeValue[T = \
+                 {read}]` to `{}`, or use `{read}` only in type position",
+                kb.qualified_name_of(*op),
+                short_name_of(kb.qualified_name_of(*op)),
+            ),
+            TypeError::TypeValueMemberReadUnbacked { read, place, .. } => {
+                unwritable_member_read(read, *place)
+            }
             TypeError::UnboundVariableRead {
                 var, owner, param, ..
             } => {
@@ -2881,6 +2914,7 @@ impl TypeError {
             | TypeError::NoProvisionAtCarriers { span, .. }
             | TypeError::ChangesSealedCode { span, .. }
             | TypeError::TypeValueReadUnbacked { span, .. }
+            | TypeError::TypeValueMemberReadUnbacked { span, .. }
             | TypeError::UnboundVariableRead { span, .. }
             | TypeError::SortParamWithoutCarrier { span, .. }
             | TypeError::AmbiguousConstrainedParamMember { span, .. }
@@ -3558,6 +3592,39 @@ impl TypeError {
                     span: self.span(kb),
                 }
             }
+            TypeError::TypeValueMemberReadUnbacked {
+                read,
+                place: place @ (MemberReadPlace::FieldPath | MemberReadPlace::Local),
+                op,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "body".to_string(),
+                expected_type: "a type member read as a value off a parameter, `x.T`, under \
+                                `requires anthill.reflect.TypeValue[T = x.T]`"
+                    .to_string(),
+                actual_type: unwritable_member_read(read, *place),
+                span: self.span(kb),
+            },
+            TypeError::TypeValueMemberReadUnbacked {
+                read,
+                place: MemberReadPlace::Parameter,
+                op,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "requires".to_string(),
+                expected_type: format!("`requires anthill.reflect.TypeValue[T = {read}]`"),
+                actual_type: format!(
+                    "`{read}` is read as a VALUE and no clause of the signature requires \
+                     `TypeValue[T = {read}]`, so it promises nothing about whether this \
+                     operation inspects `{read}` (proposal 065). Add the clause, or use \
+                     `{read}` only in type position"
+                ),
+                span: self.span(kb),
+            },
             // The body that reads it is the entity's field: the operation's body, a
             // parameter's default, a const's value.
             TypeError::UnboundVariableRead {
@@ -4279,4 +4346,24 @@ pub(super) fn dot_bracket_unread_message(member: &str, reading: UnreadDotBracket
              sort, `Sort.{member}[…](…)`"
         ),
     }
+}
+
+/// Proposal 074 stage 6 — why `k.s.T`, or `y.T` off a lambda's binder, read as a value is
+/// refused: no clause can name the path — a contract clause carries a single reference, and a
+/// binder of the body is none of the signature's — while an operation handed the value as its
+/// parameter can write it.
+fn unwritable_member_read(read: &str, place: MemberReadPlace) -> String {
+    let (receiver, member) = read.rsplit_once('.').unwrap_or((read, ""));
+    let why = match place {
+        MemberReadPlace::FieldPath => format!(
+            "off the field path `{receiver}`, and a contract clause carries only a \
+             single-reference receiver"
+        ),
+        _ => format!("off `{receiver}`, which is no parameter of the operation"),
+    };
+    format!(
+        "`{read}` is read as a VALUE {why}, so no `requires TypeValue[T = {read}]` can back it: \
+         hand `{receiver}` to an operation `(x: …)` that requires `TypeValue[T = x.{member}]` \
+         and reads `x.{member}`"
+    )
 }

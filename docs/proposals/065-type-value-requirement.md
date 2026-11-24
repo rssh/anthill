@@ -38,6 +38,8 @@ operation bad[B](x: B) -> Type = Cell[V = B]
   --   `TypeValue[T = B]`; add `requires TypeValue[T = B]` to `bad`.
 ```
 
+**A type member is read the same way** (proposal 074 §3, stage 6, 2026-11-24). `x.T` in value position, where `x`'s type leaves the member open, is `TypeValue.type_value[x.T]()`, and requires `TypeValue[x.T]` written on the operation, also over a spec that states `requires TypeValue[T]`, whose provider then supplies the clause (`docs/kernel-language.md` §8.2). A member the type writes as a type parameter is that parameter. Off a lambda's binder, a local or a field path no clause can be written, and the read is refused.
+
 **055 §8's spelling is this member.** `type_value[T = B]()` is `TypeValue.type_value` called with a callee bracket, which binds the enclosing sort's parameter (WI-20260911-RS2G4) — so 055's "canonical static→dynamic reifier" needs no declaration of its own, and a bare `B` in value position (055 §2) is sugar for the same call. (The loader's internal `Expr::TypeValue` — the resolved-IR form of 055 §2 — is a different thing with a colliding name; it is not surface.)
 
 **Explicit, not inferred** (user decision, 2026-09-19). The clause is part of the signature, because the signature is what a caller — and a spec — reads. Inferring it from a body is deferred, not rejected: it is a convenience over this rule, not a different rule, and it cannot apply to a body-less spec operation at all.

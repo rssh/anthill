@@ -2233,6 +2233,240 @@ pub(super) fn type_value_backed_params(kb: &mut KnowledgeBase, op_sym: Symbol) -
         .collect()
 }
 
+/// Proposal 074 stage 6 (WI-20261113-FCMJA; kernel-language §8.2) — the first value read of a
+/// type member left OPEN that no clause the signature WRITES backs. A value read is a call
+/// `TypeValue.type_value[T = x.T]()`, spelled or the one `x.T` in value position is
+/// ([`type_member_as_value`]); it is reported with the receiver's path, the member's short
+/// name (`["x"]`, `"T"`), where the path starts ([`MemberReadPlace`]) and its span.
+///
+/// THE CLAUSE IS WRITTEN, NOT INFERRED, as 065 holds a type parameter, so a signature says
+/// whether its operation inspects the type (proposal 074 §3). So a parameter whose spec states
+/// `requires TypeValue[T = T]` (`x: Num`) needs the clause too, though `x`'s dictionary
+/// supplies it (`op_requires_chain_rc`): without it `Num`'s requirement answered the call, and
+/// the read loaded. What backs a read off a parameter: `requires TypeValue[T = x.T]` at the
+/// same path and member; and where `x`'s type writes the member as a type parameter (`x:
+/// Num[T = X]`, `x.T` is `X`), `requires TypeValue[T = X]`, 065's own. A member the type fixes
+/// (`x: Num[T = Int64]`) is no read of an open type.
+///
+/// OFF ANYTHING BUT A PARAMETER NO CLAUSE CAN BE WRITTEN — a lambda's binder, a `let`, a
+/// `match` binder — and a member left open there is refused (decided with the user
+/// 2026-11-24): `lambda (y: Num) -> y.T` was answered by `y`'s dictionary, the one read no
+/// signature declares. Its type is read off the binder: a lambda's from its arrow, a `let`'s
+/// from what it writes, else its value; a binder whose type is not read here (a `match` arm's, a tuple pattern's)
+/// is taken as leaving the member open, and the refusal names it. A member such a type writes
+/// as a type parameter the operation's clause backs is read as that parameter, as above.
+pub(super) fn unwritten_member_value_read(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<(Vec<Symbol>, String, MemberReadPlace, Option<Span>)> {
+    let tv_op = kb.try_resolve_symbol("anthill.reflect.TypeValue.type_value")?;
+    let tv_canon = kb.canonical_sort_sym(type_value_spec_sym(kb)?);
+    let params = crate::kb::op_info::lookup_operation_info(kb, op_sym)?.params.clone();
+    // A body's own binders over its parameters, each with the type it is read at, `None`
+    // where it is not read here; a binder shadows a parameter of its name.
+    type Scope = imbl::HashMap<Symbol, Option<Value>>;
+    let bind = |scope: &Scope, pattern: &Rc<NodeOccurrence>, ty: Option<Value>| {
+        let mut inner = scope.clone();
+        let single = match pattern.as_pattern() {
+            Some(Pattern::Var { name }) => Some(*name),
+            _ => None,
+        };
+        for_each_pattern_binder(pattern, |name| {
+            inner.insert(name, if single == Some(name) { ty.clone() } else { None });
+        });
+        inner
+    };
+    // The walk first, in source order: almost no body makes such a call.
+    struct Read {
+        segs: Vec<Symbol>,
+        member: String,
+        root: Option<Option<Value>>,
+        span: Option<Span>,
+    }
+    let mut reads: Vec<Read> = Vec::new();
+    let mut stack: Vec<(Rc<NodeOccurrence>, Scope)> = vec![(Rc::clone(occ), Scope::new())];
+    while let Some((node, scope)) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        let mut children: Vec<(Rc<NodeOccurrence>, Scope)> = Vec::new();
+        match expr {
+            Expr::Let {
+                pattern,
+                value,
+                body,
+            } => {
+                children.push((Rc::clone(value), scope.clone()));
+                // The type the `let` writes, where it writes one, else its value's.
+                let ty = pattern
+                    .pattern_type_ann()
+                    .map(|ann| Value::Node(Rc::clone(ann)))
+                    .or_else(|| value.inferred_type());
+                let inner = bind(&scope, pattern, ty);
+                children.push((Rc::clone(body), inner));
+            }
+            Expr::Lambda { param, body } | Expr::LambdaWithin { param, body, .. } => {
+                let ty = node
+                    .inferred_type()
+                    .and_then(|t| arrow_parts(kb, &t))
+                    .and_then(|(p, _, _)| p);
+                let inner = bind(&scope, param, ty);
+                children.push((Rc::clone(body), inner));
+                if let Expr::LambdaWithin { requirements, .. } = expr {
+                    for r in requirements {
+                        children.push((Rc::clone(r), scope.clone()));
+                    }
+                }
+            }
+            Expr::Match {
+                scrutinee,
+                branches,
+            } => {
+                children.push((Rc::clone(scrutinee), scope.clone()));
+                for branch in branches {
+                    let arm = bind(&scope, &branch.pattern, None);
+                    if let Some(guard) = &branch.guard {
+                        children.push((Rc::clone(guard), arm.clone()));
+                    }
+                    children.push((Rc::clone(&branch.body), arm));
+                }
+            }
+            _ => {
+                if let Expr::Apply {
+                    functor, type_args, ..
+                } = expr
+                {
+                    if *functor == tv_op {
+                        let at = type_args
+                            .iter()
+                            .find(|(k, _)| k.is_none_or(|k| short_name_of(kb.local_name_of(k)) == "T"))
+                            .map(|(_, v)| v.clone());
+                        if let Some((segs, member)) = at.and_then(|v| member_projection(kb, &v)) {
+                            let root = scope.get(&segs[0]).cloned();
+                            reads.push(Read {
+                                segs,
+                                member,
+                                root,
+                                span: Some(node.span.span),
+                            });
+                        }
+                    }
+                }
+                crate::kb::node_occurrence::for_each_child(expr, |child| {
+                    children.push((Rc::clone(child), scope.clone()))
+                });
+            }
+        }
+        stack.extend(children.into_iter().rev());
+    }
+    if reads.is_empty() {
+        return None;
+    }
+    let clauses: Vec<RequiresEntry> = op_requires_entries(kb, op_sym)
+        .into_iter()
+        .filter(|e| kb.canonical_sort_sym(e.required_sort) == tv_canon)
+        .collect();
+    let written: Vec<(Vec<Symbol>, String)> = clauses
+        .iter()
+        .map(|e| normalize_op_requires_entry(kb, e))
+        .collect::<Vec<_>>()
+        .iter()
+        .filter_map(|e| {
+            let (_, bindings) = unwrap_spec_view_value(kb, &e.spec)?;
+            bindings.iter().find_map(|(_, v)| member_projection(kb, v))
+        })
+        .collect();
+    let backed = type_value_backed_params(kb, op_sym);
+    let ctx = TypeErrorContext::OperationTypeParams { op_name: op_sym };
+    for Read {
+        segs,
+        member,
+        root,
+        span,
+    } in reads
+    {
+        // The type the path starts at: a binder's, or else a parameter's.
+        let (place, root_ty) = match root {
+            Some(ty) => (MemberReadPlace::Local, ty),
+            None => match params.iter().find(|(p, _)| *p == segs[0]) {
+                Some((_, pty)) => (MemberReadPlace::Parameter, Some(pty.clone())),
+                // Neither: a name the walk does not see bound, whose type is not read here.
+                None => (MemberReadPlace::Local, None),
+            },
+        };
+        let place = if place == MemberReadPlace::Parameter && segs.len() > 1 {
+            MemberReadPlace::FieldPath
+        } else {
+            place
+        };
+        if place == MemberReadPlace::Parameter
+            && written.iter().any(|(s, m)| *s == segs && *m == member)
+        {
+            continue;
+        }
+        if let Some(mut recv_ty) = root_ty {
+            // The member's type under the path's: through the fields the path reads.
+            let mut typed = true;
+            for &field in &segs[1..] {
+                match resolve_field_type(kb, &recv_ty, field, &ctx, span) {
+                    Ok((ty, _)) => recv_ty = ty,
+                    Err(_) => {
+                        typed = false;
+                        break;
+                    }
+                }
+            }
+            if typed {
+                if let Ok(ProjResult::Grounded(ty)) = project_type_member(
+                    kb,
+                    &recv_ty,
+                    &member,
+                    None,
+                    None,
+                    &[],
+                    RowReading::Ground,
+                    &ctx,
+                    span,
+                ) {
+                    if kb.collect_vars(&ty).is_empty()
+                        && !value_contains_projection(kb, &ty)
+                        && !value_contains_rigid(kb, &ty)
+                    {
+                        continue;
+                    }
+                    // Read as the clause's binding is: both are the signature's.
+                    if clause_named_type_param(kb, &ty).is_some_and(|v| backed.contains(&v)) {
+                        continue;
+                    }
+                }
+            }
+        }
+        return Some((segs, member, place, span));
+    }
+    None
+}
+
+/// Where the path a type member read as a value is projected off starts, which says whether
+/// a clause can back it ([`unwritten_member_value_read`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MemberReadPlace {
+    /// A parameter of the operation: `requires TypeValue[T = x.T]` backs it.
+    Parameter,
+    /// A field path off a parameter, `k.s.T`: a contract clause carries a single reference.
+    FieldPath,
+    /// A lambda's binder, a `let`, a `match` binder: no clause can name it.
+    Local,
+}
+
+/// A type that is a member projected off a value path, as the path and the member's short
+/// name: `x.T` is `(["x"], "T")`, `h.s.T` `(["h", "s"], "T")`.
+fn member_projection(kb: &KnowledgeBase, ty: &Value) -> Option<(Vec<Symbol>, String)> {
+    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) else {
+        return None;
+    };
+    let segs = receiver_path_segs(kb, &value)?;
+    Some((segs, short_name_of(kb.local_name_of(member)).to_string()))
+}
+
 /// WI-20260919-N31XX — every VALUE-position read of a rigid type in this body, as
 /// (the parameter's canonical variable, the symbol as written, span), in SOURCE ORDER.
 ///

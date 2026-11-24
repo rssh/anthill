@@ -2397,8 +2397,31 @@ pub(crate) fn op_requires_chain_rc(
     // Proposal 073 §2 — a parameter typed at a spec over a parameter is an instance, and its
     // slot is appended last. One the author also wrote as this very requirement is the
     // written one, which the caller supplies.
-    for d in param_instance_requires(kb, op_sym) {
-        let dn = normalize_op_requires_entry(kb, &d);
+    let instances: Vec<RequiresEntry> = param_instance_requires(kb, op_sym)
+        .iter()
+        .map(|d| normalize_op_requires_entry(kb, d))
+        .collect();
+    // Proposal 074 stage 6 (WI-20261113-FCMJA; kernel-language §8.2): A CLAUSE WRITTEN AT A
+    // PARAMETER'S OWN MEMBER THAT THE PARAMETER'S DICTIONARY HOLDS IS SUPPLIED FROM IT, and is
+    // no slot of its own: under `x: Num`, `Num` stating `requires TypeValue[T = T]`, the
+    // clause `requires TypeValue[T = x.T]` is `x`'s `TypeValue` sub-dictionary. A call at it
+    // reads `x`'s entry through its chain, a call site supplies nothing for it, and a function
+    // value needs nothing its use would ground. MEASURED before the stage: `[ni(), nf()].map(
+    // tOf)` was refused "cannot be supplied for `tOf` used as a function value"; and since
+    // stage 9 a direct call of `tOf` was refused too, the clause and `x` counted as two
+    // dictionaries. A clause at another type stays the caller's, beside the parameter, and so
+    // does a NAMED clause (`requires tv: TypeValue[T = x.T]`): its name is a type parameter of
+    // the operation a call binds (058 §3.4), and with its slot gone nothing bound it, each call
+    // refused "expected a type for 'tv'" (MEASURED, review). A call through the name reads that
+    // slot; an unnamed call is not answered by it (§5.4), so it reads `x`'s.
+    entries.retain(|e| {
+        !(matches!(e.supply, SupplySource::Required)
+            && e.binder.is_none()
+            && instances
+                .iter()
+                .any(|inst| clause_held_by_instance(kb, e, inst)))
+    });
+    for dn in instances {
         if !entries
             .iter()
             .any(|e| views_structurally_equal(kb, &e.spec, &dn.spec))
@@ -2411,6 +2434,23 @@ pub(crate) fn op_requires_chain_rc(
         .borrow_mut()
         .insert(op_sym, rc.clone());
     rc
+}
+
+/// Proposal 074 stage 6 — is the written `clause` one the parameter `inst` stands for holds:
+/// a binding of it projects off that parameter (`TypeValue[T = x.T]` beside `x: Num`), and the
+/// parameter's entry holds it beneath, as a forward reads one ([`held_for`]).
+fn clause_held_by_instance(kb: &mut KnowledgeBase, clause: &RequiresEntry, inst: &RequiresEntry) -> bool {
+    let SupplySource::Instance { param } = inst.supply else {
+        return false;
+    };
+    let Some((_, bindings)) = unwrap_spec_view_value(kb, &clause.spec) else {
+        return false;
+    };
+    let off_param = bindings.iter().any(|(_, v)| match extract_type(kb, v) {
+        TypeExtractor::ExprCarried { value, .. } => extract_sort_ref_sym(kb, &value) == Some(param),
+        _ => false,
+    });
+    off_param && held_for(kb, clause, inst, None).is_some()
 }
 
 /// `__req_<spec short name, lowercased>` — a requirement slot's BASE name, before any

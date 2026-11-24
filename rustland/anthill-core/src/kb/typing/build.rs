@@ -1003,6 +1003,10 @@ pub(super) fn build_type(
                 // A bracket is written with parentheses only, so a bracketed dot reaching
                 // here is refused as a call of a type below, and its bracket with it.
                 if declared_type_member(kb, sort, &member_short).is_some() {
+                    // Proposal 074 stage 6: the stable path the receiver is, for a member the
+                    // receiver's type leaves open (`x.T` under `x: Additive`).
+                    let receiver_path = stable_receiver_path(kb, &receiver_node)
+                        .map(|path| env.canonicalize_receiver_path(path));
                     match type_member_as_value(
                         kb,
                         &recv.ty,
@@ -1010,6 +1014,8 @@ pub(super) fn build_type(
                         &member_short,
                         member,
                         !occ.is_paren_less() || !pos_nodes.is_empty() || !named_nodes.is_empty(),
+                        receiver_path.as_deref(),
+                        env.param_rigids(),
                         &occ,
                     ) {
                         Ok(node) => {
