@@ -1,6 +1,6 @@
 # Proposal 076: A goal's scope in the search — its call, its exit, and the alternatives it leaves
 
-## Status: Draft, written with the user 2026-11-24, revised the same day after a review (History 2). Not approved. Nothing here is implemented, and the spec is not changed by it (§9 says what it would change).
+## Status: Draft, written with the user 2026-11-24, revised the same day after two reviews (History 2 to 4). Not approved. Nothing here is implemented, and the spec is not changed by it (§9 says what it would change).
 
 ## Tracked by: WI-20261122-P6G1P (commit to the first definite proof of a ground goal), WI-20261122-VT9S7 (dependency-directed backtracking). No ticket of its own.
 
@@ -123,7 +123,7 @@ At the exit there are three things to do with the segment:
 
 1. **Keep it** (today, and the default for any goal not covered below). A later failure resumes it in order.
 2. **Drop it**: a commit, `once`. This is P6G1P's flag (§4). It changes proof counts.
-3. **Guard it**: keep it for redo after an answer, skip it on a dead end (§3). It changes neither answers nor proof counts.
+3. **Guard it**: keep it for redo after an answer, skip it on a dead end (§3). It changes no proof count, and no answer except that a search undecided only for a skipped alternative's sake becomes refuted (§3).
 
 "Return to the top stack when the goal is proved" is the exit: control goes back to the caller. The segment is the part that must not simply be dropped there.
 
@@ -136,12 +136,24 @@ At the exit there are three things to do with the segment:
 
 The second case is VT9S7's own example: `member(?c, [1, …, n])` followed by a failing goal that does not read `?c`.
 
+**And no assumption in scope has a free variable.** An assumption is a clause the goal's proof may use, and its variables are the CALLER's. MEASURED 2026-11-24 (review, reproduced):
+
+```anthill
+fact hyp(99)
+rule pick(0) :- hyp(1)
+rule pick(0) :- hyp(2)
+rule t1(?x) :- (forall(?n), hyp(?x) -: pick(0))             -- answers ?x = 1 and ?x = 2
+rule t2(?x) :- (forall(?n), hyp(?x) -: pick(0), ?x <=> 2)   -- answers ?x = 2
+```
+
+`pick(0)` is ground, and each of its proofs binds `?x` through the assumption `hyp(?x)`. In `t2` the continuation of its first proof fails and its second is the only answer: a guard that read "ground" as "independent" would skip it, and a commit would drop it in `t1`. So a goal is independent only if, besides the above, **every assumption in scope at its call is ground under σ**. That is conservative (an assumption whose variables the goal's proof cannot reach would do no harm) and O(1) to know where the scope keeps a count of its non-ground assumptions; a narrower test is not proposed. The same condition binds §4's commit and P6G1P as the ticket words it.
+
 **Rule.** When an independent goal `g` reaches a DEFINITE exit (no goal of its proof is waiting) with a non-empty segment, a guard is placed above the segment. It records how many solutions the search had reached at that moment. When backtracking reaches the guard:
 
 - **No solution was reached since `g`'s exit:** the search after `g` was a dead end. Every alternative of `g` would rebuild the same state for what follows and reach the same dead end. Skip the whole segment: cut back to `g`'s call height.
 - **A solution was reached:** remove the guard and backtrack in order, as today. `g`'s next proof gives that solution again, and proof counts stay what they are.
 
-**Why the skip is sound.** What `g`'s proof binds is either a fresh variable of a clause it opened or a variable local to `g`; nothing asked after `g` reads either. Its definite exit leaves no goal of its own waiting. So every proof of `g` leaves the same state for what comes after: the same σ on every variable the tail can see, the same goals, the same assumptions, the same depths (a goal's depth is its own, §8.3). The search after `g`'s exit is therefore the same search after each of `g`'s proofs. Between pushing the guard and reaching it, the search explored exactly that subtree, so "no solution reached since" means that subtree has none. A local variable may be an answer variable of the query: with no solution, there is no answer to differ in it.
+**Why the skip is sound.** What `g`'s proof binds is either a fresh variable of a clause it opened or a variable local to `g` (no assumption it can use has a variable to bind); nothing asked after `g` reads either. Its definite exit leaves no goal of its own waiting. So every proof of `g` leaves the same state for what comes after: the same σ on every variable the tail can see, the same goals, the same assumptions, the same depths (a goal's depth is its own, §8.3). The search after `g`'s exit is therefore the same search after each of `g`'s proofs. Between pushing the guard and reaching it, the search explored exactly that subtree, so "no solution reached since" means that subtree has none. A local variable may be an answer variable of the query: with no solution, there is no answer to differ in it.
 
 **What it covers.**
 - The k = 16 chain: each ground `|` exits definitely with a one-candidate segment. When `(1 = 2)` fails, each guard skips its segment. Linear.
@@ -153,12 +165,21 @@ The second case is VT9S7's own example: `member(?c, [1, …, n])` followed by a 
 **What it does not cover.** The guard acts on a dead end only. Once the tail has ONE solution, every further proof of `g` runs the whole tail again: `k` independent goals of two proofs each before a tail that holds give `2^k` proofs, each of them found. That is what a relation's proof count is (052); saying it otherwise is §4, or a count that multiplies instead of enumerating, which is not proposed.
 
 **What it does not change.**
-- **Truncation.** A tail cut by the depth limit inside the skipped segment would be cut again at the same depth, and the `truncated` flag is already set. An undecided verdict stays undecided.
-- **Faults of the tail.** A fault recorded in the tail would be recorded again. Faults are deduplicated.
+- **Truncation and faults of the TAIL.** A tail cut by the depth limit, or faulting, would do so again after each alternative of `g`; the `truncated` flag is already set and faults are deduplicated. A verdict undecided for the tail's sake stays undecided.
 - **Residuals.** A residual solution is a solution: the guard then backtracks in order.
 - **Fuel.** It only saves steps.
 
-**What it does change: a fault of a skipped alternative.** An alternative of `g` that is never run records no fault and no truncation of its own. The conjunction is refuted either way (its tail has no solution), so the verdict is right; but a search that today answers "refuted, and this clause faulted" (which reads as incomplete) answers "refuted" under the guard. To agree with the user (§10).
+**What it does change: the verdict where a skipped alternative would have been truncated or would have faulted.** An alternative of `g` that is never run sets no `truncated` and records no fault. MEASURED 2026-11-24 (review, reproduced), `--max-depth 8`:
+
+```anthill
+fact g(0)
+rule g(?n) :- g(?n + 1)
+rule dead(?n) :- g(?n), 1 = 2
+```
+
+`!(dead(0))` answers today CONDITIONAL, with the truncation notice: `g(0)`'s fact is followed by `1 = 2` failing, the search goes back into `g`'s recursive clause, and that reaches the depth limit. Under the guard the recursive clause is skipped, nothing is truncated, and `!(dead(0))` answers definitely TRUE. So the guard changes an ANSWER, from undecided to decided, and §3's first-draft claim that it changes neither answers nor proof counts was wrong for a search that today ends truncated or faulted.
+
+**The verdict rule proposed.** A skip is a refutation of the conjunction, not an unexplored part of it: `g`'s continuation has no solution, and it is the same continuation after every proof of `g`, found or not. `dead(0)` is false in every reading, whatever `g`'s recursion would have done, and the definite answer is the right one. So: **a skipped segment sets neither `truncated` nor a fault; the verdict is the tail's.** It only ever moves a verdict from undecided to refuted, never the other way, and never between refuted and proved. It is a change to §8.3's "truncated means undecided" (§9), which today holds of every branch the search would have entered. The guard is not enabled, inside a negation or outside one, before the user has agreed that rule (§10 question 3); the alternative is no guard, since a guard that marked every skip undecided would decide nothing P6G1P needs decided.
 
 **What "solution reached" counts.** Every solution the drain reached, BEFORE answer dedup. With dedup on, a solution reached again is a duplicate and could be skipped too. That extension is not proposed.
 
@@ -166,9 +187,10 @@ The second case is VT9S7's own example: `member(?c, [1, …, n])` followed by a 
 
 ## 4. Commit — P6G1P's flag, opt-in
 
-The same exit, for a goal GROUND at its call (not merely independent: a local variable may be an answer variable, and a commit would lose its other answers) with a definite exit. Instead of a guard, the segment is cut immediately: `once(g)`. P6G1P's tests stand as written:
-- the k = 16 chain is linear with the flag on and `2^k` with it off;
-- `(?x = 1) | (?x = 2), ?x > 1` still answers `?x = 2`;
+The same exit, for a goal GROUND at its call (not merely independent: a local variable may be an answer variable, and a commit would lose its other answers) with a definite exit and no non-ground assumption in scope (§3: `t1` there has two answers through a ground goal). Instead of a guard, the segment is cut immediately: `once(g)`. P6G1P's tests, with two controls corrected (review, 2026-11-24):
+- the k = 16 chain is linear with the commit on, and `2^k` with the commit AND the guard off. With the guard on, which is the default, it is linear already: the chain does not tell the commit from the guard;
+- what does: a ground goal with two proofs that SUCCEEDS, answer dedup off. Two proofs with the guard alone, one with the commit;
+- `((?x <=> 1) | (?x <=> 2)), ?x > 1` still answers `?x = 2`. The ticket writes the branches with `=`, which tests and does not bind: MEASURED, that query answers two conditional answers (`eq(?_, 1), gt(?_, 1)` and its twin), and `<=>` answers the one intended;
 - a ground goal whose first proof is residual and whose second is definite answers definite;
 - relation multiplicities are unchanged with the flag off.
 
@@ -196,17 +218,20 @@ Each stage is measured on its own and lands on both implementations. The first d
 - **A branch's state** is (its continuation, σ, what is waiting), each O(1) to keep.
 - **The continuation** is a persistent linked list of scopes, as ELPI's `FCons`. A scope is (its remaining goals, its caller's scope, its call height, the assumptions it pushed, its depth, its proof tag). Opening a clause pushes a scope in O(1). A branch shares its caller's scopes and copies nothing.
 - **The exit is structural:** a scope with no goals left continues with its caller's.
-- **What it retires.** `__pop_assumption` and the baked `cut(B)` become fields of a scope: the assumptions it pushed, its call height. Depth becomes how deeply scopes are nested, which is what §8.3 already defines it as. A `push_choice` branch is a scope like a clause body (§1.3).
+- **What it retires.** `__pop_assumption` and the baked `cut(B)` become fields of a scope: the assumptions it pushed, its call height. A `push_choice` branch is a scope like a clause body (§1.3).
+- **Depth is a field of the scope, given when it is made, and NOT how deeply scopes are nested.** A branch of a choice is a split at the depth of the goal it splits, and a clause body is one deeper (`Nesting`, WI-20261115-0WT09). MEASURED 2026-11-24 (review, reproduced): `anthill.kernel.push_choice((1 === 1), (1 === 2))` answers true at `--max-depth 0`. Counting scopes would refuse it. That query is a regression test of this stage on both implementations.
 - **Size.** `kb/resolve.rs` is 23.7 k lines; 73 sites read `self.stack.last()` or `last_mut()` directly, 8 push a frame, 11 copy the tail. The migration first puts the arms behind accessors (the current goal, σ, fail, offer alternatives, continue with goals), then swaps the representation behind them.
 - **Measured by:** the growing-resolvent probe and the typed probes of § MEASURED becoming linear, with the gate unchanged.
 
 **Stage B — a goal waits in the goal it was written in.** This is the delay that was meant (the user, 2026-11-24), not a side effect of the representation: a correction of how 068 §2.2 was implemented.
 - **The rule.** A goal that waits goes behind its SIBLINGS: the goals of the scope it was asked in, and no further.
-  - **Woken** by a binding of one of its blockers, it is asked next, before any ready goal, wherever the search is then (068 §2.2, decided 2026-10-21, kept: a check must cut a generator while it generates). It is asked as a goal of ITS scope: at that scope's depth, under that scope's assumptions.
+  - **Woken** by a binding of one of its blockers, it is asked next, before any ready goal, wherever the search is then (068 §2.2, decided 2026-10-21, kept: a check must cut a generator while it generates). It is asked in the CONTEXT IT WAS FIRST ASKED IN: that depth, those assumptions, that proof tag.
   - **When a scope has only waiting goals left**, it cannot finish by itself. It exits and hands them to its caller's scope, where they wait behind the caller's siblings. Its exit is then not definite.
+  - **A hand-over moves the WAIT, not the context.** The caller becomes responsible for when the goal is asked and for whether its own exit is definite. What the goal is asked under stays what it was: a consequent that waited under a hypothesis is proved under that hypothesis, though the discharge that made it has exited.
   - **At the query's scope**, what still waits is the residual.
 - **What it puts right.** Today a waiting goal is carried out of the body it was written in: past `__pop_assumption`, so outside the assumptions it was written under, and into a resolvent whose length is the residualization gate's measure. A clause that waited on a caller variable (`Candidate::Waiting`) is asked again "once the caller has had its turn": that is this rule, said of one case.
-- **The representation.** The continuation is shared, so an inner scope cannot write into an outer one. What waits is therefore a store of the BRANCH, beside σ: a persistent map from a blocker to the goals waiting on it, each with the scope that owns it, as σ's `constraints` already are (WI-502). `Wait::Suspended { blockers }` already carries what it needs; a `Parked` goal is there with no blocker. Handing goals to the caller changes their owner.
+- **The representation.** The continuation is shared, so an inner scope cannot write into an outer one. What waits is therefore a store of the BRANCH, beside σ: a persistent map from a blocker to the goals waiting on it, as σ's `constraints` already are (WI-502). An entry is (the goal, its context: depth, assumptions, proof tag, captured when it first waited; its owner: the scope now responsible for it). `Wait::Suspended { blockers }` already carries the rest; a `Parked` goal is there with no blocker. Handing goals to the caller changes the owner and nothing else.
+- **Acceptance, besides the gate:** a consequent that waits on a caller variable under a discharge, `(forall(?n), h(?n) -: c(?n, ?y))` with `c` waiting on `?y`, is handed to the caller, the caller binds `?y`, and the woken `c` needs `h` to be proved. It holds; and it fails when the suspension is given its owner's assumptions instead (the control).
 - **What it retires.** The rotation, the `consecutive_delays >= goals.len()` gate, and passing a suspended goal over on each of its turns.
 - **A definite exit** is a scope that hands nothing to its caller. For an independent goal (§3) that is an O(1) test, the store being the one the scope saw at its call: nothing outside its proof waits on a variable it binds.
 - **To check on the gate:**
@@ -215,7 +240,10 @@ Each stage is measured on its own and lands on both implementations. The first d
 
 **Stage C — choice points by height.** On Stage A's scopes.
 - **One stack of choice points**, each (a continuation, σ, the store, the alternatives left). The live branch is not on it.
-- **A choice point is released at its last alternative:** a call with one candidate pushes none. "Last" has to be known: extent rows are matched lazily, and waiting clauses come after the candidates. This removes the linear retention measured above.
+- **A choice point is released at its last alternative:** a call with one candidate pushes none. "Last" has to be known: extent rows are matched lazily, and waiting clauses come after the candidates.
+- **That alone does not bound memory** (review, 2026-11-24). With no choice point left, each call of a deterministic recursion still links a scope to its caller's: at the base of `cnt(n)`, `n` scopes are live with the choice-point stack empty. A scope is small where today's retained frame is about 4.4 KB, but it is still one a level.
+- **A scope with nothing left to do at its exit is not kept.** When the goal selected is the LAST of its scope, and that scope has no duty at its exit (no assumption to drop, no guard or commit to decide, no proof record to close), the callee's scope links to the scope's CALLER, not to it. Depth is a field (Stage A), so eliding a scope changes no depth. `cnt` then runs in a bounded number of live scopes; a recursion that is not a last call (`chain` with `ok(1)` after it) keeps one a level, as it must.
+- **Measured separately:** peak live scopes and peak live choice points, on `cnt` (both bounded), the control and the growing chain (scopes linear, choice points bounded).
 - **The cut barrier is the scope's call height**, as in WAM and ELPI, not a tag found by scanning for a frame (`apply_cut`).
 - **The guard (§3)** is a choice point of its own kind, (floor: the call height, the solutions reached), pushed at the exit of an independent scope whose height is above its call's and whose store is its call's. Backtracking into it either cuts to the floor or pops it.
 - **The commit (§4)** cuts to the call height at the same exit.
@@ -258,13 +286,13 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
 
 ## 9. What the spec would say
 
-§8.3, once §3 is implemented: the alternatives of a goal independent of what follows it are not retried on a dead end after its definite exit; answers and proof counts are unchanged; a fault that only such an alternative would raise is not reported. Once §4 is implemented: with the commit option, a ground goal's proofs are counted once. Stage B: a goal that waits, waits behind the goals of the body it was written in, and is handed to the caller when that body has nothing else left; 068 §2.2 is reworded with it. Each of these is a spec change to agree with the user first.
+§8.3, once §3 is implemented: the alternatives of a goal independent of what follows it are not retried on a dead end after its definite exit; proof counts are unchanged, and so are answers except one kind: a search that ended truncated or faulted only because of such an alternative now ends refuted ("truncated means undecided" is then said of the branches a search has to enter). Once §4 is implemented: with the commit option, a ground goal's proofs are counted once. Stage B: a goal that waits, waits behind the goals of the body it was written in, and is handed to the caller when that body has nothing else left; 068 §2.2 is reworded with it. Each of these is a spec change to agree with the user first.
 
 ## 10. Open questions
 
 1. **Proof mode and the guard.** A refutation record (075) covers "every clause whose head matches, on every branch". A skipped segment's branches are never visited. Either the guard is off in proof mode, or the record gains a step "fails as the branch before it did".
 2. **Effects.** The soundness argument assumes a proof has no external effect. An operation applied in a rule body (068) that performs one would run fewer times under the guard or the commit. Are rule-body applications effect-free by the typer's rules? To be checked.
-3. **A fault of a skipped alternative (§3).** Is "refuted" without that fault acceptable, or must a guard that skips say that it did (a flag on the stream, read where `truncated` is)?
+3. **The verdict of a skip (§3). GATES THE GUARD.** Proposed: a skipped segment sets neither `truncated` nor a fault, so `!(dead(0))` moves from conditional to true. To agree with the user before the guard is enabled anywhere. If it is not agreed, there is no guard, and P6G1P is the commit alone, which has the same question (it too leaves alternatives unrun).
 4. **A switch for the guard.** Default on, but a back-out control needs it off: a `ResolveConfig` field, or an environment switch as the other controls are.
 5. **Delay in the current goal (Stage B): what 068 says.** 068 §2.2 and `docs/design/068-implementation.md` describe rotation behind the resolvent. Stage B needs 068 §2.2 reworded ("behind its siblings" meaning the goals of its body; the hand-over to the caller; the residual at the query's scope), and §8.3 to say it. To write with the user.
 6. **A scope that hands waiting goals to its caller: is it proved?** Stage B says it exits, not definitely, and the caller goes on. The other reading: a body with goals still waiting has not been proved until they are, and the caller's later goals should not run first. The first is today's behaviour seen from the caller (its goals run while the callee's wait). To confirm.
@@ -283,3 +311,10 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
    - **§6 restaged.** The `__exit` marker stage is withdrawn. A: the linked continuation, no change of behaviour. B: a suspension store in place of rotation (new). C: choice points by height, with last-alternative release, the guard and the commit. Formerly: A marker, B release, C scopes with scoped delay, D backjumping.
    - **§8 added** (what is kept: persistent σ, the order, interpretation). Open questions renumbered; 3 and 8 are new.
 3. 2026-11-24 — the user, on revision 2's Stage B: "in 068 was an error — when I think about delay, I think about delay in the current goal, not global". Stage B rewritten from "a suspension store, order to be checked against today's" to the delay that was meant: a goal waits behind the siblings of its own scope, is handed to the caller when the scope has nothing else left, and is the residual at the query's scope; woken, it is asked next (068 §2.2, kept). The branch-level store is its representation, with an owner per goal. Open questions 5 to 7 restated: 068 §2.2 to be reworded; whether a scope that hands goals on counts as proved.
+4. 2026-11-24 — six review items the user brought; four reproduced on the binary (1, 2, 4, 5), two are arguments about the text (3, 6); all six accepted.
+   - **1. A ground goal binds a caller variable through an assumption** (`t1`, `t2` in §3). Independence, and the commit, now also require every assumption in scope to be ground.
+   - **2. A skipped alternative that would have been truncated** (`dead` in §3): the guard moves `!(dead(0))` from conditional to true. Revision 2 had seen this for faults only and called it diagnostics. It is an answer. A verdict rule is proposed and gates the guard (question 3).
+   - **3. A handed-over wait keeps its context.** Stage B said both "asked under its scope's assumptions" and "the hand-over changes its owner". The suspension now carries its context; the owner schedules it. Acceptance case added.
+   - **4. Depth is not scope nesting.** `push_choice` at `--max-depth 0` is the regression test.
+   - **5. Two of P6G1P's controls corrected** in §4: the `2^k` baseline needs the guard off too, and the binding branches are `<=>`, not `=`. A test that tells the commit from the guard added.
+   - **6. Releasing a choice point does not bound memory.** Stage C gains the elision of a scope with no duty at its exit, and measures live scopes and live choice points separately.

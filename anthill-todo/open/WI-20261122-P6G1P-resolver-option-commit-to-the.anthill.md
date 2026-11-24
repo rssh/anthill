@@ -28,3 +28,17 @@ WHAT IS NOT ASKED. Changing push_choice for non-ground goals: there the second b
 
 DONE WHEN. A test: the k = 16 chain above ends 'no' in linear steps with the flag on (within a small factor of the one-true-branch row) and in 2^k with it off (the control); (?x = 1) | (?x = 2), ?x > 1 still answers ?x = 2 with the flag on; a ground some_in with two witnesses followed by a failing goal is linear with the flag on; a ground goal whose first proof is residual and second definite answers definite with the flag on; and the existing relation-multiplicity tests (which run with the flag off) still pass.
 
+## Changes
+
+### 2026-11-24T10:55:25Z — feedback — user
+
+TWO CORRECTIONS from a review of proposal 076, with the user 2026-11-24 (both reproduced on a debug build of that day; proposal 076 sections 3 and 4).
+
+1. 'GROUND WHEN SELECTED' IS NOT ENOUGH UNDER AN ASSUMPTION WITH A FREE VARIABLE. A ground goal can bind a CALLER variable through an assumption in scope. MEASURED: fact hyp(99); rule pick(0) :- hyp(1); rule pick(0) :- hyp(2); rule t1(?x) :- (forall(?n), hyp(?x) -: pick(0)) answers ?x = 1 and ?x = 2; rule t2(?x) :- (forall(?n), hyp(?x) -: pick(0), ?x <=> 2) answers ?x = 2. pick(0) is ground and each of its proofs binds ?x through hyp(?x), so committing to its first proof loses t1's second answer and t2's only one. The condition for the commit is: ground when selected, AND every assumption in scope at the call ground under sigma (conservative; O(1) with a count of non-ground assumptions on the scope).
+
+2. TWO OF DONE WHEN'S CONTROLS.
+  - '(?x = 1) | (?x = 2), ?x > 1 still answers ?x = 2': = tests and does not bind. MEASURED: that query answers two CONDITIONAL answers (residual eq(?_, 1), gt(?_, 1) and its twin). The branches are to be written ?x <=> 1 and ?x <=> 2, which answers ?x = 2.
+  - 'the k = 16 chain in 2^k with the flag off (the control)': if proposal 076's guard lands and is on by default, the failing chain is linear with the commit off too, so the control needs the guard off as well, and the chain does not tell the commit from the guard. What does: a ground goal with two proofs that SUCCEEDS, answer dedup off -- two proofs without the commit, one with it.
+
+ALSO OPEN FOR THE COMMIT, as for the guard (proposal 076 section 10, question 3): an alternative the commit never runs sets no truncated flag and records no fault, so a search that today ends undecided because of such an alternative would end decided.
+
