@@ -369,10 +369,8 @@ pub enum TypeError {
     /// WHY IT IS NOT [`Self::DispatchAmbiguous`], verified rather than assumed: that
     /// variant's [`InstanceTie`] carries PROVIDER symbols, and for a route-1-vs-route-2
     /// tie both providers canonicalize to the SAME carrier — `render_instance_tie`
-    /// would print `Leaf, Leaf` and, both being concrete, choose
-    /// [`TieRepair::ValueDirected`], whose message ("each is a CONCRETE provider …
-    /// pin the carrier through the call's receiver") describes a different failure
-    /// entirely. This tie is between TEXTS supplying one carrier, so its candidates
+    /// would print `Leaf, Leaf` and advise a bracket that names one of two equal names,
+    /// which describes a different failure entirely. This tie is between TEXTS supplying one carrier, so its candidates
     /// are rendered by SUPPLY ROUTE ([`SpecOpSupplier::render`]) — the only wording
     /// that can name an instance fact, which has no name of its own (058 §4.3).
     ///
@@ -693,19 +691,6 @@ pub enum TypeError {
         /// Monoid[T = String]`) to add a `fact Monoid[…]` that already existed, and
         /// never named the bindings, which are the whole content of the mismatch.
         at_bindings: bool,
-    },
-    /// WI-841 (058 §4.4 check 3, now §3.5): `f[Spec = W](…)` where `W` is a CONCRETE
-    /// provider — a sort with constructors, whose values carry their own sort. Where
-    /// those values are the arguments the VALUE decides the dispatch (§1.1, the same
-    /// exemption the witness-coherence check applies), so an explicit witness could only
-    /// agree redundantly or contradict silently. Refuse, do not prefer. The test is the
-    /// SORT's, so it also refuses a concrete provider whose values are not the
-    /// arguments; that is decided, see [`validate_instance_selection`].
-    ValueDirectedSelection {
-        span: Option<Span>,
-        op: Symbol,
-        witness: Symbol,
-        spec: Symbol,
     },
     /// WI-841 (058 §4.2): a call selected two DIFFERENT witnesses for ONE requirement.
     ///
@@ -2021,7 +2006,7 @@ impl TypeError {
                 )
             }
             TypeError::DispatchAmbiguous { op, tie, in_rule_own_term, .. } => {
-                let (candidates, repair) = render_call_tie(kb, tie, *op, *in_rule_own_term);
+                let (candidates, repair) = render_call_tie(kb, tie, *in_rule_own_term);
                 unselected_instance_message(
                     kb.qualified_name_of(*op),
                     kb.qualified_name_of(tie.spec),
@@ -2384,33 +2369,6 @@ impl TypeError {
                         kb.qualified_name_of(*op),
                     )
                 }
-            }
-            TypeError::ValueDirectedSelection {
-                op, witness, spec, ..
-            } => {
-                // CHANNEL-NEUTRAL, for the reason the arm above gives (WI-20260911-TX0G6).
-                // This read "an explicit `[Spec = W]`", which names a bracket neither
-                // spelling of a NAMED slot writes: the callee writes `[O = W]` and the
-                // receiver writes `SortedSet[…, O = W]`, and both now reach this arm.
-                //
-                // AND IT STATES THE RULE, NOT A CLAIM ABOUT THIS CALL. It used to say the
-                // dispatch "is already directed by the value" and the selection "cannot
-                // change it". That is true where the provider's values are the arguments,
-                // and MEASURED false where they are not: `[WeakOrd = ConcOrd]` on two
-                // `String`s answers ConcOrd's order when admitted. The rule is kept as a
-                // property of the named sort (see [`validate_instance_selection`]), so the
-                // message gives its reason conditionally.
-                format!(
-                    "{} is a CONCRETE provider of {} (a sort with constructors), and a call \
-                     may not select one: its values carry their own sort, so where they are \
-                     the arguments of {} they already direct the dispatch, and an explicit \
-                     selection of `{} = {}` is refused rather than preferred",
-                    kb.qualified_name_of(*witness),
-                    kb.qualified_name_of(*spec),
-                    kb.qualified_name_of(*op),
-                    short_name_of(kb.qualified_name_of(*spec)),
-                    short_name_of(kb.qualified_name_of(*witness)),
-                )
             }
             TypeError::HandedProvidersTie {
                 op,
@@ -2944,7 +2902,6 @@ impl TypeError {
             | TypeError::SlotSelectionUnindexable { span, .. }
             | TypeError::ErasedRequirementSlot { span, .. }
             | TypeError::WitnessDoesNotProvide { span, .. }
-            | TypeError::ValueDirectedSelection { span, .. }
             | TypeError::ConflictingSelection { span, .. }
             | TypeError::RequirementReadTie { span, .. }
             | TypeError::HandedProvidersTie { span, .. }
@@ -3187,7 +3144,7 @@ impl TypeError {
             // for the candidate list and the repair syntax that make a use-site
             // refusal actionable.
             TypeError::DispatchAmbiguous { op, tie, in_rule_own_term, .. } => {
-                let (candidates, repair) = render_call_tie(kb, tie, *op, *in_rule_own_term);
+                let (candidates, repair) = render_call_tie(kb, tie, *in_rule_own_term);
                 LoadError::UnselectedInstance {
                     op: kb.qualified_name_of(*op).to_string(),
                     spec: kb.qualified_name_of(tie.spec).to_string(),
@@ -3378,14 +3335,6 @@ impl TypeError {
             // WI-20260911-TX0G6: `selection`, the rule the two arms above follow. The
             // receiver spelling reaches this refusal too, and its three refusals of one
             // written selection should name one field.
-            TypeError::ValueDirectedSelection { op, .. } => LoadError::TypeMismatch {
-                origin: None,
-                entity_name: kb.qualified_name_of(*op).to_string(),
-                field_name: "selection".to_string(),
-                expected_type: "no explicit selection of a concrete provider".to_string(),
-                actual_type: self.format(kb),
-                span: self.span(kb),
-            },
             // WI-844: `selection`, not `type_arg` — a conflicting pair can be written
             // in a bracket, carried in an argument's TYPE, or one of each, so the field
             // names what is wrong rather than where it was written.

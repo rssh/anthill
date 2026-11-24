@@ -468,14 +468,14 @@ fn an_alias_that_fixes_a_requirement_slot_selects_its_provider() {
             assert_eq!(run_source(&ns, &slots(&ns, &sized(bind, recv, second))), want, "{ns}");
         }
     }
-    // A concrete provider is one a call may not select, written out or through the alias.
+    // A provider with constructors is selected as any is, written out or through the alias
+    // (proposal 074 stage 9, WI-20261113-0FTHQ; refused "SortedSet.empty.selection" before):
+    // `ConcOrd` makes any two strings one element.
     for (ns, recv) in [
         ("hzvqaslotconctwin", "SortedSet[T = String, O = ConcOrd]"),
         ("hzvqaslotconc", "CS"),
     ] {
-        let body = format!("  operation go() -> Int64 =\n    let s = {recv}.empty()\n    1");
-        let rendered = refusal_of(ns, &slots(ns, &body));
-        assert!(rendered.contains("SortedSet.empty.selection"), "{ns}: {rendered}");
+        assert_eq!(run_source(ns, &slots(ns, &sized("", recv, "b"))), "1", "{ns}");
     }
 }
 
@@ -509,9 +509,9 @@ fn a_rule_body_goal_through_an_alias_is_checked_and_answers() {
 }
 
 /// A paren-less goal is the applied goal, through an alias too: `:- CR.ok` carries the
-/// receiver `:- CR.ok()` carries. Shown where the receiver is refused — the alias fixes a
-/// requirement slot to a concrete provider — since a goal with no argument gives a
-/// receiver nothing else to say.
+/// receiver `:- CR.ok()` carries. Shown where the alias fixes a requirement slot to a
+/// provider with constructors — refused in both spellings until proposal 074 stage 9, which
+/// a selection takes since — as a goal with no argument gives a receiver nothing else to say.
 #[test]
 fn a_paren_less_goal_through_an_alias_is_the_applied_goal() {
     let reg = |ns: &str, goal: &str| {
@@ -535,11 +535,15 @@ fn a_paren_less_goal_through_an_alias_is_the_applied_goal() {
              end\n"
         )
     };
-    for (ns, goal) in [("hzvqaparenapplied", "CR.ok()"), ("hzvqaparenless", "CR.ok")] {
-        let rendered = refusal_of(ns, &reg(ns, goal));
-        assert!(rendered.contains("Reg.ok.selection"), "{ns}: {rendered}");
-    }
-    for (ns, goal) in [("hzvqaparenokapplied", "IR.ok()"), ("hzvqaparenokless", "IR.ok")] {
+    // `CR` names `ConcOrd`, a provider with constructors, which a selection takes as any
+    // other since proposal 074 stage 9 (WI-20261113-0FTHQ; both spellings were refused
+    // "Reg.ok.selection" before): the two spellings still read alike.
+    for (ns, goal) in [
+        ("hzvqaparenapplied", "CR.ok()"),
+        ("hzvqaparenless", "CR.ok"),
+        ("hzvqaparenokapplied", "IR.ok()"),
+        ("hzvqaparenokless", "IR.ok"),
+    ] {
         assert_eq!(run_source(ns, &reg(ns, goal)), "1", "{ns}");
     }
 }

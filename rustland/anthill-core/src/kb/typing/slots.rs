@@ -292,7 +292,6 @@ pub(super) fn seed_rule_citation_bracket(
             key.is_some_and(|k| named.iter().any(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(k)))
         });
     let mut selections = seed_bracket_bindings(kb, subst, env, &rest, &scope, relation, span)?;
-    let mut concrete = None;
     for (key, value) in by_name {
         let key = key.expect("partitioned on a key");
         let (binder, spec) = *named
@@ -300,7 +299,7 @@ pub(super) fn seed_rule_citation_bracket(
             .find(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(key))
             .expect("partitioned on a named requirement");
         let Some(provider) =
-            validate_written_selection(kb, env, relation, spec, &value, false, &mut concrete, span)?
+            validate_written_selection(kb, env, relation, spec, &value, false, span)?
         else {
             continue;
         };
@@ -464,7 +463,6 @@ fn seed_bracket_bindings(
     // One target per binding, in order — nothing is skipped now, which is what lets
     // this be a plain `zip` rather than an index carried back out of the resolver.
     let mut selections: Vec<InstanceSelection> = Vec::new();
-    let mut concrete: Option<std::collections::HashSet<Symbol>> = None;
     for (target, (key, value)) in targets.into_iter().zip(type_args) {
         if let Some(param_var) = target.param() {
             let param = type_param_var_term(kb, param_var);
@@ -589,7 +587,6 @@ fn seed_bracket_bindings(
             spec_sort,
             value,
             target.param().is_some(),
-            &mut concrete,
             span,
         )?
         else {
@@ -805,12 +802,8 @@ pub(super) fn seed_receiver_type_args(
     // a CONCRETE provider, loaded here and was refused by the callee. Its reason for not
     // closing that at the producer was that check 3 refuses a SPELLING, so it belongs to
     // the channel the author wrote. That reason holds, and this leg is such a channel. So
-    // all three checks now run here, in the callee's order, and check 3 still does not run
-    // at the producer.
-    //
-    // `concrete`: the §1.1 set, built lazily, so a receiver bracket that binds no slot
-    // never pays for the scan. (The three corpora write no form-(3) call at all.)
-    let mut concrete: Option<std::collections::HashSet<Symbol>> = None;
+    // the checks now run here, in the callee's order. (Check 3 itself was removed by proposal
+    // 074 stage 9, WI-20261113-0FTHQ: a bracket may name any provider.)
     for entry in receiver_bracket_entries(kb, env, parent, &written) {
         let ReceiverBracketEntry {
             param,
@@ -906,7 +899,6 @@ pub(super) fn seed_receiver_type_args(
                 spec_sort,
                 &written_value,
                 true,
-                &mut concrete,
                 span,
             )?;
         }
@@ -1144,14 +1136,10 @@ fn bracket_value_to_bind(
 /// [`named_requirement_slot_of`] is the discriminator — the WITNESS's own list, not
 /// [`named_slot_spec`]'s callee ladder.
 ///
-/// **Check 3 is deliberately NOT applied to a sub-slot**, and this is the one place
-/// the sub-selection's validation differs from [`validate_instance_selection`]'s. That
-/// check refuses naming a CONCRETE provider because at a call site the argument's own
-/// value already directs dispatch, so an explicit witness could only agree redundantly
-/// or contradict silently (§3.5). A witness's requirement slot has no value: it is a
-/// dictionary slot the typer resolves, so naming the carrier's own provision there is
-/// meaningful. Driven — the identical name is refused in the KEY's value position and
-/// accepted one level in.
+/// **A sub-slot takes check 1 alone, as every selection does**: a witness's requirement slot
+/// is a dictionary slot the typer resolves, so naming the carrier's own provision there is
+/// meaningful. Check 3, which refused naming a provider with constructors in the KEY's value
+/// position, was removed by proposal 074 stage 9 (WI-20261113-0FTHQ).
 ///
 /// Check 1 IS applied, through the shared owner: a value that provides the slot's spec
 /// nowhere gets the site's own message. The binding-precise half ("provides it, but
@@ -1173,7 +1161,7 @@ pub(super) fn witness_value_slot_selections(
 ) -> Result<Vec<SlotSelection>, TypeError> {
     let out = value_slot_selections(kb, witness, value, SlotPinSource::Bracket)
         .map_err(|r| r.into_type_error(fn_sym, span))?;
-    // Check 1 only — see this function's doc for why check 3 is not a sub-slot's.
+    // Check 1, as at every selection.
     check_slot_witnesses_provide(kb, fn_sym, &out, span)?;
     Ok(out)
 }
@@ -2530,11 +2518,8 @@ pub(super) fn push_selection(
 ///    O = O])` (§7.1) the slot is bound to a type PARAMETER, not a witness, and must
 ///    stay a FORWARD of the caller's dictionary. [`is_type_param_value`] is that test,
 ///    and it is the reason this cannot turn universal polymorphism into a wrong pin.
-///  * **Check 1 YES, check 3 no.** Check 3 refuses a SPELLING — an explicit witness
-///    where a concrete provider's values already direct dispatch (§4.4) — and there is
-///    no spelling here. It runs where a selection is WRITTEN, at both call-site
-///    spellings, through [`validate_written_selection`]. Check 1 (the witness provides
-///    the spec at all) IS run, inline below.
+///  * **Check 1 YES**: the witness provides the spec at all, inline below. (Check 3 refused a
+///    WRITTEN witness with constructors and never ran here; proposal 074 stage 9 removed it.)
 ///
 ///    DECIDED, NOT LEFT OVER (WI-20260911-TX0G6): a TYPE legitimately carries a
 ///    concrete witness. WI-1094's inference WRITES one:
@@ -3708,15 +3693,10 @@ fn push_slots(
 ///  * A value with NO SORT HEAD (a literal, an arrow, a tuple) names no provider, so it
 ///    is refused (`SelectionValueNotASort`) rather than dropped into the type-parameter
 ///    half with the slot called bound.
-///  * A WITNESS gets [`validate_instance_selection`], which owns the order of checks 1
-///    and 3.
+///  * A WITNESS gets [`validate_instance_selection`].
 ///
 /// NOT THE TYPE CHANNEL. A slot bound in a parameter's, a result's or a `let`'s TYPE
-/// reaches [`selections_from_slot_bindings`] with no spelling here, and runs check 1
-/// only. Its doc records why check 3 is not a type's.
-///
-/// `concrete` is the §1.1 set, built at the FIRST witness and reused: it is a scan of
-/// every `SortInfo` fact, and one bracket may bind several slots.
+/// reaches [`selections_from_slot_bindings`] with no spelling here, and runs check 1.
 fn validate_written_selection(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -3724,7 +3704,6 @@ fn validate_written_selection(
     spec_sort: Symbol,
     value: &Value,
     binds_a_parameter: bool,
-    concrete: &mut Option<std::collections::HashSet<Symbol>>,
     span: Option<Span>,
 ) -> Result<Option<SelectedProvider>, TypeError> {
     if binds_a_parameter && view_is_abstract_type_param(kb, value) {
@@ -3743,8 +3722,7 @@ fn validate_written_selection(
         op: fn_sym,
         spec: spec_sort,
     })?;
-    let concrete = concrete.get_or_insert_with(|| crate::kb::load::sorts_with_constructors(kb));
-    validate_instance_selection(kb, fn_sym, spec_sort, witness, concrete, span)?;
+    validate_instance_selection(kb, fn_sym, spec_sort, witness, span)?;
     Ok(Some(SelectedProvider::Witness(witness)))
 }
 
@@ -3819,30 +3797,6 @@ pub(super) fn enclosing_requirement_index(chain: &DictChain, binder: Symbol) -> 
 
 /// WI-841 (058 §4.4) — validate one explicit selection at the site that wrote it.
 ///
-/// Check 3 first, because it is a refusal of the WHOLE spelling rather than a
-/// complaint about this witness: where the provider is CONCRETE (a sort with
-/// constructors), its values carry their own sort and value-directed dispatch is
-/// already deciding (§1.1 — the very exemption the witness-coherence grouping
-/// applies, read through its owner `sorts_with_constructors` so the two cannot
-/// drift). An explicit witness there could only agree redundantly or contradict
-/// silently, so §4.4 says refuse, do not prefer.
-///
-/// `concrete` is the §1.1 set, passed in rather than recomputed: it answers in BULK (a
-/// scan of every `SortInfo` fact) and is built ONCE per written bracket by the caller.
-///
-/// NOT `KnowledgeBase::sort_has_constructors`, which exists and which
-/// `carrier_is_abstract_spec` calls — the two are DIFFERENT criteria, not two spellings
-/// of one: this set reads `SortInfo.constructors`, that predicate scans for
-/// `Entity`-kind children of the sort's qualified name. §1.1's exemption is the FORMER
-/// (`check_provider_operations`' `concrete.contains(&p.carrier)`), so that is the one to
-/// share; using the per-sort predicate here would silently answer a different question.
-/// Membership is probed BOTH raw and canonical because the set is keyed on the raw
-/// `SortInfo.name` symbol while the witness arrives from a resolved call-site
-/// reference — the existing consumer probes raw, so probing only the canonical form
-/// could miss. WI-843 gave that probe ONE owner ([`is_value_directed_provider`]),
-/// shared with the tier-3 diagnostic: the two must agree about which providers a
-/// bracket may name, or the message advertises what this check refuses.
-///
 /// Check 1 is BASE-level here: does `witness` provide `spec` at all. The
 /// BINDING-precise half — "whose spec view unifies with the goal" — is [`resolve`]'s
 /// step 0, which filters the goal's own candidate set to the pinned impl and so
@@ -3855,69 +3809,31 @@ pub(super) fn enclosing_requirement_index(chain: &DictChain, binder: Symbol) -> 
 /// Check 2 ("the slot exists on the callee") is [`resolve_call_type_arg_targets`] —
 /// a key that names no slot never becomes a selection.
 ///
-/// CHECK 3's CRITERION IS THE NAMED SORT'S, and that is DECIDED rather than inherited
-/// (WI-20260911-TX0G6, 2026-09-23; kernel-language §5.4, proposal 058 §3.5). The test is
-/// "the witness has constructors". The reason for it — the VALUE directs the dispatch —
-/// holds where the witness IS its provision's carrier: `[WeakOrd = Pair]` on two pairs
-/// answers what the bare call answers. It does not hold for a concrete witness of ANOTHER
-/// carrier, which no argument ever is. Measured with this check switched off,
-/// `[WeakOrd = ConcOrd]` on two `String`s answers ConcOrd's order and not the bare
-/// call's, and a NAMED slot bound to `ConcOrd` orders by it. The type channel, which
-/// never runs this check, honours `O = ConcOrd` the same way.
-///
-/// Narrowing the test to "is the witness the arguments' own sort" was offered and
-/// DECLINED: the rule is kept readable off the declaration, and such a sort is made
-/// selectable by declaring it without constructors. So for that shape the refusal is a
-/// rule about what may be WRITTEN, and [`TypeError::ValueDirectedSelection`]'s message
-/// gives its reason conditionally rather than claiming the selection is redundant.
+/// CHECK 3 IS GONE (proposal 074 stage 9, WI-20261113-0FTHQ, decided with the user
+/// 2026-11-24): a bracket may name any provider of the spec, with constructors or not.
+/// WI-20260911-TX0G6 refused a witness with constructors, its values said to direct the
+/// dispatch already; WI-20261122-CXR5B admitted one where no value at the call decides. Once
+/// a call uses the dictionary its operation is handed before the value's own provision
+/// (kernel-language §8.2), the value directs nothing a handed dictionary does not outrank, and
+/// a bracket naming the value's own provider is how a call says it means that one:
+/// `Tag.tag[Tag = Leaf](leaf(k: 0))` inside an operation handed `Alt`'s dictionary answers
+/// `Leaf`'s 1. Where nothing is handed, it names what the bare call would choose.
 pub(super) fn validate_instance_selection(
     kb: &mut KnowledgeBase,
     fn_sym: Symbol,
     spec_sort: Symbol,
     witness: Symbol,
-    concrete: &std::collections::HashSet<Symbol>,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
-    // Check 1 FIRST. Check 3's message asserts that `witness` IS a provider of `spec`
-    // and that the value therefore decides — both false for a sort that provides
-    // nothing, and MEASURED: `[Monoid = Conc]` on a constructor-bearing `Conc` with no
-    // provision reported "Conc is a CONCRETE provider of Monoid", telling the author
-    // their typo was a coherence rule. Ordering check 3 first was justified as "a
-    // refusal of the WHOLE spelling", which only holds once the witness provides.
-    check_witness_provides_spec(kb, fn_sym, spec_sort, witness, span)?;
-    // WI-20261122-CXR5B (c3 and g4 of `docs/design/spec-carrier-set.md`) — only where a VALUE
-    // at the call decides: the operation takes an argument the dispatch reads its provider off
-    // (`op_has_spec_carrier_param`: a `Self` parameter of a self-representing spec, one typed
-    // at the spec's carrier parameter of a spec with a dictionary). Where it takes none
-    // (`Dflt.dflt()`, `Src.make[T = Int64]()`), nothing but the bracket can name the provider,
-    // and two providers with constructors left the call with no repair: refused "no explicit
-    // selection of a concrete provider" (g4), and the tie offered none (c3).
-    // The operation must be OF the spec the bracket names: a named requirement slot of another
-    // sort (`SortedSet.empty[T = String, O = ConcOrd]()`, `O: WeakOrd`) keeps the rule as
-    // WI-20260911-TX0G6 decided it — read off the named sort alone.
-    let names_its_own_provider = impl_parent_of_op(kb, fn_sym).is_some_and(|p| same_sort_canonical(kb, p, spec_sort));
-    if is_value_directed_provider(kb, concrete, witness)
-        && !(names_its_own_provider && !op_has_spec_carrier_param(kb, fn_sym, spec_sort))
-    {
-        return Err(TypeError::ValueDirectedSelection {
-            span,
-            op: fn_sym,
-            witness,
-            spec: spec_sort,
-        });
-    }
-    Ok(())
+    check_witness_provides_spec(kb, fn_sym, spec_sort, witness, span)
 }
 
 /// §4.4 CHECK 1 ALONE — does `witness` provide `spec_sort` anywhere at all.
 ///
-/// Its own function because WI-870 gave it a second caller and check 3 did NOT get
-/// one: a slot of a witness is a dictionary slot the typer resolves, with no value to
-/// direct it, so the value-directed refusal has nothing to say there
-/// ([`witness_value_slot_selections`] argues it). Sharing the check that IS common
-/// makes that split structural — a change to check 1's criterion cannot reach one
-/// caller and miss the other, which is how the two would drift about what "provides"
-/// means.
+/// Its own function because WI-870 gave it a second caller, a slot of a witness
+/// ([`witness_value_slot_selections`]). Sharing it means a change to check 1's criterion
+/// cannot reach one caller and miss the other, which is how the two would drift about what
+/// "provides" means.
 fn check_witness_provides_spec(
     kb: &KnowledgeBase,
     fn_sym: Symbol,

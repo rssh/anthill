@@ -131,12 +131,19 @@ fn a_self_representing_calls_bracket_fixes_its_provider() {
     assert!(text.contains("[Src = "), "the bracket is offered:\n{text}");
 }
 
-/// CONTROL: where a value decides — `next(s: Self)` on a `Ones` — a bracket naming a concrete
-/// provider stays refused. Passes either way, by design.
+/// Where a value decides — `next(s: Self)` on a `Ones` — a bracket naming its provider is
+/// admitted too, and answers what the value does, 1. It was refused, "CONCRETE provider", until
+/// proposal 074 stage 9 (WI-20261113-0FTHQ, decided with the user 2026-11-24) let a bracket
+/// name any provider: a call uses the dictionary its operation is handed before the value's own
+/// provision, so naming that provision is how a call says it means it.
 #[test]
-fn a_bracket_where_a_value_decides_stays_refused() {
-    let text = load_errors_of(&src("wicxr5bcb.src.value", "Src.next[Src = Ones](ones)")).join("\n");
-    assert!(text.contains("CONCRETE provider"), "{text}");
+fn a_bracket_where_a_value_decides_names_its_provider() {
+    for (ns, call) in [
+        ("wicxr5bcb.src.value", "Src.next[Src = Ones](ones)"),
+        ("wicxr5bcb.src.valuebare", "Src.next(ones)"),
+    ] {
+        assert_eq!(go(&src(ns, call), ns), 1, "{call}");
+    }
 }
 
 /// The value a bracketed `Self` result is, is the provider at what the call fixed: `let o =

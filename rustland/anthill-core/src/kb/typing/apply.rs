@@ -4765,7 +4765,7 @@ fn check_apply_call(
             // Proposal 074 stage 3: two providers of a sort with no parameter handed to the
             // operation, and nothing in the call says which.
             if !pinned_spec {
-                handed_providers_tie(kb, env, spec_sort, fn_sym, span)?;
+                handed_providers_tie(kb, env, &subst, spec_sort, fn_sym, span)?;
             }
             if let Some(class) = requirement_defer_class(
                 kb,

@@ -1283,7 +1283,7 @@ fn build_dispatching_dict_from_chain(
         // requires, and the call names neither.
         if pinned_witness_for(kb, selected, dep.required_sort).is_none() {
             if let Some((first, second)) =
-                handed_providers_pair(kb, caller_requires, caller_requires.op, dep.required_sort)
+                handed_dictionaries_for_dep(kb, caller_requires, dep, disambig)
             {
                 return Err(DictRefusal::HandedTie {
                     spec: kb.canonical_sort_sym(dep.required_sort),
@@ -2132,13 +2132,34 @@ pub(super) fn stamp_op_scoped_dicts(
     span: Option<Span>,
     usage: RequirementUse,
 ) -> Result<(), TypeError> {
-    // Proposal 074 stage 3 — a requirement of the callee at a sort with no parameter that the
-    // frame is handed two providers of, and the call does not pin: nothing says which.
+    // Proposal 074 stages 3 and 9 — a requirement of the callee that the frame is handed two
+    // dictionaries of at the call's types, a parameter at least among them, and the call does
+    // not pin: nothing says which ([`handed_dictionaries_for_dep`]).
+    let sigma = SigmaCtx {
+        subst,
+        param_rigids,
+    };
     for entry in op_dict_entries(kb, callee_op).op_entries().to_vec() {
         if !matches!(entry.supply, SupplySource::Instance { .. })
             && pinned_witness_for(kb, selected, entry.required_sort).is_none()
         {
-            handed_providers_tie_in(kb, caller_requires, caller_requires.op, entry.required_sort, callee_op, span)?;
+            // At the call's types, as the forward reads it ([`build_op_scoped_dicts`]).
+            let at_call = RequiresEntry {
+                spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+                ..entry.clone()
+            };
+            let at_call = dep_completed_at_carrier(kb, &at_call).unwrap_or(at_call);
+            if let Some((first, second)) =
+                handed_dictionaries_for_dep(kb, caller_requires, &at_call, Some(&sigma))
+            {
+                return Err(TypeError::HandedProvidersTie {
+                    span,
+                    op: callee_op,
+                    spec: kb.canonical_sort_sym(entry.required_sort),
+                    first,
+                    second,
+                });
+            }
         }
     }
     let dicts = build_op_scoped_dicts(

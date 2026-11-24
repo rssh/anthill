@@ -2017,48 +2017,162 @@ pub(super) fn param_derived_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> 
 /// reads it as it reads a written `requires`: it is in the operation's chain, and among the
 /// clauses that license a call (`TypingEnv::set_enclosing_op`). In the written clause's
 /// shape, before normalization.
+///
+/// Proposal 074 stage 9 (WI-20261113-0FTHQ): and, after every parameter's entry at its
+/// members, the entry at the types a parameter's type writes ([`param_written_entry`]),
+/// supplied by the same parameter, so a call at `Leaf` reads `t: Tag[T = Leaf]` as a call at
+/// `t.T` does. Appended after all of them, so the slots of the members' entries keep their
+/// places; the frame fills both from the one argument (`eval::instance_param_slots`).
 pub(super) fn param_instance_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry> {
     let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, op_sym) else {
         return Vec::new();
     };
     let params: Vec<(Symbol, Value)> = rec.params.clone();
-    let mut out: Vec<RequiresEntry> = Vec::new();
-    for (pname, pty) in params {
-        let spec = match extract_type(kb, &pty) {
-            TypeExtractor::SortRef(s) => s,
-            TypeExtractor::Parameterized { base, .. } => base,
-            _ => continue,
-        };
-        // Proposal 074 stage 3: and a sort with a dictionary and no parameter (`c: Ticker`),
-        // whose entry is the bare sort, the parameter's provider.
-        if spec_over_parameter(kb, spec).is_none() && !is_parameterless_dictionary_sort(kb, spec) {
-            continue;
+    let mut out: Vec<RequiresEntry> = params
+        .iter()
+        .filter_map(|(pname, pty)| param_member_entry(kb, *pname, pty))
+        .collect();
+    for (pname, pty) in &params {
+        if let Some(entry) = param_written_entry(kb, op_sym, *pname, pty) {
+            out.push(entry);
         }
-        let spec = kb.canonical_sort_sym(spec);
-        // Exactly the clause the author would write, `requires Additive[T = x.T]`, so one
-        // written the same is this entry: the spec applied to the receiver `Ref` of each of the
-        // parameter's members, keyed by its short name — whatever the parameter's type writes
-        // there, as a written clause's projection is read. Normalized where the chain is built.
-        let recv = kb.alloc(Term::Ref(pname));
-        let mut bindings: Vec<(Symbol, TermId)> = Vec::new();
-        for short in kb.type_params_of_sort(spec) {
-            let member = kb.intern(&short);
-            bindings.push((member, kb.make_expr_carried(recv, member)));
-        }
-        let base = kb.make_sort_ref(spec);
-        let applied = Value::term(if bindings.is_empty() {
-            base
-        } else {
-            kb.make_parameterized_type(base, &bindings)
-        });
-        out.push(RequiresEntry {
-            required_sort: spec,
-            spec: applied,
-            supply: SupplySource::Instance { param: pname },
-            binder: None,
-        });
     }
     out
+}
+
+/// Every entry [`param_instance_requires`] gives the one parameter `pname` typed `pty`: at its
+/// members, then at the types its type writes where it writes them. Read one parameter at a
+/// time by the count of what an operation is handed (`handed_dictionaries_at_call`), which
+/// must see two parameters of one type as two, where the chain keeps one entry per spec.
+pub(super) fn param_instance_entries(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    pname: Symbol,
+    pty: &Value,
+) -> Vec<RequiresEntry> {
+    param_member_entry(kb, pname, pty)
+        .into_iter()
+        .chain(param_written_entry(kb, op_sym, pname, pty))
+        .collect()
+}
+
+/// The spec a parameter typed `pty` is typed at, canonical, with the bindings its type
+/// writes, where it is a sort with a dictionary — one over a parameter, or one with a
+/// dictionary and no parameter (proposal 074 stage 3, `c: Ticker`); `None` otherwise.
+fn param_instance_spec(kb: &mut KnowledgeBase, pty: &Value) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
+    let (spec, written) = match extract_type(kb, pty) {
+        TypeExtractor::SortRef(s) => (s, Vec::new()),
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return None,
+    };
+    if spec_over_parameter(kb, spec).is_none() && !is_parameterless_dictionary_sort(kb, spec) {
+        return None;
+    }
+    Some((kb.canonical_sort_sym(spec), written))
+}
+
+/// The entry at the parameter's own members, `Additive[T = x.T]` for `x: Additive` — exactly
+/// the clause the author would write, so one written the same is this entry: the spec applied
+/// to the receiver `Ref` of each of the parameter's members, keyed by its short name, whatever
+/// the parameter's type writes there. A sort with no parameter is the bare sort, the
+/// parameter's provider (`c: Ticker`). Normalized where the chain is built.
+fn param_member_entry(kb: &mut KnowledgeBase, pname: Symbol, pty: &Value) -> Option<RequiresEntry> {
+    let (spec, _) = param_instance_spec(kb, pty)?;
+    let recv = kb.alloc(Term::Ref(pname));
+    let mut bindings: Vec<(Symbol, TermId)> = Vec::new();
+    for short in kb.type_params_of_sort(spec) {
+        let member = kb.intern(&short);
+        bindings.push((member, kb.make_expr_carried(recv, member)));
+    }
+    let base = kb.make_sort_ref(spec);
+    let applied = Value::term(if bindings.is_empty() {
+        base
+    } else {
+        kb.make_parameterized_type(base, &bindings)
+    });
+    Some(RequiresEntry {
+        required_sort: spec,
+        spec: applied,
+        supply: SupplySource::Instance { param: pname },
+        binder: None,
+    })
+}
+
+/// Proposal 074 stage 9 (WI-20261113-0FTHQ) — the entry at the types a parameter's type
+/// writes, where it writes one for every parameter of the spec: `t: Tag[T = Leaf]` is
+/// `Tag[T = Leaf]`, as a lambda binder's entry is its written type
+/// ([`lambda_instance_requires`]), and a call at `Leaf` reads it — the dictionary the
+/// operation is handed (kernel-language §8.2, "Which dictionary a call uses"). At its members
+/// alone a call at `Leaf` read none, and the provider chosen at load answered in its place:
+/// MEASURED before the stage, `viaParam(t: Tag[T = Leaf]) = Tag.tag(leaf(k: 0))` handed
+/// `Alt`'s dictionary answered `Leaf`'s 1.
+///
+/// A binding that names one of the operation's own type parameters (`t: Tag[T = X]` in
+/// `f[X]`) is that parameter as a clause names it, `<op>.X`: in the signature it is the
+/// parameter's flexible variable, which as the entry would match a call at any type.
+/// MEASURED before the stage, `f[X](t: Tag[T = X], x: X) = Tag.tag(x)` was refused, "missing
+/// `requires Tag[T = …]`", the dictionary it is handed read nowhere. `None` where a binding is
+/// unwritten, the parameter's own member, or of any other shape (a type holding a variable
+/// inside it): the members' entry stands alone.
+fn param_written_entry(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    pname: Symbol,
+    pty: &Value,
+) -> Option<RequiresEntry> {
+    let (spec, written) = param_instance_spec(kb, pty)?;
+    let shorts = kb.type_params_of_sort(spec);
+    if shorts.is_empty() {
+        return None;
+    }
+    let tparams: Vec<(Symbol, Var)> = crate::kb::op_info::lookup_operation_info(kb, op_sym)
+        .map(|rec| rec.type_params.clone())
+        .unwrap_or_default();
+    let op_qn = kb.qualified_name_of(op_sym).to_string();
+    // CARRIER-NEUTRAL: a fixed binding is kept as the value it is, a term or the occurrence a
+    // type alias rides (`ANTHILL_TEST_NODE_CARRIER=1` puts every sort a parameter's type names
+    // on one). MEASURED with the term carrier alone read here: under that control T13 answered
+    // 1 again and two parameters at one type loaded, the entry silently missing.
+    let mut at_types: Vec<(Symbol, Value)> = Vec::new();
+    let mut names_a_type_parameter = false;
+    for short in &shorts {
+        let (key, v) = written
+            .iter()
+            .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short.as_str())
+            .cloned()?;
+        if is_self_projection_of(kb, &v, pname, key) {
+            return None;
+        }
+        let at = if type_is_fixed(kb, &v) {
+            v
+        } else if let TypeExtractor::FlexVar { id, .. } = extract_type(kb, &v) {
+            let (name, _) = tparams
+                .iter()
+                .find(|(_, var)| matches!(var, Var::Global(g) if g.raw() == id))?;
+            let sym = kb.try_resolve_symbol(&format!("{op_qn}.{}", kb.local_name_of(*name)))?;
+            names_a_type_parameter = true;
+            Value::term(kb.make_sort_ref(sym))
+        } else {
+            return None;
+        };
+        at_types.push((kb.intern(short), at));
+    }
+    // Every binding fixed: the type as written is the entry, on whatever carrier it rides.
+    let spec_value = if !names_a_type_parameter {
+        pty.clone()
+    } else {
+        Value::Entity {
+            functor: spec,
+            pos: Vec::new().into(),
+            named: at_types.into(),
+        }
+    };
+    Some(RequiresEntry {
+        required_sort: spec,
+        spec: spec_value,
+        supply: SupplySource::Instance { param: pname },
+        binder: None,
+    })
 }
 
 /// Proposal 073 §2 — the requirement each binder of a lambda's parameter typed at a spec over

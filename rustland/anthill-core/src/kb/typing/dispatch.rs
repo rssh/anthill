@@ -343,12 +343,6 @@ pub enum TieRepair {
     /// program so written refused: `Score.score(red(), ?r)` over two witness sorts
     /// (`CallTypeArgsNotSupportedHere`).
     BracketElsewhere(String),
-    /// Every candidate is a CONCRETE provider, where §4.4 check 3 refuses an explicit
-    /// witness because the VALUE decides — and a call that reached here has no value
-    /// that does. MEASURED on `wi822_op_scoped_supply_test`'s receiver-less
-    /// `Zeroable.zero()`: `[Zeroable = Pebble]` there is
-    /// *"an explicit `[Zeroable = Pebble]` cannot change it"*.
-    ValueDirected,
     /// The tie is at a SUB-GOAL of the resolution, where §4.5 step 0 deliberately
     /// keeps a bracket key out (a key's candidate set is the CALLEE's slots, and
     /// extending it into the resolution tree would make key resolution depend on
@@ -376,8 +370,8 @@ pub enum TieRepair {
     /// What the author has to do is make them ONE provision.
     ///
     /// DRIVEN by `wi1032_provision_dedup_test::one_carrier_two_disagreeing_provisions_
-    /// names_it_once`. Before it existed this rendered as [`Self::ValueDirected`] and
-    /// printed the carrier TWICE — advising a pin on a carrier that is already pinned.
+    /// names_it_once`. Before it existed this rendered as a refusal to name a concrete
+    /// provider and printed the carrier TWICE — advising a pin on a carrier already pinned.
     OneProviderTwoProvisions,
 }
 
@@ -414,13 +408,11 @@ pub(super) fn tie_candidate_names(kb: &KnowledgeBase, tie: &InstanceTie) -> Vec<
     candidates
 }
 
-/// WI-843 — §4.4 check 3's criterion, with ONE owner: is `sort` a provider whose
-/// dispatch the VALUE already decides?
-///
-/// [`validate_instance_selection`] refuses a selection on one; [`tie_repair`] must
-/// therefore not advertise one. Sharing the `concrete` SET is not enough to keep those
-/// two agreeing — the drift channel is the TEST, and the raw-plus-canonical probe is
-/// the test. (`check_provider_operations`' exemption spells `contains(raw)` only; that
+/// WI-843 — is `sort` a provider whose values carry their own sort (a sort with
+/// constructors), which chose a named slot where they were built? One owner of the
+/// raw-plus-canonical probe. It was also §4.4 check 3's criterion, a written witness with
+/// constructors refused, which proposal 074 stage 9 removed; its reader now is the named-slot
+/// supply of a value-directed provider (`synth.rs`). (`check_provider_operations`' exemption spells `contains(raw)` only; that
 /// is pre-existing, and widening it would newly exempt groups, so it is left as found
 /// rather than folded in here.)
 pub(super) fn is_value_directed_provider(
@@ -432,8 +424,7 @@ pub(super) fn is_value_directed_provider(
 }
 
 /// WI-843 — render a tie for a diagnostic: its candidates, and the one repair that
-/// actually applies. The `sorts_with_constructors` scan lives HERE, at the render
-/// boundary, so the resolver pays nothing for ties whose result is discarded.
+/// actually applies.
 ///
 /// WI-1032 — IT DOES NOT DEDUP THE NAMES, and that is a decision with a measurement
 /// behind it rather than an omission. This did once print one carrier twice
@@ -446,11 +437,7 @@ pub(super) fn is_value_directed_provider(
 /// and the order on heads picks it ([`more_specific`]; MEASURED, in
 /// `wi1032_provision_dedup_test::a_specificity_ordered_pair_still_takes_the_more_specific`).
 /// With no driver left, a dedup here would be untested code.
-pub(super) fn render_instance_tie(
-    kb: &KnowledgeBase,
-    tie: &InstanceTie,
-    op: Option<Symbol>,
-) -> (Vec<String>, TieRepair) {
+pub(super) fn render_instance_tie(kb: &KnowledgeBase, tie: &InstanceTie) -> (Vec<String>, TieRepair) {
     let candidates = tie_candidate_names(kb, tie);
     if !tie.at_call_goal {
         // WI-456 — the slot rides from the frame that owns it ([`InstanceTie::slot`]).
@@ -462,31 +449,17 @@ pub(super) fn render_instance_tie(
             })),
         );
     }
-    // ONE provider reached twice: no bracket separates a provider from itself, and
-    // `ValueDirected`'s "pin the carrier" is advice for a carrier that is already pinned.
+    // ONE provider reached twice: no bracket separates a provider from itself.
     if candidates.len() == 1 {
         return (candidates, TieRepair::OneProviderTwoProvisions);
     }
-    let concrete = crate::kb::load::sorts_with_constructors(kb);
-    // WI-20261122-CXR5B (c3) — a provider with constructors is nameable where the call's
-    // operation takes no value that decides its dispatch, as `validate_instance_selection`
-    // admits it there.
-    let no_value_decides = op.is_some_and(|op| {
-        impl_parent_of_op(kb, op).is_some_and(|p| same_sort_canonical(kb, p, tie.spec))
-            && !op_has_spec_carrier_param(kb, op, tie.spec)
-    });
-    let repair = match tie
-        .candidates
-        .iter()
-        .position(|s| no_value_decides || !is_value_directed_provider(kb, &concrete, *s))
-    {
-        Some(i) => TieRepair::Bracket(format!(
-            "[{} = {}]",
-            short_name_of(kb.qualified_name_of(tie.spec)),
-            candidates[i],
-        )),
-        None => TieRepair::ValueDirected,
-    };
+    // Proposal 074 stage 9 (WI-20261113-0FTHQ): any provider may be named, with constructors
+    // or not ([`validate_instance_selection`]), so the repair names the first.
+    let repair = TieRepair::Bracket(format!(
+        "[{} = {}]",
+        short_name_of(kb.qualified_name_of(tie.spec)),
+        candidates[0],
+    ));
     (candidates, repair)
 }
 
@@ -497,10 +470,9 @@ pub(super) fn render_instance_tie(
 pub(super) fn render_call_tie(
     kb: &KnowledgeBase,
     tie: &InstanceTie,
-    op: Symbol,
     in_rule_own_term: bool,
 ) -> (Vec<String>, TieRepair) {
-    let (candidates, repair) = render_instance_tie(kb, tie, Some(op));
+    let (candidates, repair) = render_instance_tie(kb, tie);
     let repair = match repair {
         TieRepair::Bracket(bracket) if in_rule_own_term => TieRepair::BracketElsewhere(bracket),
         repair => repair,
@@ -574,11 +546,6 @@ pub(super) fn tie_repair_advice(spec: &str, repair: &TieRepair) -> String {
              carry call-site type arguments, so write `{bracket}` on it, inside a `let` or \
              in an operation's body that the rule calls (or name another of them)"
         ),
-        TieRepair::ValueDirected => ", and none can be named here: each is a CONCRETE \
-             provider, where an explicit witness is refused because the VALUE decides the \
-             dispatch — and this call has no value that does. Pin the carrier through the \
-             call's receiver or its expected result type"
-            .to_owned(),
         // WI-456 — the two arms differ in whether a binder EXISTS to name, and that is
         // the whole difference: the channel is the same one either way.
         TieRepair::SubGoal(Some(slot)) => format!(

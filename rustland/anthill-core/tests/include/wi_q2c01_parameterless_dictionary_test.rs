@@ -412,8 +412,14 @@ fn a_value_of_a_requiring_sort_gets_its_provider() {
         )
     };
     assert_eq!(answers("req2", &with_other("default "), &["go"]), ["40"]);
+    // Refused at the call that converts the `circle`, where no provider is chosen. Before
+    // proposal 074 stage 9 (WI-20261113-0FTHQ) the refusal was `probe`'s own body, `Desc.d(1)`
+    // "2 instances provide `Desc`": the body now reads the dictionary `probe` is handed, `t`.
     let errors = refused("req3", &with_other(""));
-    assert!(says(&errors, "2 instances provide `q2c01.req3.Desc`"), "{errors:?}");
+    assert!(
+        says(&errors, "constructing `q2c01.req3.Desc[T = anthill.prelude.Int64]` is ambiguous among providers"),
+        "{errors:?}"
+    );
     let errors = refused("req4", &format!("{}{go}", DESC.replace("Shape\n    requires Desc[T = Int64]", "Shape\n    requires Desc[T = String]")));
     assert!(says(&errors, "no impl provides q2c01.req4.Desc"), "{errors:?}");
     let shape = format!(

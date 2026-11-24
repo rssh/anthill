@@ -3416,26 +3416,12 @@ pub(super) fn parameterless_provider_call(
 pub(super) fn handed_providers_tie(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
+    subst: &Substitution,
     spec_sort: Symbol,
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
-    let chain = env.enclosing_frame_chain().clone();
-    handed_providers_tie_in(kb, &chain, env.enclosing_op(), spec_sort, fn_sym, span)
-}
-
-/// [`handed_providers_tie`] for a frame `chain` of the operation `caller_op`: refused where it
-/// is handed two providers of the sort with no parameter `spec_sort` that a call of `fn_sym`
-/// needs — the call's own spec, or a requirement of the callee's the frame would supply.
-pub(super) fn handed_providers_tie_in(
-    kb: &mut KnowledgeBase,
-    chain: &DictChain,
-    caller_op: Option<Symbol>,
-    spec_sort: Symbol,
-    fn_sym: Symbol,
-    span: Option<Span>,
-) -> Result<(), TypeError> {
-    match handed_providers_pair(kb, chain, caller_op, spec_sort) {
+    match handed_dictionaries_at_call(kb, env, subst, spec_sort) {
         None => Ok(()),
         Some((first, second)) => Err(TypeError::HandedProvidersTie {
             span,
@@ -3445,6 +3431,139 @@ pub(super) fn handed_providers_tie_in(
             second,
         }),
     }
+}
+
+/// Proposal 074 stage 9 (WI-20261113-0FTHQ; kernel-language §8.2, "Which dictionary a call
+/// uses") — the first two dictionaries the operation is handed that answer a call of an
+/// operation of `spec_sort` at the call's bindings `subst`, described, where one of them at
+/// least is handed — a parameter typed at the sort, or a lambda's binder — and the other a
+/// second such or a clause in scope; `None` otherwise. For a sort with no parameter it is
+/// stage 3's count ([`handed_providers_pair`]), which needs no bindings.
+///
+/// THE PARAMETERS ARE READ OFF THE SIGNATURE, one at a time ([`param_instance_entries`]), and
+/// the clauses and a lambda's binders off the frame: the chain keeps one entry per spec, so two
+/// parameters of one type are one entry there, and the call read the first in silence —
+/// MEASURED before the stage, `two(a: Tag[T = Leaf], b: Tag[T = Leaf]) = Tag.tag(leaf(k: 0))`
+/// answered `a`'s. An entry answers the call where the call's own walk would take it
+/// ([`collect_requires_matches`], a precise match), through its chain as well: `o: Strict[T =
+/// Big]` answers `Cmp.cmp` through `Strict provides Cmp[T = T]`.
+///
+/// TWO CLAUSES ARE NOT THIS COUNT'S: a call two clauses answer is WI-20261013-50ZMN's
+/// ([`read_requirement_by_name`]), and a clause and its own refinement (`requires Ord[T = X],
+/// WeakOrd[T = X]`) are no two dictionaries the operation is handed.
+pub(super) fn handed_dictionaries_at_call(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    spec_sort: Symbol,
+) -> Option<(String, String)> {
+    let chain = env.enclosing_frame_chain().clone();
+    let caller_op = env.enclosing_op();
+    let spec = kb.canonical_sort_sym(spec_sort);
+    if is_parameterless_dictionary_sort(kb, spec) {
+        return handed_providers_pair(kb, &chain, caller_op, spec_sort);
+    }
+    let sigma_ctx = SigmaCtx {
+        subst,
+        param_rigids: env.param_rigids(),
+    };
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    handed_answering(kb, &chain, caller_op, |kb, entry| {
+        let node = requires_node(kb, entry);
+        let mut path: SmallVec<[usize; 2]> = SmallVec::new();
+        let mut matches: Vec<(SmallVec<[usize; 2]>, SigmaVerdict)> = Vec::new();
+        collect_requires_matches(
+            kb,
+            subst,
+            Some(&sigma_ctx),
+            spec_sort,
+            &spec_qn,
+            std::slice::from_ref(&node),
+            &mut path,
+            &mut matches,
+        );
+        matches.iter().any(|(_, v)| *v == SigmaVerdict::Precise)
+    })
+}
+
+/// [`handed_dictionaries_at_call`] for a requirement `dep` of a CALLEE the frame `chain`
+/// would answer (`f(d: Additive[T = Meters], …) = sum2(a, b)`, `sum2`'s `requires Additive[T
+/// = X]` at `Meters`), under the call's σ `disambig`: an entry answers it as the forward
+/// takes one, directly or through its chain ([`held_for`]). Without a σ — the diagnostic
+/// path — nothing is counted for a sort with a parameter, the forward there being the coarse
+/// first match.
+pub(super) fn handed_dictionaries_for_dep(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    dep: &RequiresEntry,
+    disambig: Option<&SigmaCtx>,
+) -> Option<(String, String)> {
+    let spec = kb.canonical_sort_sym(dep.required_sort);
+    if is_parameterless_dictionary_sort(kb, spec) {
+        return handed_providers_pair(kb, chain, chain.op, dep.required_sort);
+    }
+    let ctx = disambig?;
+    handed_answering(kb, chain, chain.op, |kb, entry| held_for(kb, dep, entry, Some(ctx)).is_some())
+}
+
+/// The first two of what the frame `chain` of `caller_op` is handed and holds that `covers`
+/// takes, described, where one at least is handed: the operation's parameters typed at a sort
+/// with a dictionary, read off its signature one at a time (a parameter answers where one of
+/// its entries does, [`param_instance_entries`]), then the frame's clauses and a lambda's
+/// binders ([`handed_dictionaries_at_call`]).
+fn handed_answering(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    caller_op: Option<Symbol>,
+    mut covers: impl FnMut(&mut KnowledgeBase, &RequiresEntry) -> bool,
+) -> Option<(String, String)> {
+    // `(description, handed)`: a parameter or a binder is handed, a clause is not.
+    let mut answering: Vec<(String, bool)> = Vec::new();
+    let params: Vec<(Symbol, Value)> = caller_op
+        .and_then(|op| crate::kb::op_info::lookup_operation_info(kb, op))
+        .map(|rec| rec.params.clone())
+        .unwrap_or_default();
+    let mut op_params: Vec<Symbol> = Vec::new();
+    for (p, ty) in params {
+        let entries = caller_op
+            .map(|op| param_instance_entries(kb, op, p, &ty))
+            .unwrap_or_default();
+        if entries.is_empty() {
+            continue;
+        }
+        op_params.push(p);
+        let mut answers = false;
+        for entry in entries {
+            let entry = normalize_op_requires_entry(kb, &entry);
+            answers = answers || covers(kb, &entry);
+        }
+        if answers {
+            answering.push((format!("the parameter `{}`", kb.local_name_of(p)), true));
+        }
+    }
+    for entry in chain.entries().to_vec() {
+        let described = match entry.supply {
+            SupplySource::Instance { param } if op_params.contains(&param) => continue,
+            SupplySource::Instance { param } => {
+                (format!("the lambda's parameter `{}`", kb.local_name_of(param)), true)
+            }
+            // A named slot a parameter's carrier holds is the value's own choice, made where it
+            // was built, and the argument's slot outranks a clause that covers its goal
+            // (WI-1094): no dictionary the operation is handed, and not counted.
+            SupplySource::FromParam { .. } => continue,
+            SupplySource::Required | SupplySource::SelfSupplied => (
+                format!("the clause `requires {}`", render_requires_entry(kb, &entry)),
+                false,
+            ),
+        };
+        if covers(kb, &entry) {
+            answering.push(described);
+        }
+    }
+    if answering.len() < 2 || !answering.iter().any(|(_, handed)| *handed) {
+        return None;
+    }
+    Some((answering[0].0.clone(), answering[1].0.clone()))
 }
 
 /// The first two providers of the sort with no parameter `spec_sort` that the frame `chain` of

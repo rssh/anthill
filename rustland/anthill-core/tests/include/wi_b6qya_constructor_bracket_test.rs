@@ -326,8 +326,9 @@ fn the_receiver_and_the_bracket_must_agree() {
 
 /// A requirement slot the sort names is a parameter, and binding it on a constructor
 /// selects the provider as binding it on the receiver does: by length `"aa"` and `"bb"`
-/// are one element. A sort that may not be selected is refused in both spellings alike,
-/// and an anonymous requirement's spec name is no key of a constructor.
+/// are one element. A provider with constructors (`ConcOrd`) is selected in every spelling
+/// alike (proposal 074 stage 9; refused in all four before), and an anonymous requirement's
+/// spec name is no key of a constructor.
 #[test]
 fn a_named_requirement_slot_is_bound_and_selects() {
     let slots = |ns: &str, body: &str| {
@@ -370,9 +371,9 @@ fn a_named_requirement_slot_is_bound_and_selects() {
         ("b6slotconcrecv", "SortedSet[T = String, O = ConcOrd].tip()"),
         ("b6slotconcrecvpos", "SortedSet[String, ConcOrd].tip()"),
     ] {
-        let body = format!("  operation go() -> Int64 = SortedSet.size({tip})");
-        let rendered = refusal_of(ns, &slots(ns, &body));
-        assert!(rendered.contains("SortedSet.tip.selection"), "{ns}: {rendered}");
+        // Selected as any provider is (proposal 074 stage 9, WI-20261113-0FTHQ; refused
+        // "SortedSet.tip.selection" before): `ConcOrd` makes any two strings one element.
+        assert_eq!(run_source(ns, &slots(ns, &sized(tip, "b"))), "1", "{ns}");
     }
     let ns = "b6slotanon";
     let body = "  operation go() -> Int64 = SortedSet.size(SortedSet.tip[T = String, WeakOrd = ByLength]())";
@@ -390,8 +391,7 @@ fn a_named_requirement_slot_is_bound_and_selects() {
     for (tag, bracket) in [("key", "[T = String, O = ConcOrd]"), ("pos", "[String, ConcOrd]")] {
         let ns = format!("b6slotopconc{tag}");
         let body = format!("{pick}  operation go() -> Int64 = pick{bracket}(\"aa\", \"b\")");
-        let rendered = refusal_of(&ns, &slots(&ns, &body));
-        assert!(rendered.contains("pick.selection"), "{ns}: {rendered}");
+        assert_eq!(run_source(&ns, &slots(&ns, &body)), "0", "{ns}: `ConcOrd` orders none apart");
     }
 }
 

@@ -2592,18 +2592,32 @@ pub(super) struct LicensingClause {
 ///
 /// DIRECT ENTRIES ONLY: a spec required by a direct requirement in turn has no entry here,
 /// so a counted clause is one the author wrote.
+///
+/// ONE PARAMETER IS ONE ENTRY: a parameter typed at the spec stands for an entry at its members
+/// and, where its type writes them, one at those types (proposal 074 stage 9,
+/// `param_instance_requires`), and the first, `Hold[C = h.C]`, is the one advised.
 pub(super) fn sole_chain_entry_over_spec(
     kb: &KnowledgeBase,
     chain: &DictChain,
     spec: Symbol,
 ) -> Option<RequiresEntry> {
     let spec_canon = kb.canonical_sort_sym(spec);
-    let mut over_spec = chain
-        .entries()
-        .iter()
-        .filter(|e| kb.canonical_sort_sym(e.required_sort) == spec_canon);
-    let entry = over_spec.next().cloned()?;
-    over_spec.next().is_none().then_some(entry)
+    let mut over_spec: Vec<&RequiresEntry> = Vec::new();
+    for e in chain.entries() {
+        if kb.canonical_sort_sym(e.required_sort) != spec_canon {
+            continue;
+        }
+        let same_parameter = |o: &&RequiresEntry| {
+            matches!((o.supply, e.supply), (SupplySource::Instance { param: a }, SupplySource::Instance { param: b }) if a == b)
+        };
+        if !over_spec.iter().any(same_parameter) {
+            over_spec.push(e);
+        }
+    }
+    match over_spec.as_slice() {
+        [entry] => Some((*entry).clone()),
+        _ => None,
+    }
 }
 
 /// WI-590 — bind what [`enclosing_requires_licensing_clause`] resolved. Split from the

@@ -775,51 +775,28 @@ fn a_witness_of_another_spec_is_loud() {
     );
 }
 
-/// Check 3 (§1.1): a CONCRETE provider — a sort with constructors — is a backend
-/// whose VALUES carry their own sort, so value-directed dispatch is already deciding
-/// and an explicit witness could only agree redundantly or contradict silently.
-/// Refuse, do not prefer. The criterion is read through `sorts_with_constructors`,
-/// the same owner the witness-coherence exemption uses, so the two cannot drift.
+/// A CONCRETE provider — a sort with constructors — may be selected (proposal 074 stage 9,
+/// WI-20261113-0FTHQ, decided with the user 2026-11-24). Check 3 refused it here, "is a
+/// CONCRETE provider", the value said to decide already; a call now uses the dictionary its
+/// operation is handed before the value's own provision, so a bracket naming that provision
+/// says which the call means. Here nothing is handed, and the bracket names what the bare call
+/// chooses: both answer 3.
 #[test]
-fn selecting_a_concrete_provider_is_refused_not_preferred() {
-    let src = program(
-        "wi841.concrete",
-        r#"
+fn selecting_a_concrete_provider_names_it() {
+    let pebble = r#"
   sort Pebble
     entity pebble
     provides Monoid[T = Pebble]
     operation combine(a: Pebble, b: Pebble) -> Int64 = 3
   end
-"#,
-        &driver("Monoid.combine[Monoid = Pebble](pebble(), pebble())"),
-    );
-    refused_with(
-        &src,
-        "is a CONCRETE provider",
-        "where the value decides, an explicit witness is refused (§4.4 check 3)",
-    );
-
-    // CONTROL: the same program without the bracket loads and runs, so the refusal is
-    // about the SELECTION and not about the program.
-    let control = program(
-        "wi841.concreteok",
-        r#"
-  sort Pebble
-    entity pebble
-    provides Monoid[T = Pebble]
-    operation combine(a: Pebble, b: Pebble) -> Int64 = 3
-  end
-"#,
-        &driver("Monoid.combine(pebble(), pebble())"),
-    );
-    assert_eq!(
-        eval_int(
-            &control,
-            "wi841.concreteok.Driver.go",
-            "the value-directed call runs"
-        ),
-        3
-    );
+"#;
+    for (ns, call) in [
+        ("wi841.concrete", "Monoid.combine[Monoid = Pebble](pebble(), pebble())"),
+        ("wi841.concreteok", "Monoid.combine(pebble(), pebble())"),
+    ] {
+        let src = program(ns, pebble, &driver(call));
+        assert_eq!(eval_int(&src, &format!("{ns}.Driver.go"), call), 3, "{call}");
+    }
 }
 
 /// Check 3 does not leak into rule (1)'s ordinary business: a type-argument binding

@@ -3017,7 +3017,7 @@ pub(super) fn describe_resolution_failure(kb: &KnowledgeBase, result: &Resolutio
                 .then(|| {
                     tie_repair_advice(
                         kb.qualified_name_of(tie.spec),
-                        &render_instance_tie(kb, tie, None).1,
+                        &render_instance_tie(kb, tie).1,
                     )
                 })
                 .unwrap_or_default();

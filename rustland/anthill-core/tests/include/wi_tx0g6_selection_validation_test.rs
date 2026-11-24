@@ -50,9 +50,9 @@
 //!
 //! | backed out | fails |
 //! |---|---|
-//! | (R) the receiver leg's `validate_written_selection` call | [`every_refusal_reads_the_same_in_both_spellings`], [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`] |
+//! | (R) the receiver leg's `validate_written_selection` call | [`every_refusal_reads_the_same_in_both_spellings`], and `the_concrete_refusal_names_no_bracket_the_author_did_not_write` (removed with check 3 by proposal 074 stage 9) |
 //! | (F) the callee leg's forward (`binds_a_parameter = false` for every key) | [`an_abstract_slot_binding_forwards_in_both_spellings`], [`a_plain_parameter_tied_to_a_requirement_forwards_in_brackets_too`] |
-//! | (W) the channel-neutral wording of `ValueDirectedSelection` | [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`] |
+//! | (W) the channel-neutral wording of `ValueDirectedSelection` | `the_concrete_refusal_names_no_bracket_the_author_did_not_write` (the refusal and the row removed with check 3 by proposal 074 stage 9) |
 //! | (F) widened to every KEY (`binds_a_parameter = true`, rung-2 keys included) | [`a_plain_parameter_at_a_spec_key_is_still_refused`] (measured again on WI-20261013-50ZMN, which gave the row its present value: until then it was written with the enclosing sort's own named slot, `[WeakOrd = OE]`, and that spelling is a selection now — [`a_spec_key_naming_an_enclosing_requirement_hands_it_on`]) |
 //! | (P3) check 3 MOVED onto the σ-read producer, over the whole `wi_tests` binary | [`a_type_may_carry_a_concrete_witness_and_it_is_honoured`], plus three pre-existing tests (the census) |
 //!
@@ -209,25 +209,14 @@ fn render_three_via(insert: &str, set: &str) -> String {
 /// and the receiver spelling must refuse, and with the SAME BYTES — the comparison
 /// RS2G4's `the_receiver_spelling_reads_as_the_callee_spelling` makes.
 ///
-/// The `ConcOrd` and `Pair` rows are the ones this ticket changes: before it the receiver
-/// spelling loaded, so `sole_message` panics on it (R). The other three agreed already
-/// and are the control (see the header). They include both halves of the order control:
-/// `NotOrd` must be told it provides nothing, not that it is a concrete provider.
+/// The `ConcOrd` and `Pair` rows were the ones this ticket changed, check 3's refusal of a
+/// concrete witness; proposal 074 stage 9 removed check 3, and both are selections now, in
+/// both spellings alike ([`a_concrete_witness_is_selected_in_both_spellings`]). The three left
+/// agreed before this ticket and are the control (see the header): `NotOrd` HAS a constructor,
+/// and is told it provides nothing.
 #[test]
 fn every_refusal_reads_the_same_in_both_spellings() {
     for (elem, o, fault) in [
-        // Check 3, a concrete witness that is not its own carrier.
-        (
-            "String",
-            "ConcOrd",
-            "probe.tx0g6.ConcOrd is a CONCRETE provider of anthill.prelude.WeakOrd",
-        ),
-        // Check 3, a concrete SELF-provider: the prelude's canonical pair order.
-        (
-            "Pair[Int64, Int64]",
-            "Pair",
-            "anthill.prelude.Pair is a CONCRETE provider of anthill.prelude.WeakOrd",
-        ),
         // Check 1: provides nothing. HAS a constructor, so this is the order control.
         (
             "Int64",
@@ -261,40 +250,21 @@ fn every_refusal_reads_the_same_in_both_spellings() {
     }
 }
 
-/// Check 3's message used to read "an explicit `[WeakOrd = ConcOrd]` cannot change it".
-/// That names a bracket neither spelling of a NAMED slot writes: the callee writes
-/// `[O = ConcOrd]` and the receiver writes `SortedSet[…, O = ConcOrd]`. The receiver
-/// spelling reaches this refusal only since this ticket, which is what made the wording
-/// false for a program with no call bracket at all. It is now the channel-neutral
-/// "selection of `WeakOrd = ConcOrd`", the convention 6B67S set for check 1's refusal.
-/// (W), and (R) reddens it too, since without (R) the receiver spelling is not refused.
-///
-/// It also states the RULE now, not "cannot change it". For this very program that claim
-/// is false: `ConcOrd`'s values are not the arguments, and a type naming `O = ConcOrd` is
-/// honoured (`a_type_may_carry_a_concrete_witness_and_it_is_honoured`). The rule is kept
-/// as a property of the named sort (decided 2026-09-23), so the message gives its reason
-/// conditionally.
-/// Its last assertion pins the field name, `selection`, which the sibling refusals use.
+/// A CONCRETE WITNESS IS SELECTED IN BOTH SPELLINGS, and they read alike: `O = ConcOrd`, a
+/// sort with constructors, orders the set by `ConcOrd` written at the callee and at the
+/// receiver. Both were refused, the receiver spelling since this ticket, under check 3 —
+/// "an explicit selection of `WeakOrd = ConcOrd` is refused rather than preferred" — which
+/// proposal 074 stage 9 (WI-20261113-0FTHQ, decided with the user 2026-11-24) removed: a
+/// bracket may name any provider.
 #[test]
-fn the_concrete_refusal_names_no_bracket_the_author_did_not_write() {
-    let recv = sole_message(
-        "  operation w() -> SortedSet[T = String] = SortedSet[T = String, O = ConcOrd].empty()",
-    );
-    assert!(
-        !recv.contains("`[WeakOrd = ConcOrd]`"),
-        "the author wrote no `[WeakOrd = …]` bracket; got: {recv}"
-    );
-    assert!(
-        recv.contains(
-            "an explicit selection of `WeakOrd = ConcOrd` is refused rather than preferred"
-        ),
-        "got: {recv}"
-    );
-    // …and it names the FIELD the other selection refusals name, not `type_arg`.
-    assert!(
-        recv.starts_with("type mismatch in anthill.prelude.SortedSet.empty.selection:"),
-        "got: {recv}"
-    );
+fn a_concrete_witness_is_selected_in_both_spellings() {
+    for (spelling, set) in [
+        ("callee", "SortedSet.empty[T = String, O = ConcOrd]()"),
+        ("receiver", "SortedSet[T = String, O = ConcOrd].empty()"),
+    ] {
+        let src = program(&format!("  operation w(n: Int64) -> String =\n    {}", render_three(set)));
+        assert_eq!(eval_str(&src, "probe.tx0g6.w", spelling), "bbb,cc,a,", "{spelling}");
+    }
 }
 
 /// AN ABSTRACT BINDING OF A NAMED SLOT FORWARDS, IN BOTH SPELLINGS, driven to a value

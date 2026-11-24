@@ -1865,6 +1865,8 @@ mod wi_p0qgf_lambda_instance_test;
 mod wi_q2c01_parameterless_dictionary_test;
 #[path = "include/wi_dy84v_requires_data_sort_test.rs"]
 mod wi_dy84v_requires_data_sort_test;
+#[path = "include/wi_0fthq_handed_dictionary_test.rs"]
+mod wi_0fthq_handed_dictionary_test;
 #[path = "include/wi_2ksaa_dictionary_instance_test.rs"]
 mod wi_2ksaa_dictionary_instance_test;
 #[path = "include/wi_p85z7_paren_less_nullary_head_test.rs"]

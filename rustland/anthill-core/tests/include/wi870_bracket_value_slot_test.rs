@@ -35,7 +35,7 @@
 //! | the BRACKET producer's extraction (`seed_op_type_args`) | the same 7 |
 //! | the σ-READ producer's nested extraction (`selections_from_slot_bindings`) | `the_nested_pin_survives_into_a_bracket_less_later_call` ALONE |
 //! | the slot-flavoured refusal wording | the two refusal arms |
-//! | *applying* §3.5 check 3 to a sub-slot as well (the opposite decision) | `a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot` ALONE |
+//! | *applying* §3.5 check 3 to a sub-slot as well (the opposite decision) | `a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot` ALONE (measured before proposal 074 stage 9 removed check 3; the row is `a_concrete_provider_is_named_in_the_key_and_in_a_slot` since) |
 //!
 //! Three arms pass either way BY DESIGN, and each is a control rather than a
 //! measurement: `a_bare_pin_leaves_the_witnesss_own_sub_goal_ambiguous` (the tie must
@@ -323,34 +323,28 @@ fn a_binding_that_provides_nothing_at_the_sub_goal_is_refused() {
     );
 }
 
-/// §3.5 CHECK 3 IS NOT A SUB-SLOT'S, and this is the pair that decides it. The check
-/// refuses naming a CONCRETE provider at a call site because the argument's own value
-/// already directs dispatch there, so an explicit witness could only agree redundantly
-/// or contradict silently. A witness's requirement slot has no value: it is a
-/// dictionary slot the typer resolves, so naming the carrier's own provision IS the
-/// meaningful answer.
-///
-/// The same name in the two positions, so the difference is the position and nothing
-/// else. `Pair` is the prelude's own lexicographic `Ord` provider (WI-877) and is
-/// concrete — the very sort wi858 records as unnameable in a key.
-/// The components are `String`s, not `Int64`s, deliberately: `Pair`'s own conditions
-/// (`provides Ord[Pair[A, B]] :- Ord[A], Ord[B]`) are ANONYMOUS slots, so
-/// they cannot be pinned, and over `Int64` they would meet this file's two rivals and
-/// tie. Measured — the first cut used `Pair[Int64, Int64]` and was refused for exactly
-/// that, one level below the thing under test.
+/// A CONCRETE PROVIDER IS NAMED IN THE KEY AND IN A SLOT ALIKE. This pair decided that §3.5
+/// check 3 was not a sub-slot's: the check refused naming a provider with constructors in the
+/// KEY's value position, and one level in the identical name was accepted. Proposal 074 stage 9
+/// (WI-20261113-0FTHQ, decided with the user 2026-11-24) removed the check: a bracket may name
+/// any provider. So both positions answer now, and the same name in each still differs by the
+/// position alone. `Pair` is the prelude's own lexicographic `Ord` provider (WI-877) and is
+/// concrete. The components are `String`s, not `Int64`s, deliberately: `Pair`'s own conditions
+/// (`provides Ord[Pair[A, B]] :- Ord[A], Ord[B]`) are ANONYMOUS slots, so they cannot be pinned,
+/// and over `Int64` they would meet this file's two rivals and tie.
 #[test]
-fn a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot() {
-    let key = load_errs(&program(
+fn a_concrete_provider_is_named_in_the_key_and_in_a_slot() {
+    let key = program(
         "wi870.check3key",
         "    operation go(n: Int64) -> Int64 =\n      \
          WeakOrd.compare[WeakOrd = Pair](pair(fst: \"a\", snd: \"z\"), \
          pair(fst: \"b\", snd: \"a\"))\n",
-    ));
-    assert!(
-        key.iter()
-            .any(|e| e.contains("Pair") && e.contains("CONCRETE")),
-        "in the KEY's value position a concrete provider is refused — §3.5 check 3, \
-         unchanged: {key:?}"
+    );
+    assert_eq!(
+        eval_int(&key, "wi870.check3key.Driver.go", "a concrete provider in the key"),
+        -1,
+        "in the KEY's value position `Pair` answers its own lexicographic order (refused \
+         before the stage, \"CONCRETE\")",
     );
 
     let src = program(
@@ -366,9 +360,8 @@ fn a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot() {
             "a concrete provider in a slot"
         ),
         -1,
-        "one level in, the identical name is ACCEPTED and answers: `Pair`'s own \
-         lexicographic order puts (\"a\", \"z\") before (\"b\", \"a\"). Refusing here \
-         would have made a carrier's own provision the one thing a slot cannot name.",
+        "one level in, the identical name answers: `Pair`'s own lexicographic order puts \
+         (\"a\", \"z\") before (\"b\", \"a\")",
     );
 }
 
