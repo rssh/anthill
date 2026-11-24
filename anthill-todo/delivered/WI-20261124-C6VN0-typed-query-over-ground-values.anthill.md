@@ -3,9 +3,9 @@
 - id: WI-20261124-C6VN0-typed-query-over-ground-values
 - created: 2026-11-24T06:15:07Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-24T06:15:07Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-24T09:30:50Z
 
 - acceptance: cargo-test
 
@@ -24,4 +24,10 @@ DONE WHEN. Rows driven from outside the crate, through the typed execute:
 (3) an operand of a sort with its own eq, declared at that sort: that sort's eq decides, not the structure (the control that the declared type, not the value, picks the equality);
 (4) a declared type that does not fit the value: refused (QueryRefused), not ignored;
 (5) the control: the same queries with no declared type type and answer as before.
+
+## Changes
+
+### 2026-11-24T09:30:36Z — feedback — claude
+
+Delivered in 8b0f58bcd. Shape decided with the user 2026-11-24: route B, a query's typed variable types its variable (kernel-language 5.3 already said it reads as a rule head's, which the implementation did not do: the written PartialEq.eq(?xs: List[Int64], ?ys: List[Int64]) was refused, the variable getting a guard only), and a LogicalQuery value writes one with typed_query(var: ?x, type: T, query: q), which is ?x: T written in q (proposal 010.1 Q2, answered for a typed variable). A caller keeps a variable where an expression stood, declares it at the expression's declared type (an OperationInfo parameter's type_name, a field's type) and binds it, ?xs <=> nil. Rows driven from outside the crate through execute_typed_logical_query_with and refute_typed_logical_query_with (anthill-core/tests/include/wi_c6vn0_typed_query_variable_value_test.rs): (1) nil, nil declared List[Int64]: holds, Answered; (2) nil, [1]: no answer, Refuted (complete); (3) pt(1, 2), pt(1, 9) declared Pt: Pt's own eq holds them equal, === refutes (a Pt value names its sort, so the declaration and the value agree there); (4) ["a"] declared List[Int64]: QueryRefused naming ?xs; a var that is no variable: LowerError::TypedQueryNotAVariable; the untyped execute_logical_query: LowerError::TypedQueryUntyped; (5) undeclared: as before (nil/nil refused, [1]/[1] holds). Also: a typed_query under negation or in a branch types that goal alone; two types for one variable where they meet are refused. Agreed with the user: a rule-head argument that does not fit its bound (same(nil, ["a"]) refuted at run time, not refused) stays out of scope; the bare nil = [1] (refused in any body, [1] = nil loads) was sized large and filed as WI-20261124-V260E. Found on the way and fixed in the same commit: SubstTree::skip_subtree_then_continue recursed once per stored node; one more LogicalQuery constructor took wi_jee0e's no_premise_search past the 2 MiB test thread. Gate 12690 / 0; families green on both carriers; scaland testFull 811 + 51 (2 skipped) + 1.
 
