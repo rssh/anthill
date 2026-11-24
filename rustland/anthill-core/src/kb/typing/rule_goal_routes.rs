@@ -191,6 +191,7 @@ pub(crate) fn route_query_goals(
     let mut refused = Vec::new();
     refuse_unread_brackets(kb, query, &sites, &mut refused);
     refuse_misfitting_typed_variables(kb, query, &sites, &mut refused);
+    stamp_typed_variable_types(kb, query, &sites, &mut refused);
     // A goal riding in its citation marker was routed where its citation was typed — a
     // relation's query a typed body returned, drained later with the conditions run-time code
     // added to it: the marker is its routing, and routing it again would wrap the marker in
@@ -291,6 +292,13 @@ fn typed_spec_op_calls(
             }
         });
     }
+    // The typed variables (`?x: T`), each read at its type in the goal it types
+    // ([`stamp_typed_variable_types`]); a name several variables share is none of them.
+    let declared: Vec<VarId> = sites
+        .iter()
+        .filter_map(|site| typed_query_variable_of(kb, site).map(|(var, _, _)| var))
+        .filter(|var| by_name.get(&var.name()).is_some_and(|(_, _, shared)| !*shared))
+        .collect();
     let mut env = TypingEnv::empty();
     env.mark_rule_body_dispatch();
     // A variable no goal types is at a type of its own, open, which the call it is an argument
@@ -307,10 +315,22 @@ fn typed_spec_op_calls(
     let fd = find_dictionary_symbol(kb);
     let mut out = Vec::new();
     for call in calls {
+        // A typed variable at the type its occurrences in the call carry, over the type the
+        // query's first occurrence gives the name: one written under `not` or in a branch of `|`
+        // is stamped at its type in that goal alone, so two branches typing it differently each
+        // read their own (WI-20261124-C6VN0).
+        let mut call_env = env.clone();
+        for_each_var_leaf(&call, &mut |var, leaf| {
+            let Var::Global(vid) = var else { return };
+            if let Some(ty) = leaf.inferred_type().filter(|_| declared.contains(&vid)) {
+                call_env.bind_var(vid.name(), ty);
+            }
+        });
+        let env = &call_env;
         let mut errors = Vec::new();
         let typed = dispatch_calls_in_occ(
             kb,
-            &env,
+            env,
             &simp,
             &call,
             BodyPos::Goal(GoalCommit::Top),
@@ -551,13 +571,14 @@ fn refuse_misfitting_typed_variables(
         if unify_types(kb, &mut Substitution::new(), column, &bound) {
             continue;
         }
-        let Some(relation) = written_in
+        // The goal the type is written in names the relation; a value-built one may be a
+        // connective's spine, and then the guard does, which is a call by construction.
+        let relation = written_in
             .as_expr()
             .and_then(expr_call_parts)
+            .or_else(|| check.as_expr().and_then(expr_call_parts))
             .map(|(functor, _, _)| functor)
-        else {
-            continue;
-        };
+            .expect("a typed variable's guard is a call: `typed_query_variable_of` read it as one");
         let printer = crate::persistence::print::TermPrinter::new(kb);
         let (column, bound) = (printer.print_value(column), printer.print_value(&bound));
         refused.push((
@@ -577,6 +598,126 @@ fn refuse_misfitting_typed_variables(
             Some(written_in.span.source),
         ));
     }
+}
+
+/// WI-20261124-C6VN0 — A QUERY'S TYPED VARIABLE IS READ AT ITS TYPE in the goal it is written in
+/// (kernel-language §5.3), as a rule body reads a head variable at its bound: every occurrence
+/// of the variable there — and in the guard its type added — is stamped with the type, over what
+/// the columns gave it. [`refuse_misfitting_typed_variables`] has refused a column the type does
+/// not fit, so what is written over is an open slot (`List[T = ?]` under `List[Int64]`), never
+/// another type. At the top of the query the goal is the whole query, as a head's bound reaches
+/// the whole body; under `not` or in a branch of `|` it is that negand or branch. Before this only
+/// the guard read the type, and `PartialEq.eq(?xs: List[Int64], ?ys: List[Int64])` was refused,
+/// nothing fixing the element.
+///
+/// A variable is read at one type where it is read: two types for it whose goals meet — both at
+/// the top, or one inside the goal the other types — are refused, naming both, and nothing is
+/// stamped. Two branches of `|` may each type it, each branch reading its own.
+fn stamp_typed_variable_types(
+    kb: &mut KnowledgeBase,
+    query: &[Rc<NodeOccurrence>],
+    sites: &[Rc<NodeOccurrence>],
+    refused: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
+) {
+    let typed: Vec<(Rc<NodeOccurrence>, VarId, Value, Rc<NodeOccurrence>)> = sites
+        .iter()
+        .filter_map(|site| {
+            typed_query_variable_of(kb, site)
+                .map(|(var, bound, written_in)| (Rc::clone(site), var, bound, written_in))
+        })
+        .collect();
+    if typed.is_empty() {
+        return;
+    }
+    let mut top_level = Vec::new();
+    for goal in query {
+        conjuncts(kb, goal, &mut top_level);
+    }
+    // Each typed variable's scope: `None` is the whole query.
+    let scopes: Vec<Option<&Rc<NodeOccurrence>>> = typed
+        .iter()
+        .map(|(check, _, _, written_in)| {
+            (!top_level.iter().any(|g| Rc::ptr_eq(g, check))).then_some(written_in)
+        })
+        .collect();
+    let meet = |a: Option<&Rc<NodeOccurrence>>, b: Option<&Rc<NodeOccurrence>>| match (a, b) {
+        (Some(a), Some(b)) => holds_node(a, b) || holds_node(b, a),
+        _ => true,
+    };
+    let mut clash = false;
+    for i in 0..typed.len() {
+        for j in i + 1..typed.len() {
+            let ((_, var_i, bound_i, written_i), (_, var_j, bound_j, _)) = (&typed[i], &typed[j]);
+            if var_i != var_j || views_structurally_equal(kb, bound_i, bound_j) || !meet(scopes[i], scopes[j]) {
+                continue;
+            }
+            clash = true;
+            // The goal the type is written in names the relation; a value-built one may be a
+            // connective's spine, and then the guard does, which is a call by construction.
+            let relation = written_i
+                .as_expr()
+                .and_then(expr_call_parts)
+                .or_else(|| typed[i].0.as_expr().and_then(expr_call_parts))
+                .map(|(f, _, _)| f)
+                .expect("a typed variable's guard is a call: `typed_query_variable_of` read it as one");
+            let printer = crate::persistence::print::TermPrinter::new(kb);
+            let (first, second) = (printer.print_value(bound_i), printer.print_value(bound_j));
+            refused.push((
+                TypeError::Other {
+                    site: TypeError::here(),
+                    span: Some(written_i.span.span),
+                    context: TypeErrorContext::Rule {
+                        name: relation,
+                        field: RuleField::Whole,
+                    },
+                    expected: format!(
+                        "`?{}` at one type where it is read",
+                        kb.local_name_of(var_i.name())
+                    ),
+                    actual: format!("the query types it `{first}` and `{second}` there"),
+                },
+                Some(written_i.span.source),
+            ));
+        }
+    }
+    if clash {
+        return;
+    }
+    let pass = typed_query_variable_pass(kb);
+    for ((_, var, bound, _), scope) in typed.iter().zip(&scopes) {
+        // In a negand or a branch: the goal and every goal its typed variables added around it —
+        // the guard and the type's `fill` — each synthesized from that goal.
+        let roots: Vec<Rc<NodeOccurrence>> = match scope {
+            None => query.to_vec(),
+            Some(written_in) => std::iter::once(Rc::clone(written_in))
+                .chain(sites.iter().filter(|site| {
+                    site.synthesized_by() == Some(pass)
+                        && site.synthesized_from().is_some_and(|from| Rc::ptr_eq(from, written_in))
+                }).cloned())
+                .collect(),
+        };
+        for root in &roots {
+            for_each_var_leaf(root, &mut |v, leaf| {
+                if v == Var::Global(*var) {
+                    leaf.set_inferred_type(bound.clone());
+                }
+            });
+        }
+    }
+}
+
+/// Is `node` `root` or a node under it?
+fn holds_node(root: &Rc<NodeOccurrence>, node: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(root)];
+    while let Some(n) = stack.pop() {
+        if Rc::ptr_eq(&n, node) {
+            return true;
+        }
+        if let Some(expr) = n.as_expr() {
+            for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    false
 }
 
 /// The goals `goal` holds together, through its conjunctions (`KnowledgeBase::is_goal_conjunction`),

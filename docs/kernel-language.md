@@ -2783,8 +2783,15 @@ which binds nothing, lists `Colour`'s values, and `?o: Option`, whose type leave
 unwritten, is refused, as is `?b: String` over an `Int64` column. Its type is checked in the goal
 it is written in: at the top of a query it is held to the whole query, as a head's bound is to
 the body, and under `not` or in a branch of `|` it types that negand or branch and is held to its
-columns. A quantifier's binder, which ranges over its collection, is refused written with a
-type. A member with a default body that takes a value of the
+columns, and the typer reads the variable at that type there, as a rule body reads a head
+variable at its bound: `PartialEq.eq(?xs: List[Int64], ?ys: List[Int64])` compares at
+`List[Int64]`, its operands bound to `nil` or not, where without the types it is refused, nothing
+fixing the element (WI-20261124-C6VN0). A variable is read at one type where it is read: two
+types written for it at the top of a query, or one inside the goal another types, are refused;
+two branches of `|` may each type it. A query a program builds as a value writes a typed
+variable with `typed_query(var: ?x, type: T, query: q)`, which is `?x: T` written in `q`: its
+goals stand around `q`, and `q` is where it is checked and read. A quantifier's binder, which
+ranges over its collection, is refused written with a type. A member with a default body that takes a value of the
 carrier owes its spec's instance as a body-less one does, where anything provides the spec: over
 `sort Desc { sort T = ?  operation describe(x: T) -> Int64 = 1 }` and `Leaf` providing it at `7`,
 `rule via(?x, ?r) :- Desc.describe(?x, ?r)` is refused. A static member with a body (§8.7) owes

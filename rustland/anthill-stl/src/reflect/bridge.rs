@@ -441,6 +441,17 @@ impl KbBridge {
                 let (qk, ck) = (kb.intern("query"), kb.intern("count"));
                 lq_entity(f, vec![(qk, inner), (ck, Value::Int(*count))])
             }
+            // WI-20261124-C6VN0 — a typed variable: the variable and its type ride verbatim,
+            // on the carriers they came on, for the lowerer to read (`lower_query_with`).
+            LogicalQuery::TypedQuery { var, r#type, query } => {
+                let f = Self::lq_ctor(kb, "typed_query");
+                let inner = Self::reify_logical_query(kb, query);
+                let (vk, tk, qk) = (kb.intern("var"), kb.intern("type"), kb.intern("query"));
+                lq_entity(
+                    f,
+                    vec![(vk, var.value().clone()), (tk, r#type.value().clone()), (qk, inner)],
+                )
+            }
             // Quantifiers all share `{var, condition, body}` and lower to an
             // enforceable boolean guard (`eval_count_guard`/`eval_forall_guard`).
             LogicalQuery::ForallQ {

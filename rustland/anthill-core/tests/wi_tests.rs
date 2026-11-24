@@ -2660,6 +2660,8 @@ mod wi_cbrd2_constraint_typed_test;
 mod wi_cbrd2_typed_execute_test;
 #[path = "include/wi_cbrd2_typed_query_variable_test.rs"]
 mod wi_cbrd2_typed_query_variable_test;
+#[path = "include/wi_c6vn0_typed_query_variable_value_test.rs"]
+mod wi_c6vn0_typed_query_variable_value_test;
 #[path = "include/wi_4kxpd_waiting_clause_test.rs"]
 mod wi_4kxpd_waiting_clause_test;
 #[path = "include/wi_fsnz5_reflect_form_identity_test.rs"]

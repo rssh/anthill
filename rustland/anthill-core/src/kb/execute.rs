@@ -71,6 +71,13 @@ pub enum LowerError {
     /// types at a type nothing fixes, or at types that do not fit. Each refusal in the words a
     /// written query's gets, joined.
     QueryRefused(String),
+    /// WI-20261124-C6VN0 — a `typed_query` whose `var` is no variable: a value has no type to
+    /// declare, and reading it as one would type nothing.
+    TypedQueryNotAVariable { got: String },
+    /// WI-20261124-C6VN0 — a `typed_query` handed to a face no typer reads
+    /// ([`KnowledgeBase::execute_logical_query`]): its type would be dropped, so it is refused,
+    /// as a typed variable written in a pattern no typer reads is.
+    TypedQueryUntyped,
 }
 
 impl std::fmt::Display for LowerError {
@@ -93,6 +100,16 @@ impl std::fmt::Display for LowerError {
                     functor, given, unfilled, declared,
                 ),
             LowerError::QueryRefused(detail) => write!(f, "{}", detail),
+            LowerError::TypedQueryNotAVariable { got } => write!(
+                f,
+                "typed_query `var` is not a variable: {got}; a typed variable declares the type of \
+                 a variable, so bind the value to one in `query` (`?x <=> value`)"
+            ),
+            LowerError::TypedQueryUntyped => write!(
+                f,
+                "typed_query is read only by a typed query; this query is not typed, so its type \
+                 would be dropped"
+            ),
         }
     }
 }
@@ -123,6 +140,7 @@ pub(crate) struct LogicalQuerySymbols {
     pub guarded: Option<Symbol>,
     pub projected: Option<Symbol>,
     pub limited: Option<Symbol>,
+    pub typed_query: Option<Symbol>,
     pub forall_q: Option<Symbol>,
     pub some_q: Option<Symbol>,
     pub one_q: Option<Symbol>,
@@ -144,6 +162,7 @@ pub(crate) struct LogicalQuerySymbols {
     pub vars: Symbol,
     pub var: Symbol,
     pub body: Symbol,
+    pub type_: Symbol,
 
     // `is_entity_of` — synthesized by `sort_query`.
     pub is_entity_of: Option<Symbol>,
@@ -168,6 +187,7 @@ impl LogicalQuerySymbols {
             guarded: r(kb, "anthill.reflect.LogicalQuery.guarded"),
             projected: r(kb, "anthill.reflect.LogicalQuery.projected"),
             limited: r(kb, "anthill.reflect.LogicalQuery.limited"),
+            typed_query: r(kb, "anthill.reflect.LogicalQuery.typed_query"),
             forall_q: r(kb, "anthill.reflect.LogicalQuery.forall_q"),
             some_q: r(kb, "anthill.reflect.LogicalQuery.some_q"),
             one_q: r(kb, "anthill.reflect.LogicalQuery.one_q"),
@@ -188,6 +208,7 @@ impl LogicalQuerySymbols {
             vars: kb.intern("vars"),
             var: kb.intern("var"),
             body: kb.intern("body"),
+            type_: kb.intern("type"),
 
             is_entity_of: r(kb, "anthill.reflect.typing.is_entity_of"),
             not: r(kb, "anthill.kernel.not"),
@@ -742,6 +763,62 @@ impl KnowledgeBase {
             return Ok(vec![Value::term(goal)]);
         }
 
+        // WI-20261124-C6VN0 — `typed_query(var, type, query)` is `?x: T` written in `query`
+        // (proposal 010.1 §3.1 and Q2): the goals a written typed variable adds
+        // (`typing::typed_query_variable_goals`, the conformance guard before and `T`'s fill
+        // after) stand around the one goal `query` lowers to, so the typer reads `var` at `type`
+        // in `query` and nowhere outside it — a negand or a branch when the form is written in
+        // one, the whole query at its top. The spine is built of occurrences, as the written
+        // form's is (`load::with_typed_variable_goals`): the typer finds the guard by the pass
+        // that synthesized it and the goal it was synthesized from, so each stays the node it was.
+        if Some(functor) == syms.typed_query {
+            let field = |kb: &Self, key: Symbol, name: &'static str| {
+                kb.lq_field(q, key).ok_or(LowerError::MissingField {
+                    entity: "typed_query",
+                    field: name,
+                })
+            };
+            let var = field(self, syms.var, "var")?;
+            let ty = field(self, syms.type_, "type")?;
+            let inner = field(self, syms.query, "query")?;
+            let ViewHead::Var(super::term::Var::Global(vid)) = TermView::head(&var, self) else {
+                let got = crate::persistence::print::TermPrinter::new(self).print_value(&var);
+                return Err(LowerError::TypedQueryNotAVariable { got });
+            };
+            let bound = super::node_occurrence::value_to_term(self, &ty)?;
+            let inner_goals = self.lower_query_with(&inner, syms)?;
+            let goal = self.coerce_to_single_goal_value(
+                inner_goals,
+                syms,
+                "typed_query over empty_query (a typed variable types the goal it is written in)",
+            )?;
+            let occ = super::node_occurrence::value_as_occurrence(self, &goal);
+            let (first, rest) = super::typing::typed_query_variable_goals(self, vid, bound, &occ)
+                .map_err(LowerError::QueryRefused)?;
+            let push_and = syms.push_and.ok_or(LowerError::NotYetImplemented(
+                "typed_query without loaded anthill.kernel.push_and",
+            ))?;
+            let span = occ.span;
+            let goals: Vec<std::rc::Rc<super::node_occurrence::NodeOccurrence>> =
+                std::iter::once(first).chain(std::iter::once(occ)).chain(rest).collect();
+            let mut spine = goals.into_iter().rev();
+            let last = spine.next().expect("the query's goal is one");
+            let joined = spine.fold(last, |conj, g| {
+                super::node_occurrence::NodeOccurrence::new_expr(
+                    super::node_occurrence::Expr::Apply {
+                        recv_type: None,
+                        functor: push_and,
+                        pos_args: vec![g, conj],
+                        named_args: Vec::new(),
+                        type_args: Vec::new(),
+                    },
+                    span,
+                    None,
+                )
+            });
+            return Ok(vec![Value::Node(joined)]);
+        }
+
         if Some(functor) == syms.negation {
             let inner = self
                 .lq_field(q, syms.query)
@@ -868,7 +945,40 @@ impl KnowledgeBase {
     /// (1, not 6 — a zero-column relation's multiplicity IS its proof count).
     pub fn execute_logical_query(&mut self, q: &Value) -> Result<SearchStream, LowerError> {
         let goals = self.lower_query(q)?;
+        // No typer reads this query, so a `typed_query` in it would run its guard and drop its
+        // type: refused, as a typed variable in a pattern no typer reads is (WI-20261124-C6VN0).
+        if self.holds_a_typed_variable(&goals) {
+            return Err(LowerError::TypedQueryUntyped);
+        }
         Ok(self.resolve_lazy(&goals, &execute_config(&ExecuteOptions::default())))
+    }
+
+    /// Does a goal of `goals`, at any depth, hold the guard a typed variable adds
+    /// (`typing::typed_query_variable_goals`) — a `typed_query` lowered into it?
+    fn holds_a_typed_variable(&mut self, goals: &[Value]) -> bool {
+        let pass = super::typing::typed_query_variable_pass(self);
+        let mut values: Vec<Value> = goals.to_vec();
+        while let Some(v) = values.pop() {
+            match v {
+                Value::Node(occ) => {
+                    let mut nodes = vec![occ];
+                    while let Some(n) = nodes.pop() {
+                        if n.synthesized_by() == Some(pass) {
+                            return true;
+                        }
+                        if let Some(expr) = n.as_expr() {
+                            super::node_occurrence::for_each_child(expr, |c| nodes.push(std::rc::Rc::clone(c)));
+                        }
+                    }
+                }
+                Value::Entity { pos, named, .. } => {
+                    values.extend(pos.iter().cloned());
+                    values.extend(named.iter().map(|(_, v)| v.clone()));
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// A query a program builds as a value, typed when `KB.execute` reads it (proposal 010.1

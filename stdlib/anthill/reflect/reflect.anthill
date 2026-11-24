@@ -1464,6 +1464,10 @@ namespace anthill.reflect
     entity guarded(query: LogicalQuery, condition: Term)           -- filter
     entity projected(query: LogicalQuery, vars: List[T = String])  -- projection
     entity limited(query: LogicalQuery, count: Int64)                -- cardinality limit
+    -- A typed variable (WI-20261124-C6VN0, proposal 010.1 Q2): `?x: T` written in `query`.
+    -- Its goals stand around `query`, the typer reads `var` at `type` there, and a `var`
+    -- that is no variable is refused, as is the form in a query no typer reads.
+    entity typed_query(var: Term, type: Type, query: LogicalQuery)
 
     -- Quantifiers: condition -: body (Alloy-inspired)
     entity forall_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)

@@ -1156,6 +1156,23 @@ impl<L: Clone> SubstTree<L> {
     }
 
     /// Skip an entire subtree (query Var at arg position), then continue.
+    ///
+    /// ITERATIVE, as the node's `Drop` is, and for the same reason: the walk visits every node
+    /// under `node`, and a stored term's path holds one node per symbol, so recursing once per
+    /// node took native stack in proportion to the LARGEST term stored under the position —
+    /// whatever the query. MEASURED (WI-20261124-C6VN0) on
+    /// `wi_jee0e_neq_body_test::a_bool_operation_over_an_unbound_argument_is_no_premise_search`,
+    /// whose proof from Γ asks a goal with a variable argument: 454 frames of this function, and
+    /// at opt-level 2 the test needed (1.9, 2.0] MiB of stack — the default test thread is 2 MiB
+    /// — so adding one constructor to the stdlib's `LogicalQuery` overflowed it ((2.1, 2.4] MiB)
+    /// and aborted the whole `wi_tests` binary. Iterative, that test passes at 200 KiB at
+    /// opt-level 2 and in (500, 750] KiB at opt-level 0, and it is the control: with the
+    /// recursion back and the stdlib as it is, it overflows a default thread. No fixture of its
+    /// own guards the skip, because a stored path long enough to reach the stack is also a deep
+    /// term or type for another walk: a 5 000-component tuple's type overflows
+    /// `type_view_is_ground_g`, and a 5 000-field entity's reflect facts `collect_vars_rec`, each
+    /// before the skip is asked (measured the same day). The order is the recursion's: a node,
+    /// then each concrete child's subtree in the map's order, then each variable edge's.
     #[allow(clippy::too_many_arguments)]
     fn skip_subtree_then_continue<V: TermView>(
         node: &DiscrimNode<L>,
@@ -1171,23 +1188,10 @@ impl<L: Clone> SubstTree<L> {
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
-        Self::query_args(
-            node,
-            kb,
-            outer,
-            pos_idx,
-            pos_total,
-            named_keys,
-            named_idx,
-            prefix,
-            subst.clone(),
-            match_mode,
-            results,
-            on_done,
-        );
-        for (_, child) in &node.concrete {
-            Self::skip_subtree_then_continue(
-                child,
+        let mut stack: Vec<&DiscrimNode<L>> = vec![node];
+        while let Some(n) = stack.pop() {
+            Self::query_args(
+                n,
                 kb,
                 outer,
                 pos_idx,
@@ -1200,22 +1204,11 @@ impl<L: Clone> SubstTree<L> {
                 results,
                 on_done,
             );
-        }
-        for (_, child) in &node.var_edges {
-            Self::skip_subtree_then_continue(
-                child,
-                kb,
-                outer,
-                pos_idx,
-                pos_total,
-                named_keys,
-                named_idx,
-                prefix,
-                subst.clone(),
-                match_mode,
-                results,
-                on_done,
-            );
+            // Children pushed in reverse, so the first is the next popped: preorder.
+            let first_child = stack.len();
+            stack.extend(n.concrete.values().map(|c| &**c));
+            stack.extend(n.var_edges.iter().map(|(_, c)| &**c));
+            stack[first_child..].reverse();
         }
     }
 
