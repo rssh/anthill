@@ -2917,10 +2917,14 @@ fn goal_carrier_key<'g>(
     if spec_is_self_representing(kb, spec) {
         return None;
     }
-    let fixes_a_carrier = sort_carrier(kb, spec).type_vars.iter().any(|&tv| {
-        binding_for_param(kb, &goal.bindings, tv, BindingKeyMatch::Label)
-            .is_some_and(|b| !is_type_param_view(kb, b))
-    });
+    // A sort with a dictionary and no parameter has one type, which every goal at it is
+    // (proposal 074 stage 3): its default is the default at that type.
+    let type_vars = &sort_carrier(kb, spec).type_vars;
+    let fixes_a_carrier = (type_vars.is_empty() && is_parameterless_dictionary_sort(kb, spec))
+        || type_vars.iter().any(|&tv| {
+            binding_for_param(kb, &goal.bindings, tv, BindingKeyMatch::Label)
+                .is_some_and(|b| !is_type_param_view(kb, b))
+        });
     fixes_a_carrier.then_some(crate::kb::defaults::CarrierKey::Goal(&goal.bindings))
 }
 

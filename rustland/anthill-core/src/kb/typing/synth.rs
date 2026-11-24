@@ -586,6 +586,138 @@ pub fn resolve(
 /// [`resolve`] with 058 §3.2's rung 2a explicitly enabled or withheld — see
 /// [`DefaultRung`] for which goals may take a default and why the named-slot half may
 /// not.
+/// Proposal 074 stage 3 — the first body-less operation of `spec`, a sort with a dictionary and
+/// no parameter, that `provider` supplies no member for that runs; `None` where it supplies
+/// every one, for a provider with values of its own, and for any other sort (whose provision
+/// check holds its provider to its operations).
+fn unsupplied_operation(kb: &mut KnowledgeBase, spec: Symbol, provider: Symbol) -> Option<Symbol> {
+    let spec = kb.canonical_sort_sym(spec);
+    // A provider with values of its own (`Mid.other(m: Self)`, beside `W provides Mid`) runs a
+    // member at the instance its value holds, which supplies it where it runs.
+    if !is_parameterless_dictionary_sort(kb, spec) || sort_class(kb, provider) == SortClass::OwnValues {
+        return None;
+    }
+    let bodiless: Vec<Symbol> = crate::kb::op_requirements::operations_of_sort(kb, spec)
+        .into_iter()
+        .filter(|op| !op_is_executable(kb, *op))
+        .collect();
+    for op in bodiless {
+        let short = short_name_of(kb.qualified_name_of(op)).to_string();
+        let short = kb.intern(&short);
+        let runs = spec_op_suppliers_for_carrier(kb, spec, provider, op, short)
+            .iter()
+            .any(|supplier| op_is_executable(kb, supplier.target));
+        if !runs {
+            return Some(op);
+        }
+    }
+    None
+}
+
+/// Proposal 074 stage 3 — the provider of a goal at a sort with a dictionary that NOTHING
+/// provides: the sort is its own provider, and its dictionary is the dictionary of its own
+/// bodies, with a sub-dictionary for each entry of its own chain at the goal's bindings. A
+/// module (`anthill.prelude.Time`, a program's `Prog`) is `Dictionary(impl: Time)`;
+/// `ProjAdditive[X = Int64, Y = Meters]` is `Dictionary(‹Additive at Int64›, ‹Iso at Int64,
+/// Meters›, impl: ProjAdditive)`. `None` where the goal is at no such sort, or where something
+/// provides it (the search among the providers decides then); and for a sort with parameters,
+/// `None` unless `named_as_its_own`. The caller holds `goal` on `stack`.
+///
+/// A sort nothing provides one of whose operations has nothing to run — no body, host mapping,
+/// builtin or clause — has no provider at all, and is refused naming the operation, where its
+/// own dictionary would load and die when the operation ran. A MODULE's own dictionary is a
+/// leaf, as a module's requirement was answered before the stage: its operations are its own,
+/// and its own `requires` are answered where they are called. Built with them as its
+/// sub-dictionaries, two modules requiring each other built each other's dictionary without end
+/// (found by /code-review: refused "construction is cyclic" where it loaded).
+fn own_dictionary_of_unprovided_sort(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope<'_>,
+    stack: &mut Vec<SortGoal>,
+    rung: DefaultRung,
+    named_as_its_own: bool,
+) -> Option<ResolutionResult> {
+    let spec = kb.canonical_sort_sym(goal.spec_sort);
+    let own = is_parameterless_dictionary_sort(kb, spec)
+        || (named_as_its_own && sort_class(kb, spec) == SortClass::Dictionary);
+    if !own || provides_rows_of_spec(kb, spec).next().is_some() {
+        return None;
+    }
+    let refuse = |kb: &KnowledgeBase, hint: String| ResolutionResult::NoMatch {
+        goal_text: format_goal(kb, goal),
+        hint,
+        spec: goal.spec_sort,
+        forwarded: false,
+    };
+    if let Some(op) = crate::kb::op_requirements::operations_of_sort(kb, spec)
+        .into_iter()
+        .find(|&op| {
+            !op_is_executable(kb, op)
+                && !kb.has_clauses_under(op)
+                && !kb.has_clauses_under(kb.canonical_sym(op))
+        })
+    {
+        let spec_qn = kb.qualified_name_of(spec).to_string();
+        return Some(refuse(
+            kb,
+            format!(
+                "nothing provides `{spec_qn}`, and its operation `{}` has no body, host mapping \
+                 or builtin to run: declare a sort that provides `{spec_qn}`, or give `{}` a body",
+                kb.qualified_name_of(op),
+                short_name_of(kb.qualified_name_of(op)),
+            ),
+        ));
+    }
+    if is_parameterless_dictionary_sort(kb, spec) {
+        return Some(ResolutionResult::Resolved(ResolvedRequiresNode::Leaf {
+            impl_sort: spec,
+            spec_sort: goal.spec_sort,
+            bindings: SmallVec::new(),
+        }));
+    }
+    let entries = provider_dict_entries(kb, spec, None).entries().to_vec();
+    let mut sub_resolutions: Vec<ResolvedRequiresNode> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let at = slot_spec_at_bindings(kb, spec, &entry.spec, &goal.bindings);
+        let sub_goal = at.and_then(|spec_at| {
+            goal_from_requires_entry(
+                kb,
+                &RequiresEntry {
+                    spec: spec_at,
+                    ..entry.clone()
+                },
+            )
+        });
+        let Some(sub_goal) = sub_goal else {
+            let wanted = render_requires_entry(kb, &entry);
+            return Some(refuse(
+                kb,
+                format!("its own requirement `{wanted}` cannot be stated at these bindings"),
+            ));
+        };
+        match resolve_inner(kb, &sub_goal, scope, stack, None, None, rung, &mut None) {
+            ResolutionResult::Resolved(node) => sub_resolutions.push(node),
+            failure => return Some(failure.forwarded()),
+        }
+    }
+    Some(ResolutionResult::Resolved(if sub_resolutions.is_empty() {
+        ResolvedRequiresNode::Leaf {
+            impl_sort: spec,
+            spec_sort: goal.spec_sort,
+            bindings: goal.bindings.clone(),
+        }
+    } else {
+        ResolvedRequiresNode::Conditional {
+            impl_sort: spec,
+            spec_sort: goal.spec_sort,
+            bindings: goal.bindings.clone(),
+            sub_resolutions,
+            labels: None,
+        }
+    }))
+}
+
 pub fn resolve_with_rung(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -1703,6 +1835,21 @@ pub(super) fn resolve_inner<'a>(
     }
     stack.push(goal.clone());
 
+    // Proposal 074 stage 3 — a sort with a dictionary that nothing provides is its own provider:
+    // a module, which has no parameter, so no carrier whose provision is missing; and a sort
+    // with parameters where the call names it as its own (`Dictionary.instance` does, for
+    // `ProjAdditive[X = Int64, Y = Meters]`). Elsewhere `Desc[T = Bare]` over a spec nothing
+    // provides is `Bare`'s missing provision, refused below (WI-343, WI-1040).
+    let named_as_its_own = pinned.is_some_and(|w| same_sort_canonical(kb, w, goal.spec_sort));
+    if pinned.is_none() || named_as_its_own {
+        if let Some(answer) =
+            own_dictionary_of_unprovided_sort(kb, goal, scope, stack, rung, named_as_its_own)
+        {
+            stack.pop();
+            return answer;
+        }
+    }
+
     // WI-827: the same call-site σ that gates the scope `FromScope` lookup
     // above rides into candidate matching, so a per-call element's rigid /
     // wildcard / concrete role is classified once, spelling-neutrally, rather
@@ -1950,6 +2097,28 @@ pub(super) fn resolve_inner<'a>(
     let chosen_bindings = chosen.resolved_head_bindings.clone();
     let chosen_impl_subst = chosen.impl_subst.clone();
     drop(candidates);
+
+    // Proposal 074 stage 3 — the provider chosen for a sort with a dictionary and no parameter
+    // is the dictionary: it supplies a member that runs for each body-less operation of the
+    // sort, or a call through it would reach the sort's own where it ran (`Mid provides Sp`,
+    // supplying no `name`, beside `W provides Mid`).
+    if let Some(op) = unsupplied_operation(kb, goal.spec_sort, chosen_impl_sort) {
+        stack.pop();
+        return ResolutionResult::NoMatch {
+            goal_text: format_goal(kb, goal),
+            hint: format!(
+                "its provider `{}` supplies no `{}` that runs, and `{}` has no body: give \
+                 `{}` a member `{}`",
+                kb.qualified_name_of(chosen_impl_sort),
+                short_name_of(kb.qualified_name_of(op)),
+                kb.qualified_name_of(op),
+                kb.qualified_name_of(chosen_impl_sort),
+                short_name_of(kb.qualified_name_of(op)),
+            ),
+            spec: goal.spec_sort,
+            forwarded: false,
+        };
+    }
 
     // Proposal 073 §2 — a spec that a sort with abstract values provides for its own
     // carriers (`Stream provides Iterable[C = Self]`) is, at a carrier of that sort, the

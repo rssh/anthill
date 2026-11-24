@@ -235,6 +235,9 @@ pub(crate) enum DictRefusal {
         op: Symbol,
         tie: UnsuppliedDispatch,
     },
+    /// Proposal 074 stage 3 — a requirement at the sort with no parameter `spec` that the
+    /// caller's frame is handed two providers of, described ([`handed_providers_pair`]).
+    HandedTie { spec: Symbol, first: String, second: String },
 }
 
 impl From<Box<RequirementRefusal>> for DictRefusal {
@@ -263,6 +266,13 @@ impl DictRefusal {
             DictRefusal::SupplierTie { dep_text, op: tied, tie } => {
                 tie.type_error(tied, span, Some(dep_text))
             }
+            DictRefusal::HandedTie { spec, first, second } => TypeError::HandedProvidersTie {
+                span,
+                op,
+                spec,
+                first,
+                second,
+            },
         }
     }
 }
@@ -1269,6 +1279,19 @@ fn build_dispatching_dict_from_chain(
     // fixes it: no dictionary is built for this callee.
     let mut held_any = false;
     for (j, dep) in chain.iter().enumerate() {
+        // Proposal 074 stage 3 — two providers handed of a sort with no parameter the callee
+        // requires, and the call names neither.
+        if pinned_witness_for(kb, selected, dep.required_sort).is_none() {
+            if let Some((first, second)) =
+                handed_providers_pair(kb, caller_requires, caller_requires.op, dep.required_sort)
+            {
+                return Err(DictRefusal::HandedTie {
+                    spec: kb.canonical_sort_sym(dep.required_sort),
+                    first,
+                    second,
+                });
+            }
+        }
         // WI-20260923-WN9P8 — A FORWARD IS ANSWERED BY ITS PARAMETER'S OWN DICTIONARY,
         // before any strategy runs. `callee_spec_sort` owns this chain, so its named slot
         // at `j` is the slot this dep fills; see [`project_forwarded_slot`].
@@ -2109,6 +2132,15 @@ pub(super) fn stamp_op_scoped_dicts(
     span: Option<Span>,
     usage: RequirementUse,
 ) -> Result<(), TypeError> {
+    // Proposal 074 stage 3 — a requirement of the callee at a sort with no parameter that the
+    // frame is handed two providers of, and the call does not pin: nothing says which.
+    for entry in op_dict_entries(kb, callee_op).op_entries().to_vec() {
+        if !matches!(entry.supply, SupplySource::Instance { .. })
+            && pinned_witness_for(kb, selected, entry.required_sort).is_none()
+        {
+            handed_providers_tie_in(kb, caller_requires, caller_requires.op, entry.required_sort, callee_op, span)?;
+        }
+    }
     let dicts = build_op_scoped_dicts(
         kb,
         subst,

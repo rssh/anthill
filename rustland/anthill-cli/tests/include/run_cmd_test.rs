@@ -14,6 +14,27 @@ fn run_with(args: &[&str]) -> Output {
     anthill(&full)
 }
 
+/// WI-20261113-Q2C01 (proposal 074 stage 3) — a sort with operations and no parameter has a
+/// dictionary, its provider, and the provider's `now() -> String effects Clock` runs with the
+/// host's clock: through a handed provider, a clause and the provider chosen at load, each line a
+/// timestamp `YYYY-MM-DDTHH:MM:SSZ`. Before the stage the first and third were refused at load
+/// and the second died `OperationBodyMissing`.
+#[test]
+fn a_parameterless_sorts_provider_keeps_its_effect() {
+    let path = fixtures_dir().join("parameterless-provider-clock.anthill");
+    let out = run_with(&[path.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "stdout:\n{}", out.stdout);
+    for line in lines {
+        let b = line.as_bytes();
+        assert!(
+            b.len() == 20 && b[4] == b'-' && b[10] == b'T' && b[19] == b'Z',
+            "a timestamp, got {line:?}"
+        );
+    }
+}
+
 #[test]
 fn hello_program_prints_and_exits_zero() {
     let path = fixtures_dir().join("hello.anthill");

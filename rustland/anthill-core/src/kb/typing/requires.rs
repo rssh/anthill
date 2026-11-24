@@ -461,14 +461,20 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 ///   `sort C requires Eq[T]`       a SPEC DEMAND — an inbound dictionary slot the
 ///                                 caller fills, read by every dispatch site.
 ///
-/// A DEMAND NAMES A CARRIER THROUGH A TYPE PARAMETER, of a sort another sort may provide.
-/// A dictionary is selected BY the carrier the clause's parameters name, so a sort with
-/// no type parameter gives a clause nothing to select one by: whichever sorts provide it
-/// (`NonMonotonicStore provides Store`), a call of its operation is answered by its
-/// receiver's own sort, and a slot held for it could be filled by nothing. And nothing
-/// provides a sort with constructors, with a parameter or without (kernel-language.md
-/// §5.1): `sort Narrow requires Box[V = Int64]` over a data sort `Box` names no provider
-/// either. Both are refinements.
+/// A DEMAND NAMES A SORT ANOTHER SORT MAY PROVIDE: one with a type parameter, through which
+/// the clause selects the provider, and — since proposal 074 stage 3 (WI-20261113-Q2C01) — a
+/// sort with a dictionary and no parameter (`requires Ticker`), which has one type, and whose
+/// provider is chosen there as any provider at one type is: the one with no conditions, the
+/// default, one a bracket names, or — for a MODULE, which nothing provides — the module itself,
+/// the dictionary of its own bodies, as a module's requirement was answered before the stage. A
+/// sort with no type parameter and values of its own (`NonMonotonicStore provides Store`,
+/// whose operations receive on `Store`) gives a clause nothing to select one by: a call of its
+/// operation is answered by its receiver's own sort. And nothing provides a sort with
+/// constructors, with a parameter or without (kernel-language.md §5.1): `sort Narrow requires
+/// Box[V = Int64]` over a data sort `Box` names no provider either. Both are refinements
+/// alone. MEASURED before stage 3, when `requires Ticker` was one too: `use() requires Ticker
+/// = Ticker.now()` loaded and died `OperationBodyMissing`, its caller building
+/// `Dictionary(impl: Ticker)`.
 ///
 /// WHAT THE CONFLATION COST, measured. `sort Narrow requires Boom` put an unfillable
 /// `Boom` slot in `Narrow`'s dictionary chain, so building ANY dictionary whose impl is
@@ -485,8 +491,10 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// path and is deliberately left whole, so `Narrow` still refines `Boom` and the
 /// subsumption a boundary written at `Boom` performs on a `Narrow` payload is unchanged.
 pub(crate) fn clause_is_dispatchable(kb: &KnowledgeBase, required: Symbol) -> bool {
-    !kb.type_params_of_sort(required).is_empty()
-        && !sort_is_data(kb, kb.canonical_sort_sym(required))
+    let canon = kb.canonical_sort_sym(required);
+    !sort_is_data(kb, canon)
+        && (!kb.type_params_of_sort(required).is_empty()
+            || is_parameterless_dictionary_sort(kb, canon))
 }
 
 pub fn direct_requires_chain_rc(
@@ -2018,7 +2026,9 @@ pub(super) fn param_instance_requires(kb: &mut KnowledgeBase, op_sym: Symbol) ->
             TypeExtractor::Parameterized { base, .. } => base,
             _ => continue,
         };
-        if spec_over_parameter(kb, spec).is_none() {
+        // Proposal 074 stage 3: and a sort with a dictionary and no parameter (`c: Ticker`),
+        // whose entry is the bare sort, the parameter's provider.
+        if spec_over_parameter(kb, spec).is_none() && !is_parameterless_dictionary_sort(kb, spec) {
             continue;
         }
         let spec = kb.canonical_sort_sym(spec);
@@ -2033,7 +2043,11 @@ pub(super) fn param_instance_requires(kb: &mut KnowledgeBase, op_sym: Symbol) ->
             bindings.push((member, kb.make_expr_carried(recv, member)));
         }
         let base = kb.make_sort_ref(spec);
-        let applied = Value::term(kb.make_parameterized_type(base, &bindings));
+        let applied = Value::term(if bindings.is_empty() {
+            base
+        } else {
+            kb.make_parameterized_type(base, &bindings)
+        });
         out.push(RequiresEntry {
             required_sort: spec,
             spec: applied,
@@ -2064,7 +2078,7 @@ pub(super) fn lambda_instance_requires(
             TypeExtractor::Parameterized { base, bindings } => (base, bindings),
             _ => continue,
         };
-        if spec_over_parameter(kb, spec).is_none() {
+        if spec_over_parameter(kb, spec).is_none() && !is_parameterless_dictionary_sort(kb, spec) {
             continue;
         }
         let every_bound = kb.type_params_of_sort(spec).iter().all(|short| {

@@ -4762,6 +4762,11 @@ fn check_apply_call(
             // WI-20260929-6NMGQ: a call whose element is a lambda's unannotated parameter is
             // covered here by any requirement, the element being unsolved where the call is
             // typed; it is decided at the lambda's uses ([`classify_or_hold_deferral`]).
+            // Proposal 074 stage 3: two providers of a sort with no parameter handed to the
+            // operation, and nothing in the call says which.
+            if !pinned_spec {
+                handed_providers_tie(kb, env, spec_sort, fn_sym, span)?;
+            }
             if let Some(class) = requirement_defer_class(
                 kb,
                 env,
@@ -4800,6 +4805,32 @@ fn check_apply_call(
                     effects,
                     node: Rc::clone(occ),
                 });
+            }
+            // Proposal 074 stage 3: a sort with no parameter that nothing in scope hands a
+            // provider of has its provider chosen at load, and the call runs through it.
+            if !pinned_spec && env.in_evaluated_body() {
+                if let Some(class) =
+                    parameterless_provider_call(kb, env, spec_sort, fn_sym, op_short_sym, span)?
+                {
+                    classify(kb, occ, class);
+                    stamp_spec_op_supply(
+                        kb,
+                        env,
+                        occ,
+                        fn_sym,
+                        &subst,
+                        &selections,
+                        &projection_receivers,
+                        &held_views,
+                        span,
+                    )?;
+                    return Ok(TypeResult {
+                        ty: resolved_ret.clone(),
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
             }
 
             // WI-350: an abstract spec receiver (`s : Stream[T]`, or an

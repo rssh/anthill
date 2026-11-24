@@ -1,0 +1,32 @@
+-- WI-20261113-Q2C01 (proposal 074 stage 3): a sort with operations and no parameter has a
+-- dictionary, its provider; the provider's operations keep their effects, and `anthill run`
+-- binds `Clock` to the host's time. Each line is `Ticker.now()` read through a handed
+-- provider, a clause, and the provider chosen at load.
+namespace run.q2c01
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.{Int64, String, List, Error, Time}
+  import anthill.prelude.Time.{Clock}
+  import anthill.realization.runtime.Dictionary
+
+  sort Ticker
+    operation now() -> String effects Clock
+  end
+  sort SysTicker
+    provides Ticker
+    operation now() -> String effects Clock = Time.now()
+  end
+  operation use(c: Ticker) -> String effects Clock = Ticker.now()
+  operation useReq() -> String effects Clock requires Ticker = Ticker.now()
+  operation go() -> String effects Clock = Ticker.now()
+
+  sort Prog
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error, Clock}
+    =
+      let _ = println(console(), use(Dictionary.instance[Ticker]()))
+      let _ = println(console(), useReq())
+      let _ = println(console(), go())
+      0
+  end
+end

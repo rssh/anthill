@@ -201,8 +201,10 @@ end
 
 /// d12/d13. A spec with no type-var is fixed by a bracket naming its provider: 7. Before: the
 /// program loaded and failed at run, "operation has no body: Greeter.greet" — the pinned goal
-/// was answered by the spec itself. Without the bracket (d13) it is refused at load, either way.
-/// The first assertion FAILS backed out; the second passes either way, by design.
+/// was answered by the spec itself. Without the bracket (d13) it takes its one provider, 7
+/// (proposal 074 stage 3, WI-20261113-Q2C01: a sort with a dictionary and no parameter has its
+/// provider chosen at load as any provider at one type is); refused at load before the stage.
+/// The first assertion FAILS backed out; the second FAILS with stage 3's choice backed out.
 #[test]
 fn a_spec_with_no_type_var_is_fixed_by_naming_its_provider() {
     let program = |ns: &str, call: &str| {
@@ -226,8 +228,8 @@ end
     };
     let ns = "wicxr5bc.greet";
     assert_eq!(call(&program(ns, "Greeter.greet[Greeter = W1]()"), ns, "int"), Value::Int(7));
-    let errs = load_errors_of(&program("wicxr5bc.greetbare", "Greeter.greet()"));
-    assert!(errs.iter().any(|e| e.contains("nothing can run")), "{errs:#?}");
+    let ns = "wicxr5bc.greetbare";
+    assert_eq!(call(&program(ns, "Greeter.greet()"), ns, "int"), Value::Int(7));
 }
 
 /// g6. A self-representing spec's call with no `Self` value: the type expected at its `Self`

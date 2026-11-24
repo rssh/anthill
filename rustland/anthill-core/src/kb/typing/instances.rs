@@ -47,6 +47,13 @@ pub enum InstanceConversion {
     /// construction built at load, or a forward of the frame's own slot
     /// ([`dictionary_instance_call`]).
     BuiltDictionary { dict: TermId },
+    /// A value of a sort that requires a sort with a dictionary, used where that sort's provider
+    /// is expected (proposal 074 stage 3, decided with the user 2026-11-24): `requires` is
+    /// subtyping and a demand at once, so the position holds the provider the demand found at
+    /// load, the dictionary `dict` evaluates to. The value is evaluated, its effects kept, and is
+    /// not what the position holds: `probe(circle(r: 1))` over `enum Shape requires Desc[T =
+    /// Int64]` hands `probe` IntDesc.
+    ToProvider { dict: TermId },
 }
 
 /// Is `sort` an abstract sort whose values are instances (073 §2): it receives on itself
@@ -279,6 +286,33 @@ pub(crate) fn conversion_between(
     };
     let exp_head = kb.canonical_sort_sym(kb.type_arg_owner(exp_head).unwrap_or(exp_head));
     let act_head = kb.canonical_sort_sym(kb.type_arg_owner(act_head).unwrap_or(act_head));
+    // A value of a sort that refines a sort with a dictionary — `enum Shape requires Desc[T =
+    // Int64]` — used where that sort's provider is expected: the provider its `requires` finds at
+    // load (decided with the user 2026-11-24). A dictionary of a refining sort is compatible as
+    // it is, and is not converted.
+    if exp_head != act_head
+        && takes_a_provider(kb, exp_head)
+        && kb.has_kind(act_head, crate::kb::SymbolKind::Sort)
+        && sort_class(kb, act_head) != SortClass::Dictionary
+        && sort_refines(kb, act_head, exp_head)
+    {
+        let shown = type_display_name_value(kb, expected);
+        let keyed = keyed_bindings_of(kb, exp_head, expected).ok_or_else(|| {
+            format!(
+                "a `{}` used where the provider of `{shown}` is expected, which leaves a parameter \
+                 open: no provider is chosen at an open type",
+                kb.qualified_name_of(act_head)
+            )
+        })?;
+        let dict = build_spec_dictionary_in(kb, scope, rigids, exp_head, keyed, None).map_err(|why| {
+            format!(
+                "a `{}` used where the provider of `{shown}` is expected: its `requires` finds \
+                 none — {why}",
+                kb.qualified_name_of(act_head)
+            )
+        })?;
+        return Ok(Some(InstanceConversion::ToProvider { dict }));
+    }
     if is_abstract_carrier_sort(kb, exp_head) {
         if exp_head == act_head {
             return Ok(None);
@@ -1404,12 +1438,15 @@ pub(super) fn spec_application_where_a_dictionary_is_expected(
 /// known type the provider §8.7's order selects (group one), at a type rigid under a clause
 /// the clause's own (group two).
 ///
+/// A sort with operations and no parameter has one type, and its provider is chosen there; a
+/// sort with a dictionary that nothing provides is its own provider, the dictionary of its own
+/// bodies — a module's, and one with parameters named so here (proposal 074 stage 3).
+///
 /// Refused, each naming why: an argument; the receiver spelling `Dictionary[S = …].instance()`;
-/// `S` fixed by nothing; a data sort, an abstract sort with values of its own, one whose chain
-/// declares no operation (whose values are its providers'), and one with operations and no
-/// parameter (stage 3 of 074 builds its dictionary); an application leaving a slot of a
-/// parameter open, at any depth; a key naming no provider of the spec; an `S` no provision
-/// answers; and one nothing provides at all, whose own dictionary stage 3 builds.
+/// `S` fixed by nothing; a data sort, an abstract sort with values of its own, and one whose
+/// chain declares no operation (whose values are its providers'); an application leaving a
+/// slot of a parameter open, at any depth; a key naming no provider of the spec; an `S` no
+/// provision answers; and a sort nothing provides one of whose operations has nothing to run.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dictionary_instance_call(
     kb: &mut KnowledgeBase,
@@ -1498,16 +1535,9 @@ pub(super) fn dictionary_instance_call(
     if let Some(why) = why_none {
         return Err(refuse("a spec application".into(), why));
     }
+    // A sort with no parameter has one dictionary at its one type (proposal 074 stage 3):
+    // its provider, chosen as any provider at one type is, or its own where nothing provides it.
     let params = kb.type_params_of_sort(spec);
-    if params.is_empty() {
-        return Err(refuse(
-            "an abstract sort with a parameter".into(),
-            format!(
-                "`{shown}`: `{name}` has operations and no parameter, and its dictionary is \
-                 not built yet (proposal 074 stage 3)"
-            ),
-        ));
-    }
     // Every parameter of the spec is written, with no slot open at any depth (`Additive[T =
     // List]` leaves `List`'s `T`): the dictionary is at the type its application names, and no
     // value chooses one (058 §3.9). Keyed as a written `requires` keys them, by short name.
@@ -1540,22 +1570,23 @@ pub(super) fn dictionary_instance_call(
         Ok(pin) => pin,
         Err(why) => return Err(refuse(format!("a provider of `{name}`"), why)),
     };
-    let dict = build_spec_dictionary(kb, env, spec, keyed, pin.as_ref()).map_err(|why| {
-        // A sort with a dictionary nothing provides has the dictionary of its own bodies,
-        // which proposal 074's stage 3 builds beside a module's (decided with the user
-        // 2026-11-14). Asked only where nothing in scope answered: a clause's own dictionary,
-        // `requires Desc[T = X]`, answers before any provider is looked for.
-        let why = if provides_rows_of_spec(kb, spec).next().is_none() {
-            format!(
-                "nothing provides `{name}`: a sort with a dictionary that nothing provides has \
-                 the dictionary of its own bodies, which is not built yet (proposal 074 stage \
-                 3, WI-20261113-Q2C01)"
-            )
-        } else {
-            why
-        };
-        refuse(format!("the dictionary of `{shown}`"), why)
-    })?;
+    // A sort with a dictionary that nothing provides is its own provider, the dictionary of its
+    // own bodies (proposal 074 stage 3), after a clause in scope: a module's is resolved as any
+    // provider is, and one with parameters is named as its own here, where the bracket names it.
+    // The first refusal is kept where the sort named as its own fails too: it is the search's.
+    let dict = match build_spec_dictionary(kb, env, spec, keyed.clone(), pin.as_ref()) {
+        Err(first) if pin.is_none() && provides_rows_of_spec(kb, spec).next().is_none() => {
+            let own = InstanceSelection {
+                spec_sort: spec,
+                slot: SelectedSlot::Unnamed,
+                provider: SelectedProvider::Witness(spec),
+                slots: Vec::new(),
+            };
+            build_spec_dictionary(kb, env, spec, keyed, Some(&own)).map_err(|_| first)
+        }
+        built => built,
+    }
+    .map_err(|why| refuse(format!("the dictionary of `{shown}`"), why))?;
     occ.set_instance_conversion(InstanceConversion::BuiltDictionary { dict });
     Ok(TypeResult::pure_value(s_type, env.clone(), Rc::clone(occ)))
 }
@@ -1636,6 +1667,48 @@ fn build_spec_dictionary(
     keyed: Vec<(Symbol, Value)>,
     pin: Option<&InstanceSelection>,
 ) -> Result<TermId, String> {
+    let chain = env.enclosing_frame_chain().clone();
+    build_spec_dictionary_in(kb, &chain, env.param_rigids(), spec, keyed, pin)
+}
+
+/// Does a position typed at `sort` hold its provider — a sort with a dictionary, over a
+/// parameter (`Desc[T = Int64]`) or with none (`Ticker`, proposal 074 stage 3)?
+pub(crate) fn takes_a_provider(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    spec_over_parameter(kb, sort).is_some() || is_parameterless_dictionary_sort(kb, sort)
+}
+
+/// The bindings `ty`, an application of `spec`, writes for each parameter of `spec`, keyed by
+/// short name as a written `requires` keys them; `None` where one is unwritten or left open.
+fn keyed_bindings_of(kb: &mut KnowledgeBase, spec: Symbol, ty: &Value) -> Option<Vec<(Symbol, Value)>> {
+    let bindings = match extract_type(kb, ty) {
+        TypeExtractor::SortRef(_) => Vec::new(),
+        TypeExtractor::Parameterized { bindings, .. } => bindings,
+        _ => return None,
+    };
+    let mut keyed = Vec::new();
+    for short in kb.type_params_of_sort(spec) {
+        let bound = bindings
+            .iter()
+            .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)
+            .map(|(_, v)| v.clone())?;
+        let expanded = expand_sorts_deep(kb, &bound, SlotVar::Flexible);
+        if !type_is_determined(kb, &expanded) {
+            return None;
+        }
+        keyed.push((kb.intern(&short), bound));
+    }
+    Some(keyed)
+}
+
+/// [`build_spec_dictionary`] in the frame `chain`, its body's rigids `rigids`.
+fn build_spec_dictionary_in(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    rigids: &[(VarId, TermId)],
+    spec: Symbol,
+    keyed: Vec<(Symbol, Value)>,
+    pin: Option<&InstanceSelection>,
+) -> Result<TermId, String> {
     let (Some(view), Some(syms)) = (sort_view_value(kb, spec, keyed), ProjectionSyms::resolve(kb))
     else {
         return Err(
@@ -1649,7 +1722,6 @@ fn build_spec_dictionary(
         supply: SupplySource::Required,
         binder: None,
     };
-    let chain = env.enclosing_frame_chain().clone();
     let sub_chains: Vec<Vec<RequiresEntry>> = chain
         .iter()
         .map(|e| direct_requires_chain(kb, e.required_sort))
@@ -1657,14 +1729,14 @@ fn build_spec_dictionary(
     let subst = Substitution::new();
     let sigma = SigmaCtx {
         subst: &subst,
-        param_rigids: env.param_rigids(),
+        param_rigids: rigids,
     };
     let mut failure: Option<ResolutionResult> = None;
     let mut tie: Option<(Symbol, UnsuppliedDispatch)> = None;
     match build_dep_projection(
         kb,
         &dep,
-        &chain,
+        chain,
         &sub_chains,
         &syms,
         Some(&sigma),

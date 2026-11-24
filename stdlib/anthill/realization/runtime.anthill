@@ -55,10 +55,12 @@ namespace anthill.realization.runtime
     -- parameter written, or rigid under a clause (the clause's own dictionary then); a key
     -- of the bracket names a provider by the spec's short name,
     -- `Dictionary.instance[Additive[T = Meters], Additive = MetersAdd]()`, and without one
-    -- the provider is the one kernel-language §8.7's order selects. Refused at load: a sort
-    -- with constructors or with values of its own (`Box`, `Stream`), a marker, a sort with
-    -- operations and no parameter (for now), an application leaving a parameter unwritten,
-    -- and one no provision answers.
+    -- the provider is the one kernel-language §8.7's order selects; a sort with operations
+    -- and no parameter has one type, and its provider is chosen there (`Ticker`); a sort with
+    -- a dictionary that nothing provides is its own provider (`anthill.prelude.Time`, and
+    -- `ProjAdditive[X = Int64, Y = Meters]` named so). Refused at load: a sort with
+    -- constructors or with values of its own (`Box`, `Stream`), a marker, an application
+    -- leaving a parameter unwritten, and one no provision answers.
     operation instance() -> S
 
     -- The resolved impl identity (the `impl` named child).

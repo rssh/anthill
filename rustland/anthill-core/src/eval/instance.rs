@@ -116,6 +116,11 @@ impl Interpreter {
                 let dict = self.eval_requirement_chain_node(&occ)?;
                 self.pack(dict, v)
             }
+            // The value is evaluated (its effects kept) and the position holds the provider.
+            InstanceConversion::ToProvider { dict } => {
+                let occ = materialize_from_handle(&self.kb, *dict);
+                Ok(self.eval_requirement_chain_node(&occ)?.as_value().clone())
+            }
             InstanceConversion::PackAtReceiver => {
                 let dict = receiver.cloned().ok_or_else(|| {
                     EvalError::Internal(

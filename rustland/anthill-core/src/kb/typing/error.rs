@@ -750,6 +750,17 @@ pub enum TypeError {
     /// holds it only past a `requires` — `PartialEq.eq` under two requirements on
     /// `Ord`, which only the call written in full names. The refusal advises the
     /// spellings that load.
+    /// Proposal 074 stage 3 — a call of `op`, an operation of the sort `spec` with a dictionary
+    /// and no parameter, in an operation handed two providers of `spec` (`first` and `second`,
+    /// described: a parameter typed at it, or a clause), which nothing in the call tells apart
+    /// ([`handed_providers_tie`]).
+    HandedProvidersTie {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        first: String,
+        second: String,
+    },
     RequirementReadTie {
         span: Option<Span>,
         op: Symbol,
@@ -2401,6 +2412,23 @@ impl TypeError {
                     short_name_of(kb.qualified_name_of(*witness)),
                 )
             }
+            TypeError::HandedProvidersTie {
+                op,
+                spec,
+                first,
+                second,
+                ..
+            } => {
+                let op_qn = kb.qualified_name_of(*op);
+                let member = short_name_of(op_qn);
+                let spec_name = short_name_of(kb.qualified_name_of(*spec));
+                format!(
+                    "a call of `{op_qn}` that two providers of `{spec_name}` the operation is \
+                     handed answer, {first} and {second}, and nothing in the call says which: \
+                     hand one to a helper that takes it (`(c: {spec_name})`), or name the \
+                     provider in the call's bracket, `{spec_name}.{member}[{spec_name} = …](…)`"
+                )
+            }
             TypeError::RequirementReadTie {
                 op,
                 spec,
@@ -2919,6 +2947,7 @@ impl TypeError {
             | TypeError::ValueDirectedSelection { span, .. }
             | TypeError::ConflictingSelection { span, .. }
             | TypeError::RequirementReadTie { span, .. }
+            | TypeError::HandedProvidersTie { span, .. }
             | TypeError::UnnamedRequirementTie { span, .. }
             | TypeError::NamedRequirementNotAtCall { span, .. }
             | TypeError::UnnamedRequirementBesideTwo { span, .. }
@@ -3368,6 +3397,17 @@ impl TypeError {
                 field_name: "requirement".to_string(),
                 expected_type: format!(
                     "the requirement of {} this call reads, as its bracket writes it",
+                    kb.qualified_name_of(*spec)
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::HandedProvidersTie { op, spec, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "provider".to_string(),
+                expected_type: format!(
+                    "one provider of {} the call is handed, or one its bracket names",
                     kb.qualified_name_of(*spec)
                 ),
                 actual_type: self.format(kb),

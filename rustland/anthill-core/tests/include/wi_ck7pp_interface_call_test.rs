@@ -269,24 +269,27 @@ fn result_only_call_expected_at_a_provider_is_refused_without_a_missing_requires
     assert!(!errs.join(" ").contains("missing `requires"), "{errs:#?}");
 }
 
-/// A call in a member of a sort WITH constructors that provides the called sort runs at
-/// that sort, which is no instance of the called one: `Sp.name()` in `W` reached `Sp.name`
-/// though `W` declares `name`, and `Mon.unit(x)` in `Box` reached `Mon.unit`. Both are
-/// refused; the member of the sort itself is the repair.
+/// A call in a member of a sort WITH constructors that provides the called sort: `Sp.name()` in
+/// `W`, where `Sp` has a dictionary and no parameter, runs at `Sp`'s one provider, `W` (proposal
+/// 074 stage 3, WI-20261113-Q2C01: a provider with constructors may be the one provider), and
+/// answers 42 — refused before the stage, the call reaching `Sp.name` though `W` declares
+/// `name`. `Mon.unit(x)` in `Twice`, where `Mon`'s `unit` returns `Self` (so `Mon` has values of
+/// its own, decided with the user 2026-11-24) and two sorts provide it, stays refused; the
+/// member of the sort itself is the repair. The first FAILS with stage 3's load-time choice
+/// backed out; the second passes either way, by design.
 #[test]
 fn a_call_in_a_member_of_a_providing_sort_with_constructors_is_refused() {
-    let errs = load_errors_of(
-        "namespace ck3a\n  import anthill.prelude.{Int64}\n  \
-         sort Sp\n    operation name() -> Int64\n  end\n  \
-         sort W\n    entity w\n    provides Sp\n    operation name() -> Int64 = 42\n    \
-         operation other() -> Int64 = Sp.name()\n  end\nend\n",
+    assert_eq!(
+        run_int64(
+            "namespace ck3a\n  import anthill.prelude.{Int64}\n  \
+             sort Sp\n    operation name() -> Int64\n  end\n  \
+             sort W\n    entity w\n    provides Sp\n    operation name() -> Int64 = 42\n    \
+             operation other() -> Int64 = Sp.name()\n  end\n  \
+             operation drive() -> Int64 = W.other()\nend\n",
+            "ck3a.drive",
+        ),
+        Ok(42),
     );
-    assert_refused_naming(
-        &errs,
-        &["a call of `ck3a.Sp.name` that nothing can run", "`Provider.name(…)`"],
-        "Sp.name() in a member of W",
-    );
-    assert!(!errs.join(" ").contains("name[]("), "no bracket names an instance of a sort with no parameter: {errs:#?}");
     let errs = load_errors_of(&format!(
         "namespace ck3b\n  import anthill.prelude.{{Int64}}\n{MON_SELF}  \
          sort Twice\n    entity tw\n    provides Mon\n    \
@@ -301,7 +304,10 @@ fn a_call_in_a_member_of_a_providing_sort_with_constructors_is_refused() {
 }
 
 /// A body of a sort without constructors, run at that sort itself, reaches a provided
-/// sort's member there: `Mid.other()` has no instance for `Sp.name()` to be answered at.
+/// sort's member there: `Sp.name()` in `Mid.other()` takes `Sp`'s one provider, `Mid` (proposal
+/// 074 stage 3), which supplies no `name` — refused at load, naming it, where the call would
+/// reach the body-less `Sp.name` when it ran. FAILS with the supplier check backed out (it
+/// loads, and dies `OperationBodyMissing`).
 #[test]
 fn a_provided_sorts_member_in_a_body_run_at_the_sort_itself_is_refused() {
     let errs = load_errors_of(
@@ -313,7 +319,7 @@ fn a_provided_sorts_member_in_a_body_run_at_the_sort_itself_is_refused() {
     );
     assert_refused_naming(
         &errs,
-        &["a call of `ck3d.Mid.other` that nothing can run", "its body calls `ck3d.Sp.name`"],
+        &["a call of `ck3d.Sp.name` that no dictionary can answer", "its provider `ck3d.Mid` supplies no `name` that runs"],
         "Mid.other() run at Mid",
     );
 }

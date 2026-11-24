@@ -358,7 +358,8 @@ const SORTS: &str = "  sort Box
 
 /// One row per sort `Dictionary.instance` builds no dictionary of — a data sort, an abstract
 /// sort with values of its own, one whose chain declares no operation (whose values are its
-/// providers'), one with no parameter — and the two applications it cannot build one at: the
+/// providers'), one with no parameter that nothing provides and whose operation has nothing to
+/// run (stage 3) — and the two applications it cannot build one at: the
 /// type a position is declared at, the bracket, and what the refusal says. Read by the
 /// operation rows here and the constant rows of stage 2 below.
 const NO_DICTIONARY: &[(&str, &str, &str)] = &[
@@ -387,8 +388,11 @@ const NO_DICTIONARY: &[(&str, &str, &str)] = &[
         "anthill.logic.Classical.Classical",
         "declares an operation, so it has no dictionary",
     ),
-    ("Ticker", "Ticker", "has operations and no parameter"),
-    ("anthill.prelude.Time", "anthill.prelude.Time", "has operations and no parameter"),
+    // Since stage 3 (WI-20261113-Q2C01) a sort with operations and no parameter has a
+    // dictionary, its provider's or, where nothing provides it, its own: refused only where
+    // nothing provides it and an operation of it has nothing to run (`anthill.prelude.Time`,
+    // whose `now` the host runs, is its own provider, in `wi_q2c01_parameterless_dictionary_test`).
+    ("Ticker", "Ticker", "nothing provides `p074.refused.Ticker`, and its operation `p074.refused.Ticker.now` has no body"),
 ];
 
 #[test]
@@ -556,9 +560,10 @@ end
 
 /// A provision at the sort itself of a sort whose chain declares no operation says nothing of
 /// its values: `Clock` providing an operation-less `Tagged[T = Clock]`, as `Error` provides
-/// `Effect[T = Error[?]]`, stays an abstract sort without values of its own — refused for now
-/// only for having no parameter. FAILS with that exclusion backed out, where `Clock` reads as
-/// a sort with values of its own.
+/// `Effect[T = Error[?]]`, stays an abstract sort without values of its own — a sort with a
+/// dictionary that nothing provides, refused (since stage 3, WI-20261113-Q2C01) only because
+/// its `now` has nothing to run. FAILS with that exclusion backed out, where `Clock` reads as a
+/// sort with values of its own.
 #[test]
 fn an_operationless_spec_provided_at_a_sort_leaves_its_class() {
     let errors = refused(
@@ -571,7 +576,7 @@ fn an_operationless_spec_provided_at_a_sort_leaves_its_class() {
   end
   operation f() -> Clock = Dictionary.instance[Clock]()",
     );
-    assert!(says(&errors, "`Clock` has operations and no parameter"), "{errors:?}");
+    assert!(says(&errors, "nothing provides `p074.refused.Clock`, and its operation"), "{errors:?}");
 }
 
 /// An abstract sort nothing in whose chain declares an operation has values of its own, its
@@ -594,13 +599,14 @@ fn an_operation_free_sort_holds_its_providers_values() {
 }
 
 /// A sort with a dictionary that nothing provides has the dictionary of its own bodies, which
-/// stage 3 builds beside a module's (decided with the user 2026-11-14): `ProjAdditive` — the
-/// user's T11 provider — is refused naming the stage, where `Additive[T = Bool]`, which other
-/// providers answer at other types, is "no impl provides" (above).
+/// stage 3 builds beside a module's (decided with the user 2026-11-14; WI-20261113-Q2C01):
+/// `ProjAdditive` — the user's T11 provider — named as its own by `Dictionary.instance`, its
+/// `requires` resolved as its sub-dictionaries, `Int64`'s `Additive` and `MetersIso`. Refused in
+/// stage 1, naming stage 3. FAILS with the own dictionary backed out (refused "no impl
+/// provides `ProjAdditive`").
 #[test]
-fn a_sort_nothing_provides_waits_for_stage_3() {
-    let errors = refused(
-        "  sort Meters
+fn a_sort_nothing_provides_is_its_own_provider() {
+    let body = "  sort Meters
     entity m(v: Int64)
   end
   sort Iso
@@ -627,10 +633,11 @@ fn a_sort_nothing_provides_waits_for_stage_3() {
     operation zero() -> Y = Iso.to(Additive.zero[T = X]())
   end
   operation f() -> ProjAdditive[X = Int64, Y = Meters] =
-    Dictionary.instance[ProjAdditive[X = Int64, Y = Meters]]()",
+    Dictionary.instance[ProjAdditive[X = Int64, Y = Meters]]()";
+    assert_eq!(
+        answers("projown", body, "f"),
+        "Dictionary(Dictionary(impl: Int64), Dictionary(impl: MetersIso), impl: ProjAdditive)"
     );
-    assert!(says(&errors, "nothing provides `ProjAdditive`"), "{errors:?}");
-    assert!(says(&errors, "stage 3"), "{errors:?}");
 }
 
 /// `S` is read as any written type is: an alias of a spec application is the application, in
@@ -921,11 +928,11 @@ fn a_compound_form_reads_a_constant_dictionary_as_an_operation_body_does() {
 // | `S` fixed by the type expected | `t7_add2_at_a_dictionary`, `an_alias_in_the_bracket_or_the_expected_type_is_the_application`, `wi_p0qgf…an_instance_returned_or_bound` |
 // | a slot open below the top refused | `dictionary_instance_refuses_what_it_does_not_read` |
 // | a key names the provider | `a_key_names_the_provider`, `dictionary_instance_refuses_a_bracket_it_cannot_read` |
-// | a sort nothing provides refused naming stage 3 | `a_sort_nothing_provides_waits_for_stage_3` |
-// | that refusal asked before the clause (the defect /code-review found) | `a_sort_nothing_provides_waits_for_stage_3`, `wi_9bkz4…a_clauses_dictionary_needs_no_provider_where_it_is_written` |
+// | a sort nothing provides refused naming stage 3 | `a_sort_nothing_provides_waits_for_stage_3` (rewritten by stage 3 as `a_sort_nothing_provides_is_its_own_provider`) |
+// | that refusal asked before the clause (the defect /code-review found) | `a_sort_nothing_provides_waits_for_stage_3` (rewritten by stage 3 as `a_sort_nothing_provides_is_its_own_provider`), `wi_9bkz4…a_clauses_dictionary_needs_no_provider_where_it_is_written` |
 // | the built-in named bare refused | `dictionary_instance_refuses_what_it_does_not_read` |
 // | the provision rung restored | `a_spec_whose_provider_has_values_of_its_own_still_has_a_dictionary`, `wi_8dxvk…query_domain_answers_an_operation_free_sort_by_provision` |
-// | loader-derived `TypeValue` rows counted as a provision at itself | 7: `a_dictionary_is_no_value_of_a_carrier`, `a_sort_nothing_provides_waits_for_stage_3`, `an_operationless_spec_provided_at_a_sort_leaves_its_class`, `dictionary_instance_refuses_what_has_no_dictionary`, `wi_9bkz4` (2), `wi_kssa4…a_spec_typed_value_is_refused_where_the_carrier_is_expected` |
+// | loader-derived `TypeValue` rows counted as a provision at itself | 7: `a_dictionary_is_no_value_of_a_carrier`, `a_sort_nothing_provides_waits_for_stage_3` (rewritten by stage 3 as `a_sort_nothing_provides_is_its_own_provider`), `an_operationless_spec_provided_at_a_sort_leaves_its_class`, `dictionary_instance_refuses_what_has_no_dictionary`, `wi_9bkz4` (2), `wi_kssa4…a_spec_typed_value_is_refused_where_the_carrier_is_expected` |
 // | an operation-free spec's provision at itself counted | `an_operationless_spec_provided_at_a_sort_leaves_its_class` |
 // | an opaque sort read as having values of its own | `an_opaque_sort_holds_its_own_values` |
 // | an operation-free sort read as having values of its own (else: a dictionary) | 10: `an_operation_free_sort_holds_its_providers_values`, `dictionary_instance_refuses_what_has_no_dictionary`, `wi402_manifest_provider_test` (5), `wi1063…the_wi401_escape_gate_still_fires`, `wi_8dxvk…`, `wi_9bkz4…a_provision_that_moves…` |

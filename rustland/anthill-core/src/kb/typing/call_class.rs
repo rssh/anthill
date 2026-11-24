@@ -408,6 +408,11 @@ pub(super) fn unselectable_spec_operation_call(
         SignatureCarrier::ResultOnly => true,
     };
     let provided = spec_has_any_providers(kb, spec);
+    // Proposal 074 stage 3: a provided sort with a dictionary and no parameter has its provider
+    // chosen at load ([`parameterless_provider_call`]).
+    if provided && !result_only && is_parameterless_dictionary_sort(kb, spec) {
+        return None;
+    }
     let directed = if result_only {
         dispatched
     } else {
@@ -3315,4 +3320,192 @@ fn collect_requires_matches(
         }
         path.pop();
     }
+}
+
+/// Proposal 074 stage 3 — a call of a body-less operation of a sort with a dictionary and no
+/// parameter (`Ticker.now()`) that nothing in scope hands a provider of the sort — no parameter
+/// typed at it, no `requires` of it — and whose bracket names none: its provider is chosen at
+/// load, as any provider at one type is (the one provider with no conditions, else the
+/// default), and the call runs through that provider (`CallClass::DeferToDictionary`, the
+/// dictionary built at load). `Ok(None)` for any other call, and for a module — a sort nothing
+/// provides — whose own operation the call runs as it always did.
+///
+/// Refused where no provider is chosen — two and no default — naming the providers and the
+/// bracket that names one, `Ticker.now[Ticker = P]()`.
+pub(super) fn parameterless_provider_call(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    op_short_sym: Symbol,
+    span: Option<Span>,
+) -> Result<Option<CallClass>, TypeError> {
+    let spec = kb.canonical_sort_sym(spec_sort);
+    if !is_parameterless_dictionary_sort(kb, spec) || provides_rows_of_spec(kb, spec).next().is_none() {
+        return Ok(None);
+    }
+    // A member of a sort with values of its own that provides the spec runs at the instance it
+    // was entered with (`Mid.other(m: Self) = Sp.name()`, kernel-language §5.2): that instance's
+    // member, which the dispatch below takes.
+    if env.enclosing_sort().is_some_and(|enclosing| {
+        sort_class(kb, enclosing) == SortClass::OwnValues && entered_at_an_instance_of(kb, env, spec)
+    }) {
+        return Ok(None);
+    }
+    let Some(syms) = ProjectionSyms::resolve(kb) else {
+        return Err(TypeError::DictionaryCannotAnswer {
+            span,
+            op: fn_sym,
+            detail: "no dictionary can be built in this knowledge base: it holds no `anthill.reflect`"
+                .into(),
+        });
+    };
+    let chain = env.enclosing_frame_chain().clone();
+    let goal = SortGoal {
+        spec_sort: spec,
+        bindings: SmallVec::new(),
+        carrier: None,
+        left_open: SmallVec::new(),
+    };
+    let scope = ResolutionScope {
+        available_requires: chain.entries(),
+        sigma: None,
+        pin: None,
+        sub_goal_requires: &[],
+    };
+    match resolve_with_rung(kb, &goal, &scope, DefaultRung::Consult) {
+        ResolutionResult::Resolved(tree) => {
+            let dict = emit_tree_as_projection(kb, &chain, &tree, &syms).ok_or_else(|| {
+                TypeError::DictionaryCannotAnswer {
+                    span,
+                    op: fn_sym,
+                    detail: format!(
+                        "the provider of `{}` chosen for it has no dictionary this scope can build",
+                        kb.qualified_name_of(spec)
+                    ),
+                }
+            })?;
+            Ok(Some(CallClass::DeferToDictionary {
+                spec_op_sym: fn_sym,
+                op_short_sym,
+                dict,
+            }))
+        }
+        failure => {
+            let spec_short = short_name_of(kb.qualified_name_of(spec)).to_string();
+            let member = short_name_of(kb.qualified_name_of(fn_sym)).to_string();
+            Err(TypeError::DictionaryCannotAnswer {
+                span,
+                op: fn_sym,
+                detail: format!(
+                    "{}; name the provider in the call's bracket, \
+                     `{spec_short}.{member}[{spec_short} = …](…)`, or hand it one",
+                    describe_resolution_failure(kb, &failure)
+                ),
+            })
+        }
+    }
+}
+
+/// Proposal 074 stage 3 (§2, "Which dictionary a call uses") — a call of an operation of a sort
+/// with a dictionary and no parameter is refused where the operation is handed two providers of
+/// that sort, two parameters typed at it or a parameter and a clause (`stamps(a: Ticker, b:
+/// Ticker) = Ticker.now()`): nothing in the call says which, and the first written answering is
+/// the scope-directed choice §8.7 rejects. The way out is a helper handed one (`nowOf(c:
+/// Ticker) = Ticker.now()`) or a bracket naming the provider.
+pub(super) fn handed_providers_tie(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    let chain = env.enclosing_frame_chain().clone();
+    handed_providers_tie_in(kb, &chain, env.enclosing_op(), spec_sort, fn_sym, span)
+}
+
+/// [`handed_providers_tie`] for a frame `chain` of the operation `caller_op`: refused where it
+/// is handed two providers of the sort with no parameter `spec_sort` that a call of `fn_sym`
+/// needs — the call's own spec, or a requirement of the callee's the frame would supply.
+pub(super) fn handed_providers_tie_in(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    caller_op: Option<Symbol>,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    match handed_providers_pair(kb, chain, caller_op, spec_sort) {
+        None => Ok(()),
+        Some((first, second)) => Err(TypeError::HandedProvidersTie {
+            span,
+            op: fn_sym,
+            spec: kb.canonical_sort_sym(spec_sort),
+            first,
+            second,
+        }),
+    }
+}
+
+/// The first two providers of the sort with no parameter `spec_sort` that the frame `chain` of
+/// `caller_op` is handed, described (`the parameter `a``, `the clause `requires Ticker``);
+/// `None` where it is handed fewer, or the sort has a parameter.
+pub(super) fn handed_providers_pair(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    caller_op: Option<Symbol>,
+    spec_sort: Symbol,
+) -> Option<(String, String)> {
+    let spec = kb.canonical_sort_sym(spec_sort);
+    if !is_parameterless_dictionary_sort(kb, spec) {
+        return None;
+    }
+    // Counted off the operation's parameters and the frame's entries, not the entries alone:
+    // the chain keeps one entry per spec it states (`op_requires_chain_rc`), and two parameters
+    // at a sort with no parameter state it the same.
+    let typed_at_spec = |kb: &KnowledgeBase, ty: &Value| match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) | TypeExtractor::Parameterized { base: s, .. } => {
+            same_sort_canonical(kb, s, spec)
+        }
+        _ => false,
+    };
+    let params: Vec<Symbol> = caller_op
+        .and_then(|op| crate::kb::op_info::lookup_operation_info(kb, op))
+        .map(|rec| {
+            rec.params
+                .iter()
+                .filter(|(_, ty)| typed_at_spec(kb, ty))
+                .map(|(p, _)| *p)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut handed: Vec<String> = params
+        .iter()
+        .map(|p| format!("the parameter `{}`", kb.local_name_of(*p)))
+        .collect();
+    for entry in chain.entries().to_vec() {
+        if !same_sort_canonical(kb, entry.required_sort, spec) {
+            continue;
+        }
+        match entry.supply {
+            SupplySource::Instance { param } if params.contains(&param) => {}
+            SupplySource::Instance { param } => {
+                handed.push(format!("the parameter `{}`", kb.local_name_of(param)))
+            }
+            _ => handed.push(match entry.binder {
+                Some(name) => format!(
+                    "the clause `requires {}: {}`",
+                    kb.local_name_of(name),
+                    kb.local_name_of(spec)
+                ),
+                None => format!("the clause `requires {}`", kb.local_name_of(spec)),
+            }),
+        }
+    }
+    if handed.len() < 2 {
+        return None;
+    }
+    let second = handed.swap_remove(1);
+    let first = handed.swap_remove(0);
+    Some((first, second))
 }

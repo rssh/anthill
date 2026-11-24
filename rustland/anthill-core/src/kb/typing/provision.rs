@@ -268,8 +268,8 @@ pub(super) fn spec_has_carrier_param(kb: &KnowledgeBase, spec: Symbol) -> bool {
 /// a diagnostic names: the one an operation receives on, else the sort's first. The sort's
 /// dictionary is at all its parameters; the one answered is for a message, and for the rule
 /// head's member spelling (`?x: Spec.C`), which names the carrier. `None` for a data sort, an
-/// abstract sort with values of its own, and one with no parameter (`Ticker`, whose dictionary
-/// 074's stage 3 builds; `Main`).
+/// abstract sort with values of its own, and one with no parameter (`Main`; `Ticker`, which has
+/// a dictionary and no parameter to be over, [`is_parameterless_dictionary_sort`]).
 ///
 /// ONE LADDER, read by the verdict and by the message alike: they were two
 /// (`carrier_param_of` added a sole-parameter rung of its own), and where they disagreed
@@ -284,6 +284,16 @@ pub(crate) fn spec_over_parameter(kb: &KnowledgeBase, spec: Symbol) -> Option<Sy
             .first()
             .map(|(p, _)| *p)
     })
+}
+
+/// Proposal 074 stage 3 — is `sort` an abstract sort with a dictionary and no parameter
+/// ([`SortClass::Dictionary`], no type parameter): `Ticker`, `anthill.prelude.Time`, a
+/// program's `Prog`? A value typed at it is its provider, chosen as any provider at one type is
+/// — the one provider with no conditions, the default, or one a bracket names — and a module,
+/// which nothing provides, is its own: the dictionary of its own bodies.
+pub(crate) fn is_parameterless_dictionary_sort(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    let canon = kb.canonical_sort_sym(sort);
+    kb.type_params_of_sort(canon).is_empty() && sort_class(kb, canon) == SortClass::Dictionary
 }
 
 /// WI-20261122-CXR5B — the type-var of `spec` (a spec over a parameter) a value of `provider`
@@ -324,9 +334,10 @@ pub(crate) enum SortClass {
     /// `requires` and those of the specs it provides.
     Data,
     /// An abstract sort with values of its own by what its declaration says of them
-    /// ([`has_values_by_declaration`]): declared opaque (`sort Handle = ?`), or one an
-    /// operation receives on — its own, or through a `provides` that binds a spec's parameter
-    /// to the sort itself (`Stream`, `Symbol provides PartialEq[T = Symbol]`).
+    /// ([`has_values_by_declaration`]): declared opaque (`sort Handle = ?`), one an operation
+    /// returns (`unit(x: Int64) -> Self`), or one an operation receives on — its own, or
+    /// through a `provides` that binds a spec's parameter to the sort itself (`Stream`,
+    /// `Symbol provides PartialEq[T = Symbol]`).
     OwnValues,
     /// An abstract sort nothing in whose chain declares an operation (`sort KVStore { sort K
     /// = ?  sort V = ? }`, `Main`): it has values of its own, its providers', and a
@@ -335,8 +346,9 @@ pub(crate) enum SortClass {
     /// type a provider's value so).
     OperationFree,
     /// An abstract sort with a dictionary: its chain declares operations — its own, those its
-    /// `requires` and its conversions reach — and none receives on the sort itself
-    /// (`Additive`, `Default`, `Ord`, `Ticker`). A value typed at it is its dictionary.
+    /// `requires` and its conversions reach — none receives on the sort itself and none returns
+    /// it (`Additive`, `Default`, `Ord`, `Ticker`). A value typed at it is its dictionary, its
+    /// provider.
     Dictionary,
 }
 
@@ -374,8 +386,8 @@ pub(crate) fn sort_class(kb: &KnowledgeBase, sort: Symbol) -> SortClass {
 }
 
 /// Is the abstract sort `sort` one with values of its own by what its declaration says of
-/// them — declared opaque, or received on (its own operation, or a `provides` at itself) —
-/// rather than for declaring no operation? A TYPE PARAMETER (`Monad[M[T]]`'s `M`, whose own
+/// them — declared opaque, returned by its operation, or received on (its own operation, or a
+/// `provides` at itself) — rather than for declaring no operation? A TYPE PARAMETER (`Monad[M[T]]`'s `M`, whose own
 /// parameter would make it a spec over one) declares no operation, and is
 /// [`SortClass::OperationFree`]: a value typed at it is a value of the type it stands for.
 pub(super) fn has_values_by_declaration(kb: &KnowledgeBase, sort: Symbol) -> bool {
@@ -383,6 +395,21 @@ pub(super) fn has_values_by_declaration(kb: &KnowledgeBase, sort: Symbol) -> boo
     kb.opaque_sorts.contains(&canon)
         || spec_is_self_representing(kb, canon)
         || provides_at_itself(kb, canon)
+        || an_operation_returns_the_sort(kb, canon)
+}
+
+/// Does an operation of `sort` return the sort itself (`operation unit(x: Int64) -> Self`)? It
+/// makes values of the sort, as one receiving on it takes them, so the sort has values of its
+/// own (decided with the user 2026-11-24, proposal 074 stage 3's census: `Mon` in
+/// `wi_ck7pp_interface_call_test`), and is no sort with a dictionary.
+fn an_operation_returns_the_sort(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    crate::kb::op_requirements::operations_of_sort(kb, sort)
+        .into_iter()
+        .any(|op| {
+            crate::kb::op_info::lookup_operation_info(kb, op).is_some_and(|rec| {
+                sort_functor_of_view(kb, &rec.return_type).is_some_and(|head| same_sort_canonical(kb, head, sort))
+            })
+        })
 }
 
 /// Does `sort` provide a spec with one of the spec's parameters bound to `sort` itself
@@ -442,7 +469,8 @@ pub(super) fn sort_is_data(kb: &KnowledgeBase, sort: Symbol) -> bool {
 /// the spec stands for its providers ([`spec_as_its_providers`]) always. Asked once a
 /// provision has been found, which nearly every compare never reaches.
 pub(super) fn provider_conforms_to(kb: &KnowledgeBase, spec: Symbol) -> bool {
-    kb.spec_as_providers_depth > 0 || !spec_has_carrier_param(kb, spec)
+    kb.spec_as_providers_depth > 0
+        || !(spec_has_carrier_param(kb, spec) || is_parameterless_dictionary_sort(kb, spec))
 }
 
 /// WI-20261005-KSSA4 — every operation parameter and entity field whose declared type names,
@@ -849,6 +877,25 @@ pub(crate) fn check_rule_sort_uses(
                 let Some((spec, param)) =
                     parameter_spec_written_as_type(kb, &TermIdView(written_type))
                 else {
+                    // Proposal 074 stage 3 — a sort with a dictionary and no parameter: a value
+                    // typed at it is its provider, which a fact does not hold.
+                    if let Some(spec) = parameterless_spec_written_as_type(kb, &TermIdView(written_type)) {
+                        let site = crate::kb::load::render_decl_site(kb, written.span);
+                        let sort_name = kb.qualified_name_of(spec).to_owned();
+                        let what = if matches!(written.site, RuleSortSite::HeadBound) {
+                            "a rule variable is typed"
+                        } else {
+                            "a `domain` goal asks whether a value is a"
+                        };
+                        errors.push(crate::kb::load::LoadError::Other {
+                            message: format!(
+                                "{site}: {what} `{sort_name}`, a sort with a dictionary and no \
+                                 parameter: a value typed at it is its provider, and a value \
+                                 whose sort provides it is not one, so nothing matches. Bound \
+                                 the variable at the provider's own sort"
+                            ),
+                        });
+                    }
                     continue;
                 };
                 let site = crate::kb::load::render_decl_site(kb, written.span);
@@ -916,6 +963,34 @@ pub(crate) fn check_rule_sort_uses(
         errors.push(crate::kb::load::LoadError::Other { message });
     }
     errors
+}
+
+/// Proposal 074 stage 3 — [`parameter_spec_written_as_type`]'s twin for a sort with a dictionary
+/// and no parameter (`?x: Ticker`), which names no member a provider's value could be typed at.
+/// Not a WITNESS, which such a sort is where it provides a spec: `?s: SortedSet[T = String, O =
+/// ByLength]` names `ByLength` as the provider of the set's slot, no value of it (MEASURED:
+/// read as a value's type, six rows of `wi_0rrqp`, `wi_cbrd2` and `wi_s4d63` were refused).
+pub(crate) fn parameterless_spec_written_as_type<V: TermView>(
+    kb: &mut KnowledgeBase,
+    ty: &V,
+) -> Option<Symbol> {
+    let mut pending = Vec::new();
+    collect_sorts_written_as_types(kb, ty, &mut pending);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(written) = pending.pop() {
+        let sort = kb.canonical_sort_sym(written);
+        if !visited.insert(sort) {
+            continue;
+        }
+        if let Some(target) = alias_leaf(kb, sort) {
+            collect_sorts_written_as_types(kb, &TermIdView(target), &mut pending);
+        } else if is_parameterless_dictionary_sort(kb, sort)
+            && !provides_rows_of_provider(kb, sort).any(|row| !is_derived_only_spec(kb, row.spec_base))
+        {
+            return Some(sort);
+        }
+    }
+    None
 }
 
 /// 8DXVK: source-written type membership never interprets a parameter-carried

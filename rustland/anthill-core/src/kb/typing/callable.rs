@@ -389,7 +389,10 @@ fn provider_at_a_spec_type_error(
     context: &TypeErrorContext,
 ) -> Option<TypeError> {
     let spec = sort_functor_of_view(kb, declared)?;
-    spec_over_parameter(kb, spec)?;
+    let parameterless = is_parameterless_dictionary_sort(kb, spec);
+    if !parameterless {
+        spec_over_parameter(kb, spec)?;
+    }
     let mut provider = sort_functor_of_view(kb, actual)?;
     // A value typed at a sort with a dictionary is that dictionary, no provider's value
     // (proposal 074 §2): `Additive[T = Int64]` where `Additive[T = Float]` is expected is two
@@ -402,8 +405,26 @@ fn provider_at_a_spec_type_error(
     while !carrier_is_an_instance(kb, provider, spec) {
         provider = kb.strict_parent_sort(provider)?;
     }
-    let param = param_a_provider_stands_at(kb, spec, provider)?;
     let (expected, got) = render_mismatch_pair(kb, declared, actual);
+    // Proposal 074 stage 3 — a sort with a dictionary and no parameter: a value typed at it is
+    // its provider, and there is no member of it a provider's value could be typed at.
+    if parameterless {
+        let spec_name = kb.qualified_name_of(spec);
+        let provider = kb.qualified_name_of(provider);
+        return Some(TypeError::Other {
+            span,
+            context: context.clone(),
+            expected,
+            actual: format!(
+                "{got} — `{spec_name}` has a dictionary and no parameter: `{provider}` \
+                 provides it, so `{spec_name}`'s operations may run at `{provider}`'s, and that \
+                 does not make a value of `{provider}` a `{spec_name}`. A value typed \
+                 `{spec_name}` is its provider: pass `Dictionary.instance[{spec_name}]()`"
+            ),
+            site: TypeError::here(),
+        });
+    }
+    let param = param_a_provider_stands_at(kb, spec, provider)?;
     Some(TypeError::Other {
         span,
         context: context.clone(),
