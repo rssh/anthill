@@ -42,3 +42,7 @@ TWO CORRECTIONS from a review of proposal 076, with the user 2026-11-24 (both re
 
 ALSO OPEN FOR THE COMMIT, as for the guard (proposal 076 section 10, question 3): an alternative the commit never runs sets no truncated flag and records no fault, so a search that today ends undecided because of such an alternative would end decided.
 
+### 2026-11-24T10:56:22Z — feedback — user
+
+DECIDED with the user 2026-11-24 (proposal 076 section 3, question 3): an alternative the commit, or 076's guard, never runs sets neither the truncated flag nor a fault. A skip is a refutation of the conjunction, since the continuation has no solution whichever proof of the goal precedes it. So a search that today ends undecided only because it walked into such an alternative and met the depth limit there ends decided: !(dead(0)) over fact g(0); rule g(?n) :- g(?n + 1); rule dead(?n) :- g(?n), 1 = 2 moves from conditional to true at --max-depth 8. This closes the 'ALSO OPEN' note above; kernel-language 8.3's wording is still to be changed with the user when it lands.
+
