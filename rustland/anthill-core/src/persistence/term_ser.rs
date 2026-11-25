@@ -414,7 +414,7 @@ pub fn decode_value(
     ty: &impl TermView,
     opts: CodecOptions,
 ) -> Result<TermId, ValueError> {
-    let ty = Ty::closed(owned(ty));
+    let ty = DeclaredType::closed(ty);
     Decoder::new(kb, opts).value(json, &ty)
 }
 
@@ -428,7 +428,7 @@ pub fn encode_value(
     ty: &impl TermView,
     opts: CodecOptions,
 ) -> Result<serde_json::Value, ValueError> {
-    let ty = Ty::closed(owned(ty));
+    let ty = DeclaredType::closed(ty);
     let value = owned(value);
     Encoder::new(kb, opts, &value).value(&value, &ty)
 }
@@ -594,25 +594,34 @@ fn is_type_term(kb: &KnowledgeBase, v: &Value) -> bool {
 
 // ── The declared type, as the walks read it ───────────────────
 
-/// A declared type: a type term on whatever carrier it rides, and what the type parameters it
-/// may name are bound to. A constructor's field is typed in its sort's parameters; at a value
-/// of `Box[T = Int64]` the field `items: List[T = T]` is read with `T` bound to `Int64`. The
-/// binding is itself a type with the bindings of the place it was written in, so a parameter
-/// is substituted at any depth without building a type term (the encoder has a `&` KB).
-#[derive(Clone)]
-struct Ty {
+/// A declared type as a walk over values at it reads it: a type term on whatever carrier it
+/// rides, and what the type parameters it may name are bound to. A constructor's field is
+/// typed in its sort's parameters; at a value of `Box[T = Int64]` the field `items: List[T =
+/// T]` is read with `T` bound to `Int64`. The binding is itself a type with the bindings of the
+/// place it was written in, so a parameter is substituted at any depth without building a
+/// type term (the encoder has a `&` KB).
+///
+/// THE ONE READING (WI-20261125-CMQJ4). The codec reads every type it walks through
+/// [`DeclaredType::shape`] and every constructor's fields through [`DataShape::fields`], and
+/// so does any caller that walks a value at its declared type as the codec does — a value
+/// generator, a differ. A field's type read from `entity_field_types` is written in its sort's
+/// parameters (`value: T`); rebuilt outside, the substitution is a second copy of the rule —
+/// a default, a positional binding or a binding naming an outer parameter read one way there
+/// and another here — and nothing keeps the two alike.
+#[derive(Clone, Debug)]
+pub struct DeclaredType {
     view: Value,
     env: Env,
 }
 
 /// The bindings of the parameters a type may name: each parameter's canonical variable (its
 /// `VarId`'s raw id) and what it stands for.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 struct Env(Rc<Vec<(u32, Binding)>>);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Binding {
-    To(Ty),
+    To(DeclaredType),
     /// A parameter the type leaves unwritten and that declares no default, kept by its name: its
     /// canonical variable is anonymous (`?_`), and a message names the parameter.
     Open(Symbol),
@@ -628,49 +637,159 @@ impl Env {
     }
 }
 
-impl Ty {
-    /// A type that names no parameter of a place: what a caller hands the pair.
-    fn closed(view: Value) -> Ty {
-        Ty {
-            view,
+impl DeclaredType {
+    /// A type that names no parameter of a place, on any carrier: what a caller hands the
+    /// pair, and where a walk starts.
+    pub fn closed(ty: &impl TermView) -> DeclaredType {
+        DeclaredType {
+            view: owned(ty),
             env: Env::default(),
         }
     }
 
-    fn within(&self, view: Value) -> Ty {
-        Ty {
+    fn within(&self, view: Value) -> DeclaredType {
+        DeclaredType {
             view,
             env: self.env.clone(),
         }
     }
+
+    /// What the type is, once a parameter it names is looked up in its place's bindings:
+    /// `T` at `Cell`'s `value` within `Cell[T = Int64]` is `Int64`. A parameter nothing binds —
+    /// left unwritten with no default, or free in a type handed in — is refused by its name
+    /// (`UnboundParameter`); a type with no data spelling (`Set`, a function type) is
+    /// `NoDataSpelling`.
+    pub fn shape(&self, kb: &KnowledgeBase) -> Result<TypeShape, ValueProblem> {
+        let (ty, extracted) = resolve(kb, self)?;
+        let (head, bindings) = match extracted {
+            TypeExtractor::SortRef(s) => (s, Vec::new()),
+            TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+            TypeExtractor::NamedTuple(fields) => {
+                return Ok(TypeShape::Tuple(
+                    fields.into_iter().map(|(l, t)| (l, ty.within(t))).collect(),
+                ))
+            }
+            _ => return Err(ValueProblem::NoDataSpelling),
+        };
+        let sort = head.plain();
+        let arg = |name: &str| {
+            bindings
+                .iter()
+                .find(|(k, _)| kb.local_name_of(*k) == name || is_positional_label_at(kb.local_name_of(*k), 0))
+                .map(|(_, v)| ty.within(v.clone()))
+                .ok_or_else(|| ValueProblem::UnboundParameter {
+                    name: name.to_owned(),
+                })
+        };
+        if !head.is_type_face() {
+            match kb.qualified_name_of(sort) {
+                "anthill.prelude.String" => return Ok(TypeShape::String),
+                "anthill.prelude.Int64" => return Ok(TypeShape::Int64),
+                "anthill.prelude.Float" => return Ok(TypeShape::Float),
+                "anthill.prelude.BigInt" => return Ok(TypeShape::BigInt),
+                "anthill.prelude.Bool" => return Ok(TypeShape::Bool),
+                "anthill.prelude.Type" => return Ok(TypeShape::Type),
+                OPTION => return Ok(TypeShape::Option(arg("T")?)),
+                LIST => return Ok(TypeShape::List(arg("T")?)),
+                _ => {}
+            }
+        }
+        let ctors = kb.field_constructors_of_sort(sort);
+        if ctors.is_empty() {
+            return Err(ValueProblem::NoDataSpelling);
+        }
+        let own = ctors.len() == 1 && ctors[0] == sort;
+        let env = sort_env(kb, sort, &ty, &bindings);
+        Ok(TypeShape::Data(DataShape {
+            sort,
+            ctors,
+            own,
+            env,
+        }))
+    }
+
+    /// The type as the KB prints one, with the parameters its place binds substituted
+    /// (`Cell[T = Bool]` for `Holder`'s `c: Cell[T = A]` at `Holder[A = Bool]`). Display only.
+    pub fn display_name(&self, kb: &KnowledgeBase) -> String {
+        expected_text(kb, self)
+    }
 }
 
-/// What a declared type is, to the mapping.
-enum Shape {
+/// What a declared type is, to a walk over values at it.
+#[derive(Debug)]
+pub enum TypeShape {
     String,
     Int64,
     Float,
     BigInt,
     Bool,
     Type,
-    Option(Ty),
-    List(Ty),
+    /// `Option`, at its element's type.
+    Option(DeclaredType),
+    /// `List`, at its element's type.
+    List(DeclaredType),
     /// Components in the type's order, each `(label, type)`.
-    Tuple(Vec<(Symbol, Ty)>),
-    /// A sort or an entity: the constructors its values may be. `own` when the type's one
-    /// constructor is the type itself. `env` binds the sort's parameters, the place its
-    /// constructors' fields are typed in.
-    Data {
-        sort: Symbol,
-        ctors: Vec<Symbol>,
-        own: bool,
-        env: Env,
-    },
+    Tuple(Vec<(Symbol, DeclaredType)>),
+    /// A sort or an entity: the constructors its values may be.
+    Data(DataShape),
+}
+
+/// A sort or an entity at the type that applies it: its constructors, and the bindings of its
+/// parameters there — the place its constructors' fields are typed in.
+#[derive(Debug)]
+pub struct DataShape {
+    sort: Symbol,
+    ctors: Vec<Symbol>,
+    /// The type's one constructor is the type itself (an entity's type).
+    own: bool,
+    env: Env,
+}
+
+impl DataShape {
+    /// The sort the type is headed by (for an entity's type, the entity).
+    pub fn sort(&self) -> Symbol {
+        self.sort
+    }
+
+    /// The constructors a value of the type may be, in declared order.
+    pub fn constructors(&self) -> &[Symbol] {
+        &self.ctors
+    }
+
+    /// `ctor`'s fields, each `(field, type)` in declared order, each type in this type's
+    /// bindings: `Cell`'s `value` at `Cell[T = Int64]` is read as `Int64` by its
+    /// [`DeclaredType::shape`]. A parameter the type leaves open is refused there, at the
+    /// field that names it. Refused here: a constructor that is not one of the type's
+    /// (`UnknownConstructor`), and one the KB records a field's name for and no type for
+    /// (`NoDataSpelling`).
+    pub fn fields(&self, kb: &KnowledgeBase, ctor: Symbol) -> Result<Vec<(Symbol, DeclaredType)>, ValueProblem> {
+        // A constructor is its plain symbol; a type names one by its face.
+        let ctor = ctor.plain();
+        if !self.ctors.contains(&ctor) {
+            return Err(ValueProblem::UnknownConstructor {
+                name: kb.qualified_name_of(ctor).to_owned(),
+                sort: kb.qualified_name_of(self.sort).to_owned(),
+            });
+        }
+        declared_fields(kb, ctor)
+            .into_iter()
+            .map(|(field, fty)| match fty {
+                Some(view) => Ok((
+                    field,
+                    DeclaredType {
+                        view,
+                        env: self.env.clone(),
+                    },
+                )),
+                None => Err(ValueProblem::NoDataSpelling),
+            })
+            .collect()
+    }
 }
 
 /// The type `ty` stands for once its parameter is looked up: `T` at `cons.head` within
 /// `List[T = Stock]` is `Stock`. A parameter nothing binds is refused, naming it.
-fn resolve(kb: &KnowledgeBase, ty: &Ty) -> Result<(Ty, TypeExtractor), ValueProblem> {
+fn resolve(kb: &KnowledgeBase, ty: &DeclaredType) -> Result<(DeclaredType, TypeExtractor), ValueProblem> {
     let mut cur = ty.clone();
     loop {
         match extract_type(kb, &cur.view) {
@@ -682,10 +801,14 @@ fn resolve(kb: &KnowledgeBase, ty: &Ty) -> Result<(Ty, TypeExtractor), ValueProb
                         name: kb.local_name_of(*param).to_owned(),
                     })
                 }
+                // Free in the type handed in. A parameter's canonical variable is anonymous
+                // (`?_`), so it is named by the parameter it stands for: the field type as
+                // WRITTEN (`value: T`) handed in for the type at an application.
                 None => {
+                    let param = kb.type_param_of_canonical_var(VarId::new(id, name)).unwrap_or(name);
                     return Err(ValueProblem::UnboundParameter {
-                        name: kb.local_name_of(name).to_owned(),
-                    })
+                        name: kb.local_name_of(param).to_owned(),
+                    });
                 }
             },
             TypeExtractor::Skolem { name, .. } | TypeExtractor::TypeVar(name) => {
@@ -698,60 +821,11 @@ fn resolve(kb: &KnowledgeBase, ty: &Ty) -> Result<(Ty, TypeExtractor), ValueProb
     }
 }
 
-fn classify(kb: &KnowledgeBase, ty: &Ty) -> Result<Shape, ValueProblem> {
-    let (ty, extracted) = resolve(kb, ty)?;
-    let (head, bindings) = match extracted {
-        TypeExtractor::SortRef(s) => (s, Vec::new()),
-        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-        TypeExtractor::NamedTuple(fields) => {
-            return Ok(Shape::Tuple(
-                fields.into_iter().map(|(l, t)| (l, ty.within(t))).collect(),
-            ))
-        }
-        _ => return Err(ValueProblem::NoDataSpelling),
-    };
-    let sort = head.plain();
-    let arg = |name: &str| {
-        bindings
-            .iter()
-            .find(|(k, _)| kb.local_name_of(*k) == name || is_positional_label_at(kb.local_name_of(*k), 0))
-            .map(|(_, v)| ty.within(v.clone()))
-            .ok_or_else(|| ValueProblem::UnboundParameter {
-                name: name.to_owned(),
-            })
-    };
-    if !head.is_type_face() {
-        match kb.qualified_name_of(sort) {
-            "anthill.prelude.String" => return Ok(Shape::String),
-            "anthill.prelude.Int64" => return Ok(Shape::Int64),
-            "anthill.prelude.Float" => return Ok(Shape::Float),
-            "anthill.prelude.BigInt" => return Ok(Shape::BigInt),
-            "anthill.prelude.Bool" => return Ok(Shape::Bool),
-            "anthill.prelude.Type" => return Ok(Shape::Type),
-            OPTION => return Ok(Shape::Option(arg("T")?)),
-            LIST => return Ok(Shape::List(arg("T")?)),
-            _ => {}
-        }
-    }
-    let ctors = kb.field_constructors_of_sort(sort);
-    if ctors.is_empty() {
-        return Err(ValueProblem::NoDataSpelling);
-    }
-    let own = ctors.len() == 1 && ctors[0] == sort;
-    let env = sort_env(kb, sort, &ty, &bindings);
-    Ok(Shape::Data {
-        sort,
-        ctors,
-        own,
-        env,
-    })
-}
-
 /// The bindings of `sort`'s parameters at the type `ty` applies it to: each parameter the
 /// type binds, by its name or its position, to the type written there (within `ty`'s own
 /// bindings); one it leaves unwritten to its declared default (within the parameters bound
 /// before it); one with neither is OPEN, refused, by its name, where a field names it.
-fn sort_env(kb: &KnowledgeBase, sort: Symbol, ty: &Ty, bindings: &[(Symbol, Value)]) -> Env {
+fn sort_env(kb: &KnowledgeBase, sort: Symbol, ty: &DeclaredType, bindings: &[(Symbol, Value)]) -> Env {
     // A constructor's own type is typed in its sort's parameters.
     let owner = if kb.type_param_syms_of(sort).is_empty() {
         kb.sort_of_constructor(sort).unwrap_or(sort)
@@ -777,7 +851,7 @@ fn sort_env(kb: &KnowledgeBase, sort: Symbol, ty: &Ty, bindings: &[(Symbol, Valu
         let binding = match written {
             Some((_, v)) => Binding::To(ty.within(v.clone())),
             None => match kb.sort_param_defaults.get(&param) {
-                Some(&default) => Binding::To(Ty {
+                Some(&default) => Binding::To(DeclaredType {
                     view: Value::term(default),
                     env: Env(Rc::new(bound.clone())),
                 }),
@@ -793,18 +867,25 @@ fn sort_env(kb: &KnowledgeBase, sort: Symbol, ty: &Ty, bindings: &[(Symbol, Valu
 /// binds substituted where they occur in an application (`List[T = Int64]`, not `List[T =
 /// T]`). Display only: the application is rebuilt as an entity value, which the KB's one
 /// type renderer reads as it reads a term (WI-20260904-B1KFS).
-fn expected_text(kb: &KnowledgeBase, ty: &Ty) -> String {
+fn expected_text(kb: &KnowledgeBase, ty: &DeclaredType) -> String {
     type_display_name_value(kb, &shown_type(kb, ty))
 }
 
-fn shown_type(kb: &KnowledgeBase, ty: &Ty) -> Value {
+fn shown_type(kb: &KnowledgeBase, ty: &DeclaredType) -> Value {
     let mut ty = ty.clone();
-    while let TypeExtractor::FlexVar { id, .. } = extract_type(kb, &ty.view) {
+    while let TypeExtractor::FlexVar { id, name } = extract_type(kb, &ty.view) {
         match ty.env.lookup(id) {
             Some(Binding::To(bound)) => ty = bound.clone(),
             // An open parameter is shown by its own name, not by its anonymous variable.
             Some(Binding::Open(param)) => return Value::SymbolRef(*param),
-            None => return ty.view,
+            // Free: a parameter's canonical variable by the parameter's name, as `resolve`
+            // names it; any other variable as itself.
+            None => {
+                return match kb.type_param_of_canonical_var(VarId::new(id, name)) {
+                    Some(param) => Value::SymbolRef(param),
+                    None => ty.view,
+                }
+            }
         }
     }
     if ty.env.is_empty() {
@@ -891,7 +972,7 @@ fn tuple_functor(kb: &KnowledgeBase) -> Option<Symbol> {
 }
 
 /// Are the components all positional (`_1`, `_2`, … in order)? Such a tuple is an array.
-fn all_positional(kb: &KnowledgeBase, comps: &[(Symbol, Ty)]) -> bool {
+fn all_positional(kb: &KnowledgeBase, comps: &[(Symbol, DeclaredType)]) -> bool {
     comps
         .iter()
         .enumerate()
@@ -922,7 +1003,7 @@ impl<'k> Decoder<'k> {
         }
     }
 
-    fn err(&self, ty: &Ty, problem: ValueProblem) -> ValueError {
+    fn err(&self, ty: &DeclaredType, problem: ValueProblem) -> ValueError {
         ValueError {
             path: JsonPath(self.path.clone()),
             expected: expected_text(self.kb, ty),
@@ -937,8 +1018,8 @@ impl<'k> Decoder<'k> {
         r
     }
 
-    fn value(&mut self, json: &serde_json::Value, ty: &Ty) -> Result<TermId, ValueError> {
-        let shape = classify(self.kb, ty).map_err(|p| self.err(ty, p))?;
+    fn value(&mut self, json: &serde_json::Value, ty: &DeclaredType) -> Result<TermId, ValueError> {
+        let shape = ty.shape(self.kb).map_err(|p| self.err(ty, p))?;
         if let Some((_, f)) = self.nonfinite.iter().find(|(at, _)| *at == self.path) {
             let what = format!("the TOML float `{}`", toml_float_text(*f));
             return Err(self.err(ty, ValueProblem::Unrepresentable { what }));
@@ -947,8 +1028,8 @@ impl<'k> Decoder<'k> {
             // Under an `Option` the variable is the present value's (021, "Variables"), and one
             // that would stand for a whole inner `Option` has no spelling, as the writer says.
             return match shape {
-                Shape::Option(inner) => match classify(self.kb, &inner) {
-                    Ok(Shape::Option(_)) => Err(self.err(&inner, ValueProblem::Variable)),
+                TypeShape::Option(inner) => match inner.shape(self.kb) {
+                    Ok(TypeShape::Option(_)) => Err(self.err(&inner, ValueProblem::Variable)),
                     _ => Ok(self.some(var)),
                 },
                 _ => Ok(var),
@@ -957,15 +1038,15 @@ impl<'k> Decoder<'k> {
         let wrong = |me: &Self| me.err(ty, ValueProblem::WrongShape { found: describe_json(json) });
         use serde_json::Value as J;
         match shape {
-            Shape::String => match json {
+            TypeShape::String => match json {
                 J::String(s) => Ok(self.literal(Literal::String(self.unescape(s)))),
                 _ => Err(wrong(self)),
             },
-            Shape::Bool => match json {
+            TypeShape::Bool => match json {
                 J::Bool(b) => Ok(self.literal(Literal::Bool(*b))),
                 _ => Err(wrong(self)),
             },
-            Shape::Int64 => match json {
+            TypeShape::Int64 => match json {
                 J::Number(n) => match n.as_i64() {
                     Some(i) => Ok(self.literal(Literal::Int(i))),
                     // Past `i64` either way: a `u64`, or an integer the parser has rounded to
@@ -978,14 +1059,14 @@ impl<'k> Decoder<'k> {
                 },
                 _ => Err(wrong(self)),
             },
-            Shape::Float => match json {
+            TypeShape::Float => match json {
                 J::Number(n) => {
                     let f = n.as_f64().expect("a JSON number is an f64 without arbitrary_precision");
                     Ok(self.literal(Literal::Float(OrderedFloat(f))))
                 }
                 _ => Err(wrong(self)),
             },
-            Shape::BigInt => {
+            TypeShape::BigInt => {
                 let digits = match json {
                     J::Number(n) if n.is_i64() || n.is_u64() => n.to_string(),
                     J::Number(n) => {
@@ -1005,18 +1086,18 @@ impl<'k> Decoder<'k> {
                 let n: num_bigint::BigInt = digits.parse().expect("decimal digits parse as a BigInt");
                 Ok(self.literal(Literal::BigInt(n)))
             }
-            Shape::Type => match json {
+            TypeShape::Type => match json {
                 J::String(s) => type_from_text(self.kb, s).map_err(|e| self.err(ty, e.problem)),
                 _ => Err(wrong(self)),
             },
-            Shape::Option(inner) => match json {
+            TypeShape::Option(inner) => match json {
                 J::Null => Ok(self.none()),
                 other => {
                     let v = self.value(other, &inner)?;
                     Ok(self.some(v))
                 }
             },
-            Shape::List(elem) => match json {
+            TypeShape::List(elem) => match json {
                 J::Array(items) => {
                     let mut terms = Vec::with_capacity(items.len());
                     for (i, item) in items.iter().enumerate() {
@@ -1026,13 +1107,8 @@ impl<'k> Decoder<'k> {
                 }
                 _ => Err(wrong(self)),
             },
-            Shape::Tuple(comps) => self.tuple(json, ty, &comps),
-            Shape::Data {
-                sort,
-                ctors,
-                own,
-                env,
-            } => self.data(json, ty, sort, &ctors, own, &env),
+            TypeShape::Tuple(comps) => self.tuple(json, ty, &comps),
+            TypeShape::Data(data) => self.data(json, ty, &data),
         }
     }
 
@@ -1085,7 +1161,7 @@ impl<'k> Decoder<'k> {
             .make_entity_term(some, SmallVec::new(), SmallVec::from_elem((field, inner), 1))
     }
 
-    fn tuple(&mut self, json: &serde_json::Value, ty: &Ty, comps: &[(Symbol, Ty)]) -> Result<TermId, ValueError> {
+    fn tuple(&mut self, json: &serde_json::Value, ty: &DeclaredType, comps: &[(Symbol, DeclaredType)]) -> Result<TermId, ValueError> {
         let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         if all_positional(self.kb, comps) {
             let Some(items) = json.as_array() else {
@@ -1139,26 +1215,19 @@ impl<'k> Decoder<'k> {
         }))
     }
 
-    fn data(
-        &mut self,
-        json: &serde_json::Value,
-        ty: &Ty,
-        sort: Symbol,
-        ctors: &[Symbol],
-        own: bool,
-        env: &Env,
-    ) -> Result<TermId, ValueError> {
+    fn data(&mut self, json: &serde_json::Value, ty: &DeclaredType, data: &DataShape) -> Result<TermId, ValueError> {
         use serde_json::Value as J;
-        if own && self.opts.entity_tags == EntityTags::OmitAtEntityType {
+        let ctors = data.constructors();
+        if data.own && self.opts.entity_tags == EntityTags::OmitAtEntityType {
             runtime_account(self.kb, ctors[0]).map_err(|p| self.err(ty, p))?;
             return match json {
-                J::Object(fields) => self.fields(ctors[0], env, fields, ty),
+                J::Object(fields) => self.fields(ctors[0], data, fields, ty),
                 other => Err(self.err(ty, ValueProblem::WrongShape { found: describe_json(other) })),
             };
         }
         match json {
             J::String(tag) => {
-                let ctor = self.ctor_by_tag(tag, ctors, sort, ty)?;
+                let ctor = self.ctor_by_tag(tag, ctors, data.sort, ty)?;
                 let fields = declared_fields(self.kb, ctor).len();
                 if fields != 0 {
                     return Err(self.err(
@@ -1173,11 +1242,11 @@ impl<'k> Decoder<'k> {
             }
             J::Object(m) if m.len() == 1 => {
                 let (tag, payload) = m.iter().next().expect("one key");
-                let ctor = self.ctor_by_tag(tag, ctors, sort, ty)?;
+                let ctor = self.ctor_by_tag(tag, ctors, data.sort, ty)?;
                 let ctor_ty = ty.within(Value::SymbolRef(self.kb.type_face_of(ctor)));
                 self.at(PathStep::Key(tag.clone()), |me| match payload {
-                    J::Object(fields) => me.fields(ctor, env, fields, &ctor_ty),
-                    other => me.shorthand(ctor, env, other, &ctor_ty),
+                    J::Object(fields) => me.fields(ctor, data, fields, &ctor_ty),
+                    other => me.shorthand(ctor, data, other, &ctor_ty),
                 })
             }
             other => {
@@ -1200,7 +1269,7 @@ impl<'k> Decoder<'k> {
 
     /// The constructor of the declared type a tag names — among those constructors and nowhere
     /// else (WI-912): a tag outside the type is a wrong-typed value, not a name to look up.
-    fn ctor_by_tag(&self, tag: &str, ctors: &[Symbol], sort: Symbol, ty: &Ty) -> Result<Symbol, ValueError> {
+    fn ctor_by_tag(&self, tag: &str, ctors: &[Symbol], sort: Symbol, ty: &DeclaredType) -> Result<Symbol, ValueError> {
         let ctor = ctors
             .iter()
             .copied()
@@ -1219,16 +1288,16 @@ impl<'k> Decoder<'k> {
     }
 
     /// The object of a constructor's fields: each key a field, decoded at its declared type in
-    /// the sort's parameters (`env`); an absent `Option` field is `none()`, any other absent
+    /// the type's bindings (`data`); an absent `Option` field is `none()`, any other absent
     /// field an error.
     fn fields(
         &mut self,
         ctor: Symbol,
-        env: &Env,
+        data: &DataShape,
         obj: &serde_json::Map<String, serde_json::Value>,
-        ty: &Ty,
+        ty: &DeclaredType,
     ) -> Result<TermId, ValueError> {
-        let declared = declared_fields(self.kb, ctor);
+        let declared = data.fields(self.kb, ctor).map_err(|p| self.err(ty, p))?;
         if let Some(k) = obj
             .keys()
             .find(|k| !declared.iter().any(|(f, _)| self.kb.local_name_of(*f) == k.as_str()))
@@ -1238,20 +1307,13 @@ impl<'k> Decoder<'k> {
         let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         for (field, fty) in &declared {
             let name = self.kb.local_name_of(*field).to_owned();
-            let Some(fty) = fty else {
-                return Err(self.err(ty, ValueProblem::NoDataSpelling));
-            };
-            let fty = Ty {
-                view: fty.clone(),
-                env: env.clone(),
-            };
             let term = match obj.get(&name) {
-                Some(v) => self.at(PathStep::Key(name), |me| me.value(v, &fty))?,
-                None => match classify(self.kb, &fty) {
-                    Ok(Shape::Option(_)) => self.none(),
+                Some(v) => self.at(PathStep::Key(name), |me| me.value(v, fty))?,
+                None => match fty.shape(self.kb) {
+                    Ok(TypeShape::Option(_)) => self.none(),
                     Ok(_) => return Err(self.err(ty, ValueProblem::MissingField { name })),
                     Err(problem) => {
-                        return Err(self.at(PathStep::Key(name), |me| me.err(&fty, problem)))
+                        return Err(self.at(PathStep::Key(name), |me| me.err(fty, problem)))
                     }
                 },
             };
@@ -1261,11 +1323,16 @@ impl<'k> Decoder<'k> {
     }
 
     /// The single-field shorthand: the payload is the value of the constructor's one field.
-    fn shorthand(&mut self, ctor: Symbol, env: &Env, payload: &serde_json::Value, ty: &Ty) -> Result<TermId, ValueError> {
-        let declared = declared_fields(self.kb, ctor);
+    fn shorthand(
+        &mut self,
+        ctor: Symbol,
+        data: &DataShape,
+        payload: &serde_json::Value,
+        ty: &DeclaredType,
+    ) -> Result<TermId, ValueError> {
+        let declared = data.fields(self.kb, ctor).map_err(|p| self.err(ty, p))?;
         let (field, fty) = match declared.as_slice() {
-            [(field, Some(fty))] => (field, fty),
-            [(_, None)] => return Err(self.err(ty, ValueProblem::NoDataSpelling)),
+            [(field, fty)] => (field, fty),
             _ => {
                 return Err(self.err(
                     ty,
@@ -1276,11 +1343,7 @@ impl<'k> Decoder<'k> {
                 ))
             }
         };
-        let fty = Ty {
-            view: fty.clone(),
-            env: env.clone(),
-        };
-        let term = self.value(payload, &fty)?;
+        let term = self.value(payload, fty)?;
         Ok(self.construct(ctor, SmallVec::from_elem((*field, term), 1)))
     }
 
@@ -1360,7 +1423,7 @@ impl<'k> Encoder<'k> {
         name
     }
 
-    fn err(&self, ty: &Ty, problem: ValueProblem) -> ValueError {
+    fn err(&self, ty: &DeclaredType, problem: ValueProblem) -> ValueError {
         ValueError {
             path: JsonPath(self.path.clone()),
             expected: expected_text(self.kb, ty),
@@ -1375,7 +1438,7 @@ impl<'k> Encoder<'k> {
         r
     }
 
-    fn wrong(&self, ty: &Ty, v: &Value) -> ValueError {
+    fn wrong(&self, ty: &DeclaredType, v: &Value) -> ValueError {
         self.err(
             ty,
             ValueProblem::WrongShape {
@@ -1384,29 +1447,29 @@ impl<'k> Encoder<'k> {
         )
     }
 
-    fn value(&mut self, v: &Value, ty: &Ty) -> Result<serde_json::Value, ValueError> {
+    fn value(&mut self, v: &Value, ty: &DeclaredType) -> Result<serde_json::Value, ValueError> {
         use serde_json::Value as J;
         let kb = self.kb;
-        let shape = classify(kb, ty).map_err(|p| self.err(ty, p))?;
+        let shape = ty.shape(kb).map_err(|p| self.err(ty, p))?;
         if let ViewHead::Var(var) = v.head(kb) {
             return match (var, &shape) {
-                (Var::Global(vid), shape) if self.opts.variables && !matches!(shape, Shape::Option(_)) => {
+                (Var::Global(vid), shape) if self.opts.variables && !matches!(shape, TypeShape::Option(_)) => {
                     Ok(J::String(self.variable(vid)))
                 }
                 _ => Err(self.err(ty, ValueProblem::Variable)),
             };
         }
         match shape {
-            Shape::String => match v.literal_string(kb) {
+            TypeShape::String => match v.literal_string(kb) {
                 Some(s) => Ok(J::String(self.escape(s))),
                 None => Err(self.wrong(ty, v)),
             },
-            Shape::Bool => v.literal_bool(kb).map(J::Bool).ok_or_else(|| self.wrong(ty, v)),
-            Shape::Int64 => v
+            TypeShape::Bool => v.literal_bool(kb).map(J::Bool).ok_or_else(|| self.wrong(ty, v)),
+            TypeShape::Int64 => v
                 .literal_int64(kb)
                 .map(|n| J::Number(n.into()))
                 .ok_or_else(|| self.wrong(ty, v)),
-            Shape::Float => {
+            TypeShape::Float => {
                 let f = v.literal_f64(kb).ok_or_else(|| self.wrong(ty, v))?;
                 serde_json::Number::from_f64(f).map(J::Number).ok_or_else(|| {
                     self.err(
@@ -1417,15 +1480,15 @@ impl<'k> Encoder<'k> {
                     )
                 })
             }
-            Shape::BigInt => {
+            TypeShape::BigInt => {
                 let n = v.literal_big_int(kb).ok_or_else(|| self.wrong(ty, v))?;
                 match (self.opts.big_int, i64::try_from(&n)) {
                     (BigIntSpelling::NumberWhenItFits, Ok(i)) => Ok(J::Number(i.into())),
                     _ => Ok(J::String(n.to_string())),
                 }
             }
-            Shape::Type => type_text(kb, v).map(J::String).map_err(|p| self.err(ty, p)),
-            Shape::Option(inner) => match v.head(kb) {
+            TypeShape::Type => type_text(kb, v).map(J::String).map_err(|p| self.err(ty, p)),
+            TypeShape::Option(inner) => match v.head(kb) {
                 ViewHead::Functor {
                     functor,
                     pos_arity: 0,
@@ -1449,14 +1512,9 @@ impl<'k> Encoder<'k> {
                 }
                 _ => Err(self.wrong(ty, v)),
             },
-            Shape::List(elem) => self.list(v, ty, &elem),
-            Shape::Tuple(comps) => self.tuple(v, ty, &comps),
-            Shape::Data {
-                sort,
-                ctors,
-                own,
-                env,
-            } => self.data(v, ty, sort, &ctors, own, &env),
+            TypeShape::List(elem) => self.list(v, ty, &elem),
+            TypeShape::Tuple(comps) => self.tuple(v, ty, &comps),
+            TypeShape::Data(data) => self.data(v, ty, &data),
         }
     }
 
@@ -1469,7 +1527,7 @@ impl<'k> Encoder<'k> {
         }
     }
 
-    fn list(&mut self, v: &Value, ty: &Ty, elem: &Ty) -> Result<serde_json::Value, ValueError> {
+    fn list(&mut self, v: &Value, ty: &DeclaredType, elem: &DeclaredType) -> Result<serde_json::Value, ValueError> {
         let kb = self.kb;
         let mut items = Vec::new();
         let mut cell = v.clone();
@@ -1503,7 +1561,7 @@ impl<'k> Encoder<'k> {
         Ok(serde_json::Value::Array(items))
     }
 
-    fn tuple(&mut self, v: &Value, ty: &Ty, comps: &[(Symbol, Ty)]) -> Result<serde_json::Value, ValueError> {
+    fn tuple(&mut self, v: &Value, ty: &DeclaredType, comps: &[(Symbol, DeclaredType)]) -> Result<serde_json::Value, ValueError> {
         let kb = self.kb;
         match v.head(kb) {
             ViewHead::Functor { functor, .. } if Some(functor) == tuple_functor(kb) => {}
@@ -1546,15 +1604,7 @@ impl<'k> Encoder<'k> {
         Ok(serde_json::Value::Object(object))
     }
 
-    fn data(
-        &mut self,
-        v: &Value,
-        ty: &Ty,
-        sort: Symbol,
-        ctors: &[Symbol],
-        own: bool,
-        env: &Env,
-    ) -> Result<serde_json::Value, ValueError> {
+    fn data(&mut self, v: &Value, ty: &DeclaredType, data: &DataShape) -> Result<serde_json::Value, ValueError> {
         let kb = self.kb;
         let ViewHead::Functor { functor, .. } = v.head(kb) else {
             return Err(self.wrong(ty, v));
@@ -1563,26 +1613,26 @@ impl<'k> Encoder<'k> {
             // A type is not an instance of the type it names.
             return Err(self.wrong(ty, v));
         }
-        let Some(ctor) = ctors.iter().copied().find(|c| *c == functor) else {
+        let Some(ctor) = data.constructors().iter().copied().find(|c| *c == functor) else {
             return Err(self.err(
                 ty,
                 ValueProblem::UnknownConstructor {
                     name: kb.qualified_name_of(functor).to_owned(),
-                    sort: kb.qualified_name_of(sort).to_owned(),
+                    sort: kb.qualified_name_of(data.sort).to_owned(),
                 },
             ));
         };
         runtime_account(kb, ctor).map_err(|p| self.err(ty, p))?;
         self.declared_only(v, ctor, ty)?;
-        if own && self.opts.entity_tags == EntityTags::OmitAtEntityType {
-            return Ok(serde_json::Value::Object(self.fields(v, ctor, env, ty)?));
+        if data.own && self.opts.entity_tags == EntityTags::OmitAtEntityType {
+            return Ok(serde_json::Value::Object(self.fields(v, ctor, data, ty)?));
         }
         let tag = tag_of(kb, ctor, self.opts.tag_names);
         if declared_fields(kb, ctor).is_empty() {
             return Ok(serde_json::Value::String(tag));
         }
         let ctor_ty = ty.within(Value::SymbolRef(kb.type_face_of(ctor)));
-        let fields = self.at(PathStep::Key(tag.clone()), |me| me.fields(v, ctor, env, &ctor_ty))?;
+        let fields = self.at(PathStep::Key(tag.clone()), |me| me.fields(v, ctor, data, &ctor_ty))?;
         // The shorthand, where the one field's encoding is not an object: an object there would
         // read back as the constructor's own fields (021, "Entities and sorts"). A one field
         // omitted (`none()`) leaves the object of no fields, which reads back the same.
@@ -1601,7 +1651,7 @@ impl<'k> Encoder<'k> {
     /// A constructed value holds its constructor's declared fields and nothing else: an argument
     /// beyond them has no place in the object of its fields, and dropping it would write
     /// another value.
-    fn declared_only(&self, v: &Value, ctor: Symbol, ty: &Ty) -> Result<(), ValueError> {
+    fn declared_only(&self, v: &Value, ctor: Symbol, ty: &DeclaredType) -> Result<(), ValueError> {
         let kb = self.kb;
         let declared = declared_fields(kb, ctor);
         let ViewHead::Functor { pos_arity, .. } = v.head(kb) else {
@@ -1624,31 +1674,25 @@ impl<'k> Encoder<'k> {
     }
 
     /// The object of a constructed value's fields, in declared order, each at its declared type
-    /// in the sort's parameters; a `none()` `Option` field is omitted.
+    /// in the type's bindings (`data`); a `none()` `Option` field is omitted.
     fn fields(
         &mut self,
         v: &Value,
         ctor: Symbol,
-        env: &Env,
-        ty: &Ty,
+        data: &DataShape,
+        ty: &DeclaredType,
     ) -> Result<serde_json::Map<String, serde_json::Value>, ValueError> {
         let kb = self.kb;
         let mut object = serde_json::Map::new();
-        for (i, (field, fty)) in declared_fields(kb, ctor).into_iter().enumerate() {
+        let declared = data.fields(kb, ctor).map_err(|p| self.err(ty, p))?;
+        for (i, (field, fty)) in declared.into_iter().enumerate() {
             let name = kb.local_name_of(field).to_owned();
-            let Some(fty) = fty else {
-                return Err(self.err(ty, ValueProblem::NoDataSpelling));
-            };
-            let fty = Ty {
-                view: fty,
-                env: env.clone(),
-            };
             // A positional application fills the declared fields in order.
             let Some(arg) = v.named_field(kb, &name).or_else(|| v.pos_arg(kb, i)).map(|a| a.to_value()) else {
                 return Err(self.err(ty, ValueProblem::MissingField { name }));
             };
             let json = self.at(PathStep::Key(name.clone()), |me| me.value(&arg, &fty))?;
-            if json.is_null() && matches!(classify(kb, &fty), Ok(Shape::Option(_))) {
+            if json.is_null() && matches!(fty.shape(kb), Ok(TypeShape::Option(_))) {
                 continue;
             }
             object.insert(name, json);
@@ -1733,8 +1777,8 @@ struct RowType {
     /// `meta.entity` as it is written.
     entity: String,
     ctor: Symbol,
-    ty: Ty,
-    env: Env,
+    ty: DeclaredType,
+    data: DataShape,
 }
 
 /// A `meta.entity` NAME: read by THE NAME LADDER AT `<global>` (WI-912), the question a
@@ -1826,7 +1870,7 @@ fn row_type_of_text(kb: &mut KnowledgeBase, entity: &str) -> Result<RowType, Ser
 }
 
 fn row_type(kb: &KnowledgeBase, entity: String, ctor: Symbol, view: Value) -> Result<RowType, SerError> {
-    let ty = Ty::closed(view);
+    let ty = DeclaredType::closed(&view);
     let refused = |problem| SerError::EntityType {
         entity: entity.clone(),
         error: ValueError {
@@ -1835,14 +1879,14 @@ fn row_type(kb: &KnowledgeBase, entity: String, ctor: Symbol, view: Value) -> Re
             problem,
         },
     };
-    match classify(kb, &ty).map_err(refused)? {
+    match ty.shape(kb).map_err(refused)? {
         // The row's constructor is the one `meta.entity` names, even at a type that admits
         // others beside it (`sort Mix { entity Mix(…)  entity Other }`).
-        Shape::Data { ctors, env, .. } if ctors.contains(&ctor) => Ok(RowType {
+        TypeShape::Data(data) if data.constructors().contains(&ctor) => Ok(RowType {
             entity,
             ctor,
             ty,
-            env,
+            data,
         }),
         _ => Err(refused(ValueProblem::WrongShape {
             found: format!("the type {}", describe_value(kb, &ty.view)),
@@ -1946,7 +1990,7 @@ fn load_section(
             .filter_map(|(p, f)| p.strip_prefix(place.as_slice()).map(|rest| (rest.to_vec(), *f)))
             .collect();
         let decoded = match entry.as_object() {
-            Some(fields) => decoder.fields(row.ctor, &row.env, fields, &row.ty),
+            Some(fields) => decoder.fields(row.ctor, &row.data, fields, &row.ty),
             None => Err(decoder.err(
                 &row.ty,
                 ValueProblem::WrongShape {
@@ -2009,7 +2053,7 @@ fn facts_to_value(kb: &KnowledgeBase, row: &RowType, rule_ids: &[RuleId]) -> Res
                 error,
             })?;
         let fields = encoder
-            .fields(&head, row.ctor, &row.env, &row.ty)
+            .fields(&head, row.ctor, &row.data, &row.ty)
             .map_err(|error| SerError::Row {
                 index: Some(index),
                 error,
