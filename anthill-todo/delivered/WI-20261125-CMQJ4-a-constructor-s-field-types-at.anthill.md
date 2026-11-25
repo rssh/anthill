@@ -3,9 +3,9 @@
 - id: WI-20261125-CMQJ4-a-constructor-s-field-types-at
 - created: 2026-11-25T08:45:14Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-25T08:45:14Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-25T21:12:11Z
 
 - acceptance: cargo-test
 
@@ -18,4 +18,14 @@ A caller CAN rebuild it from public pieces. MEASURED 2026-11-25 on bb5528b38 thr
 WHY IT MATTERS. Rebuilt outside the crate, the rule exists twice, and nothing keeps the two copies alike: a default, a positional binding, or a binding that names a parameter of an outer place, read one way by the caller and another by the codec, gives a value the codec does not decode, or field types the codec does not use. The same reasoning that made build_list the single owner of a list's shape.
 WHAT IS ASKED. One public owner of what a declared type is to a value walker, which the codec itself reads: for a type, with the bindings of the place it is written in, its shape. That is, a primitive; an Option or a List with its element type; a tuple's components; or a sort's constructors, each with its fields' types at the application (parameters substituted, defaults applied, a parameter with neither refused by name), and a nested type keeping its place's bindings. The form is anthill's to choose: term_ser's Shape and Ty made public with a constructor's fields resolved, or a function that answers one constructor's resolved fields at a type.
 DONE WHEN. (1) A test outside the crate reads Cell[T = Int64]'s constructor with value at Int64; a parameter left to its default (sort Box[T = Int64], written Box) and a positional binding (Pair[Int64, String]) read alike; a nested application whose binding names an outer parameter (sort Holder[A] with entity Holder(c: Cell[T = A]), at Holder[A = Bool]) reads c.value at Bool; an unwritten parameter with no default is refused by name. (2) The codec reads its shapes through it, with no second copy of sort_env. (3) For each type the test reads, a value built from the reported field types decodes through the codec to itself.
+
+## Changes
+
+### 2026-11-25T21:11:57Z — feedback — claude
+
+Implemented 2026-11-25 (5929df723). The codec's own walk is the one public owner: anthill_core::persistence::term_ser::DeclaredType (a type and the bindings of the place it is written in; DeclaredType::closed(&ty) on any carrier), DeclaredType::shape(kb) -> Result<TypeShape, ValueProblem> (String, Int64, Float, BigInt, Bool, Type, Option(elem), List(elem), Tuple(components), Data(DataShape)), DataShape::sort() / constructors() / fields(kb, ctor) -> Result<Vec<(Symbol, DeclaredType)>, ValueProblem>, and DeclaredType::display_name(kb). A field comes back in the type's bindings and is read by its own shape(): a parameter bound by name or position, an unwritten one at its default, a binding naming an outer parameter read in its outer place, one with neither refused by its name (UnboundParameter). Lazy, as before: no substituted type term is built, so it reads with a & KB.
+DONE (1): tests/include/wi_cmqj4_declared_type_shape_test.rs (wi_tests), from outside the crate: Cell[T = Int64].value at Int64; Box at its default (bare face and text); Pair[Int64, String] (text, a field's type, and a type whose arguments carry positional labels); Holder[A = Bool].c.value at Bool (field, List, Option); Cell with T unwritten refused naming T. (2) the codec reads through it: classify is gone and Decoder::fields, Decoder::shorthand, Encoder::fields call DataShape::fields; no second copy of sort_env. (3) for each type, a value built from nothing but the reported field types encodes and decodes back to itself.
+MEASURED: the loader names a positional application's arguments by parameter (Pair[A = Int64, B = String]), so only a type with _1/_2 labels reaches sort_env's positional match; the row has both. Four back-outs (positional match, default branch, field bindings, outer place) measured on a binary of this file and the codec suite, each recorded in the file's header.
+/code-review xhigh: fixed, a free parameter variable named by its parameter in the refusal and display_name (a field type as written, value: T, was refused naming _), and fields() takes a constructor by its type face. Not changed: an untyped field's NoDataSpelling now precedes UnknownField / NotOneField; a field's DeclaredType is not an entry of encode_value / decode_value; typing::field_type_at, the evaluator's narrower reading for instance pairing (073), is separate (read, not measured: it answers None for a field like c: Cell[T = A]).
+Gate: workspace 12773 passed, 0 failed, 26 ignored; the file and the codec suite under ANTHILL_TEST_NODE_CARRIER=1, 18 passed; no Scala touched.
 
