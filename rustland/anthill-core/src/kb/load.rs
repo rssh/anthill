@@ -20590,6 +20590,25 @@ fn collect_written_type_vars(ty: &TypeExpr, out: &mut Vec<ParseTermId>) {
     });
 }
 
+/// Proposal 074 stage 8 (H1) — the constructor `constructor`, written at a higher-kinded slot,
+/// applied to `args`: `Option` at `[Int64]` is `Option[Int64]`, `Pair[Int64]` at `[Int64]` is
+/// `Pair[Int64, Int64]` — the arguments taking the parameters it leaves open, in order.
+fn applied_written_constructor(constructor: &TypeExpr, args: &[SortBinding]) -> TypeExpr {
+    match constructor {
+        TypeExpr::Simple(name) => TypeExpr::Parameterized {
+            name: name.clone(),
+            bindings: args.to_vec(),
+        },
+        TypeExpr::Parameterized { name, bindings } => TypeExpr::Parameterized {
+            name: name.clone(),
+            bindings: bindings.iter().chain(args).cloned().collect(),
+        },
+        other => unreachable!(
+            "`mint_dictionary_members` records a written constructor as a sort, got {other:?}"
+        ),
+    }
+}
+
 /// Every type written in `ty`, `ty` first and then its parts in the order they are written
 /// — a binding's bound, a tuple's fields, an arrow's parameters, result and effects, an
 /// effect row's labels, a guarded label (not its guard).
@@ -31268,6 +31287,9 @@ struct Loader<'a> {
     // WI-P962X: retain the instance an alias fixes as well as its member; the
     // ordinary body reader uses the unfixed entries, and clauses match the instance.
     signature_spec_members: Vec<((Symbol, Symbol), SmallVec<[(Symbol, TermId); 2]>, TermId)>,
+    // Proposal 074 stage 8 (H1): `(parameter, member)` → how `m.M[args]` reads, for the
+    // operation being loaded — its signature, its body and its clauses. Empty outside it.
+    dictionary_members: Vec<(String, String, DictionaryMember)>,
     // WI-201: the CARRIER BLOCK whose operations are being loaded — a sort body, or a
     // `namespace <Sort>` entry — with what its `provides` clauses bind each spec member
     // to, pre-scanned BEFORE any operation in it is loaded (so it is order-independent).
@@ -31397,6 +31419,20 @@ struct CarrierBlock {
     carrier: Option<Symbol>,
     /// `(spec base sym, member sym)` → what the block's provisions bind that member to.
     bindings: HashMap<(Symbol, Symbol), BlockMemberBinding>,
+}
+
+/// Proposal 074 stage 8 (§6, H1) — how `m.M[args]` reads in the operation being loaded, `m` a
+/// parameter of it typed at a spec whose member `M` is higher-kinded
+/// ([`Loader::mint_dictionary_members`]).
+#[derive(Clone, Debug)]
+enum DictionaryMember {
+    /// `m`'s type leaves `M` unwritten: a parameter of the operation minted for it, a
+    /// constructor slot over `M`'s parameters, written into `m`'s type as `Spec[M = P]` —
+    /// `lift(m: Mon, x: Int64) -> m.M[Int64]` is `lift[P[T]](m: Mon[M = P], x: Int64) ->
+    /// P[Int64]`. `var` is its variable.
+    Carrier { var: TermId, carrier: Symbol },
+    /// `m`'s type writes `M` (`m: Mon[M = Option]`): the constructor written there, applied.
+    Written(TypeExpr),
 }
 
 /// What one carrier block's `provides` clauses bind one spec member to
@@ -31637,6 +31673,7 @@ impl<'a> Loader<'a> {
             binder_syms: HashMap::new(),
             bare_spec_sugar: None,
             signature_spec_members: Vec::new(),
+            dictionary_members: Vec::new(),
             carrier_block: CarrierBlock::default(),
             requires_lines: Vec::new(),
             prelowered_provision_specs: HashMap::new(),
@@ -43782,6 +43819,228 @@ impl<'a> Loader<'a> {
         var
     }
 
+    /// Proposal 074 stage 8 (§6, H1) — the `m.M[args]` the signature of the operation `functor`
+    /// writes, `m` a parameter of it typed at a spec (a sort with no constructors) whose
+    /// member `M` is higher-kinded: where `m`'s type writes `M`, the constructor written there;
+    /// where it leaves `M` unwritten, a parameter `P` of the operation, a constructor slot over
+    /// `M`'s parameters as an operation's own `F[T]` is (WI-452), its variable returned for the
+    /// operation's type parameters. `m`'s type then takes `M = P`
+    /// ([`Self::with_dictionary_member_carriers`]), so a call fixes `P` by the dictionary it
+    /// hands, and the body's call of the spec at `P` reads that dictionary (stage 9). `P` is
+    /// named `m.M`, which no name a program writes is. MEASURED before: `lift(m: Mon, x:
+    /// Int64) -> m.M[Int64] = Mon.pure(x)` was refused, "unresolved type name 'm.M'".
+    fn mint_dictionary_members(
+        &mut self,
+        o: &Operation,
+        functor: Symbol,
+        op_scope: crate::intern::ScopeId,
+        op_qualified: &str,
+    ) -> Vec<TermId> {
+        let mut applied: Vec<(String, String)> = Vec::new();
+        let mut note = |t: &TypeExpr| {
+            if let TypeExpr::Parameterized { name, .. } = t {
+                if let [head, member] = name.segments.as_slice() {
+                    let pair = (
+                        self.parsed.symbols.local_name(*head).to_owned(),
+                        self.parsed.symbols.local_name(*member).to_owned(),
+                    );
+                    if !applied.contains(&pair) {
+                        applied.push(pair);
+                    }
+                }
+            }
+        };
+        for_each_type_expr(&o.return_type, &mut note);
+        for p in &o.params {
+            for_each_type_expr(&p.ty, &mut note);
+        }
+        for e in &o.effects {
+            for_each_type_expr(&e.type_expr, &mut note);
+        }
+        let mut vars = Vec::new();
+        for (head, member) in applied {
+            let Some(param) = o.params.iter().find(|p| self.parsed.symbols.local_name(p.name) == head)
+            else {
+                continue;
+            };
+            let (spec_name, written) = match &param.ty {
+                TypeExpr::Simple(n) => (n, &[][..]),
+                TypeExpr::Parameterized { name, bindings } => (name, bindings.as_slice()),
+                _ => continue,
+            };
+            let spec_path = join_segments(&self.parsed.symbols, &spec_name.segments);
+            let spec = match self
+                .kb
+                .symbols
+                .resolve_in_scope(&spec_path, op_scope)
+                .or_else(|| self.resolve_dotted(&spec_path, DottedVisibility::VisibleOnly))
+            {
+                ResolveResult::Found(s) => s,
+                _ => continue,
+            };
+            if !self.kb.has_kind(spec, SymbolKind::Sort) || self.kb.sort_has_constructors(spec) {
+                continue;
+            }
+            let Some(member_param) = self.kb.type_param_sym_of(spec, &member) else {
+                continue;
+            };
+            let slots: Vec<Symbol> = self.kb.type_param_syms_of(member_param).to_vec();
+            if slots.is_empty() {
+                continue;
+            }
+            // Written or not, as the type's own lowering keys its arguments (`fit_type_args`): a
+            // positional after a named one binds the next parameter it leaves (found by
+            // /code-review: `Mon2[K = Int64, Option]` writes `M`).
+            let declared = self.kb.type_params_of_sort(spec);
+            let keys: Vec<Option<Symbol>> = written
+                .iter()
+                .map(|b| b.param.as_ref().map(|n| self.reintern(n.last())))
+                .collect();
+            let fit = self.kb.fit_type_args(&declared, &[], &keys);
+            let at = declared.iter().position(|q| *q == member);
+            let bound = at
+                .and_then(|k| fit.slots.iter().position(|slot| *slot == Some(k)))
+                .map(|i| &written[i]);
+            if let Some(b) = bound {
+                // A constructor as written, a sort with or without its bracket; any other
+                // binding is no constructor, refused where the slot is checked, and `m.M`
+                // stays unread.
+                if !matches!(b.bound, TypeExpr::Simple(_) | TypeExpr::Parameterized { .. }) {
+                    continue;
+                }
+                // Read again at each `m.M[…]`, so a variable of the constructor's own occurrence
+                // (`Pair[?]`) would be another at each (found by /code-review).
+                let mut fresh = false;
+                for_each_type_expr(&b.bound, &mut |t| {
+                    fresh |= matches!(t, TypeExpr::Variable { fresh: true, .. });
+                });
+                if fresh {
+                    self.errors.push(LoadError::Other {
+                        message: format!(
+                            "operation '{op_qualified}': `{head}.{member}[…]` reads the constructor \
+                             `{head}`'s type writes at `{member}`, which holds a variable of its own \
+                             occurrence (`?`), another at every reading: name it (`?x`)"
+                        ),
+                    });
+                }
+                self.dictionary_members
+                    .push((head, member, DictionaryMember::Written(b.bound.clone())));
+                continue;
+            }
+            let short = format!("{head}.{member}");
+            let carrier = self.kb.symbols.define(
+                &short,
+                &format!("{op_qualified}.{short}"),
+                SymbolKind::Sort,
+                op_scope,
+            );
+            self.kb.symbols.add_type_param(op_scope, &short, carrier);
+            let var_sym = self.kb.intern(&short);
+            let vid = self.kb.fresh_var(var_sym);
+            let var = self.kb.alloc(Term::Var(Var::Global(vid)));
+            let carrier_scope = self.kb.symbols.scope_id(carrier);
+            for slot in slots {
+                let slot_short = super::typing::short_name_of(self.kb.local_name_of(slot)).to_owned();
+                let slot_sym = self.kb.symbols.define(
+                    &slot_short,
+                    &format!("{op_qualified}.{short}.{slot_short}"),
+                    SymbolKind::Sort,
+                    carrier_scope,
+                );
+                self.kb.symbols.add_type_param(carrier_scope, &slot_short, slot_sym);
+                let slot_term = self.kb.alloc(Term::Fn {
+                    functor: slot_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                });
+                self.emit_type_param_backing_var(slot_term, functor);
+                let backing = super::typing::resolve_sort_alias(self.kb, slot_sym)
+                    .expect("`emit_type_param_backing_var` asserts the slot's alias");
+                let Term::Var(Var::Global(v)) = *self.kb.get_term(backing) else {
+                    unreachable!("a type parameter's backing alias is its variable")
+                };
+                self.kb.record_type_param_var(slot_sym, v);
+            }
+            let carrier_term = self.kb.alloc(Term::Fn {
+                functor: carrier,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            self.assert_sort_alias(carrier_term, crate::eval::value::Value::term(var), functor);
+            self.kb.record_type_param_var(carrier, vid);
+            self.dictionary_members
+                .push((head, member, DictionaryMember::Carrier { var, carrier }));
+            vars.push(var);
+        }
+        vars
+    }
+
+    /// How `name` reads as `m.M[args]` in the operation being loaded
+    /// ([`Self::mint_dictionary_members`]); `None` for any other name, and where `m` is an
+    /// arrow's binder or a local, another value than the parameter.
+    fn dictionary_member_reading(&mut self, name: &Name) -> Option<DictionaryMember> {
+        let [head, member] = name.segments.as_slice() else {
+            return None;
+        };
+        let head = self.parsed.symbols.local_name(*head).to_owned();
+        let member = self.parsed.symbols.local_name(*member).to_owned();
+        if self.dictionary_members.is_empty()
+            || self.arrow_binder(&head).is_some()
+            || self.lookup_local_name(&head).is_some()
+        {
+            return None;
+        }
+        self.dictionary_members
+            .iter()
+            .find(|(p, m, _)| *p == head && *m == member)
+            .map(|(_, _, reading)| reading.clone())
+    }
+
+    /// The parameter `param`'s lowered type `ty` with the members minted for it written in
+    /// (`Mon` ⟹ `Mon[M = P]`, [`Self::mint_dictionary_members`]); `ty` itself where none was.
+    fn with_dictionary_member_carriers(
+        &mut self,
+        param: &str,
+        ty: crate::eval::value::Value,
+    ) -> crate::eval::value::Value {
+        let added: Vec<(String, TermId)> = self
+            .dictionary_members
+            .iter()
+            .filter_map(|(p, m, reading)| match reading {
+                DictionaryMember::Carrier { var, .. } if p == param => Some((m.clone(), *var)),
+                _ => None,
+            })
+            .collect();
+        if added.is_empty() {
+            return ty;
+        }
+        let (base, mut bindings) = match super::typing::extract_type(self.kb, &ty) {
+            super::typing::TypeExtractor::SortRef(s) => (s, Vec::new()),
+            super::typing::TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+            other => unreachable!(
+                "`mint_dictionary_members` minted a member only for a parameter typed at a \
+                 sort, got {other:?}"
+            ),
+        };
+        for (member, var) in added {
+            assert!(
+                !bindings
+                    .iter()
+                    .any(|(k, _)| super::typing::short_name_of(self.kb.local_name_of(*k)) == member),
+                "`mint_dictionary_members` minted `{param}.{member}` for a type that writes `{member}`"
+            );
+            bindings.push((self.kb.intern(&member), crate::eval::value::Value::term(var)));
+        }
+        let base_ref = self.kb.make_sort_ref(base);
+        super::typing::parameterized_value(
+            self.kb,
+            base_ref,
+            &bindings,
+            crate::kb::node_occurrence::empty_span(),
+            None,
+        )
+    }
+
     /// Proposal 074 stage 8 (§6, H3) — `Spec.Member[args]` written in an operation signature,
     /// where `Member` is a HIGHER-KINDED parameter of the constructor-less sort `Spec`
     /// (`Monad.M[Int64]`): the parameter the member sugar mints for `Spec.Member`, as a
@@ -44737,9 +44996,25 @@ impl<'a> Loader<'a> {
                 self.bare_alias_read(child, site, span, owner)
             }
             TypeExpr::Parameterized { name, bindings } => {
-                let written_sym = self.remap_name(name);
-                if let Some(child) = self.applied_structural_alias(written_sym, bindings, span, owner) {
-                    return child;
+                // Proposal 074 stage 8 (H1): `m.M[args]`, `M` a higher-kinded member of the spec
+                // the operation's parameter `m` is typed at — the constructor `m`'s type writes,
+                // applied, or the operation's parameter minted for it.
+                let dictionary_carrier = match self.dictionary_member_reading(name) {
+                    Some(DictionaryMember::Written(constructor)) => {
+                        let applied = applied_written_constructor(&constructor, bindings);
+                        return self.type_expr_to_child(&applied, span, owner);
+                    }
+                    Some(DictionaryMember::Carrier { carrier, .. }) => Some(carrier),
+                    None => None,
+                };
+                let written_sym = match dictionary_carrier {
+                    Some(carrier) => carrier,
+                    None => self.remap_name(name),
+                };
+                if dictionary_carrier.is_none() {
+                    if let Some(child) = self.applied_structural_alias(written_sym, bindings, span, owner) {
+                        return child;
+                    }
                 }
                 // WI-20260924-SNJPR — an ALIAS applied to further arguments is the sort
                 // it stands for, applied to the bindings the alias fixes and then the
@@ -44779,11 +45054,14 @@ impl<'a> Loader<'a> {
                 // `Member` a higher-kinded parameter of the spec — the member sugar's own
                 // parameter, a constructor slot, or the constructor a carrier block narrows
                 // it to, applied here.
-                let (sort_sym, mut fixed, through_alias) =
-                    match self.applied_higher_kinded_member(&written_name, span) {
-                        Some((base, written)) => (base, written, false),
-                        None => (sort_sym, fixed, through_alias),
-                    };
+                let applied_member = match dictionary_carrier {
+                    Some(carrier) => Some((carrier, SmallVec::new())),
+                    None => self.applied_higher_kinded_member(&written_name, span),
+                };
+                let (sort_sym, mut fixed, through_alias) = match applied_member {
+                    Some((base, written)) => (base, written, false),
+                    None => (sort_sym, fixed, through_alias),
+                };
                 // WI-709: the arguments must FIT the parameters the head's arguments bind
                 // — an undeclared name or an over-applied positional is load-blocking,
                 // decided by the same rule the VALUE position (WI-707) decides it by, so
@@ -50197,6 +50475,11 @@ impl<'a> Loader<'a> {
 
         let op_qualified = self.kb.qualified_name_of(functor).to_owned();
 
+        // Proposal 074 stage 8 (H1): each `m.M[args]` the signature writes, read before any of
+        // it is lowered — the result is, before the parameters, and `m`'s type takes `M = P`.
+        let prev_dictionary_members = std::mem::take(&mut self.dictionary_members);
+        let dictionary_member_vars = self.mint_dictionary_members(o, functor, op_scope, &op_qualified);
+
         // `result` as a parameter name collides with the reserved
         // return-value name; one diagnostic per operation suffices.
         if o.params
@@ -50407,6 +50690,7 @@ impl<'a> Loader<'a> {
                 self.arrow_callback =
                     matches!(p.ty, TypeExpr::Arrow { .. }).then(|| (functor, param_name_str.clone()));
                 let type_value = self.annotation_type_to_value(&p.ty);
+                let type_value = self.with_dictionary_member_carriers(&param_name_str, type_value);
                 self.arrow_callback = None;
                 // WI-489: record this param's static type so a value-in-type field
                 // projection off it (`Modify[c.backend]`) validates its field path in
@@ -50500,6 +50784,8 @@ impl<'a> Loader<'a> {
                 None => clauses.push((*spec, fixed, vec![(*member, *var)])),
             }
         }
+        // A dictionary parameter's applied member's (H1), as the sugar's are.
+        type_param_var_terms.extend(dictionary_member_vars);
         // The written inline variables follow the members (see `inline_param_terms`).
         type_param_var_terms.extend(inline_param_terms);
         for (spec, fixed, members) in clauses {
@@ -50638,6 +50924,7 @@ impl<'a> Loader<'a> {
         // WI-489: drop this signature's place→type map (restoring any enclosing one).
         self.signature_place_types = prev_place_types;
         self.signature_spec_members = prev_signature_members;
+        self.dictionary_members = prev_dictionary_members;
 
         // Build OperationInfo term with named args matching the entity definition
         let op_info_sym = self.kb.resolve_symbol("anthill.reflect.OperationInfo");

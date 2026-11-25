@@ -3050,6 +3050,18 @@ pub(super) fn read_requirement_by_name(
             .collect();
         for (n, a) in unnamed.iter().enumerate() {
             for b in &unnamed[n + 1..] {
+                // The two entries one dictionary PARAMETER lends — at its members and at the
+                // types its type writes (`d: Additive[T = U]` is `Additive[T = d.T]` and
+                // `Additive[T = U]`, proposal 074 stage 9) — are one dictionary, the one it is
+                // handed: no tie (proposal 074 stage 8, G2). MEASURED before: `zero[U](d:
+                // Additive[T = U]) -> U = let z = Additive.zero() …` was refused, "two
+                // requirements … both cover, `Additive[T = d.T]` and `Additive[T = U]`".
+                if matches!(
+                    (&a.supply, &b.supply),
+                    (SupplySource::Instance { param: p }, SupplySource::Instance { param: q }) if p == q
+                ) {
+                    continue;
+                }
                 let apart = requirement_bindings_apart(kb, spec_sort, &a.spec, &b.spec);
                 if apart.is_empty() {
                     continue;

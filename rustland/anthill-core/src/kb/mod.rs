@@ -1898,6 +1898,12 @@ pub struct KnowledgeBase {
     /// the copy an operation used as a value is instantiated at. Each carries the name
     /// (`VarId::name`), so one write here answers for all of them.
     minted_params: HashMap<Symbol, MintedParam>,
+    /// Proposal 074 stage 8 — the HIGHER-KINDED parameter each body's skolem stands for
+    /// ([`Self::record_rigid_carrier`]): a constructor application is keyed by its parameter
+    /// and reaches the skolem through the parameter's variable, so a reader that meets the
+    /// skolem (`M := ?F` in `F`'s own body) reads it back as that parameter, over its own
+    /// parameters (`typing::constructor_of`).
+    rigid_carriers: HashMap<VarId, Symbol>,
 
     /// The one name per slot an unwritten slot's unknown is opened under
     /// ([`Self::unwritten_slot_name`]), keyed by the sort's parameter the slot is. A body
@@ -3341,6 +3347,7 @@ impl KnowledgeBase {
             type_param_canonical_var: HashMap::new(),
             type_param_canonical_vids: HashMap::new(),
             minted_params: HashMap::new(),
+            rigid_carriers: HashMap::new(),
             unwritten_slot_names: HashMap::new(),
             pattern_slot_name: None,
             run_time_pattern_slot: None,
@@ -4111,6 +4118,17 @@ impl KnowledgeBase {
     /// variable's name.
     pub fn minted_param(&self, name: Symbol) -> Option<MintedParam> {
         self.minted_params.get(&name).copied()
+    }
+
+    /// Proposal 074 stage 8 — `rigid` is a body's skolem of the higher-kinded parameter
+    /// `param` ([`Self::rigid_carrier`]).
+    pub(crate) fn record_rigid_carrier(&mut self, rigid: VarId, param: Symbol) {
+        self.rigid_carriers.insert(rigid, param);
+    }
+
+    /// The higher-kinded parameter the skolem `rigid` stands for, where it stands for one.
+    pub(crate) fn rigid_carrier(&self, rigid: VarId) -> Option<Symbol> {
+        self.rigid_carriers.get(&rigid).copied()
     }
 
     /// WI-20261006-XQGEW — the head `name` was written with, where `name` is the name of

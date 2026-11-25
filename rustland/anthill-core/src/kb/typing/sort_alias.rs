@@ -355,12 +355,20 @@ pub(crate) struct Constructor {
 /// Int64] = Monad.pure(x)` was refused, "expected F[T = Int64], got M[T = Int64]".
 pub(crate) fn constructor_of(kb: &mut KnowledgeBase, v: &Value) -> Option<Constructor> {
     // A higher-kinded parameter's own variable, where a binding left a carrier at it (`M :=
-    // ?F` under `requires Monad[M = F]`): that parameter, over its own parameters.
-    if let Some(param) = kb
-        .value_global_var(v)
-        .and_then(|vid| kb.type_param_of_canonical_var(vid))
-        .filter(|p| is_higher_kinded_param(kb, *p))
-    {
+    // ?F` under `requires Monad[M = F]`), or the skolem a body reads it at: that parameter,
+    // over its own parameters.
+    let skolem = match v {
+        Value::Term { id, .. } => match kb.get_term(*id) {
+            Term::Var(Var::Rigid(rv)) => kb.rigid_carrier(*rv),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(param) = skolem.or_else(|| {
+        kb.value_global_var(v)
+            .and_then(|vid| kb.type_param_of_canonical_var(vid))
+            .filter(|p| is_higher_kinded_param(kb, *p))
+    }) {
         let open = kb.type_param_syms_of(param).to_vec();
         return Some(Constructor {
             base: param,

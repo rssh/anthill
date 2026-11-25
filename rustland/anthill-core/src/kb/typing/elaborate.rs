@@ -1572,6 +1572,15 @@ pub(super) fn rigidify_op_type_params(
         if let Var::Global(vid) = var {
             let vid = *vid;
             let rigid_term = fresh_rigid_named(kb, *param_sym);
+            // Proposal 074 stage 8: a higher-kinded parameter's skolem is read back as that
+            // parameter wherever a constructor is asked of it ([`constructor_of`]).
+            if let (Some(param), Term::Var(Var::Rigid(rv))) =
+                (kb.type_param_of_canonical_var(vid), kb.get_term(rigid_term).clone())
+            {
+                if is_higher_kinded_param(kb, param) {
+                    kb.record_rigid_carrier(rv, param);
+                }
+            }
             rigidify.bind_term(kb, vid, rigid_term);
         }
     }

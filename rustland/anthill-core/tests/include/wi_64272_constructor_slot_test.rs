@@ -64,7 +64,7 @@ const BOX: &str = "
 
 fn program(ns: &str, decls: &str, body: &str) -> String {
     format!(
-        "namespace p074s8.{ns}\n  import anthill.prelude.{{Int64, String, Option, List, Pair}}\n  import anthill.prelude.Option.{{some, none}}\n{MON}{decls}{body}\nend\n"
+        "namespace p074s8.{ns}\n  import anthill.prelude.{{Int64, String, Option, List, Pair, Additive}}\n  import anthill.prelude.Option.{{some, none}}\n  import anthill.realization.runtime.Dictionary\n{MON}{decls}{body}\nend\n"
     )
 }
 
@@ -688,6 +688,206 @@ fn an_operations_higher_kinded_parameter_takes_types_and_no_default() {
     );
 }
 
+// ── Part 4: a dictionary of a spec over a constructor, and `m.M[Int64]` off it ─────────────
+
+/// H1: a parameter typed at a spec over a constructor is its dictionary, and its member
+/// applied, `m.M[Int64]`, is the constructor the dictionary is at — `lift(m: Mon, x: Int64) ->
+/// m.M[Int64]` is `lift[P[T]](m: Mon[M = P], x: Int64) -> P[Int64]`, the call fixing `P` by
+/// the dictionary it hands. In the body too, in another parameter's type, and with the result
+/// unannotated. MEASURED before part 4: refused, "unresolved type name 'm.M'", and each
+/// `Dictionary.instance[Mon[M = Option]]()` "leaves `M` with a slot open".
+#[test]
+fn h1_a_dictionary_parameters_applied_member_is_its_constructor() {
+    let body = "  operation lift(m: Mon, x: Int64) -> m.M[Int64] = Mon.pure(x)
+  operation inBody(m: Mon, x: Int64) -> m.M[Int64] =
+    let y: m.M[Int64] = Mon.pure(x)
+    y
+  operation same(m: Mon, v: m.M[Int64]) -> m.M[Int64] = v
+  operation viaOption() -> Option[Int64] = lift(Dictionary.instance[Mon[M = Option]](), 7)
+  operation viaList() -> List[Int64] = lift(Dictionary.instance[Mon[M = List]](), 7)
+  operation viaBody() -> List[Int64] = inBody(Dictionary.instance[Mon[M = List]](), 7)
+  operation viaParam() -> Option[Int64] = same(Dictionary.instance[Mon[M = Option]](), some(3))
+  operation viaLet() -> List[Int64] =
+    let y = lift(Dictionary.instance[Mon[M = List]](), 7)
+    y";
+    answers(
+        "h1",
+        "",
+        body,
+        &[
+            ("viaOption", "some(value: 7)"),
+            ("viaList", "[7]"),
+            ("viaBody", "[7]"),
+            ("viaParam", "some(value: 3)"),
+            ("viaLet", "[7]"),
+        ],
+    );
+    // The dictionary decides: at `List`'s, the result is no `Option`.
+    let text = refusal(
+        "h1wrong",
+        "",
+        "  operation lift(m: Mon, x: Int64) -> m.M[Int64] = Mon.pure(x)
+  operation go() -> Option[Int64] = lift(Dictionary.instance[Mon[M = List]](), 7)",
+    );
+    assert!(
+        text.contains("expected Option[T = Int64], got List[T = Int64]"),
+        "{text}"
+    );
+}
+
+/// H1 where the parameter's type writes the member: `m.M[Int64]` is the constructor written
+/// there, applied — `Option[Int64]`, and `Pair[Int64, Int64]` for `Pair[Int64]`. MEASURED
+/// before part 4: refused, "unresolved type name 'm.M'".
+#[test]
+fn h1_a_member_the_parameters_type_writes_is_that_constructor() {
+    let decls = "
+  sort PairMon
+    provides Mon[M = Pair[Int64]]
+    operation pure[X](a: X) -> Pair[Int64, X] = Pair.pair(fst: 0, snd: a)
+  end
+";
+    let body = "  operation written(m: Mon[M = Option], x: Int64) -> m.M[Int64] = Mon.pure(x)
+  operation writtenPair(m: Mon[M = Pair[Int64]], x: Int64) -> m.M[Int64] = Mon.pure(x)
+  operation viaOption() -> Option[Int64] = written(Dictionary.instance[Mon[M = Option]](), 7)
+  operation viaPair() -> Pair[Int64, Int64] =
+    writtenPair(Dictionary.instance[Mon[M = Pair[Int64]]](), 7)";
+    answers(
+        "h1written",
+        decls,
+        body,
+        &[
+            ("viaOption", "some(value: 7)"),
+            ("viaPair", "pair(fst: 0, snd: 7)"),
+        ],
+    );
+}
+
+/// A dictionary or a constructor passed on: the callee's constructor is the caller's own, its
+/// skolem in the caller's body — through the dictionary (`lift(d, x)` in `outer(d: Mon, …)`),
+/// through the expected type (`lift2(x)` under `requires Mon[M = G]`, an operation's or its
+/// sort's), and at a dictionary written there (`Dictionary.instance[Mon[M = F]]()`). Found by
+/// /code-review of part 4; MEASURED before, each refused: "expected d.M[T = Int64], got m.M[T =
+/// Int64]", "expected a type for 'F', got unconstrained", and "`Mon[M = ?F]` binds `M` to `?F`,
+/// which leaves none open" (the plain `Dictionary.instance[Additive[T = U]]()` answering).
+#[test]
+fn a_constructor_passed_on_is_the_callers_own() {
+    let decls = "
+  operation lift(m: Mon, x: Int64) -> m.M[Int64] = Mon.pure(x)
+  operation lift2[F[T]](x: Int64) -> F[Int64] requires Mon[M = F] = Mon.pure(x)
+  operation take(m: Mon) -> Int64 = 1
+  sort UseM[G[T]]
+    requires Mon[M = G]
+    operation viaLift(x: Int64) -> G[Int64] = lift2(x)
+  end
+";
+    let body = "  operation outer(d: Mon, x: Int64) -> d.M[Int64] = lift(d, x)
+  operation outer2[G[T]](x: Int64) -> G[Int64] requires Mon[M = G] = lift2(x)
+  operation hk[F[T]](x: Int64) -> Int64 requires Mon[M = F] = take(Dictionary.instance[Mon[M = F]]())
+  operation viaDict() -> Option[Int64] = outer(Dictionary.instance[Mon[M = Option]](), 7)
+  operation viaOp() -> List[Int64] = outer2[List](7)
+  operation viaSort() -> Option[Int64] = UseM[G = Option].viaLift(7)
+  operation viaInstance() -> Int64 = hk[Option](7)";
+    answers(
+        "passedOn",
+        decls,
+        body,
+        &[
+            ("viaDict", "some(value: 7)"),
+            ("viaOp", "[7]"),
+            ("viaSort", "some(value: 7)"),
+            ("viaInstance", "1"),
+        ],
+    );
+}
+
+/// The member a parameter's type writes is found as the type's own lowering keys its
+/// arguments: a positional after a named one binds the next parameter it leaves —
+/// `Mon2[K = Int64, Option]` writes `M`. And a written constructor holding a variable of its own
+/// occurrence (`Pair[?]`) is refused, being read again at each `m.M[…]`. Found by /code-review
+/// of part 4; MEASURED before: the first refused, "expected m.M[T = Int64], got Option[T =
+/// Int64]" (`M` taken as unwritten, and bound twice).
+#[test]
+fn the_member_a_parameters_type_writes_is_found_as_its_lowering_keys_it() {
+    let decls = "
+  sort Mon2[K, M[T]]
+    operation pure2[A](k: K, a: A) -> M[A]
+  end
+  sort OptionMon2
+    provides Mon2[K = Int64, M = Option]
+    operation pure2[A](k: Int64, a: A) -> Option[A] = some(a)
+  end
+";
+    answers(
+        "mixed",
+        decls,
+        "  operation lift(m: Mon2[K = Int64, Option], x: Int64) -> m.M[Int64] = Mon2.pure2(0, x)
+  operation go() -> Option[Int64] = lift(Dictionary.instance[Mon2[K = Int64, M = Option]](), 7)",
+        &[("go", "some(value: 7)")],
+    );
+    let text = refusal(
+        "fresh",
+        "",
+        "  operation lift(m: Mon[M = Pair[?]], x: Int64) -> m.M[Int64] = Mon.pure(x)",
+    );
+    assert!(
+        text.contains(
+            "which holds a variable of its own occurrence (`?`), another at every reading"
+        ),
+        "{text}"
+    );
+}
+
+/// A dictionary of a spec over a constructor is written at the constructor, which leaves the
+/// slot's count of parameters open (H4's rule): `Dictionary.instance[Mon[M = Option]]()`, and
+/// refused where the constructor leaves another count — `Pair` two, `Option[Int64]` none.
+/// MEASURED before part 4: refused, "`Mon[M = Option]` leaves `M` with a slot open".
+#[test]
+fn a_dictionary_at_a_constructor_slot_is_written_at_the_constructor() {
+    answers(
+        "dict",
+        "",
+        "  operation take(m: Mon) -> Int64 = 1
+  operation go() -> Int64 = take(Dictionary.instance[Mon[M = Option]]())",
+        &[("go", "1")],
+    );
+    for (ns, at, left) in [
+        ("dictpair", "Pair", "which leaves `A`, `B` open"),
+        ("dictnone", "Option[Int64]", "which leaves none open"),
+    ] {
+        let text = refusal(
+            ns,
+            "",
+            &format!(
+                "  operation take(m: Mon) -> Int64 = 1
+  operation go() -> Int64 = take(Dictionary.instance[Mon[M = {at}]]())"
+            ),
+        );
+        assert!(
+            text.contains("expected a constructor of 1 parameter at `M` (`M[T]`)")
+                && text.contains(left),
+            "{text}"
+        );
+    }
+}
+
+/// The two entries one dictionary parameter lends — at its members and at the types its type
+/// writes (stage 9) — are one dictionary, so a call nothing else fixes reads it: under `d:
+/// Additive[T = U]`, `Additive.zero()` is `d`'s. Found writing part 4, with G2's twin: MEASURED
+/// before, refused, "two requirements of the enclosing declaration with no name both cover,
+/// `Additive[T = d.T]` and `Additive[T = U]`".
+#[test]
+fn a_dictionary_parameters_two_entries_are_one_dictionary() {
+    answers(
+        "oneDict",
+        "",
+        "  operation zero[U](d: Additive[T = U]) -> U =
+    let z = Additive.zero()
+    z
+  operation go() -> Int64 = zero(Dictionary.instance[Additive[T = Int64]]())",
+        &[("go", "0")],
+    );
+}
+
 // ── Back-out ledger ───────────────────────────────────────────────────────────────────────
 //
 // MEASURED 2026-11-24: each piece backed out by a temporary switch, every row of anthill-core
@@ -799,3 +999,42 @@ fn an_operations_higher_kinded_parameter_takes_types_and_no_default() {
 // The domain the member's carrier is backed under — the operation, as an operation's own `F[T]`
 // is, where it was the spec's (the sealed `anthill.prelude.Monad` for a program) — changes no
 // row's verdict: nothing a row drives reads that domain.
+//
+// PART 4, MEASURED 2026-11-25 the same way (control 11668 passed, 0 failed):
+//
+// p4a, a dictionary at a constructor slot (`dictionary_instance_call`): 3 rows,
+// `a_dictionary_at_a_constructor_slot_is_written_at_the_constructor`,
+// `h1_a_dictionary_parameters_applied_member_is_its_constructor`,
+// `h1_a_member_the_parameters_type_writes_is_that_constructor`.
+//
+// p4b, `m.M[args]` read off the operation's parameter (`mint_dictionary_members`): 2 rows, the
+// two `h1_` rows.
+//
+// p4c, the parameter's type written `Mon[M = P]` (`with_dictionary_member_carriers`): 1 row,
+// `h1_a_dictionary_parameters_applied_member_is_its_constructor`.
+//
+// p4d, one parameter's two entries one dictionary (`read_requirement_by_name`): 1 row,
+// `a_dictionary_parameters_two_entries_are_one_dictionary`.
+//
+// p4e, the member the parameter's type writes read as that constructor: 1 row,
+// `h1_a_member_the_parameters_type_writes_is_that_constructor`.
+//
+// The fixes of part 4's /code-review, MEASURED the same way (control 11670 passed, 0 failed):
+//
+// p4f, a call handed the enclosing operation's constructor skolems (`check_apply_call`): 1 row,
+// `a_constructor_passed_on_is_the_callers_own`. p4g, a skolem read back as its parameter
+// (`constructor_of`, `KnowledgeBase::rigid_carrier`), backed out alone: 7 rows — that row,
+// `h1_a_dictionary_parameters_applied_member_is_its_constructor`, and five of parts 2 and 3
+// (`a_requirement_at_a_constructor_parameter_is_read_through_it`, both `h2_` rows, and the two
+// `h3_` rows other than the carrier block's), since the skolems handed with no reader of them
+// leave each body's constructor unread. p4fg, the two backed out together, the code before the fix: 1
+// row, `a_constructor_passed_on_is_the_callers_own`.
+//
+// p4h, the member a parameter's type writes found by `fit_type_args`: 1 row,
+// `the_member_a_parameters_type_writes_is_found_as_its_lowering_keys_it`. p4j, a written
+// constructor holding a fresh variable refused: the same row.
+//
+// The review also found the pre-scan reading an arrow's binder `m` in `f: (m: Mon) ->
+// m.M[Int64]` as the operation's `m`; a walker skipping an arrow's binders was written and
+// removed, no loading program being able to tell — an arrow binder's applied member is
+// unread (refused, "unresolved type name 'm.M'") either way.

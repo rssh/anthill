@@ -1547,8 +1547,52 @@ pub(super) fn dictionary_instance_call(
             .iter()
             .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)
             .map(|(_, ty)| ty.clone());
+        // Proposal 074 stage 8 (H1): at a HIGHER-KINDED parameter the binding is a constructor,
+        // whose open parameters are the slot's (`Mon[M = Option]`): written in full where it is
+        // a constructor of the slot's count with every binding it writes determined. MEASURED
+        // before: `Dictionary.instance[Mon[M = Option]]()` refused, "leaves `M` with a slot open".
+        let slots: Vec<String> = kb
+            .type_param_sym_of(spec, &short)
+            .map(|p| kb.type_param_syms_of(p).to_vec())
+            .unwrap_or_default()
+            .iter()
+            .map(|q| short_name_of(kb.local_name_of(*q)).to_string())
+            .collect();
         let open = match &bound {
             None => Some("unwritten"),
+            Some(ty) if !slots.is_empty() => match constructor_of(kb, ty) {
+                Some(ctor) if ctor.open.len() == slots.len() => ctor
+                    .written
+                    .iter()
+                    .any(|(_, w)| {
+                        let expanded = expand_sorts_deep(kb, w, SlotVar::Flexible);
+                        !type_is_determined(kb, &expanded)
+                    })
+                    .then_some("with a slot open"),
+                ctor => {
+                    let left = match ctor.map(|c| c.open) {
+                        Some(open) if !open.is_empty() => open
+                            .iter()
+                            .map(|o| format!("`{}`", short_name_of(kb.local_name_of(*o))))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        _ => "none".to_string(),
+                    };
+                    return Err(refuse(
+                        format!(
+                            "a constructor of {} parameter{} at `{short}` (`{short}[{}]`)",
+                            slots.len(),
+                            if slots.len() == 1 { "" } else { "s" },
+                            slots.join(", "),
+                        ),
+                        format!(
+                            "`{shown}` binds `{short}` to `{}`, which leaves {left} open{}",
+                            type_display_name_value(kb, ty),
+                            unfixed_tail(&written)
+                        ),
+                    ));
+                }
+            },
             Some(ty) => {
                 let expanded = expand_sorts_deep(kb, ty, SlotVar::Flexible);
                 (!type_is_determined(kb, &expanded)).then_some("with a slot open")

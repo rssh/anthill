@@ -374,6 +374,10 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // would then print by the bare spelling again.
         // `spgbp_a_layer_minted_member_still_prints_as_written_after_the_discard` drives it.
         minted_params: _,
+        // Proposal 074 stage 8 — the higher-kinded parameter a body's skolem stands for, keyed
+        // by the skolem's variable: fresh, never reused (`next_var` above is monotone), so an
+        // entry a discarded layer left names a variable nothing holds any more.
+        rigid_carriers: _,
         // …and the one name per spelling an unwritten slot's unknown is opened under, which
         // is such a symbol too.
         unwritten_slot_names: _,

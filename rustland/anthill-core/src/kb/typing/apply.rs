@@ -486,6 +486,31 @@ fn check_apply_call(
             None => (occ, named_args, named_results),
         };
         let mut subst = Substitution::new();
+        // Proposal 074 stage 8: the enclosing operation's own higher-kinded parameters are its
+        // skolems at the call, as its other type parameters are in the types the call reads.
+        // A constructor application is keyed by its parameter and reaches it through the
+        // parameter's variable, which no rigidified type rewrites, so the call is handed the
+        // binding: `lift2(x)` in `outer[G[T]]` meets `G[T = Int64]` at `outer`'s `G`. MEASURED
+        // before: the two variables met free, and the call was refused, "expected a type for
+        // 'F', got unconstrained". The enclosing SORT's are too, for a callee of another sort
+        // (`lift2(x)` in `sort UseM[G[T]]`); a call of the sort's own operation is placed at its
+        // instance by its own rules (`call_at_own_instance`, `sibling_at_another_instance`).
+        let own_sort_call = callee_parent_sort.is_some_and(|c| {
+            env.enclosing_sort().is_some_and(|e| same_sort_canonical(kb, c, e))
+        });
+        let seeded = if own_sort_call {
+            &env.param_rigids()[env.sort_rigid_len..]
+        } else {
+            env.param_rigids()
+        };
+        for (vid, rigid) in seeded {
+            if kb
+                .type_param_of_canonical_var(*vid)
+                .is_some_and(|p| is_higher_kinded_param(kb, p))
+            {
+                subst.bind_term(kb, *vid, *rigid);
+            }
+        }
         // WI-269 Phase D: explicit call-site `op[bindings]` bindings
         // seed the substitution first. Returns `NoSuchTypeParam` on
         // an unknown binding name.

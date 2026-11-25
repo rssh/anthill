@@ -1198,6 +1198,7 @@ impl KnowledgeBase {
             type_param_canonical_var: plain(&self.type_param_canonical_var),
             type_param_canonical_vids: plain(&self.type_param_canonical_vids),
             minted_params: plain(&self.minted_params),
+            rigid_carriers: plain(&self.rigid_carriers),
             unwritten_slot_names: plain(&self.unwritten_slot_names),
             pattern_slot_name: plain(&self.pattern_slot_name),
             run_time_pattern_slot: plain(&self.run_time_pattern_slot),
