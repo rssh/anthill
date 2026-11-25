@@ -1220,10 +1220,11 @@ end
 }
 
 /// A LIBRARY SPEC WITH NO ROW THAT ANSWERS, AND NO FORMER IN SIGHT, gets the same kind of
-/// repair: a value. Three shapes: a type argument nothing writes (`none()`), a spec as the
-/// carrier, and a spec as a raised payload, which a sort that is no spec has a `TypeValue`
-/// row for and a spec has none. They advised a written row — "declare `provides …`", or
-/// "… needs a row at this instantiation" — and a `requires` in scope.
+/// repair: a value. Two shapes: a spec as the carrier, and a spec as a raised payload, which a
+/// sort that is no spec has a `TypeValue` row for and a spec has none. They advised a written
+/// row — "declare `provides …`", or "… needs a row at this instantiation" — and a `requires` in
+/// scope. A third, a type argument nothing writes (`tyOf(none())`), is answered since proposal
+/// 074 stage 8 (H5): the argument left unwritten, the type is `Option`.
 ///
 /// BACK-OUT: the library arm of `RequirementRefusal::render` taken out, and all three carry
 /// the row advice again.
@@ -1232,21 +1233,6 @@ fn a_library_spec_with_no_answering_row_is_refused_naming_a_value() {
     let type_value = "no row of `anthill.reflect.TypeValue` answers here, and none may be \
                       written";
     for (shape, src, want) in [
-        (
-            "a type argument nothing writes",
-            r#"
-namespace test.n31xx.libopen
-  import anthill.prelude.{Option, Type}
-  import anthill.prelude.Option.{none}
-  import anthill.reflect.{TypeValue}
-
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
-
-  operation ask() -> Type = tyOf(none())
-end
-"#,
-            type_value,
-        ),
         (
             "a spec as the carrier",
             r#"
@@ -1301,6 +1287,24 @@ end
         assert!(errs[0].contains(want), "{shape}: expected {want:?}; got {:?}", errs[0]);
         assert_names_no_row_advice(shape, &errs[0]);
     }
+    let mut interp = crate::common::interp_for(
+        r#"
+namespace test.n31xx.libopen
+  import anthill.prelude.{Option, Type}
+  import anthill.prelude.Option.{none}
+  import anthill.reflect.{TypeValue}
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
+
+  operation ask() -> Type = tyOf(none())
+end
+"#,
+    );
+    let v = interp
+        .call("test.n31xx.libopen.ask", &anthill_core::eval::HostValue::all(&[]))
+        .map(|h| h.value)
+        .expect("`tyOf(none())` answers");
+    assert_eq!(crate::common::show_value(interp.kb(), &v), "Option");
 }
 
 /// AT A CONSTRUCTION, the refusals a call gets: a sort whose `requires TypeValue[T = T]` is

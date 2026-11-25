@@ -203,7 +203,10 @@ fn a_host_call_of_a_raising_builtin_is_passed_its_type_value() {
 /// A handler's own value is given the `TypeValue` its type has, as a host's call of
 /// `Error.raise` reads it ([`anthill_core::eval::Interpreter::type_value_of`]): the typed host
 /// call `Dictionary.instance[TypeValue[T = …]]()` at the type the value reads as, nothing derived
-/// from the value. A bare `nil` pins no element, and is refused.
+/// from the value. A bare `nil` pins no element, which is left unwritten (proposal 074 stage 8,
+/// H5, decided with the user 2026-11-13: an inferred type and a written one behave the same):
+/// its `TypeValue` is `List`'s with the element's unwritten. Refused before, "does not pin its
+/// type".
 #[test]
 fn a_handler_reads_a_values_type_value_off_its_type() {
     let mut interp = interp_for("namespace test.j6k.tv end\n");
@@ -222,10 +225,11 @@ fn a_handler_reads_a_values_type_value_off_its_type() {
     }
     let nil = interp.kb().try_resolve_symbol("anthill.prelude.List.nil").expect("`nil` is loaded");
     match interp.type_value_of(&Value::SymbolRef(nil)) {
-        Err(EvalError::RaiseTypeUnread { detail }) => {
-            assert!(detail.contains("does not pin its type"), "{detail}")
-        }
-        other => panic!("a bare `nil` pins no element; got {other:?}"),
+        Ok(tv) => assert_eq!(
+            crate::common::show_value(interp.kb(), &tv.into_value()),
+            "Dictionary(Dictionary(impl: Unwritten), impl: List)"
+        ),
+        other => panic!("a bare `nil` is a `List`, its element unwritten; got {other:?}"),
     }
 }
 

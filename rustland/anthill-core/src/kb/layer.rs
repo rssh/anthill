@@ -383,6 +383,9 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         unwritten_slot_names: _,
         // …and the name a type pattern's open slot is opened under, likewise.
         pattern_slot_name: _,
+        // Proposal 074 stage 8 (H5) — the unwritten parameter's `TypeValue` impl: a symbol
+        // minted for it alone, as the pattern slot's name above is.
+        type_value_unwritten: _,
         // …and the one open slot the run reads, a term of the KB's, which no discard truncates.
         run_time_pattern_slot: _,
         // `SourceId` is an index into this registry and rides inside every `SourceSpan`.

@@ -439,8 +439,9 @@ end
 /// bracket — a rule-body goal reads none — but a payload whose type the clause knows, which
 /// `the_advised_repairs_answer` drives. Where the call pins every element it is the account
 /// an operation body gives: an arrow, the structural former's; a spec, which has no `TypeValue`,
-/// that no row of `TypePattern` answers. A collection whose element is open is refused at its
-/// raise, the pattern open there answered since proposal 071 stage (e). FAILS
+/// that no row of `TypePattern` answers. A collection whose element is open raises at `List`,
+/// its element unwritten (proposal 074 stage 8, H5), and the boundary's refusal is the two-label
+/// one. FAILS
 /// with the rule-body gate's two pinned arms backed out: those three shapes are told "this
 /// call pins no element".
 #[test]
@@ -466,9 +467,12 @@ fn an_unfilled_pattern_slot_is_refused_where_it_is_written() {
                 "Pin the element at this call",
             ]
         } else if shape == "a collection whose element is open" {
+            // Its `TypeValue` is `List`'s, the element unwritten (proposal 074 stage 8, H5); the
+            // boundary then has no one pattern for the two labels. Refused at the raise before,
+            // "no row of `anthill.reflect.TypeValue` answers here".
             &[
-                "anthill.reflect.TypeValue[T = anthill.prelude.List]",
-                "no row of `anthill.reflect.TypeValue` answers here, and none may be written",
+                "expected one pattern for `T1` that admits every `Error` label the argument raises",
+                "the argument raises `Error[T = List]` and `Error[T = Other]`, which no one sort heads",
             ]
         } else if shape == "a spec as the payload" {
             &[

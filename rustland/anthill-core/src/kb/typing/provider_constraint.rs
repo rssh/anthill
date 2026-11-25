@@ -317,6 +317,13 @@ pub(crate) fn type_of_type_value_dictionary(
     open_slot: Option<TermId>,
 ) -> Result<TermId, String> {
     let head = dict.impl_sort();
+    if kb.is_type_value_unwritten(head) {
+        return Err(
+            "an unwritten parameter's evidence read as a whole type: it stands only beneath a \
+             sort's, for a parameter that sort's type leaves unwritten"
+                .to_string(),
+        );
+    }
     if kb.minted_param(head) == Some(crate::kb::MintedParam::PatternSlot) {
         return open_slot.ok_or_else(|| "a pattern's open slot read with no error layer".to_string());
     }
@@ -356,8 +363,16 @@ pub(crate) fn type_of_type_value_dictionary(
         let sub = dict
             .sub(base + i)
             .ok_or_else(|| format!("dictionary sub {i} missing below arity {arity}"))?;
+        // Proposal 074 stage 8 (H5): a parameter the type leaves unwritten stays unwritten —
+        // `Option`'s dictionary names `Option`, `Pair[A = Int64]`'s `Pair[A = Int64]`.
+        if kb.is_type_value_unwritten(sub.impl_sort()) {
+            continue;
+        }
         let ty = type_of_type_value_dictionary(kb, &sub, open_slot)?;
         bindings.push((kb.intern(name), ty));
+    }
+    if bindings.is_empty() {
+        return Ok(kb.make_sort_ref(head));
     }
     // Each argument keyed by its parameter's declared name, through the one canonical builder,
     // as a type written in value position is (`Interpreter::finish_sort_type`).

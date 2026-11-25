@@ -1916,6 +1916,9 @@ pub struct KnowledgeBase {
     /// minted at the first: a slot's identity is its rigid's variable, as an unwritten slot's
     /// is.
     pattern_slot_name: Option<Symbol>,
+    /// Proposal 074 stage 8 (H5) — the `impl` of the `TypeValue` evidence at a parameter a
+    /// type leaves UNWRITTEN ([`Self::type_value_unwritten`]), minted at the first ask.
+    type_value_unwritten: Option<Symbol>,
 
     /// The one open slot the run reads ([`Self::run_time_pattern_slot`]), minted at the first.
     run_time_pattern_slot: Option<TermId>,
@@ -3350,6 +3353,7 @@ impl KnowledgeBase {
             rigid_carriers: HashMap::new(),
             unwritten_slot_names: HashMap::new(),
             pattern_slot_name: None,
+            type_value_unwritten: None,
             run_time_pattern_slot: None,
             domain_params: HashMap::new(),
             sort_domains: HashMap::new(),
@@ -4106,6 +4110,27 @@ impl KnowledgeBase {
         let slot = self.pattern_slot();
         self.run_time_pattern_slot = Some(slot);
         slot
+    }
+
+    /// Proposal 074 stage 8 (H5) — the `impl` of the dictionary `TypeValue` is answered by at a
+    /// parameter a type leaves unwritten (`Option`'s `T`, or one inference left free): its
+    /// `type_value()` leaves the parameter unwritten, so `Option`'s dictionary names `Option`.
+    /// A name of its own, minted at the first ask; no sort is declared for it.
+    pub(crate) fn type_value_unwritten(&mut self) -> Symbol {
+        match self.type_value_unwritten {
+            Some(name) => name,
+            None => {
+                let name = self.symbols.intern_unique("Unwritten");
+                self.type_value_unwritten = Some(name);
+                name
+            }
+        }
+    }
+
+    /// Is `impl_sort` the `impl` of an unwritten parameter's `TypeValue` evidence
+    /// ([`Self::type_value_unwritten`])?
+    pub(crate) fn is_type_value_unwritten(&self, impl_sort: Symbol) -> bool {
+        self.type_value_unwritten == Some(impl_sort)
     }
 
     /// Is `vid` a type pattern's open slot ([`Self::pattern_slot`])?

@@ -532,9 +532,11 @@ fn the_wi708_operation_parameter_channel_is_unchanged() {
     assert_eq!(eval_type(&mut interp, "w_ty"), "Box[T = Letter]");
 }
 
-/// A BRACKET VALUE WITH AN UNWRITTEN SLOT LEAVES THE ELEMENT UNDETERMINED, AND A BODY
-/// THAT READS IT IS REFUSED — the decision this row has always been about, re-verdicted
-/// by proposal 065 (WI-20260919-N31XX).
+/// A BRACKET VALUE WITH AN UNWRITTEN SLOT LEAVES THE ELEMENT UNWRITTEN, AND A BODY THAT
+/// READS IT READS THE SORT — re-verdicted by proposal 074 stage 8 (H5, decided with the user
+/// 2026-11-13): `Holder[U = List].tyb()` is `Box[T = List]`, `TypeValue` at `List` leaving the
+/// element unwritten. Until then the call was refused at load, as the history below says
+/// (proposal 065, WI-20260919-N31XX).
 ///
 /// `[T = List]` says *a list of something*, and RS2G4 decided what the something IS: σ
 /// holds the EXPANDED `List[T = ?T]`, variable and all, rather than the bare `Ref(List)`
@@ -557,7 +559,7 @@ fn the_wi708_operation_parameter_channel_is_unchanged() {
 /// THE CONTROL IS THE WRITTEN FORM, one line down, which loads and answers. Without it
 /// this row would pass against a rule that refused every bracket value.
 #[test]
-fn a_bracket_value_with_an_unwritten_slot_is_refused_where_it_is_read() {
+fn a_bracket_value_with_an_unwritten_slot_reads_the_sort() {
     let decls = r#"
 namespace test.rs2g4x
   import anthill.prelude.{Int64, Type, List}
@@ -577,22 +579,12 @@ namespace test.rs2g4x
     let bare = format!("{decls}  operation w_bare() -> Type = Holder[U = List].tyb()
 end
 ");
-    let errs = match try_load_kb_with(&bare) {
-        Ok(_) => panic!("a bare `[U = List]` leaves the element undetermined and must not load"),
-        Err(e) => e,
+    let mut interp = interp_for(&bare);
+    let got = match interp.call("test.rs2g4x.w_bare", &anthill_core::eval::HostValue::all(&[])).map(|h| h.value) {
+        Ok(ty) => TermPrinter::new(interp.kb()).print_value(&ty),
+        Err(e) => panic!("{e:?}"),
     };
-    // WI-20260921-3G1YT — "cannot be left unfilled" belonged to 065's hardcoded
-    // `TypeValue` arm, now deleted; the general path refuses this identically. What is
-    // asserted instead is STRONGER and is what the fixture is about: the bracket is bare,
-    // so `List`'s element is UNWRITTEN, and the refusal now shows it as `List[T = ?]`
-    // (before, an unbound var rendered `<term#23484>` — an interning id). `?` is the
-    // language's own spelling for an undetermined parameter and points straight at the
-    // repair, which is the `w_written` control immediately below.
-    assert!(
-        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")
-            && e.contains("anthill.prelude.List[T = ?]")),
-        "the refusal must name the evidence and show the UNWRITTEN element; got {errs:#?}"
-    );
+    assert_eq!(got, "Box[T = List]");
 
     // CONTROL — the WRITTEN inner value determines the element, so the evidence is the
     // derived `List provides TypeValue[…] requires TypeValue[T = Int64]` and it answers.

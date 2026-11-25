@@ -64,7 +64,7 @@ const BOX: &str = "
 
 fn program(ns: &str, decls: &str, body: &str) -> String {
     format!(
-        "namespace p074s8.{ns}\n  import anthill.prelude.{{Int64, String, Option, List, Pair, Additive}}\n  import anthill.prelude.Option.{{some, none}}\n  import anthill.realization.runtime.Dictionary\n{MON}{decls}{body}\nend\n"
+        "namespace p074s8.{ns}\n  import anthill.prelude.{{Int64, String, Option, List, Pair, Additive, Type, Bool, Map, PartialEq}}\n  import anthill.prelude.Option.{{some, none}}\n  import anthill.reflect.{{TypeValue}}\n  import anthill.realization.runtime.Dictionary\n{MON}{decls}{body}\nend\n"
     )
 }
 
@@ -888,6 +888,107 @@ fn a_dictionary_parameters_two_entries_are_one_dictionary() {
     );
 }
 
+// ── Part 5: `TypeValue` at a parameter a type leaves unwritten ───────────────────────────
+
+/// H5, decided with the user 2026-11-13: `TypeValue` at a sort with unwritten parameters is
+/// derived as at any sort, each unwritten parameter's sub-dictionary one whose `type_value()`
+/// leaves it unwritten — so a constructor read as a value is the bare sort, the value `t() ->
+/// Type = Option` already is. A bracket and a requirement alike, nested, and past a sort's own
+/// `requires` (`Map requires Eq[T = K]`). MEASURED before part 5: refused, "unresolved:
+/// TypeValue[T = Option.T]", and through `tv`, "`TypeValue[T = Option[T = ?]]` … no row of
+/// `anthill.reflect.TypeValue` answers here".
+#[test]
+fn h5_typevalue_at_a_constructor_is_the_bare_sort() {
+    let body = "  operation t() -> Type = Option
+  operation tv[X]() -> Type requires TypeValue[T = X] = X
+  operation direct() -> Type = TypeValue.type_value[T = Option]()
+  operation viaTv() -> Type = tv[X = Option]()
+  operation same() -> Bool =
+    let a = TypeValue.type_value[T = Option]()
+    let b = t()
+    PartialEq.eq(a, b)
+  operation nested() -> Type = TypeValue.type_value[T = List[T = Option]]()
+  operation mapK() -> Type = TypeValue.type_value[T = Map[K = Int64]]()
+  operation pairA() -> Type = TypeValue.type_value[T = Pair[A = Int64]]()
+  operation pairB() -> Type = TypeValue.type_value[T = Pair[B = Int64]]()";
+    answers(
+        "h5",
+        "",
+        body,
+        &[
+            ("direct", "Option"),
+            ("viaTv", "Option"),
+            ("same", "true"),
+            ("nested", "List[T = Option]"),
+            ("mapK", "Map[K = Int64]"),
+            ("pairA", "Pair[A = Int64]"),
+            ("pairB", "Pair[B = Int64]"),
+        ],
+    );
+}
+
+/// H5: the dictionary keeps its shape, one sub-dictionary per declared parameter, an unwritten
+/// one's `impl` the open slot's — `Dictionary.instance[TypeValue[T = Option]]()` is
+/// `Dictionary(Dictionary(impl: Unwritten), impl: Option)`. MEASURED before part 5: refused,
+/// "`TypeValue[T = Option]` leaves `T` with a slot open".
+#[test]
+fn h5_an_unwritten_parameters_dictionary_keeps_the_shape() {
+    answers(
+        "h5dict",
+        "",
+        "  operation d() -> TypeValue[T = Option] = Dictionary.instance[TypeValue[T = Option]]()",
+        &[("d", "Dictionary(Dictionary(impl: Unwritten), impl: Option)")],
+    );
+}
+
+/// H5: a parameter inference leaves free is one left unwritten (the user: an inferred type and a
+/// written one behave the same) — `tyOf(none)` is `Option`, as `tv[X = Option]()` is; and the
+/// constructor a dictionary is at, read as a value, `m.M`, is `Option` at `Option`'s. MEASURED
+/// before part 5: each refused at the call, "`TypeValue[T = Option]` cannot be supplied".
+#[test]
+fn h5_an_inferred_free_parameter_and_a_dictionarys_constructor() {
+    let body = "  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = B
+  operation tOf(m: Mon) -> Type requires TypeValue[m.M] = m.M
+  operation viaNone() -> Type = tyOf(none)
+  operation viaDict() -> Type = tOf(Dictionary.instance[Mon[M = Option]]())";
+    answers(
+        "h5free",
+        "",
+        body,
+        &[("viaNone", "Option"), ("viaDict", "Option")],
+    );
+}
+
+/// No other spec has an answer at an open slot: `PartialEq` at `Option`'s unwritten `T` stays
+/// refused, its written twin loading; and `TypeValue` of a type nothing fixes is no open slot of a
+/// sort, and stays refused. Passes before and after part 5 by design.
+#[test]
+fn h5_no_other_spec_answers_at_an_open_slot() {
+    let text = refusal(
+        "h5eq",
+        "",
+        "  operation eqOf[X]() -> Int64 requires PartialEq[T = X] = 0
+  operation un() -> Int64 = eqOf[X = Option]()
+  operation ok() -> Int64 = eqOf[X = Option[Int64]]()",
+    );
+    // `un` alone: the written twin `ok` loads.
+    assert!(
+        text.contains(
+            "`anthill.prelude.PartialEq[T = anthill.prelude.Option[T = ?]]` cannot be supplied"
+        ) && text.matches("cannot be supplied").count() == 1,
+        "{text}"
+    );
+    let text = refusal(
+        "h5top",
+        "",
+        "  operation top() -> Type = TypeValue.type_value()",
+    );
+    assert!(
+        text.contains("that names no instance of `anthill.reflect.TypeValue`"),
+        "{text}"
+    );
+}
+
 // ── Back-out ledger ───────────────────────────────────────────────────────────────────────
 //
 // MEASURED 2026-11-24: each piece backed out by a temporary switch, every row of anthill-core
@@ -1038,3 +1139,28 @@ fn a_dictionary_parameters_two_entries_are_one_dictionary() {
 // m.M[Int64]` as the operation's `m`; a walker skipping an arrow's binders was written and
 // removed, no loading program being able to tell — an arrow binder's applied member is
 // unread (refused, "unresolved type name 'm.M'") either way.
+//
+// PART 5, MEASURED 2026-11-25 the same way (control 11674 passed, 0 failed). H5 lifts a refusal
+// eight rows of earlier tickets pinned; its census, the part's code run over all of
+// anthill-core before a row was rewritten, failed those eight and no other. Seven are
+// rewritten to H5's answers: `wi_89j6k`'s and `wi_wgjfn`'s empty list (a host's reading),
+// `wi_9wvt7_reify_rule_body`'s collection whose element is open (refused now by the boundary's
+// two labels), `wi_n31xx`'s `tyOf(none())`, `wi_rs2g4`'s `[U = List]`, and `wi_sqzpq`'s two
+// calls at `Boom`. The eighth, `wi_9wvt7_review5`'s `variant[C](w: Wrap.wrap[V = C])`, found the
+// first rule too broad — a caller's own parameter read as an unwritten one — and passes as it
+// was once the rule reads only the asking sort's own parameter.
+//
+// p5a, `TypeValue` answered at an unwritten parameter (`unwritten_parameter_of_a_type`): 10
+// rows, part 5's three answering rows and the seven rewritten.
+//
+// p5b, the reader leaving the parameter unwritten (`type_of_type_value_dictionary`): 6 rows,
+// the ones that read the type.
+//
+// p5c, a `TypeValue` dictionary written with a slot open (`dictionary_instance_call`): 3 rows,
+// `h5_an_unwritten_parameters_dictionary_keeps_the_shape` and the two host readings, which go
+// through that call.
+//
+// p5d, the open slot read only at the asking sort's own parameter, backed out to any parameter:
+// 1 row, `wi_9wvt7_review5_test::a_part_with_no_instance_is_said_and_a_variant_is_its_sort`.
+//
+// Passes before and after by design: `h5_no_other_spec_answers_at_an_open_slot`.

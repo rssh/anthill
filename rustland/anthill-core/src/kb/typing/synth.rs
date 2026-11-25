@@ -1130,6 +1130,64 @@ fn open_slot_beneath_pattern(
     }))
 }
 
+/// Proposal 074 stage 8 (§6, H5; decided with the user 2026-11-13) — `TypeValue` AT A PARAMETER
+/// A TYPE LEAVES UNWRITTEN is answered, not searched for: beneath the goal of a sort's derived
+/// instance, its condition at a parameter the type does not write (`Option`'s `T` in
+/// `TypeValue[T = Option]`, `Pair`'s `B` in `[T = Pair[A = Int64]]`) or one inference left free
+/// (`tyOf(none)`'s `Option[T = ?]`) is a dictionary whose `type_value()` leaves the parameter
+/// unwritten ([`KnowledgeBase::type_value_unwritten`]), so the type is the constructor read as
+/// a value, `Option`. Only beneath a `TypeValue` goal: a type not known at the top names nothing,
+/// a rigid parameter is the caller's to hand (`requires TypeValue[…]`), a pattern's open slot
+/// is its own (`open_slot_beneath_pattern`), and no other spec answers at an open slot —
+/// `Additive` at a free or unwritten slot stays refused. MEASURED before:
+/// `TypeValue.type_value[T = Option]()` refused, "unresolved: TypeValue[T = Option.T]".
+fn unwritten_parameter_of_a_type(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    stack: &[SortGoal],
+) -> Option<ResolutionResult> {
+    let [(_, t)] = goal.bindings.as_slice() else {
+        return None;
+    };
+    let type_value = type_value_spec_sym(kb)?;
+    if !same_sort_canonical(kb, goal.spec_sort, type_value) {
+        return None;
+    }
+    // The sort whose derived instance asks: the goal beneath which this one is its condition.
+    let parent = stack.last().filter(|g| same_sort_canonical(kb, g.spec_sort, type_value))?;
+    let [(_, of)] = parent.bindings.as_slice() else {
+        return None;
+    };
+    let sort = match extract_type(kb, of) {
+        TypeExtractor::SortRef(s) | TypeExtractor::Parameterized { base: s, .. } => s,
+        _ => return None,
+    };
+    let open = match extract_type(kb, t) {
+        // A variable inference left free, no parameter's own variable. (A pattern's open slot
+        // is a rigid, read beneath its pattern by `open_slot_beneath_pattern`.)
+        TypeExtractor::FlexVar { .. } => kb
+            .value_global_var(t)
+            .is_none_or(|vid| kb.type_param_of_canonical_var(vid).is_none()),
+        // That sort's own parameter, the type not writing it — not a parameter of the caller's,
+        // which a clause spells the same way and only a `requires` hands (found by the census:
+        // `variant[C](w: Wrap.wrap[V = C]) = tyOf(w)` loaded).
+        TypeExtractor::SortRef(p) => {
+            let short = short_name_of(kb.local_name_of(p)).to_string();
+            kb.type_param_sym_of(sort, &short)
+                .is_some_and(|q| kb.canonical_sym(q) == kb.canonical_sym(p))
+        }
+        _ => false,
+    };
+    if !open {
+        return None;
+    }
+    Some(ResolutionResult::Resolved(ResolvedRequiresNode::Leaf {
+        impl_sort: kb.type_value_unwritten(),
+        spec_sort: goal.spec_sort,
+        bindings: SmallVec::new(),
+    }))
+}
+
 /// A `TypePattern` goal whose type leaves a slot out, or holds a variable nothing bound there,
 /// with that slot open ([`fill_open_slots`]): a call states the pattern `Boom` by
 /// `TypePattern.admits[T = Boom](t)`, and a slot it leaves open is open, as a bracket's slot
@@ -1652,6 +1710,9 @@ pub(super) fn resolve_inner<'a>(
     }
     if let Some(open) = open_slot_beneath_pattern(kb, goal, stack) {
         return open;
+    }
+    if let Some(unwritten) = unwritten_parameter_of_a_type(kb, goal, stack) {
+        return unwritten;
     }
     if let Some(opened) = pattern_goal_opened(kb, goal) {
         return resolve_inner(kb, &opened, scope, stack, local_provider, slot_pin, rung, report);

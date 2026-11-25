@@ -454,26 +454,24 @@ fn a_sorts_own_type_value_answers_no_type_read() {
 }
 
 /// A REQUIREMENT AT A TYPE WITH AN OPEN SLOT is answered by a provision that leaves the slot
-/// open, and not by one at an instance (kernel-language.md §8.1); `TypeValue` derives no row at
-/// an open slot. A call naming such a type — `[P = Boom]` over `sort Boom { sort Reason = ? }` —
-/// is refused where it is written, with the account the slot inferred and left out gets: the
-/// library spec's own repair, a sort named with every type argument. BACK-OUT: no provision
-/// answered and nothing said so; the program loaded clean and the callee's read died at run
-/// time. A `TypePattern` at such a type is answered since proposal 071 stage (e), its evidence
-/// built with the slot open (`wi_bdvyw_boundary_pattern_test::a_slot_a_call_leaves_open_in_a_pattern_admits_every_type`).
+/// open, and not by one at an instance (kernel-language.md §8.1). `TypeValue`'s derived row
+/// leaves it open since proposal 074 stage 8 (H5, decided with the user 2026-11-13): a call
+/// naming such a type — `[P = Boom]` over `sort Boom { sort Reason = ? }` — reads `Boom`, the
+/// slot unwritten. Before H5 it was refused at load, "no row of `anthill.reflect.TypeValue`
+/// answers here"; and before that it loaded clean and the callee's read died at run time. A
+/// `TypePattern` at such a type is answered since proposal 071 stage (e), its evidence built with
+/// the slot open (`wi_bdvyw_boundary_pattern_test::a_slot_a_call_leaves_open_in_a_pattern_admits_every_type`).
 #[test]
-fn a_type_value_call_at_an_open_slot_is_refused_at_load() {
-    let call = "open(n: Int64) -> Type = tvAt[P = Boom](0)";
-    let says = "no row of `anthill.reflect.TypeValue` answers here, and none may be written";
-    let src = program(&format!(
-        "    operation tvAt[P](n: Int64) -> Type requires TypeValue[T = P] = TypeValue.type_value[T = P]()\n    operation {call}"
-    ));
-    let errs = refusals(&src);
-    assert!(
-        errs.iter()
-            .any(|e| e.contains(says) && e.contains("every type argument of it written")),
-        "`{call}` must be refused at load for its open slot, saying `{says}`; got {errs:?}"
+fn a_type_value_call_at_an_open_slot_reads_the_sort() {
+    let src = program(
+        "    operation tvAt[P](n: Int64) -> Type requires TypeValue[T = P] = TypeValue.type_value[T = P]()\n    operation open(n: Int64) -> Type = tvAt[P = Boom](0)",
     );
+    let mut interp = crate::common::interp_for(&src);
+    let v = interp
+        .call("wisqzpq.tp.D.open", &anthill_core::eval::HostValue::all(&[Value::Int(0)]))
+        .map(|h| h.value)
+        .expect("`open(0)` answers");
+    assert_eq!(crate::common::show_value(interp.kb(), &v), "Boom");
 }
 
 /// A PROGRAM'S SPEC AT AN OPEN SLOT: the account says what its own provisions do there. With
@@ -535,23 +533,21 @@ end
     }
 }
 
-/// THE RESOLVER'S ADVICE FOR A GOAL THAT IS NOT GROUND names both things its open part can
-/// be: a ground call naming a type with a slot open asks `TypeValue[T = Boom.Reason]`, whose
-/// `Boom.Reason` no caller holds. BACK-OUT: the advice was a `requires` in scope alone, which
-/// names a parameter no caller has. (Asked of `TypePattern.admits[T = Boom](t)` until proposal
-/// 071 stage (e), which answers it, the slot open.)
+/// A GROUND CALL NAMING A TYPE WITH A SLOT OPEN asks `TypeValue[T = Boom.Reason]`, whose
+/// `Boom.Reason` no caller holds, and since proposal 074 stage 8 (H5) that is the slot `Boom`
+/// leaves unwritten: `TypeValue.type_value[T = Boom]()` is `Boom`. Until then the call was
+/// refused, the resolver's advice naming both things the open part could be — a parameter of
+/// the caller and a slot the call leaves open (asked of `TypePattern.admits[T = Boom](t)` until
+/// proposal 071 stage (e), which answers it, the slot open).
 #[test]
-fn a_ground_call_at_an_open_slot_advises_both_repairs() {
-    let src = program(
-        "    operation ground(n: Int64) -> Type = TypeValue.type_value[T = Boom]()",
-    );
-    let errs = refusals(&src);
-    assert!(
-        errs.iter().any(|e| e.contains(
-            "where it holds a parameter of the caller, add `requires anthill.reflect.TypeValue[…]` in scope to take it from the caller, and where it holds a slot a type the call states leaves open, write every type argument of that type"
-        )),
-        "the advice must name both repairs; got {errs:?}"
-    );
+fn a_ground_call_at_an_open_slot_reads_the_sort() {
+    let src = program("    operation ground(n: Int64) -> Type = TypeValue.type_value[T = Boom]()");
+    let mut interp = crate::common::interp_for(&src);
+    let v = interp
+        .call("wisqzpq.tp.D.ground", &anthill_core::eval::HostValue::all(&[Value::Int(0)]))
+        .map(|h| h.value)
+        .expect("`ground(0)` answers");
+    assert_eq!(crate::common::show_value(interp.kb(), &v), "Boom");
 }
 
 /// A PARAMETER OF THE CALLEE LEFT UNBOUND IS NO TYPE THE CALL STATES. At a library spec no

@@ -1593,6 +1593,10 @@ pub(super) fn dictionary_instance_call(
                     ));
                 }
             },
+            // Proposal 074 stage 8 (H5): `TypeValue` alone has an answer at a slot a type leaves
+            // open, the type with the slot unwritten — `Dictionary.instance[TypeValue[T =
+            // Option]]()` names `Option`. MEASURED before: refused, "leaves `T` with a slot open".
+            Some(_) if type_value_spec_sym(kb).is_some_and(|tv| same_sort_canonical(kb, tv, spec)) => None,
             Some(ty) => {
                 let expanded = expand_sorts_deep(kb, ty, SlotVar::Flexible);
                 (!type_is_determined(kb, &expanded)).then_some("with a slot open")

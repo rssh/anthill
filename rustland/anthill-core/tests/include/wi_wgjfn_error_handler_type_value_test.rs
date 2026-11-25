@@ -197,17 +197,20 @@ fn a_fail_from_the_error_handler_is_not_yet_supported() {
     }
 }
 
-/// A value that does not pin its type has no type value to read off: an empty list, whose
-/// element type nothing states.
+/// A value that does not pin a parameter of its type leaves it unwritten (proposal 074 stage 8,
+/// H5, decided with the user 2026-11-13): an empty list, whose element nothing states, is a
+/// `List`, its type value `List`'s with the element's unwritten. Refused before, "no type value
+/// can be read off".
 #[test]
-fn a_value_that_does_not_pin_its_type_has_no_type_value() {
+fn a_value_that_does_not_pin_a_parameter_leaves_it_unwritten() {
     let mut interp = crate::common::interp_for(PROGRAM);
     let empty = interp.build_list_value(vec![], &[]).expect("an empty list");
     match interp.type_value_of(&empty) {
-        Err(EvalError::RaiseTypeUnread { detail }) => {
-            assert!(detail.starts_with("no type value can be read off"), "{detail}")
-        }
-        other => panic!("an empty list pins no type; got {other:?}"),
+        Ok(tv) => assert_eq!(
+            crate::common::show_value(interp.kb(), &tv.into_value()),
+            "Dictionary(Dictionary(impl: Unwritten), impl: List)"
+        ),
+        other => panic!("an empty list is a `List`, its element unwritten; got {other:?}"),
     }
 }
 
