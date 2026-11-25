@@ -1919,6 +1919,11 @@ pub struct KnowledgeBase {
     /// Proposal 074 stage 8 (H5) — the `impl` of the `TypeValue` evidence at a parameter a
     /// type leaves UNWRITTEN ([`Self::type_value_unwritten`]), minted at the first ask.
     type_value_unwritten: Option<Symbol>,
+    /// Proposal 074 stage 8 (G1) — the members of higher-kinded parameters an operation's
+    /// signature or an entity's field writes a ROW at (`M[E = {}, T = A]`,
+    /// [`Self::record_hk_row_member`]); read with the
+    /// members a clause gives a row by order by `typing::hk_row_members`.
+    hk_row_members: HashSet<Symbol>,
 
     /// The one open slot the run reads ([`Self::run_time_pattern_slot`]), minted at the first.
     run_time_pattern_slot: Option<TermId>,
@@ -3354,6 +3359,7 @@ impl KnowledgeBase {
             unwritten_slot_names: HashMap::new(),
             pattern_slot_name: None,
             type_value_unwritten: None,
+            hk_row_members: HashSet::new(),
             run_time_pattern_slot: None,
             domain_params: HashMap::new(),
             sort_domains: HashMap::new(),
@@ -4125,6 +4131,17 @@ impl KnowledgeBase {
                 name
             }
         }
+    }
+
+    /// Proposal 074 stage 8 (G1) — `member`, a parameter of a higher-kinded parameter, is
+    /// written as a row somewhere (`M[E = {}]`): a row by use.
+    pub(crate) fn record_hk_row_member(&mut self, member: Symbol) {
+        self.hk_row_members.insert(member);
+    }
+
+    /// Was `member` written as a row ([`Self::record_hk_row_member`])?
+    pub(crate) fn hk_row_member_written(&self, member: Symbol) -> bool {
+        self.hk_row_members.contains(&member)
     }
 
     /// Is `impl_sort` the `impl` of an unwritten parameter's `TypeValue` evidence

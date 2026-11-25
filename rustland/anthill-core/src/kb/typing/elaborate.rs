@@ -247,12 +247,20 @@ pub(super) fn rigidify_unwritten_sort_params(
                 // alike …)` (MEASURED: `wi858_pair_orderings_test`'s
                 // `union_of_two_parameters_at_one_ordering_merges`; through two `let`s, its
                 // `union_within_one_ordering_merges`).
+                //
+                // NOR INTO A HIGHER-KINDED SLOT (proposal 074 stage 8, H4's rule). `F = List` in
+                // `OptionT[F = List, T = Int64]` is a CONSTRUCTOR: `List`'s `T` is open, for
+                // `F`'s applications to take by order, and no slot the signature leaves out.
+                // Found by part 6's /code-review: `case optT(run)` over such a parameter bound
+                // `run: F[Option[Int64]]`, `F` filled with `List[T = ?T]`, which is no
+                // constructor, and was refused against `List[Option[Int64]]`.
                 let short = short_name_of(kb.local_name_of(*param)).to_owned();
                 if sort_param_is_effect_row(kb, base, &short)
                     || kb
                         .named_requirement_slots(kb.canonical_sort_sym(base))
                         .iter()
                         .any(|s| kb.local_name_of(s.binder) == short)
+                    || !kb.type_param_syms_of(*param).is_empty()
                 {
                     bindings.push((*k, v.clone()));
                     continue;

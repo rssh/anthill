@@ -815,6 +815,30 @@ pub(crate) fn check_provision_constructors(
                 .map(|q| short_name_of(kb.local_name_of(*q)).to_string())
                 .collect();
             if slots.len() == ctor.open.len() {
+                // Proposal 074 stage 8 (G1): each open parameter of the kind of the slot's it
+                // takes — a row where the spec uses a row (`GradedMonad`'s `M[E, T]`'s `E`,
+                // `Eff`'s `effects E = ?`), a type where it does not. MEASURED before: `provides
+                // GradedMonad[M = Box2]` over `sort Box2 { sort V = ?  sort T = ? }` loaded, its
+                // bodies refused one by one where they read the row.
+                let rows = hk_row_members(kb, param);
+                let theirs: Vec<Symbol> = kb.type_param_syms_of(param).to_vec();
+                for (slot, open) in theirs.iter().zip(&ctor.open) {
+                    let slot_is_row = rows.contains(slot);
+                    let open_short = short_name_of(kb.local_name_of(*open)).to_string();
+                    if slot_is_row == sort_param_is_effect_row(kb, ctor.base, &open_short) {
+                        continue;
+                    }
+                    errors.push(crate::kb::load::LoadError::ConstructorKind {
+                        spec: kb.qualified_name_of(clause.spec).to_string(),
+                        param: short_name_of(kb.local_name_of(param)).to_string(),
+                        slot: short_name_of(kb.local_name_of(*slot)).to_string(),
+                        slot_is_row,
+                        constructor: type_display_name_value(kb, &binding),
+                        open: open_short,
+                        provider: kb.qualified_name_of(clause.provider).to_string(),
+                        site: crate::kb::load::render_decl_site(kb, clause.span),
+                    });
+                }
                 continue;
             }
             // The provider at its own parameters (`Self`, `Option[T = T]`): the spelling that

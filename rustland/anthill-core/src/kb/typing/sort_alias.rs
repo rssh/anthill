@@ -335,6 +335,103 @@ pub(crate) fn slot_is_higher_kinded(kb: &KnowledgeBase, head: Symbol, key: Symbo
         .is_some_and(|param| !kb.type_param_syms_of(param).is_empty())
 }
 
+/// Proposal 074 stage 8 (§6, G1; decided with the user 2026-11-13) — the members of the
+/// higher-kinded parameter `param` that are ROWS, by use: written as a row in an operation's
+/// signature or an entity's field type ([`KnowledgeBase::hk_row_member_written`], `M[E =
+/// {}]`), or at the place of a row of the
+/// spec's own higher-kinded slot a clause binds `param` to, by order (`greet[M[E, T]] …
+/// requires GradedMonad[M = M]`: `E`, because `GradedMonad`'s `M` has a row there; a minted
+/// carrier, `m: GradedMonad[M = P]` or the member sugar's, likewise). Empty for any other sort.
+/// [`sort_param_is_effect_row`] reads it beside the `effects E = ?` anchor.
+pub(crate) fn hk_row_members(kb: &KnowledgeBase, param: Symbol) -> Vec<Symbol> {
+    hk_row_members_seen(kb, param, &mut Vec::new())
+}
+
+fn hk_row_members_seen(kb: &KnowledgeBase, param: Symbol, seen: &mut Vec<Symbol>) -> Vec<Symbol> {
+    if seen.contains(&param) || !is_sort_param_symbol(kb, param) {
+        return Vec::new();
+    }
+    let members: Vec<Symbol> = kb.type_param_syms_of(param).to_vec();
+    if members.is_empty() {
+        return Vec::new();
+    }
+    seen.push(param);
+    let mut rows: Vec<Symbol> = members
+        .iter()
+        .copied()
+        .filter(|m| kb.hk_row_member_written(*m))
+        .collect();
+    for slot in clause_slots_binding(kb, param) {
+        let theirs = kb.type_param_syms_of(slot).to_vec();
+        let their_rows = hk_row_members_seen(kb, slot, seen);
+        for (mine, their) in members.iter().zip(&theirs) {
+            if their_rows.contains(their) && !rows.contains(mine) {
+                rows.push(*mine);
+            }
+        }
+    }
+    rows
+}
+
+/// The higher-kinded slots of specs a clause binds `param` to: `GradedMonad`'s `M` for
+/// `requires GradedMonad[M = M]` and for a parameter typed `GradedMonad[M = P]`, read off the
+/// declaration `param` belongs to — the operation's `requires` and parameter types, or the
+/// sort's own `requires`, or the clause the member sugar wrote for its carrier.
+fn clause_slots_binding(kb: &KnowledgeBase, param: Symbol) -> Vec<Symbol> {
+    let Some(scope) = kb.symbols.declaring_scope(param) else {
+        return Vec::new();
+    };
+    let owner = scope.owner();
+    // Each clause as the spec it names and its bindings: an operation's `requires` and
+    // parameter types are types (`GradedMonad[M = M]`), a sort's `requires` a spec view.
+    let clauses: Vec<(Symbol, Vec<(Symbol, Value)>)> = if scope.is_operation() {
+        match crate::kb::op_info::lookup_operation_info(kb, owner) {
+            Some(rec) => rec
+                .requires
+                .iter()
+                .chain(rec.params.iter().map(|(_, t)| t))
+                .filter_map(|t| match extract_type(kb, t) {
+                    TypeExtractor::Parameterized { base, bindings } => {
+                        Some((base, bindings.into_iter().collect()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    } else {
+        direct_requires(kb, owner)
+            .into_iter()
+            .filter_map(|e| {
+                unwrap_spec_view_value(kb, &e.spec)
+                    .map(|(_, bindings)| (e.required_sort, bindings.into_iter().collect()))
+            })
+            .collect()
+    };
+    let mut out = Vec::new();
+    for (base, bindings) in clauses {
+        for (key, v) in bindings {
+            let names_param = match extract_type(kb, &v) {
+                TypeExtractor::SortRef(s) => kb.canonical_sym(s) == kb.canonical_sym(param),
+                TypeExtractor::FlexVar { .. } => kb
+                    .value_global_var(&v)
+                    .and_then(|vid| kb.type_param_of_canonical_var(vid))
+                    .is_some_and(|p| kb.canonical_sym(p) == kb.canonical_sym(param)),
+                _ => false,
+            };
+            if !names_param {
+                continue;
+            }
+            if let Some(slot) = kb.type_param_sym_of(base, short_name_of(kb.local_name_of(key))) {
+                if !kb.type_param_syms_of(slot).is_empty() {
+                    out.push(slot);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Proposal 074 stage 8 (§6, H4's rule; kernel-language §5.4) — a CONSTRUCTOR, the value a
 /// higher-kinded slot takes: a sort with the parameters it writes (`Option`, `Box`, `Pair[A =
 /// Int64]`, `OptionT[F = F]`), and the ones it leaves OPEN — declared, unwritten, with no

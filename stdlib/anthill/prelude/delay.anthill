@@ -5,16 +5,17 @@
    moves from the ambient row into `E`); `flatMap` composes purely and UNIONS
    the captured effects; `force` finally performs them.
 
-   `E` is an ordinary type parameter holding an effect-set TERM — there is no
-   special effect-kind machinery, because types are terms: the effect set is a
-   term, hence a type-level value, so it drops into `E` and the reify bridge
-   between an arrow's effect row (`@ E`) and the type-param `E` is the IDENTITY
-   (the same term in both positions). A SINGLE captured row is the bare
+   `E` is an EFFECT-ROW parameter: `DelayMonad` writes effect rows at its
+   constructor's `E` (`{}`, `EffP`, `{E1, E2}`), so `E` is an effect row by use,
+   and a provider's constructor declares its `E` an effect row too (`effects E =
+   ?` in `Delay` below; a type parameter there is refused at the provision —
+   proposal 074 stage 8). The reify bridge between an arrow's effect row (`@ E`)
+   and `E` is the IDENTITY (the same effect row in both positions). A SINGLE captured row is the bare
    variable `E` (not `{E}`); `{E1, E2}` is a union, `{}` the empty row.
 
    Captured-effect tracking via `E` is, incidentally, the same information a
    capture-checking type system tracks as a capture set; here it falls out of
-   effects-as-rows + rows-as-type-parameters rather than a bespoke checker.
+   effects-as-rows + row parameters rather than a bespoke checker.
 
    Contrast `anthill.prelude.monad.Monad`: that is the EAGER monad — `flatMap`
    runs the continuation now, so its effect surfaces in the `effects` clause;
@@ -23,7 +24,7 @@
 
    Reference: Katsumata, "Parametric Effect Monads and Semantics of Effect
    Systems" (POPL 2014) — the graded-monad foundation. >}
-sort anthill.prelude.DelayMonad[M[T, E]]                 -- E : captured effect set (a row, held as a type)
+sort anthill.prelude.DelayMonad[M[T, E]]                 -- E : captured effect set (an effect row, by use)
   operation pure[A](a: A) -> M[T = A, E = {}]                                  -- captures nothing
   operation delay[A, EffP](thunk: () -> A @ EffP) -> M[T = A, E = EffP]        -- capture: row -> E
   operation flatMap[A, B, E1, E2](m: M[T = A, E = E1],
@@ -42,7 +43,7 @@ sort anthill.prelude.Delay
   import anthill.prelude.{DelayMonad, Unit}
 
   sort T = ?                                   -- result type
-  sort E = ?                                   -- captured effect set (a row, held as a type)
+  effects E = ?                                -- captured effect set (an effect row)
   entity delayed(thunk: () -> T @ E)           -- the suspended computation
 
   -- `pure a` captures nothing: a thunk that just returns `a`, effect row `{}`.

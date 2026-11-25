@@ -1625,5 +1625,11 @@ fn pattern_field_type_through(kb: &mut KnowledgeBase, subst: &Substitution, ty: 
     }
     // Otherwise deep-walk: a parameterized `Fn` has its type params resolved in
     // every nested position; a ground term / `Value::Node` is returned as-is.
-    walk_type_deep_value(kb, subst, &cur)
+    let walked = walk_type_deep_value(kb, subst, &cur);
+    // Proposal 074 stage 8 (H4's rule): a field applying its sort's higher-kinded parameter is at
+    // the constructor the scrutinee's type fills it with, applied by order — `case optT(run)` over
+    // an `OptionT[F = List, T = Int64]` binds `run: List[Option[Int64]]`. Found by part 6's
+    // /code-review: the walk left the application's head, and `run` was `F[Option[Int64]]`, the
+    // sort's own `F`, refused against `List[Option[Int64]]`.
+    fill_higher_kinded_heads(kb, subst, &walked).unwrap_or(walked)
 }

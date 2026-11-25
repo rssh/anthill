@@ -1202,6 +1202,7 @@ impl KnowledgeBase {
             unwritten_slot_names: plain(&self.unwritten_slot_names),
             pattern_slot_name: plain(&self.pattern_slot_name),
             type_value_unwritten: plain(&self.type_value_unwritten),
+            hk_row_members: plain(&self.hk_row_members),
             run_time_pattern_slot: plain(&self.run_time_pattern_slot),
             domain_params: plain(&self.domain_params),
             sort_domains: plain(&self.sort_domains),

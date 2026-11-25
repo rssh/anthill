@@ -1919,6 +1919,29 @@ pub enum LoadError {
         /// rendering, so two files' refusals at equal offsets would collapse into one.
         site: String,
     },
+    /// Proposal 074 stage 8 (§6, G1; decided with the user 2026-11-13) — a `provides` clause
+    /// binding a higher-kinded parameter of its spec to a constructor one of whose open
+    /// parameters is not of the kind the slot's parameter it takes is: `provides
+    /// GradedMonad[M = Box2]` where `M`'s `E` is a row and `Box2`'s `V`, which takes it, a type.
+    /// Raised by [`super::typing::check_provision_constructors`].
+    ConstructorKind {
+        /// The spec, qualified.
+        spec: String,
+        /// The higher-kinded parameter, by short name (`M`).
+        param: String,
+        /// The slot's parameter, by short name (`E`).
+        slot: String,
+        /// Whether the slot's parameter is a row (and the constructor's a type), or the reverse.
+        slot_is_row: bool,
+        /// The binding as written (`Box2`).
+        constructor: String,
+        /// The constructor's open parameter that takes the slot's, by short name (`V`).
+        open: String,
+        /// The provider, qualified.
+        provider: String,
+        /// The clause's `path:line:col`.
+        site: String,
+    },
     /// Proposal 074 stage 8 (§6, H4's rule) — a `provides` clause binding a higher-kinded
     /// parameter of its spec to a constructor whose open parameters are not as many as the
     /// slot's: `provides Monad[M = Pair]` (two for `M[T]`'s one). Raised by
@@ -4983,6 +5006,19 @@ impl LoadError {
                     provision_names_no_carrier_message(spec, carrier_param, taken_by, *dispatch, provider)
                 )
             }
+            LoadError::ConstructorKind {
+                spec,
+                param,
+                slot,
+                slot_is_row,
+                constructor,
+                open,
+                provider,
+                site,
+            } => format!(
+                "{site}: {}",
+                constructor_kind_message(spec, param, slot, *slot_is_row, constructor, open, provider)
+            ),
             LoadError::ConstructorArity {
                 spec,
                 param,
@@ -5573,6 +5609,20 @@ impl std::fmt::Display for LoadError {
                     site
                 )
             }
+            LoadError::ConstructorKind {
+                spec,
+                param,
+                slot,
+                slot_is_row,
+                constructor,
+                open,
+                provider,
+                site,
+            } => write!(
+                f,
+                "{} at {site}",
+                constructor_kind_message(spec, param, slot, *slot_is_row, constructor, open, provider)
+            ),
             LoadError::ConstructorArity {
                 spec,
                 param,
@@ -10252,6 +10302,26 @@ fn spec_alias_refused_message(alias: &str, reason: &str) -> String {
     format!(
         "'{alias}' is a type alias, which a spec clause reads as the spec it stands for — \
          {reason}"
+    )
+}
+
+/// Proposal 074 stage 8 (G1) — the sentence for [`LoadError::ConstructorKind`].
+fn constructor_kind_message(
+    spec: &str,
+    param: &str,
+    slot: &str,
+    slot_is_row: bool,
+    constructor: &str,
+    open: &str,
+    provider: &str,
+) -> String {
+    let short = spec.rsplit('.').next().unwrap_or(spec);
+    let base = constructor.split('[').next().unwrap_or(constructor);
+    let (theirs, mine) = if slot_is_row { ("a row", "a type") } else { ("a type", "a row") };
+    format!(
+        "`provides {short}[{param} = {constructor}]` in '{provider}': `{param}`'s `{slot}` is \
+         {theirs}, and `{base}`'s `{open}`, which takes it, is {mine} — a constructor's open \
+         parameters take `{param}`'s in order, each of the same kind"
     )
 }
 
@@ -43975,6 +44045,105 @@ impl<'a> Loader<'a> {
         vars
     }
 
+    /// Proposal 074 stage 8 (§6, G1; decided with the user 2026-11-13) — the members of a
+    /// higher-kinded parameter at which the operation's signature writes a ROW, recorded for
+    /// the reader of a sort's row parameters (`typing::hk_row_members`): `M[E = {}, T = A]`,
+    /// `M[E = {R1, R2}, T = B]`, and `M[E = R, T = A]` where `R` is a row by use (`@ R`) or an
+    /// enclosing sort's row parameter. A single label (`M[E = ConsoleOutput]`) says no kind by
+    /// itself; a member written nowhere as a row, and given none by a clause, is a type.
+    fn record_hk_row_members(&mut self, o: &Operation, op_scope: crate::intern::ScopeId) {
+        let mut types: Vec<&TypeExpr> = vec![&o.return_type];
+        types.extend(o.params.iter().map(|p| &p.ty));
+        types.extend(o.effects.iter().map(|e| &e.type_expr));
+        self.record_hk_rows_written(&types, op_scope, Some(o), o.span);
+    }
+
+    /// [`Self::record_hk_row_members`] over `types`, written in `scope`: an operation's
+    /// signature (`op`, whose own row parameters a binding may name), or an entity's field
+    /// types (`entity w(x: F[E = {}, T = Int64])` in `sort Wrap[F[E, T]]`; found by
+    /// /code-review — `unwrap[F[E, T]](v: Wrap[F = F]) -> F[E = ConsoleOutput, T = Int64]`
+    /// over a field written `{ConsoleOutput}` was refused).
+    fn record_hk_rows_written(
+        &mut self,
+        types: &[&TypeExpr],
+        scope: crate::intern::ScopeId,
+        op: Option<&Operation>,
+        site: Span,
+    ) {
+        let mut written: Vec<(Name, Vec<SortBinding>)> = Vec::new();
+        let mut note = |t: &TypeExpr| {
+            if let TypeExpr::Parameterized { name, bindings } = t {
+                if name.segments.len() == 1 {
+                    written.push((name.clone(), bindings.clone()));
+                }
+            }
+        };
+        for t in types {
+            for_each_type_expr(t, &mut note);
+        }
+        for (name, bindings) in written {
+            let short = self.parsed.symbols.local_name(name.segments[0]).to_owned();
+            let ResolveResult::Found(f) = self.kb.symbols.resolve_in_scope(&short, scope) else {
+                continue;
+            };
+            let members: Vec<Symbol> = self.kb.type_param_syms_of(f).to_vec();
+            if members.is_empty() || !super::typing::is_sort_param_symbol(self.kb, f) {
+                continue;
+            }
+            let declared: Vec<String> = members
+                .iter()
+                .map(|m| super::typing::short_name_of(self.kb.local_name_of(*m)).to_owned())
+                .collect();
+            let keys: Vec<Option<Symbol>> = bindings
+                .iter()
+                .map(|b| b.param.as_ref().map(|n| self.reintern(n.last())))
+                .collect();
+            let fit = self.kb.fit_type_args(&declared, &[], &keys);
+            for (b, slot) in bindings.iter().zip(fit.slots.iter()) {
+                let Some(k) = *slot else {
+                    continue;
+                };
+                let row = match &b.bound {
+                    TypeExpr::EffectRow(_) => true,
+                    TypeExpr::Simple(n) if n.segments.len() == 1 => {
+                        op.is_some_and(|o| {
+                            o.type_params.iter().any(|tp| tp.name == n.segments[0])
+                                && self.op_type_param_is_row(o, n.segments[0])
+                        }) || self.names_enclosing_row_param(&n.segments, scope)
+                    }
+                    _ => false,
+                };
+                if !row || super::typing::hk_row_members(self.kb, f).contains(&members[k]) {
+                    continue;
+                }
+                // A sealed load's spec read `members[k]` as a type, in its bodies and at its
+                // provisions; one load of both would read a row there (§8.3). Found by
+                // /code-review: `namespace anthill.prelude.Monad` with `weird(m: M[T = {}])`
+                // loaded after the standard library, `Monad`'s `T` a row from then on.
+                let owner = self.kb.symbols.declaring_scope(f).map(|s| s.owner());
+                if let Some(owner) =
+                    owner.filter(|s| self.kb.sealed.holds_sort(self.kb.canonical_sort_sym(*s)))
+                {
+                    let owner = self.kb.qualified_name_of(owner).to_owned();
+                    let param = super::typing::short_name_of(self.kb.local_name_of(f)).to_owned();
+                    self.errors.push(LoadError::ChangesSealedCode {
+                        message: format!(
+                            "this load writes a row at `{param}`'s `{}`, which '{owner}' \
+                             declared in a sealed load and reads as a type (proposal 074 \
+                             stage 8, kernel-language §8.3): a later load may not change how an \
+                             earlier declaration's parameter reads. Put the declaration in the \
+                             source that declares '{owner}'",
+                            declared[k]
+                        ),
+                        span: Some(site),
+                    });
+                    continue;
+                }
+                self.kb.record_hk_row_member(members[k]);
+            }
+        }
+    }
+
     /// How `name` reads as `m.M[args]` in the operation being loaded
     /// ([`Self::mint_dictionary_members`]); `None` for any other name, and where `m` is an
     /// arrow's binder or a local, another value than the parameter.
@@ -48108,6 +48277,9 @@ impl<'a> Loader<'a> {
         // the three decisions keyed on THEM (list-literal desugaring, `Option` wrap,
         // absent-optional fill) were order-dependent in exactly the same way.
         let lowered = self.declared_field_values(e, functor);
+        // Proposal 074 stage 8 (G1): a row its fields write at a higher-kinded parameter.
+        let field_types: Vec<&TypeExpr> = e.fields.iter().map(|f| &f.ty).collect();
+        self.record_hk_rows_written(&field_types, self.current_scope, None, e.span);
 
         // WI-630 (everything-is-facts gap): a sort-body entity's `EntityInfo`
         // fact is emitted by `load_sort_with_body`'s loop (which also links it to
@@ -50479,6 +50651,8 @@ impl<'a> Loader<'a> {
         // it is lowered — the result is, before the parameters, and `m`'s type takes `M = P`.
         let prev_dictionary_members = std::mem::take(&mut self.dictionary_members);
         let dictionary_member_vars = self.mint_dictionary_members(o, functor, op_scope, &op_qualified);
+        // Proposal 074 stage 8 (G1): the members of a higher-kinded parameter it writes rows at.
+        self.record_hk_row_members(o, op_scope);
 
         // `result` as a parameter name collides with the reserved
         // return-value name; one diagnostic per operation suffices.

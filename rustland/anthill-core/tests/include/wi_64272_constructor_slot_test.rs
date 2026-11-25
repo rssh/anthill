@@ -989,6 +989,327 @@ fn h5_no_other_spec_answers_at_an_open_slot() {
     );
 }
 
+// ── Part 6: a parameter of a higher-kinded parameter is a row by use ─────────────────────
+
+/// `Eff`, whose `E` is a row, a graded monad over a constructor of two parameters, and `Eff`'s
+/// provider of it — §6's G1–G3 as the proposal writes them.
+const GRADED: &str = "
+  sort Eff
+    effects E = ?
+    sort T = ?
+    entity eff(run: () -> T @ E)
+  end
+  operation force[R, A](m: Eff[E = R, T = A]) -> A effects R =
+    match m
+      case eff(run) -> run()
+  sort GradedMonad[M[E, T]]
+    operation pure[A](a: A) -> M[E = {}, T = A]
+    operation bind[R1, R2, A, B](m: M[E = R1, T = A], f: (a: A) -> M[E = R2, T = B]) -> M[E = {R1, R2}, T = B]
+    operation lift[R, A](body: () -> A @ R) -> M[E = R, T = A]
+  end
+  sort EffMonad
+    provides GradedMonad[M = Eff]
+    operation pure[A](a: A) -> Eff[E = {}, T = A] = eff(run: lambda () -> a)
+    operation bind[R1, R2, A, B](m: Eff[E = R1, T = A], f: (a: A) -> Eff[E = R2, T = B]) -> Eff[E = {R1, R2}, T = B] =
+      eff(run: lambda () -> force(f(force(m))))
+    operation lift[R, A](body: () -> A @ R) -> Eff[E = R, T = A] = eff(run: body)
+  end
+";
+
+/// `greet`'s body, G1's: one `println`, captured, then `1`.
+const GREET_BODY: &str =
+    "GradedMonad.bind(GradedMonad.lift(lambda () -> println(console(), name)), lambda (u) -> GradedMonad.pure(1))";
+
+fn graded(ns: &str, body: &str) -> String {
+    format!(
+        "namespace p074s8.{ns}\n  import anthill.prelude.{{Int64, String, Unit}}\n  import anthill.prelude.Console.{{console, println, ConsoleOutput}}\n  import anthill.realization.runtime.Dictionary\n{GRADED}{body}\nend\n"
+    )
+}
+
+/// Load a graded program and call each `(op, value, printed)` in turn: `printed` is everything
+/// the console holds after the call — so an operation that only BUILDS a computation leaves it
+/// as it was, and one that forces it adds its line.
+fn graded_runs(ns: &str, body: &str, steps: &[(&str, &str, &str)]) {
+    let mut interp = interp_for(&graded(ns, body));
+    let (buf, handler) = crate::common::buffered_console();
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleOutput", handler)
+        .expect("register output handler");
+    for (op, want, printed) in steps {
+        let got = call(&mut interp, &format!("p074s8.{ns}.{op}"));
+        if !want.is_empty() {
+            assert_eq!(got, *want, "{op}");
+        }
+        assert_eq!(buf.borrow().as_str(), *printed, "printed after {op}");
+    }
+}
+
+fn graded_refusal(ns: &str, body: &str) -> String {
+    let errors = load_errors_of(&graded(ns, body));
+    assert!(!errors.is_empty(), "{ns}: expected a refusal");
+    errors.join("\n")
+}
+
+/// G1, decided with the user 2026-11-13: a parameter of a higher-kinded parameter is a row by
+/// use. `greet`'s `M` is bound by its clause to `GradedMonad`'s `M`, whose `E` the spec writes
+/// rows at (`{}`, `R` of `@ R`, `{R1, R2}`), so `greet`'s `E` is a row too, and the body's
+/// grade, `{{}, ConsoleOutput}`, is the declared `ConsoleOutput`. Building prints nothing;
+/// forcing prints `x` and answers 1. MEASURED before part 6: refused, "expected M[E =
+/// ConsoleOutput, T = Int64], got M[E = {{}, ConsoleOutput}, T = Int64]", `E` read as a type.
+#[test]
+fn g1_a_parameter_a_spec_writes_rows_at_is_a_row() {
+    let body = format!(
+        "  operation greet[M[E, T]](name: String) -> M[E = ConsoleOutput, T = Int64] requires GradedMonad[M = M] =
+    {GREET_BODY}
+  operation build() -> Eff[E = ConsoleOutput, T = Int64] =
+    let b: Eff[E = ConsoleOutput, T = Int64] = greet(\"x\")
+    b
+  operation go() -> Int64 effects ConsoleOutput = force(build())"
+    );
+    graded_runs("g1", &body, &[("build", "", ""), ("go", "1", "x\n"), ("go", "1", "x\nx\n")]);
+}
+
+/// G1 at a sort's own higher-kinded parameter: `UseG[F[E, T]] requires GradedMonad[M = F]`
+/// makes `F`'s `E` a row, as an operation's clause does. Found writing the row: the reader took
+/// the sort's `requires` for a type and found no slot there (refused, "expected F[E =
+/// ConsoleOutput, T = Int64], got F[E = {{}, ConsoleOutput}, T = Int64]").
+#[test]
+fn g1_a_sorts_constructor_parameter_bound_by_its_requires() {
+    let body = format!(
+        "  sort UseG[F[E, T]]
+    requires GradedMonad[M = F]
+    operation greetG(name: String) -> F[E = ConsoleOutput, T = Int64] =
+      {GREET_BODY}
+  end
+  operation go() -> Int64 effects ConsoleOutput =
+    let b: Eff[E = ConsoleOutput, T = Int64] = UseG[F = Eff].greetG(\"x\")
+    force(b)"
+    );
+    graded_runs("g1sort", &body, &[("go", "1", "x\n")]);
+}
+
+/// G1 with no clause: a row written at a member of the operation's own higher-kinded parameter
+/// makes it a row — `keep`'s `{ConsoleOutput}` is the row `ConsoleOutput`, as at `Eff`, and
+/// `x` is its declared result.
+#[test]
+fn g1_a_row_written_at_a_member_makes_it_a_row() {
+    let body = "  operation keep[M[E, T]](x: M[E = {ConsoleOutput}, T = Int64]) -> M[E = ConsoleOutput, T = Int64] = x
+  operation mk() -> Eff[E = ConsoleOutput, T = Int64] =
+    eff(run: lambda () ->
+      let u = println(console(), \"y\")
+      2)
+  operation go() -> Int64 effects ConsoleOutput = force(keep(mk()))";
+    graded_runs("g1written", body, &[("go", "2", "y\n")]);
+}
+
+/// G1 at an entity's field: `Wrap`'s field writes the row `{ConsoleOutput}` at `F`'s `E`, so
+/// `F`'s `E` is a row, and `unwrap`'s too, whose `F` its parameter's type binds to `Wrap`'s.
+/// Found by part 6's /code-review: the fields were not read, and `unwrap` was refused, "expected
+/// F[E = ConsoleOutput, T = Int64], got F[E = {ConsoleOutput}, T = Int64]".
+#[test]
+fn g1_a_row_an_entitys_field_writes() {
+    let body = "  sort Wrap[F[E, T]]
+    entity w(x: F[E = {ConsoleOutput}, T = Int64])
+  end
+  operation unwrap[F[E, T]](v: Wrap[F = F]) -> F[E = ConsoleOutput, T = Int64] =
+    match v
+      case w(x) -> x
+  operation mk() -> Wrap[F = Eff] =
+    w(x: eff(run: lambda () ->
+      let u = println(console(), \"z\")
+      3))
+  operation go() -> Int64 effects ConsoleOutput = force(unwrap(mk()))";
+    graded_runs("g1field", body, &[("go", "3", "z\n")]);
+}
+
+/// G2: G1's body over a dictionary parameter, `m.M[ConsoleOutput, Int64]` (part 4's H1), at
+/// `Eff`'s dictionary. MEASURED before part 6: refused as G1, "expected m.M[E = ConsoleOutput,
+/// T = Int64], got m.M[E = {{}, ConsoleOutput}, T = Int64]".
+#[test]
+fn g2_a_dictionary_parameters_constructor_at_a_row() {
+    let body = format!(
+        "  operation greetWith(m: GradedMonad, name: String) -> m.M[ConsoleOutput, Int64] =
+    {GREET_BODY}
+  operation build() -> Eff[E = ConsoleOutput, T = Int64] =
+    let b: Eff[E = ConsoleOutput, T = Int64] = greetWith(Dictionary.instance[GradedMonad[M = Eff]](), \"x\")
+    b
+  operation go() -> Int64 effects ConsoleOutput = force(build())"
+    );
+    graded_runs("g2", &body, &[("build", "", ""), ("go", "1", "x\n")]);
+}
+
+/// G3: the grade is checked. `greet` declared `M[E = {}, …]` over the body that prints is
+/// refused, its row holding `ConsoleOutput`; and `force(b)` in an operation whose row lacks
+/// `ConsoleOutput` is refused naming it. Both refused before part 6 too — the first by the
+/// reading that refused G1's correct grade as well, so it is G1's row that tells the two apart;
+/// the second by `Eff`'s own row, which G1 does not touch.
+#[test]
+fn g3_a_grade_the_body_does_not_have_is_refused() {
+    let text = graded_refusal(
+        "g3a",
+        &format!(
+            "  operation greet[M[E, T]](name: String) -> M[E = {{}}, T = Int64] requires GradedMonad[M = M] =
+    {GREET_BODY}"
+        ),
+    );
+    assert!(
+        text.contains(
+            "type mismatch in greet.return (op-return): expected M[E = {}, T = Int64], got M[E = {{}, ConsoleOutput}, T = Int64]"
+        ),
+        "{text}"
+    );
+    let text = graded_refusal(
+        "g3b",
+        &format!(
+            "  operation greet[M[E, T]](name: String) -> M[E = ConsoleOutput, T = Int64] requires GradedMonad[M = M] =
+    {GREET_BODY}
+  operation quiet() -> Int64 =
+    let b: Eff[E = ConsoleOutput, T = Int64] = greet(\"x\")
+    force(b)"
+        ),
+    );
+    assert!(
+        text.contains("quiet.effects (op-effects): expected declared: [], got undeclared effect: ConsoleOutput")
+            && !text.contains("greet.return"),
+        "{text}"
+    );
+}
+
+/// G1's provision rule: a provider's constructor agrees in kind with the slot it fills, by
+/// order. A type parameter where the spec writes a row is refused at the provision — `Delay`
+/// with `sort E = ?` providing the standard library's `DelayMonad`, which the standard library's
+/// own `Delay` wrote before part 6 and now declares `effects E = ?` — and the row-declared twin
+/// loads and runs. MEASURED before part 6: the type form loaded.
+#[test]
+fn a_type_parameter_where_the_spec_writes_a_row_is_refused_at_the_provision() {
+    let delay = |e: &str| {
+        format!(
+            "namespace p074s8.delay{e}
+  import anthill.prelude.{{DelayMonad, Unit, Int64}}
+  sort Delay
+    sort T = ?
+    {e} E = ?
+    entity delayed(thunk: () -> T @ E)
+    operation delayPure[A](a: A) -> Delay[T = A, E = {{}}] =
+      delayed(lambda () -> a)
+    operation delayDelay[A, EffP](thunk: () -> A @ EffP) -> Delay[T = A, E = EffP] =
+      delayed(thunk)
+    operation delayForce[A, Eff](m: Delay[T = A, E = Eff]) -> A effects Eff =
+      match m
+        case delayed(t) -> t()
+    operation delayFlatMap[A, B, E1, E2](m: Delay[T = A, E = E1], f: (A) -> Delay[T = B, E = E2]) -> Delay[T = B, E = {{E1, E2}}] =
+      delayed(lambda () ->
+        let a = delayForce(m)
+        delayForce(f(a)))
+    provides DelayMonad[M = Delay, pure = delayPure, delay = delayDelay, flatMap = delayFlatMap, force = delayForce]
+  end
+  operation run() -> Int64 = Delay.delayForce(Delay.delayFlatMap(Delay.delayPure(6), lambda (a) -> Delay.delayPure(a + 1)))
+end
+"
+        )
+    };
+    let errors = load_errors_of(&delay("sort"));
+    assert_eq!(
+        errors,
+        vec![
+            "`provides DelayMonad[M = Delay]` in 'p074s8.delaysort.Delay': `M`'s `E` is a row, and `Delay`'s `E`, which takes it, is a type — a constructor's open parameters take `M`'s in order, each of the same kind at 18:5"
+                .to_string()
+        ],
+    );
+    let mut interp = interp_for(&delay("effects"));
+    assert_eq!(call(&mut interp, "p074s8.delayeffects.run"), "7");
+}
+
+/// The other direction: a row parameter where the spec uses a type is refused at the provision —
+/// `Mon`'s `T` is no row anywhere, and `RowBox`'s one open parameter is. MEASURED before part 6:
+/// loaded.
+#[test]
+fn a_row_parameter_where_the_spec_uses_a_type_is_refused_at_the_provision() {
+    let text = refusal(
+        "rowbox",
+        "  sort RowBox
+    effects E = ?
+    entity rb(n: Int64)
+  end
+  sort RowBoxMon
+    provides Mon[M = RowBox]
+    operation pure[A](a: A) -> RowBox[E = A] = rb(n: 0)
+  end",
+        "",
+    );
+    assert!(
+        text.contains(
+            "`provides Mon[M = RowBox]` in 'p074s8.rowbox.RowBoxMon': `M`'s `T` is a type, and `RowBox`'s `E`, which takes it, is a row"
+        ),
+        "{text}"
+    );
+}
+
+/// A later load may not make a sealed spec's member a row: the standard library's `Monad` read
+/// `M`'s `T` as a type, in its bodies and at its provisions (`Monad[M = Option]`), so an
+/// operation a program adds to it writing `M[T = {}]` is refused (kernel-language §8.3). Writing
+/// a row where the sealed spec already has one changes nothing and loads: `DelayMonad`'s `E`.
+/// Found by part 6's /code-review; MEASURED before the fix: `weird` loaded, `Monad`'s `T` a row
+/// for every later reading.
+#[test]
+fn a_later_load_may_not_make_a_sealed_specs_member_a_row() {
+    let errors = load_errors_of(
+        "namespace anthill.prelude.Monad
+  import anthill.prelude.{Int64}
+  operation weird[A](m: M[T = {}]) -> Int64 = 0
+end
+",
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains(
+            "this load writes a row at `M`'s `T`, which 'anthill.prelude.Monad' declared in a sealed load and reads as a type"
+        ),
+        "{errors:?}"
+    );
+    let mut interp = interp_for(
+        "namespace anthill.prelude.DelayMonad
+  import anthill.prelude.{Int64}
+  operation weird2[A](m: M[T = A, E = {}]) -> Int64 = 3
+end
+namespace p074s8.sealedrow
+  import anthill.prelude.{Int64, Delay, DelayMonad}
+  operation k() -> Int64 = DelayMonad.weird2(Delay.delayPure(1))
+end
+",
+    );
+    assert_eq!(call(&mut interp, "p074s8.sealedrow.k"), "3");
+}
+
+/// A match reads a field that applies its sort's higher-kinded parameter at the constructor the
+/// scrutinee's type fills it with: `case optT(run)` over `OptionT[F = List, T = Int64]` binds
+/// `run: List[Option[Int64]]`, and over an operation's own `OptionT[F = G, T = A]`, `run:
+/// G[Option[A]]`. Found by part 6's /code-review, both refused on the stage's parent commit: "expected
+/// List[T = Option[T = Int64]], got F[T = Option[T = Int64]]" — the signature's `F = List` opened
+/// `List`'s `T` as a slot it leaves out, which is no constructor — and "expected G[T = Option[T =
+/// ?A]], got F[T = Option[T = ?A]]", the pattern's walk leaving the application's head.
+#[test]
+fn a_match_reads_a_field_at_the_scrutinees_constructor() {
+    let body = "  sort OptionT[F[T]]
+    sort T = ?
+    entity optT(run: F[Option[T]])
+  end
+  operation runOf[G[T], A](o: OptionT[F = G, T = A]) -> G[Option[A]] =
+    match o
+      case optT(run) -> run
+  operation atList(o: OptionT[F = List, T = Int64]) -> List[Option[Int64]] =
+    match o
+      case optT(run) -> run
+  operation viaRunOf() -> List[Option[Int64]] = runOf(OptionT.optT(run: [some(7)]))
+  operation viaAtList() -> List[Option[Int64]] = atList(OptionT.optT(run: [some(7)]))";
+    answers(
+        "matchctor",
+        "",
+        body,
+        &[("viaRunOf", "[some(value: 7)]"), ("viaAtList", "[some(value: 7)]")],
+    );
+}
+
 // ── Back-out ledger ───────────────────────────────────────────────────────────────────────
 //
 // MEASURED 2026-11-24: each piece backed out by a temporary switch, every row of anthill-core
@@ -1164,3 +1485,51 @@ fn h5_no_other_spec_answers_at_an_open_slot() {
 // 1 row, `wi_9wvt7_review5_test::a_part_with_no_instance_is_said_and_a_variant_is_its_sort`.
 //
 // Passes before and after by design: `h5_no_other_spec_answers_at_an_open_slot`.
+//
+// PART 6, MEASURED 2026-11-25 the same way (control 11681 passed, 0 failed; 11684 with the
+// review's rows). The standard library's `Delay` declares `effects E = ?` in every run, and the
+// two wi516 fixtures with it; the type form is refused at the provision.
+//
+// p6a, the rows a signature writes (`record_hk_row_members`): the standard library's own
+// `provides DelayMonad[M = Delay]` is refused, `DelayMonad`'s `E` then a type, so every row that
+// loads it fails (10527). Backed out with p6f, the kind check: 8 rows — the four G1/G2 rows read
+// by a clause or written (`g1_a_parameter_a_spec_writes_rows_at_is_a_row`,
+// `g1_a_sorts_constructor_parameter_bound_by_its_requires`,
+// `g1_a_row_written_at_a_member_makes_it_a_row`, `g2_a_dictionary_parameters_constructor_at_a_row`),
+// `g3_a_grade_the_body_does_not_have_is_refused`, the two provision rows and
+// `a_later_load_may_not_make_a_sealed_specs_member_a_row`.
+//
+// p6b, the rows a clause gives by order (`clause_slots_binding`): 4 rows — the two `g1_` rows
+// read by a clause, `g2_`, and `g3_`.
+//
+// p6c, a sort's own `requires` read as such a clause: 1 row,
+// `g1_a_sorts_constructor_parameter_bound_by_its_requires`.
+//
+// p6d, the reader (`effects_param_head_is`): 5 rows — the four G1/G2 rows and `g3_`.
+//
+// p6f, the kind agreement at a provision (`check_provision_constructors`): 2 rows,
+// `a_type_parameter_where_the_spec_writes_a_row_is_refused_at_the_provision` and
+// `a_row_parameter_where_the_spec_uses_a_type_is_refused_at_the_provision`.
+//
+// A sixth piece, the same rows read by `effect_row_params_of_spec` and
+// `declared_effect_row_params`, failed no row backed out; it was removed.
+//
+// The fixes of part 6's /code-review, MEASURED the same way:
+//
+// p6g, a later load's row at a sealed spec's member refused: 1 row,
+// `a_later_load_may_not_make_a_sealed_specs_member_a_row`.
+//
+// p6h, the rows an entity's field writes: 1 row, `g1_a_row_an_entitys_field_writes`.
+//
+// p6i, a pattern's field read at the scrutinee's constructor (`pattern_field_type_through`):
+// 2 rows, `a_match_reads_a_field_at_the_scrutinees_constructor` and
+// `g1_a_row_an_entitys_field_writes`, whose `unwrap` matches.
+//
+// p6j, no unwritten slot opened inside a higher-kinded slot (`rigidify_unwritten_sort_params`): 1
+// row, `a_match_reads_a_field_at_the_scrutinees_constructor` (its `atList`).
+//
+// A layer's rows go with it: `kb::layer`'s `s8_a_layers_row_at_an_earlier_member_goes_with_the_layer`
+// fails with `hk_row_members` out of `kb_scoped_fields!`.
+//
+// Passes before and after by design: G3's first refusal (`g3_`'s `greet` declared `M[E = {}]`),
+// refused before part 6 too, by the reading that refused G1's correct grade as well.

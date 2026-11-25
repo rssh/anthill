@@ -11,6 +11,12 @@
 //! `anthill.prelude.delay`, proposal 047 §8) as a user source loaded over the
 //! full stdlib. Nullary thunks use `lambda () -> body` (the typed-binder form
 //! the spec used to show, `lambda (u: Unit) -> …`, does not parse — WI-517).
+//!
+//! `E` is declared `effects E = ?`, as the stdlib's `Delay` is: `DelayMonad` writes rows
+//! at its constructor's `E`, so a provider's `E` is a row (proposal 074 stage 8, G1). The
+//! type form, `sort E = ?`, is refused at the provision — the row
+//! `a_type_parameter_where_the_spec_writes_a_row_is_refused_at_the_provision` in
+//! `wi_64272_constructor_slot_test`.
 
 /// PRIMARY: with the secondary nested-arg effect-drop worked around by a `let`,
 /// the only remaining failure is the present-label-vs-open-tail mismatch in the
@@ -22,7 +28,7 @@ enum wi516.delay.Delay
   import anthill.prelude.{DelayMonad, Unit}
 
   sort T = ?
-  sort E = ?
+  effects E = ?
   entity delayed(thunk: () -> T @ E)
 
   operation delayPure[A](a: A) -> Delay[T = A, E = {}] =
@@ -64,7 +70,7 @@ enum wi516.delaynest.Delay
   import anthill.prelude.{DelayMonad, Unit}
 
   sort T = ?
-  sort E = ?
+  effects E = ?
   entity delayed(thunk: () -> T @ E)
 
   operation delayPure[A](a: A) -> Delay[T = A, E = {}] =

@@ -438,11 +438,13 @@ case class TypeScope(
     * THE HAZARD IT CARRIES, and the reason the declaration answers first
     * wherever it can: a row is erasable only because the slot it fills is an
     * effect slot. A sort that holds a row in an ORDINARY parameter — delay.anthill's
-    * graded monad, `M[T = A, E = {}]` where `E` is `sort E = ?` (proposal 047) —
-    * is refused when Bootstrap can see that declaration, and would be silently
-    * collapsed here. No prelude file reaches a graded monad through an ambient
-    * name; a project that does gets `Delay[A]` for `Delay[A, {}]` with no
-    * diagnostic.
+    * graded monad, `M[T = A, E = {}]` where `E` is a member of the higher-kinded `M[T,
+    * E]`, which the binder grammar cannot mark `effects` — is refused when Bootstrap
+    * can see that declaration, and would be silently collapsed here. No prelude file
+    * reaches such a sort through an ambient name; a project that does — a `G` declaring
+    * `sort E = ?` and written `G[A, {}]` — gets `G[A]` with no diagnostic. (`Delay`
+    * itself declares `effects E = ?` since proposal 074 stage 8, and `Delay[A]` is its
+    * erasure by §2.8a.)
     *
     * WI-1060 SHRANK ITS REACH RATHER THAN CLOSING IT: every type the auto-imported
     * files emit is now in [[ScalaTypes]]`.preludeSorts` with its declared parameter

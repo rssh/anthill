@@ -41,6 +41,15 @@
   table: a raise keeps the writes made before it (`ExceptT` over `StateT`), and an abandoned
   alternative's writes are undone. §10's two `Modify` questions are answered there. The rest of
   this proposal (`Error`, `Branch`, `Suspension`, the reflection mechanism) is unaffected.
+- [074](074-typeclass-instance-is-a-dictionary.md) stage 8, part 6 (WI-20261113-64272,
+  2026-11-25), **for the kind of `DelayMonad`'s `E`** (§8, *Effect-set-as-type*). `E` is an
+  effect-row parameter, not a type parameter that holds a row term:
+  - `DelayMonad` writes effect rows at `M`'s `E` (`{}`, `EffP`, `{E1, E2}`), so `E` is an effect
+    row by use;
+  - a provider's constructor agrees with it in kind, so `Delay` declares `effects E = ?`, and
+    `provides DelayMonad[M = Delay, …]` over a `Delay` that declares `sort E = ?` is refused.
+
+  The bridge between `@ E` and `E` is still the identity, both being effect rows.
 
 ---
 
@@ -290,6 +299,11 @@ arrow's effect row (`@ E`) and the type-param `E` — the reify bridge between "
 "captured effect" is the **identity** (verified: `delay`/`force` load with the same `EffP`/`Eff` in
 both positions). A single captured row is the bare variable `E` (not `{E}`, which would read `E` as
 one present label); `{E1, E2}` is a union, `{}` the empty row.
+
+> **Amended (074 stage 8, 2026-11-25).** `E` is an effect-row parameter, and `Delay` declares it
+> `effects E = ?`: a parameter of `M` is an effect row where `DelayMonad` writes effect rows at
+> it, and a provider's constructor must agree with it in kind. A `Delay` whose `E` is `sort E =
+> ?` is refused at `provides DelayMonad[M = Delay, …]` (*Superseded in part by*, above).
 
 **Interpretation = lowering `E`** — this is what earns the second parameter. A handler/interpreter is
 typed as *reducing* the captured set: `runError : M[T, {Error, ρ}] -> M[Result[T], ρ]` peels `Error`

@@ -1137,8 +1137,8 @@ class BootstrapTest extends munit.FunSuite:
     // Passes both with and without §2.8a BY DESIGN — that is what makes it the
     // control. What it would catch is an erasure keyed on anything looser than the
     // declaration: on the name (`E` here would vanish), or on the argument's shape
-    // (delay.anthill's `Delay[T = A, E = {}]`, which is refused rather than
-    // collapsed — see the WI-1055 B2 arm).
+    // (delay.anthill's `DelayMonad.pure`, `M[T = A, E = {}]`, which is refused rather
+    // than collapsed — see the WI-1055 B2 arm).
     val files = gen(parseSource(
       """namespace anthill.wi1062
         |  sort Graded
@@ -1460,8 +1460,10 @@ class BootstrapTest extends munit.FunSuite:
     // which is one file and one construct.
     //
     // delay.anthill is that construct and is why the arm is not dead code. Its
-    // graded monad (proposal 047) declares `sort E = ?` — an ORDINARY parameter —
-    // and stores the captured effect set in it, so `pure`'s `M[T = A, E = {}]` and
+    // graded monad (proposal 047) stores the captured effect set at `E` of its
+    // higher-kinded `M[T, E]` — a member the binder grammar cannot mark `effects`, so
+    // this emitter reads it as an ORDINARY parameter (proposal 074 stage 8 reads it as a
+    // row by use, and `Delay` itself declares `effects E = ?`) — so `pure`'s `M[T = A, E = {}]` and
     // `delay`'s `M[T = A, E = EffP]` are DIFFERENT types. Erasing `E` would make
     // them one, which is the entire content of the grading; `Any` (what this
     // emitted before WI-1055) collapses them the same way while compiling.
@@ -3200,9 +3202,13 @@ class BootstrapTest extends munit.FunSuite:
     // the head would let a file's other refusals move, multiply or vanish unnoticed,
     // which is the granularity this list exists to report.
     val expectedRefusals = Map(
+      // ONE SINCE proposal 074 stage 8, part 6: `Delay` declares `effects E = ?`, so
+      // `delayPure`'s `Delay[T = A, E = {}]` drops its row with the effect parameter (§2.8a)
+      // and emits. `DelayMonad.pure` writes `{}` at a member of its higher-kinded `M[T, E]`,
+      // which the binder grammar has no `effects` spelling for: 074 reads it as a row by
+      // use, this emitter reads it as an ordinary parameter and refuses it.
       "delay.anthill" -> Seq(
-        ("operation `pure`", "ORDINARY type-parameter slot"),
-        ("operation `delayPure`", "ORDINARY type-parameter slot")),
+        ("operation `pure`", "ORDINARY type-parameter slot")),
       "effects.anthill" -> Seq(
         ("sort `MatchFailed`", "imported from `anthill.reflect`"),
         ("sort `RelationFloundered`", "imported from `anthill.reflect`")),

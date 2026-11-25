@@ -206,6 +206,8 @@ kb_scoped_fields!(
     default_providers,
     provides_clause_seen,
     provides_clause_counts,
+    // Proposal 074 stage 8 (G1): the members a layer's declarations wrote a row at.
+    hk_row_members,
     // ── derived indexes and well-known symbols ─────────────────
     sort_alias_index,
     alias_targets,
@@ -521,6 +523,11 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         default_providers: _,
         provides_clause_seen: _,
         provides_clause_counts: _,
+        // Proposal 074 stage 8 (G1) — the members of higher-kinded parameters a signature or
+        // a field wrote a row at. SCOPED: a layer's operation added under an earlier sort's
+        // namespace can write one at that sort's member, and after the discard the member
+        // reads as the base's declarations have it.
+        hk_row_members: _,
         sort_alias_index: _,
         alias_targets: _,
         alias_types: _,
@@ -1156,6 +1163,41 @@ end
             shown(&kb),
             vec!["Tagger.E"],
             "a row the layer made must still print as it was written after the discard"
+        );
+    }
+
+    /// Proposal 074 stage 8 (G1): a row a layer's operation writes at an earlier sort's
+    /// higher-kinded member is the layer's, and goes with it. WHAT FAILS WHEN BACKED OUT:
+    /// with `hk_row_members` out of `kb_scoped_fields!`, `Mon2`'s `T` stays a row after the
+    /// discard.
+    #[test]
+    fn s8_a_layers_row_at_an_earlier_member_goes_with_the_layer() {
+        let mut kb = crate::kb::test_support::load_stdlib(None);
+        let base = parse::parse(
+            "namespace s8layer\n  sort Mon2[M[T]]\n    operation pure[A](a: A) -> M[T = A]\n  \
+             end\nend\n",
+        )
+        .unwrap();
+        if let Err(errs) = load::load_all(&mut kb, &[&base], &NullResolver) {
+            panic!("base load errors: {errs:?}");
+        }
+        let m = kb.resolve_symbol("s8layer.Mon2.M");
+        let t = kb.type_param_syms_of(m)[0];
+        assert!(!crate::kb::typing::hk_row_members(&kb, m).contains(&t), "a type before");
+        let snap = kb.snapshot_scoped();
+        let layer = parse::parse(
+            "namespace s8layer.Mon2\n  import anthill.prelude.{Int64}\n  \
+             operation weird[A](m: M[T = {}]) -> Int64 = 0\nend\n",
+        )
+        .unwrap();
+        if let Err(errs) = load::load_all(&mut kb, &[&layer], &NullResolver) {
+            panic!("layer load errors: {errs:?}");
+        }
+        assert!(crate::kb::typing::hk_row_members(&kb, m).contains(&t), "a row in the layer");
+        kb.restore_scoped(snap);
+        assert!(
+            !crate::kb::typing::hk_row_members(&kb, m).contains(&t),
+            "a type again after the discard"
         );
     }
 

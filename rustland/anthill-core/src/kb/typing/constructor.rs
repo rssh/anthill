@@ -626,7 +626,9 @@ pub(super) fn sort_param_sym_is_effect_row(
 }
 
 /// Does `sort`'s own `EffectsRuntime` requirement name, as its `Effects` row, a parameter `is`
-/// accepts? The one walk behind [`sort_param_is_effect_row`]'s two keys.
+/// accepts — or, where `sort` is a higher-kinded parameter, is one of its members a row by use
+/// ([`hk_row_members`], proposal 074 stage 8, G1)? The one walk behind
+/// [`sort_param_is_effect_row`]'s two keys.
 fn effects_param_head_is(
     kb: &mut KnowledgeBase,
     sort: Symbol,
@@ -648,7 +650,8 @@ fn effects_param_head_is(
             }
         }
     }
-    false
+    // Proposal 074 stage 8 (G1): a higher-kinded parameter's members are rows by use.
+    hk_row_members(kb, sort).into_iter().any(|m| is(kb, m))
 }
 
 /// WI-20260923-32XFQ — the constructor field a receiver projection threads into: `(spec
