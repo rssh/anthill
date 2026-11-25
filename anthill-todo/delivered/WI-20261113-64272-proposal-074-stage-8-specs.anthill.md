@@ -3,9 +3,9 @@
 - id: WI-20261113-64272-proposal-074-stage-8-specs
 - created: 2026-11-13T23:02:01Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-13T23:02:01Z
+- status_at: 2026-11-25T15:42:55Z
 
 - acceptance: cargo-test
 
@@ -46,4 +46,8 @@ Part 4 of 6 delivered 2026-11-25 (fb9b1edb3): a dictionary of a spec over a cons
 ### 2026-11-25T11:47:30Z — feedback — user
 
 Part 5 of 6 delivered 2026-11-25 (30fb37ae3): TypeValue at a parameter a type leaves unwritten (H5). TypeValue at a sort whose type leaves a parameter unwritten is derived as at any sort, the parameter's evidence an open slot whose type_value() leaves it unwritten (Dictionary(Dictionary(impl: Unwritten), impl: Option)). TypeValue.type_value[T = Option]() and tv[X = Option]() are Option (equal to the value Option); Pair[A = Int64] / Pair[B = Int64] read back as written; tyOf(none) is Option (inferred free = unwritten); H5's tOf(m: Mon) = m.M is Option at Option's dictionary. Before, each refused. The open slot answers only beneath a sort's instance, at that sort's own parameter: PartialEq at an unwritten slot, a type nothing fixes, and a caller's own parameter stay refused. Census: eight earlier rows pinned the refusal H5 lifts; seven rewritten to H5's answers (wi_89j6k and wi_wgjfn host readings of an empty list -> List; wi_9wvt7 reify of a raise at a list with its element open, now refused by the boundary's two labels; wi_n31xx tyOf(none()) -> Option; wi_rs2g4 Holder[U = List].tyb() -> Box[T = List]; wi_sqzpq two calls at Boom -> Boom); the eighth (wi_9wvt7_review5 variant[C]) found the first rule too broad and passes unchanged after the fix. Back-outs over anthill-core (control 11674/0), each piece failing its own rows. /code-review (xhigh): 3 findings, 2 fixed, the two-repair advice kept (no row drives it now). kernel-language and proposal 074 agreed with the user. Gate 12756/0; families green both carriers; node carrier only the four pre-existing wi_cxr5b rows; scaland 811 + 51 (2 skipped) + 1. Next: part 6, rows by use (G1, G3) and G2 moved from part 4.
+
+### 2026-11-25T15:42:53Z — feedback — user
+
+PART 6 OF 6 DELIVERED (2026-11-25, 01b266f91), and with it stage 8. G1-G3: a parameter of a higher-kinded parameter is an effect row by use -- where an operation's signature or an entity's field type writes an effect row at it, or a clause binds the higher-kinded parameter to a spec's slot with an effect row in the same position (an operation's requires or parameter type, a sort's own requires). G1's greet builds without printing and force prints x and answers 1; G2's greetWith at Eff's dictionary and UseG[F = Eff].greetG the same; G3's two programs refused naming ConsoleOutput. MEASURED before: G1 and G2 refused, 'expected M[E = ConsoleOutput, T = Int64], got M[E = {{}, ConsoleOutput}, T = Int64]'. DECIDED with the user 2026-11-25: a provider's constructor agrees in kind with the slot it fills, by order, refused at the provision both ways (LoadError::ConstructorKind); the standard library's Delay declares effects E = ? (and the two wi516 fixtures), proposal 047 amended. Found writing the rows: a sort's requires was not read as such a clause. /code-review found and the part fixed: a later load writing an effect row at a sealed spec's member, refused as ChangesSealedCode; an entity field's effect row unread; a discarded layer keeping its rows; and, refused on the stage's parent commit too, a match reading a field that applies a higher-kinded parameter at the sort's own parameter (case optT(run) over OptionT[F = List, T = Int64]). scaland's Scala emitter still refuses DelayMonad.pure (it reads no use); Delay now emits. Back-outs measured per piece, ledger in wi_64272_constructor_slot_test. Gate 12767 / 0; families green on both carriers; node carrier only the 4 wi_cxr5b rows, as before the stage; scaland 811 / 0. NOT FIXED, as recorded earlier on this ticket: a let binding a spec call whose constructor nothing fixes (let y = Mon.pure(x) under requires Mon[M = F]) is refused with a mismatch that does not say the constructor is unfixed.
 
