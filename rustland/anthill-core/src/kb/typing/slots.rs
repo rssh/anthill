@@ -1860,6 +1860,73 @@ pub(super) fn call_is_at_callers_instance(
     open_params_at_callers_instance(kb, ctx.subst, &rigids).is_some()
 }
 
+/// Proposal 074 stage 8 part 2 (decided with the user 2026-11-25) — a call of a spec's own
+/// body-less operation, in that spec's own body, placed at ANOTHER instance than the one the
+/// body runs at: `Some` of the parameters it fixes elsewhere, each with the type it fixes it at
+/// (`G = F` for `wrapG(a)` at `F[A]` in `Box[F[T], G[T]]`), `None` at the body's own instance.
+///
+/// Such a call is a self-recursive [`CallClass::UnresolvedSpecOp`], read at run time off the
+/// body's own provider, which is at the body's instance: at another, it ran that provider's
+/// member at the wrong types (MEASURED: `Box.confused[F = Option, G = List](7)` over `confused[A](a:
+/// A) -> F[A] = wrapG(a)` answered `[7]` where `Option` is declared, and the two-plain-parameter
+/// twin `"s"` where `Int64` is — WI-80ZV8's known issue (a)). A call at another instance owes its
+/// callee that instance's provider, as a call from another sort does (§8.7).
+pub(super) fn sibling_at_another_instance(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    env: &TypingEnv,
+    spec_sort: Symbol,
+) -> Option<Vec<(Symbol, Value)>> {
+    let own = env.enclosing_sort()?;
+    if !same_sort_canonical(kb, own, spec_sort) {
+        return None;
+    }
+    let rigids: SmallVec<[(VarId, TermId); 4]> =
+        env.enclosing_instance_param_rigids().iter().copied().collect();
+    if open_params_at_callers_instance(kb, subst, &rigids).is_some() {
+        return None;
+    }
+    let params = sort_type_params_as_pairs(kb, spec_sort);
+    let mut elsewhere = Vec::new();
+    for (param, var) in params.iter() {
+        let Term::Var(Var::Global(vid)) = kb.get_term(*var).clone() else {
+            continue;
+        };
+        let Some((_, rigid)) = rigids.iter().find(|(v, _)| *v == vid) else {
+            continue;
+        };
+        let walked = walk_type_deep(kb, subst, *var);
+        let bound = surface_node_binding_to_term(kb, subst, walked);
+        if bound == *rigid {
+            continue;
+        }
+        // Another parameter of the body, by its rigid or — a higher-kinded one, whose
+        // variable a carrier is left at — by its variable: named as written.
+        let named = rigids
+            .iter()
+            .find(|(_, r)| *r == bound)
+            .map(|(v, _)| *v)
+            .or_else(|| match kb.get_term(bound) {
+                Term::Var(Var::Global(v)) => Some(*v),
+                _ => None,
+            })
+            .and_then(|v| kb.type_param_of_canonical_var(v));
+        match named {
+            // At its own place, read through another spelling of its rigid.
+            Some(other) if same_sort_canonical(kb, other, *param) || other == *param => {}
+            Some(other) => {
+                let r = kb.make_sort_ref(other);
+                elsewhere.push((*param, Value::term(r)));
+            }
+            None if !matches!(kb.get_term(bound), Term::Var(Var::Global(_))) => {
+                elsewhere.push((*param, Value::term(bound)));
+            }
+            None => {}
+        }
+    }
+    Some(elsewhere)
+}
+
 /// WI-20261001-80ZV8 (proposal 070 §3, stage c) — A SIBLING CALL NOTHING PLACED ELSEWHERE IS
 /// AT THE CALLER'S INSTANCE: whatever of the callee's sort parameters the bracket, the
 /// arguments and the expected type left open is the enclosing instance's.

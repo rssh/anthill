@@ -4204,6 +4204,7 @@ fn check_apply_call(
                     let own_or_required = call_at_own_instance(
                         kb,
                         env,
+                        &subst,
                         &op,
                         fn_sym,
                         spec_sort,
@@ -4270,13 +4271,22 @@ fn check_apply_call(
                                 span,
                             )?;
                         }
-                        None => occ.set_classification(CallClass::UnresolvedSpecOp {
-                            spec_op_sym: fn_sym,
-                            spec_sort_sym: spec_sort,
-                            abstract_params: SmallVec::from_elem(param, 1),
-                            span,
-                            enclosing_sort: env.enclosing_sort(),
-                        }),
+                        None => {
+                            if let Some(elsewhere) =
+                                sibling_at_another_instance(kb, &subst, env, spec_sort)
+                            {
+                                return Err(sibling_at_another_instance_refusal(
+                                    kb, fn_sym, spec_sort, &elsewhere, span,
+                                ));
+                            }
+                            occ.set_classification(CallClass::UnresolvedSpecOp {
+                                spec_op_sym: fn_sym,
+                                spec_sort_sym: spec_sort,
+                                abstract_params: SmallVec::from_elem(param, 1),
+                                span,
+                                enclosing_sort: env.enclosing_sort(),
+                            })
+                        }
                     }
                     return Ok(TypeResult {
                         ty: resolved_ret,
@@ -4988,6 +4998,7 @@ fn check_apply_call(
                 if let Some(class) = call_at_own_instance(
                     kb,
                     env,
+                    &subst,
                     &op,
                     fn_sym,
                     spec_sort,
@@ -5736,6 +5747,7 @@ fn check_apply_call(
                         if let Some(class) = call_at_own_instance(
                             kb,
                             env,
+                            &subst,
                             &op,
                             fn_sym,
                             spec_sort,
@@ -6017,12 +6029,27 @@ fn check_apply_call(
                                 }
                             }
                         }
+                        // Proposal 074 stage 8 part 2 — a call of the spec's own operation in its
+                        // own body at another instance than the body's is refused, whichever route
+                        // would read the body's provider for it: the own-carrier one below, which
+                        // compares the carrier alone (`confused(c: C) -> F = wrapG(c)` answered
+                        // `"s"` where `Int64` is declared, MEASURED), and the self-recursive one.
+                        if !abstract_params.is_empty() {
+                            if let Some(elsewhere) =
+                                sibling_at_another_instance(kb, &subst, env, spec_sort)
+                            {
+                                return Err(sibling_at_another_instance_refusal(
+                                    kb, fn_sym, spec_sort, &elsewhere, span,
+                                ));
+                            }
+                        }
                         // Proposal 073 §3 — in the spec's own default body, a call at the
                         // body's own carrier takes the instance the body runs at.
                         if !abstract_params.is_empty() && env.in_evaluated_body() {
                             if let Some(class) = call_at_own_instance(
                                 kb,
                                 env,
+                                &subst,
                                 &op,
                                 fn_sym,
                                 spec_sort,
@@ -8289,4 +8316,36 @@ fn held_instance_reads_carrierless_call(
             .filter(|h| kb.canonical_sort_sym(h.spec_sort) == spec)
             .count()
             == 1
+}
+
+/// Proposal 074 stage 8 part 2 — the refusal of a sibling call at another instance
+/// ([`sibling_at_another_instance`]): the parameters it fixes elsewhere, and what answers it.
+fn sibling_at_another_instance_refusal(
+    kb: &KnowledgeBase,
+    fn_sym: Symbol,
+    spec_sort: Symbol,
+    elsewhere: &[(Symbol, Value)],
+    span: Option<Span>,
+) -> TypeError {
+    let spec = short_name_of(kb.qualified_name_of(spec_sort)).to_string();
+    let at = elsewhere
+        .iter()
+        .map(|(p, v)| format!("{} = {}", short_name_of(kb.local_name_of(*p)), type_display_name_value(kb, v)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
+        expected: format!(
+            "a call of `{spec}`'s own operation at the instance this body runs at, whose \
+             provider answers it"
+        ),
+        actual: format!(
+            "`{}` at `{spec}[{at}]`, another instance: this body is handed the provider of \
+             its own instance alone, and nothing hands one at that — require `{spec}` at it, or \
+             call where a provider at it is known",
+            short_name_of(kb.qualified_name_of(fn_sym)),
+        ),
+    }
 }

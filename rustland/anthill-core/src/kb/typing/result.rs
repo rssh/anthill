@@ -1350,15 +1350,72 @@ fn rewrite_occ_deep(
                 }))
             }
             TypeNode::Parameterized { base, bindings } => {
-                let b = child(kb, subst, base, w, &mut changed);
+                // Proposal 074 stage 8 — A HIGHER-KINDED PARAMETER'S APPLICATION KEEPS ITS
+                // HEAD, as its term twin's functor is never walked: walked, `Ref(F)` read as
+                // `F`'s variable, so an open carrier's application headed by a variable and read
+                // as no type (`?F[T = Int64]`, an `Error` to `extract_type`), and a filled one
+                // took its constructor's keys by name. Grounding fills it with the constructor,
+                // by order, as the term walk does ([`apply_constructor`]). MEASURED, under
+                // ANTHILL_TEST_NODE_CARRIER=1: `UseM`'s `lift(x: Int64) -> F[Int64] =
+                // Mon.pure(x)` was refused, "expected ?F[T = Int64], got M[T = Int64]".
+                let hk_head = match base {
+                    TypeChild::Interned(t) => match kb.get_term(*t) {
+                        Term::Ref(f) if is_higher_kinded_param(kb, *f) => Some(*f),
+                        _ => None,
+                    },
+                    TypeChild::Node(_) => None,
+                };
                 let bs: Vec<(Symbol, TypeChild)> = bindings
                     .iter()
                     .map(|(s, c)| (*s, child(kb, subst, c, w, &mut changed)))
                     .collect();
-                Some(NodeKind::Type(TypeNode::Parameterized {
-                    base: b,
-                    bindings: bs,
-                }))
+                match hk_head {
+                    Some(carrier) => {
+                        let filled = if w.ground {
+                            filled_constructor(kb, subst, carrier)
+                        } else {
+                            None
+                        };
+                        let slots: Vec<Symbol> = kb.type_param_syms_of(carrier).to_vec();
+                        match filled.filter(|c| c.open.len() == slots.len()) {
+                            // The constructor applied by order, on this carrier: its written
+                            // arguments, then each open parameter the slot's argument there.
+                            Some(ctor) => {
+                                changed = true;
+                                let short = |kb: &KnowledgeBase, s: Symbol| {
+                                    short_name_of(kb.local_name_of(s)).to_string()
+                                };
+                                let mut nb: Vec<(Symbol, TypeChild)> = Vec::new();
+                                for (k, v) in &ctor.written {
+                                    let key = kb.intern(&short(kb, *k));
+                                    nb.push((key, value_to_type_child_at(kb, v, occ.span, occ.owner)));
+                                }
+                                for (slot, open) in slots.iter().zip(&ctor.open) {
+                                    let want = short(kb, *slot);
+                                    if let Some((_, c)) = bs.iter().find(|(k, _)| short(kb, *k) == want) {
+                                        let key = kb.intern(&short(kb, *open));
+                                        nb.push((key, c.clone()));
+                                    }
+                                }
+                                Some(NodeKind::Type(TypeNode::Parameterized {
+                                    base: TypeChild::Interned(kb.make_sort_ref(ctor.base)),
+                                    bindings: nb,
+                                }))
+                            }
+                            None => Some(NodeKind::Type(TypeNode::Parameterized {
+                                base: base.clone(),
+                                bindings: bs,
+                            })),
+                        }
+                    }
+                    None => {
+                        let b = child(kb, subst, base, w, &mut changed);
+                        Some(NodeKind::Type(TypeNode::Parameterized {
+                            base: b,
+                            bindings: bs,
+                        }))
+                    }
+                }
             }
             TypeNode::EffectsRows { effects_expr } => {
                 let e = child(kb, subst, effects_expr, w, &mut changed);

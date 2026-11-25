@@ -713,7 +713,9 @@ fn unify_constructor_application(
         .filter(|t| matches!(kb.get_term(*t), Term::Var(Var::Global(_))))?;
     let walked = walk_term_to_resolved(kb, subst, var_t);
     let empty = crate::kb::node_occurrence::empty_span();
-    if let Some(ctor) = constructor_of(kb, &walked) {
+    // Still its own variable is free, not a constructor of itself.
+    let own = kb.value_global_var(&walked) == kb.value_global_var(&Value::term(var_t));
+    if let Some(ctor) = (!own).then(|| constructor_of(kb, &walked)).flatten() {
         let other_base = kb.make_sort_ref(other);
         let other_ty = parameterized_value(kb, other_base, other_bindings, empty, None);
         return Some(match apply_constructor(kb, &ctor, carrier, args, empty, None) {
@@ -1864,13 +1866,17 @@ pub(super) fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: T
 /// application's arguments BY ORDER ([`apply_constructor`]), so `M[T = A]` with `M := Box` is
 /// `Box[V = A]`. MEASURED before: the fill kept the application's keys under the sort, `Box[T =
 /// A]`, and a bracket's `[M = Pair[A = Int64]]` filled nothing.
-fn filled_constructor(kb: &mut KnowledgeBase, subst: &Substitution, functor: Symbol) -> Option<Constructor> {
+pub(super) fn filled_constructor(kb: &mut KnowledgeBase, subst: &Substitution, functor: Symbol) -> Option<Constructor> {
     let var_t = resolve_sort_alias(kb, functor)
         .filter(|t| matches!(kb.get_term(*t), Term::Var(Var::Global(_))))?;
     // WI-394: walk to a `Value` so a non-`Term` (`Value::Node`) fill is seen
     // through the view; a `Node` that is not a concrete sort application yields
     // `None` ("not filled to a constructor"), the same as a bare var.
     let walked = walk_term_to_resolved(kb, subst, var_t);
+    // Still its own variable: unfilled, not a constructor of itself.
+    if kb.value_global_var(&walked) == kb.value_global_var(&Value::term(var_t)) {
+        return None;
+    }
     constructor_of(kb, &walked)
 }
 

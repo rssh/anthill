@@ -310,6 +310,150 @@ fn a_result_the_constructor_does_not_make_is_refused() {
     assert!(text.contains("expected Box[V = String]"), "{text}");
 }
 
+// ── Part 2: a requirement's constructor, read through it ─────────────────────────────────
+
+/// A sort over a constructor that requires the spec at it: inside `UseM`, `Mon.pure(x)` is at
+/// `M = F`, so `M[Int64]` reads `F[Int64]`, and a call at `F = Option` answers through
+/// `OptionMon`. MEASURED before part 2: refused, "expected F[T = Int64], got M[T = Int64]".
+#[test]
+fn a_requirement_at_a_constructor_parameter_is_read_through_it() {
+    let decls = "
+  sort UseM[F[T]]
+    requires Mon[M = F]
+    operation lift(x: Int64) -> F[Int64] = Mon.pure(x)
+  end
+";
+    let body = "  operation viaOption() -> Option[Int64] = UseM[F = Option].lift(7)
+  operation viaList() -> List[Int64] = UseM[F = List].lift(7)
+  operation positional() -> Option[Int64] = UseM[Option].lift(7)";
+    answers(
+        "usem",
+        decls,
+        body,
+        &[
+            ("viaOption", "some(value: 7)"),
+            ("viaList", "[7]"),
+            ("positional", "some(value: 7)"),
+        ],
+    );
+}
+
+/// H4: a provider over a constructor, whose provision's constructor writes its own parameter
+/// (`OptionT[F = F]`, over `T`) and whose member calls the spec at `F` — through the bracket,
+/// and unbracketed, `M` fixed by the expected type `F[Option[A]]`. `F = List` and `F = Option`
+/// each answer through their own provider. MEASURED before the stage: `pure`'s body refused,
+/// "`Mon[M = OptionTMonad.F[T = ?]]` cannot be supplied" (the bracketed spelling, answered by
+/// part 1); the unbracketed one was refused as `UseM` was.
+#[test]
+fn h4_a_provider_over_a_constructor_reads_the_constructors_provider() {
+    let decls = "
+  sort OptionT[F[T]]
+    sort T = ?
+    entity optT(run: F[Option[T]])
+  end
+  sort OptionTMon[F[T]]
+    requires Mon[M = F]
+    provides Mon[M = OptionT[F = F]]
+    operation pure[A](a: A) -> OptionT[F = F, T = A] = optT(run: Mon.pure[M = F](some(a)))
+  end
+  sort OptionT2[F[T]]
+    sort T = ?
+    entity optT2(run: F[Option[T]])
+  end
+  sort OptionT2Mon[F[T]]
+    requires Mon[M = F]
+    provides Mon[M = OptionT2[F = F]]
+    operation pure[A](a: A) -> OptionT2[F = F, T = A] = optT2(run: Mon.pure(some(a)))
+  end
+";
+    let body = "  operation overList() -> OptionT[F = List, T = Int64] = Mon.pure[M = OptionT[F = List]](7)
+  operation overOption() -> OptionT[F = Option, T = Int64] = Mon.pure[M = OptionT[F = Option]](7)
+  operation unbracketed() -> OptionT2[F = List, T = Int64] = Mon.pure[M = OptionT2[F = List]](7)";
+    answers(
+        "optiont",
+        decls,
+        body,
+        &[
+            ("overList", "optT(run: [some(value: 7)])"),
+            ("overOption", "optT(run: some(value: some(value: 7)))"),
+            ("unbracketed", "optT2(run: [some(value: 7)])"),
+        ],
+    );
+}
+
+/// A call of a spec's own operation in its own body, placed at ANOTHER instance than the
+/// body's, is refused at load (decided with the user 2026-11-25): the body is handed the provider
+/// of its own instance alone. MEASURED before: both ran the caller's provider at the wrong types,
+/// `Box.confused[F = Option, G = List](7)` answering `[7]` where `Option` is declared, and the
+/// plain twin `"s"` where `Int64` is (WI-80ZV8's known issue (a)); part 2 had made the
+/// higher-kinded one load where it was refused by luck.
+#[test]
+fn a_sibling_call_at_another_instance_is_refused() {
+    let text = refusal(
+        "sibhk",
+        "
+  sort Box[F[T], G[T]]
+    operation wrapG[A](a: A) -> G[A]
+    operation confused[A](a: A) -> F[A] = wrapG(a)
+  end
+",
+        "",
+    );
+    assert!(
+        text.contains("`wrapG` at `Box[G = F]`, another instance")
+            && text.contains("nothing hands one at that"),
+        "{text}"
+    );
+    let text = refusal(
+        "sibplain",
+        "
+  sort Box2
+    sort F = ?
+    sort G = ?
+    operation wrapG(a: Int64) -> G
+    operation confused(a: Int64) -> F = wrapG(a)
+  end
+",
+        "",
+    );
+    assert!(
+        text.contains("`wrapG` at `Box2[G = F]`, another instance"),
+        "{text}"
+    );
+}
+
+/// CONTROL, passes either way by design: a sibling call at the body's own instance answers
+/// through the body's provider, and one at another instance that a requirement hands answers
+/// through that provider.
+#[test]
+fn a_sibling_call_at_the_bodys_instance_or_a_required_one_answers() {
+    let decls = "
+  sort Box2
+    sort F = ?
+    sort G = ?
+    operation wrapG(a: Int64) -> G
+    operation again(a: Int64) -> G = wrapG(a)
+    operation viaReq(a: Int64) -> F requires Box2[F = F, G = F] = wrapG(a)
+  end
+  sort IS
+    provides Box2[F = Int64, G = String]
+    operation wrapG(a: Int64) -> String = \"s\"
+  end
+  sort II
+    provides Box2[F = Int64, G = Int64]
+    operation wrapG(a: Int64) -> Int64 = a + 1
+  end
+";
+    let body = "  operation goAgain() -> String = Box2.again[F = Int64, G = String](7)
+  operation goReq() -> Int64 = Box2.viaReq[F = Int64, G = String](7)";
+    answers(
+        "sibok",
+        decls,
+        body,
+        &[("goAgain", "\"s\""), ("goReq", "8")],
+    );
+}
+
 // ── Back-out ledger ───────────────────────────────────────────────────────────────────────
 //
 // MEASURED 2026-11-24: each piece backed out by a temporary switch, every row of anthill-core
@@ -344,3 +488,37 @@ fn a_result_the_constructor_does_not_make_is_refused() {
 // it was removed.
 //
 // Passes under every piece by design: `an_expected_type_fixes_a_constructor_named_alike`.
+
+// PART 2, MEASURED 2026-11-25 the same way, on the part's final code (control 11658 passed, 0
+// failed). Before the sibling refusal, its control failed one row, wi383's
+// `rigid_functor_application_rejects_wrong_functor`, which the part moves and which is rewritten
+// on what it is about, two rigid functors of one body.
+//
+// p2a, a higher-kinded parameter's own variable read as its constructor (`constructor_of`, with
+// the guard that a carrier still at its own variable is unfilled — without it the load
+// overflowed its stack, `F[T = X]` filling to itself): 1 row,
+// `a_requirement_at_a_constructor_parameter_is_read_through_it`.
+//
+// p2c, a sibling call at another instance refused (`sibling_at_another_instance`, decided with
+// the user 2026-11-25), on both routes that read the body's provider — the self-recursive
+// `UnresolvedSpecOp` and the own-carrier `call_at_own_instance`, which compared the carrier
+// alone (found by /code-review): 2 rows, `a_sibling_call_at_another_instance_is_refused` and
+// wi383's `a_sibling_call_at_another_functor_is_refused`; control 11658 / 0 on the final code.
+// Its census, each route's refusal run over all of anthill-core before a row was written for
+// it, failed one row in all: the one the part had added asserting the call loads.
+//
+// p2d, on the node carrier (ANTHILL_TEST_NODE_CARRIER=1): a higher-kinded parameter's
+// application keeps its head in the occurrence walk and is filled by order there, as its term
+// twin is (`rewrite_occ_deep`). Before it, measured on that carrier over all of anthill-core:
+// `a_requirement_at_a_constructor_parameter_is_read_through_it` failed ("expected ?F[T = Int64],
+// got M[T = Int64]"), with the four wi_xgrkz rows that failed there on the stage's parent commit
+// too; with it, only the four wi_cxr5b two-application rows fail, as on the parent commit.
+//
+// A piece binding a carrier explicitly to another higher-kinded parameter's variable in
+// `unify_constructor_application` failed no row backed out — the unification of two carriers'
+// variables already leaves `M` at `F`'s — and was removed.
+//
+// Passes under every piece of part 2 by design: `h4_a_provider_over_a_constructor_reads_the_
+// constructors_provider`, answered by part 1 (MEASURED after part 1: `optT(run: [some(value:
+// 7)])`, refused before the stage), and `a_sibling_call_at_the_bodys_instance_or_a_required_one_
+// answers`.

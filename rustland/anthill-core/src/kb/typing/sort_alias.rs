@@ -346,11 +346,32 @@ pub(crate) struct Constructor {
     pub(crate) open: Vec<Symbol>,
 }
 
-/// The constructor `v` is, where it is a concrete sort, bare or applied; `None` for anything
-/// else (a type parameter, a variable, a tuple, an arrow).
+/// The constructor `v` is, where it is a concrete sort, bare or applied, or a HIGHER-KINDED
+/// parameter (`F` of `sort UseM[F[T]]`, over its own parameters); `None` for anything else (a
+/// type parameter of another kind, a variable, a tuple, an arrow).
+///
+/// A higher-kinded parameter is one (proposal 074 stage 8, part 2): under `requires Monad[M =
+/// F]`, `M[T = Int64]` is `F[T = Int64]`. MEASURED before: `UseM`'s `lift(x: Int64) -> F[T =
+/// Int64] = Monad.pure(x)` was refused, "expected F[T = Int64], got M[T = Int64]".
 pub(crate) fn constructor_of(kb: &mut KnowledgeBase, v: &Value) -> Option<Constructor> {
+    // A higher-kinded parameter's own variable, where a binding left a carrier at it (`M :=
+    // ?F` under `requires Monad[M = F]`): that parameter, over its own parameters.
+    if let Some(param) = kb
+        .value_global_var(v)
+        .and_then(|vid| kb.type_param_of_canonical_var(vid))
+        .filter(|p| is_higher_kinded_param(kb, *p))
+    {
+        let open = kb.type_param_syms_of(param).to_vec();
+        return Some(Constructor {
+            base: param,
+            written: Vec::new(),
+            open,
+        });
+    }
     let (base, written) = sort_application_parts(kb, v)?;
-    genuine_concrete_sort(kb, base)?;
+    if genuine_concrete_sort(kb, base).is_none() && !is_higher_kinded_param(kb, base) {
+        return None;
+    }
     let open = kb
         .type_param_syms_of(base)
         .iter()
@@ -406,10 +427,13 @@ pub(crate) fn apply_constructor(
     Some(parameterized_value(kb, base, &bindings, span, owner))
 }
 
-/// Is the type parameter `param` (its declared symbol) higher-kinded — one declaring
-/// parameters of its own, `M` of `sort Monad[M[T]]`?
+/// Is `param` a higher-kinded type parameter — a MARKED one, backed by a variable (WI-452),
+/// that declares parameters of its own, `M` of `sort Monad[M[T]]`? A parametric sort declares
+/// parameters too, and is none (`List`).
 pub(crate) fn is_higher_kinded_param(kb: &KnowledgeBase, param: Symbol) -> bool {
     !kb.type_param_syms_of(param).is_empty()
+        && resolve_sort_alias(kb, param)
+            .is_some_and(|t| matches!(kb.get_term(t), Term::Var(Var::Global(_))))
 }
 
 /// Does `ty` leave a slot of a sort application open — a declared slot it does not write,

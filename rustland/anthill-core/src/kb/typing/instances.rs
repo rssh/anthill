@@ -1765,6 +1765,7 @@ fn build_spec_dictionary_in(
 pub(super) fn call_at_own_instance(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
+    subst: &Substitution,
     op: &OperationInfoFull,
     fn_sym: Symbol,
     spec_sort: Symbol,
@@ -1775,6 +1776,12 @@ pub(super) fn call_at_own_instance(
 ) -> Option<CallClass> {
     let own = env.enclosing_sort()?;
     if !same_sort_canonical(kb, own, spec_sort) {
+        return None;
+    }
+    // At the body's own carrier but another instance — another parameter fixed elsewhere (`G = F`
+    // in `confused(c: C) -> F = wrapG(c)`): not the instance the body runs at, whose provider
+    // this would read (proposal 074 stage 8 part 2; MEASURED: `"s"` where `Int64` is declared).
+    if sibling_at_another_instance(kb, subst, env, spec_sort).is_some() {
         return None;
     }
     let carrier = spec_carrier_param(kb, spec_sort)?;

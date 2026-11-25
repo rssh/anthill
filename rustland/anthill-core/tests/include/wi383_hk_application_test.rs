@@ -93,12 +93,40 @@ end
 }
 
 /// Piece 3 (REJECT, wrong functor): decomposition checks the FUNCTOR head, not just the
-/// binding — `confused` returns `wrapG(a) : G[T = A]` but declares `F[T = A]`; `F ≠ G`
-/// rejects. (Here the diagnostic distinguishes the functors: `expected F[...], got G[...]`.)
-/// TWO marked HK carriers in one enclosing list (`Box[F[T], G[T]]`).
+/// binding — `confused` returns its argument `g : G[T = A]` but declares `F[T = A]`; the two
+/// rigid functors `F ≠ G` reject. (Here the diagnostic distinguishes the functors: `expected
+/// F[...], got G[...]`.) TWO marked HK carriers in one enclosing list (`Box[F[T], G[T]]`).
+///
+/// MOVED by proposal 074 stage 8 part 2 (WI-20261113-64272). The row returned a SIBLING CALL,
+/// `wrapG(a) : G[T = A]`; under proposal 070 a sibling call's parameters are fixed by the
+/// expected type as any call's are, so that call is at `G = F` and loads, as `wrapG(a) -> G`
+/// declared `-> F` does over a sort with two plain parameters (MEASURED). It was refused only
+/// because a higher-kinded variable bound to another was never read as that one's constructor.
+/// The functor check is stated on what it is about, two rigid functors of one body.
 #[test]
 fn rigid_functor_application_rejects_wrong_functor() {
     let snippet = r#"namespace test.hk.fg
+  sort Box[F[T], G[T]]
+    operation confused[A](g: G[T = A]) -> F[T = A] = g
+  end
+end
+"#;
+    let errs = load_errors(&[snippet]);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("confused") && e.contains("expected F[T = ?A], got G[T = ?A]")),
+        "confused (-> F[T=A], returns G[T=A]) MUST be rejected on the functor; got: {errs:?}"
+    );
+}
+
+/// The sibling call the row above returned before proposal 074 stage 8: its `G` is fixed by
+/// the expected type to `F`, as a plain parameter's is, so the call is at `Box[G = F]`, another
+/// instance than the body's, and it is refused (decided with the user 2026-11-25: a call of the
+/// spec's own operation there is answered by the body's provider, at the body's instance, and
+/// ran it at the wrong types — `[7]` where `Option` is declared).
+#[test]
+fn a_sibling_call_at_another_functor_is_refused() {
+    let snippet = r#"namespace test.hk.fgsib
   sort Box[F[T], G[T]]
     operation wrapG[A](a: A) -> G[T = A]
     operation confused[A](a: A) -> F[T = A] = wrapG(a)
@@ -107,9 +135,8 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter()
-            .any(|e| e.contains("confused") && e.contains("mismatch")),
-        "confused (-> F[T=A], returns G[T=A]) MUST be rejected on the functor; got: {errs:?}"
+        errs.iter().any(|e| e.contains("`wrapG` at `Box[G = F]`, another instance")),
+        "{errs:?}"
     );
 }
 
