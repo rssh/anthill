@@ -4257,6 +4257,7 @@ impl<'a> Converter<'a> {
                 type_params.push(TypeParam {
                     name: self.intern(self.text(binder)),
                     span: self.span(binder),
+                    members: Vec::new(),
                     default: None,
                     requirement_slot: Some(slot),
                 });
@@ -5417,11 +5418,59 @@ impl<'a> Converter<'a> {
                     && self.child_by_kind(*d, "variable").is_some_and(|v| self.text(v) == "?"))
             })
             .map(|d| self.convert_type(d));
+        // Proposal 074 stage 8 (H2): `F[T]` — the member names, one level deep. A member of
+        // its own kind (`F[G[T]]`) and a member's default are refused here, LOUD: nothing
+        // reads either for an operation's parameter, and dropped they would load as
+        // something the author did not write.
+        let mut members: Vec<(Symbol, Span)> = Vec::new();
+        let member_list = self.child_by_kind(node, "sort_type_param_list");
+        if let Some(list) = member_list {
+            for m in self.children_by_kind(list, "sort_type_param") {
+                if self.child_by_kind(m, "sort_type_param_list").is_some() {
+                    self.err(
+                        format!(
+                            "operation type parameter `{written_name}`: a parameter of a \
+                             higher-kinded parameter is a type, not a constructor of its own"
+                        ),
+                        m,
+                    );
+                    continue;
+                }
+                if self.field(m, "default").is_some() {
+                    self.err(
+                        format!(
+                            "operation type parameter `{written_name}`: a parameter of a \
+                             higher-kinded parameter declares no default"
+                        ),
+                        m,
+                    );
+                    continue;
+                }
+                if let Some(n) = self.field(m, "name") {
+                    let member = self.intern(self.text(n));
+                    members.push((member, self.span(n)));
+                }
+            }
+            // …and so is a default of the parameter itself (found by /code-review): read as
+            // a type, `F[T] = Option` was refused for leaving a slot open, which is what a
+            // constructor does; no reader takes a constructor as a default yet.
+            if let Some(d) = self.field(node, "default").filter(|_| default.is_some()) {
+                self.err(
+                    format!(
+                        "operation type parameter `{written_name}`: a higher-kinded parameter \
+                         declares no default"
+                    ),
+                    d,
+                );
+            }
+        }
+        let default = default.filter(|_| member_list.is_none());
         // WI-840: a bracket-declared parameter names no requirement slot; only the
         // `requires <name>: Spec[…]` binder does (`convert_requires_body`).
         TypeParam {
             name,
             span,
+            members,
             default,
             requirement_slot: None,
         }

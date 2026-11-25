@@ -1000,6 +1000,16 @@ fn check_apply_call(
         // arg loops because a row tail's lower bound is the UNION over every parameter
         // naming it. Empty for an op with no type parameters (the gate at each push).
         let mut callback_pairs: Vec<(Symbol, Value, Value)> = Vec::new();
+        // Proposal 074 stage 8 (H2): (declared, actual) per argument of an operation with a
+        // higher-kinded parameter, for the refusal of an argument that fits two constructors
+        // there ([`constructors_the_call_fits`]). Kept only for such an operation.
+        let constructor_param = op.type_params.iter().any(|(_, v)| match v {
+            Var::Global(vid) => kb
+                .type_param_of_canonical_var(*vid)
+                .is_some_and(|p| is_higher_kinded_param(kb, p)),
+            _ => false,
+        });
+        let mut constructor_args: Vec<(Value, Value)> = Vec::new();
         // WI-20260926-NEKR0: a type parameter several arguments bind takes their JOIN, bound
         // here BEFORE the loops below unify in parameter order — which is what made the first
         // argument decide it. A projection-bearing parameter is deferred there and here alike.
@@ -1109,6 +1119,9 @@ fn check_apply_call(
                     if needs_param_arg_types {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
+                    if constructor_param {
+                        constructor_args.push((param_type.clone(), arg_result.ty.clone()));
+                    }
                     // WI-329: the (declared, actual) pairs the discharge inference reads
                     // after BOTH loops ([`callback_pair_recorded`]).
                     if callback_pair_recorded(kb, &op, param_type) {
@@ -1191,6 +1204,9 @@ fn check_apply_call(
                     }
                     if needs_param_arg_types {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
+                    }
+                    if constructor_param {
+                        constructor_args.push((param_type.clone(), arg_result.ty.clone()));
                     }
                     // WI-329 — see the positional loop.
                     if callback_pair_recorded(kb, &op, param_type) {
@@ -2960,6 +2976,12 @@ fn check_apply_call(
         // WI-557/602 scoped the sibling value-precondition obligation.
         if !env.in_rule_body() {
             if let Some(open) = first_unconstrained_type_param(kb, &subst, &op) {
+                let fits = constructors_the_call_fits(
+                    kb, &subst, &op, open, expected.as_ref(), &constructor_args, fn_sym, span,
+                );
+                if let Some(two) = fits {
+                    return Err(two);
+                }
                 return Err(unconstrained_type_param_error(
                     kb, &subst, fn_sym, open, span,
                 ));
@@ -8348,4 +8370,77 @@ fn sibling_at_another_instance_refusal(
             short_name_of(kb.qualified_name_of(fn_sym)),
         ),
     }
+}
+
+
+/// Proposal 074 stage 8 (§6, H2; decided with the user 2026-11-13) — the refusal of a call whose
+/// types fit TWO constructors at an operation's higher-kinded parameter: `let p: Pair[Int64,
+/// Int64] = lift(7)` over `lift[F[T]](x: Int64) -> F[Int64]` is `F = Pair[A = Int64]` over `B`
+/// and `F = Pair[B = Int64]` over `A`. Neither the last parameters (as Scala's partial
+/// unification takes them) nor the providers of `requires Mon[M = F]` choose; the bracket does.
+/// Read where the result is an application of it at an expected type, and where a parameter is
+/// one at its argument's (`args`, found by /code-review: `size(m: Pair.pair(fst: 1, snd: 2))`
+/// over `size[F[T]](m: F[Int64])`). `None` where `open` is no higher-kinded parameter or no
+/// such place fits two constructors. MEASURED before: refused "expected a type for 'F', got
+/// unconstrained", naming neither.
+#[allow(clippy::too_many_arguments)]
+fn constructors_the_call_fits(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    op: &OperationInfoFull,
+    open: (Symbol, Var),
+    expected: Option<&Value>,
+    args: &[(Value, Value)],
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    let Var::Global(vid) = open.1 else {
+        return None;
+    };
+    let carrier = kb.type_param_of_canonical_var(vid).filter(|p| is_higher_kinded_param(kb, *p))?;
+    let at_result = expected.map(|e| (op.return_type.clone(), e.clone()));
+    for (declared, actual) in at_result.iter().chain(args) {
+        if !matches!(extract_type(kb, declared), TypeExtractor::Parameterized { base, .. } if base == carrier) {
+            continue;
+        }
+        let actual = walk_type_deep_value(kb, subst, actual);
+        let Some((other, other_bindings)) = sort_application_parts(kb, &actual) else {
+            continue;
+        };
+        if genuine_concrete_sort(kb, other).is_none() {
+            continue;
+        }
+        let mut candidates = constructor_candidates(kb, carrier, other, &other_bindings);
+        if candidates.len() < 2 {
+            continue;
+        }
+        // Shown the constructor writing the LEADING parameters first (`Pair[A = Int64]` over
+        // `B`), the one the advice writes: the order the proposal's own example reads them in.
+        candidates.reverse();
+        let name = short_name_of(kb.local_name_of(carrier)).to_string();
+        let slots: Vec<String> = kb
+            .type_param_syms_of(carrier)
+            .iter()
+            .map(|q| short_name_of(kb.local_name_of(*q)).to_string())
+            .collect();
+        let shown: Vec<String> = candidates
+            .iter()
+            .map(|(_, c)| format!("`{name} = {}`", type_display_name_value(kb, c)))
+            .collect();
+        let first = type_display_name_value(kb, &candidates[0].1);
+        let op_short = short_name_of(kb.qualified_name_of(fn_sym)).to_string();
+        return Some(TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
+            expected: format!("one constructor at `{name}` (`{name}[{}]`) the call's types fix", slots.join(", ")),
+            actual: format!(
+                "`{}` fits {}: a constructor's open parameters take `{name}`'s arguments in order, \
+                 and nothing at the call says which — write it, `{op_short}[{name} = {first}](…)`",
+                type_display_name_value(kb, &actual),
+                shown.join(" and "),
+            ),
+        });
+    }
+    None
 }

@@ -454,6 +454,240 @@ fn a_sibling_call_at_the_bodys_instance_or_a_required_one_answers() {
     );
 }
 
+// ── Part 3: an operation's higher-kinded parameter ───────────────────────────────────────
+
+/// H2: an operation declares a higher-kinded parameter with the sort's spelling, and a call
+/// fixes it as any type parameter — by its bracket, by position, by the type its result is
+/// expected at; `Box`'s `V` takes `F`'s `T` by order. MEASURED before: `[F[T]]` in an
+/// operation's bracket was a syntax error.
+#[test]
+fn h2_an_operations_higher_kinded_parameter_is_fixed_as_any_parameter() {
+    let body = "  operation lift[F[T]](x: Int64) -> F[Int64] requires Mon[M = F] = Mon.pure(x)
+  operation viaBracket() -> Option[Int64] = lift[F = Option](7)
+  operation viaPositional() -> List[Int64] = lift[List](7)
+  operation viaExpected() -> Option[Int64] =
+    let o: Option[Int64] = lift(7)
+    o
+  operation viaBox() -> Box[Int64] =
+    let b: Box[Int64] = lift(7)
+    b";
+    answers(
+        "h2",
+        BOX,
+        body,
+        &[
+            ("viaBracket", "some(value: 7)"),
+            ("viaPositional", "[7]"),
+            ("viaExpected", "some(value: 7)"),
+            ("viaBox", "box(v: 7)"),
+        ],
+    );
+}
+
+/// H2, decided with the user 2026-11-13: where a call's types fit two constructors the call is
+/// refused, naming both and the bracket that picks one — `Pair[Int64, Int64]` is `F = Pair[A =
+/// Int64]` over `B` and `F = Pair[B = Int64]` over `A`; neither the last parameters nor the
+/// providers of the clause choose. The bracket loads. Kinds count: `Eff[E = {}, T = Int64]`
+/// fits one, `F = Eff[E = {}]`, `E` being a row where `F`'s parameter takes a type. MEASURED
+/// before part 3: refused "expected a type for 'F', got unconstrained", naming neither.
+#[test]
+fn h2_a_call_fitting_two_constructors_is_refused_and_kinds_count() {
+    let decls = "
+  sort PairMon
+    provides Mon[M = Pair[Int64]]
+    operation pure[X](a: X) -> Pair[Int64, X] = Pair.pair(fst: 0, snd: a)
+  end
+  sort Eff
+    effects E = ?
+    sort T = ?
+    entity eff(v: T)
+  end
+  sort EffMon
+    provides Mon[M = Eff[E = {}]]
+    operation pure[A](a: A) -> Eff[E = {}, T = A] = eff(v: a)
+  end
+  operation lift[F[T]](x: Int64) -> F[Int64] requires Mon[M = F] = Mon.pure(x)
+";
+    let text = refusal(
+        "twofit",
+        decls,
+        "  operation go() -> Pair[Int64, Int64] =
+    let p: Pair[Int64, Int64] = lift(7)
+    p",
+    );
+    assert!(
+        text.contains(
+            "`Pair[A = Int64, B = Int64]` fits `F = Pair[A = Int64]` and `F = Pair[B = Int64]`"
+        ) && text.contains("`lift[F = Pair[A = Int64]](…)`"),
+        "{text}"
+    );
+    // An ARGUMENT that fits two, too (found by /code-review). MEASURED on part 3's first code:
+    // refused "expected a type for 'F', got unconstrained", naming neither.
+    let text = refusal(
+        "twofitarg",
+        decls,
+        "  operation size[F[T]](m: F[Int64]) -> Int64 = 0
+  operation go() -> Int64 = size(m: Pair.pair(fst: 1, snd: 2))",
+    );
+    assert!(
+        text.contains(
+            "`Pair[A = Int64, B = Int64]` fits `F = Pair[A = Int64]` and `F = Pair[B = Int64]`"
+        ) && text.contains("`size[F = Pair[A = Int64]](…)`"),
+        "{text}"
+    );
+    let body = "  operation named() -> Pair[Int64, Int64] = lift[F = Pair[Int64]](7)
+  operation byKind() -> Eff[E = {}, T = Int64] =
+    let e: Eff[E = {}, T = Int64] = lift(7)
+    e";
+    answers(
+        "onefit",
+        decls,
+        body,
+        &[("named", "pair(fst: 0, snd: 7)"), ("byKind", "eff(v: 7)")],
+    );
+}
+
+/// H3: §5.4's member spelling at a higher-kinded member — H2 with the parameter unnamed. The
+/// member sugar's parameter is a constructor slot, `requires Mon[M = P]` its clause. MEASURED
+/// before part 3: loaded, and `let o: Option[Int64] = lift(7)` answered `?_`, the application
+/// resolving to the spec's own `M`, which nothing at a call binds.
+#[test]
+fn h3_the_member_spelling_at_a_higher_kinded_member() {
+    let body = "  operation lift(x: Int64) -> Mon.M[Int64] = Mon.pure(x)
+  operation viaOption() -> Option[Int64] =
+    let o: Option[Int64] = lift(7)
+    o
+  operation viaList() -> List[Int64] =
+    let l: List[Int64] = lift(7)
+    l";
+    answers(
+        "h3",
+        "",
+        body,
+        &[("viaOption", "some(value: 7)"), ("viaList", "[7]")],
+    );
+}
+
+/// H3, the member sugar's other readings at the applied spelling (found by /code-review):
+/// inside the spec's own declaration `Mon2.M[Int64]` is its own `M`, and in an operation's body
+/// the one its signature spelled (WI-20261005-KSSA4). MEASURED on part 3's first code: both
+/// refused, "expected M[T = Int64], got M[T = Int64] (these render alike …)" — the first minting
+/// a parameter of its own, the second reading the spec's `M` where the signature read the
+/// sugar's.
+#[test]
+fn h3_the_member_spelling_in_the_specs_own_body_and_an_operations_body() {
+    let decls = "
+  sort Mon2[M[T]]
+    operation pure[A](a: A) -> M[A]
+    operation twice(x: Int64) -> Mon2.M[Int64] = pure(x)
+  end
+  sort OptionMon2
+    provides Mon2[M = Option]
+    operation pure[A](a: A) -> Option[A] = some(a)
+  end
+";
+    let body = "  operation viaOwn() -> Option[Int64] = Mon2[M = Option].twice(7)
+  operation liftLet(x: Int64) -> Mon.M[Int64] =
+    let m: Mon.M[Int64] = Mon.pure(x)
+    m
+  operation viaBody() -> Option[Int64] =
+    let o: Option[Int64] = liftLet(7)
+    o";
+    answers(
+        "h3own",
+        decls,
+        body,
+        &[("viaOwn", "some(value: 7)"), ("viaBody", "some(value: 7)")],
+    );
+}
+
+/// H3 in a carrier block that provides the spec at one constructor: the member IS that
+/// constructor (WI-201's narrowing), applied — `Box`, `R2[E = E]` over `T` (the block's `E` the
+/// call's), `Pair[Int64]` over `B` (found by /code-review). MEASURED on part 3's first code:
+/// refused, "expected M[T = Int64], got Box[V = Int64]", the narrowing recorded and dropped.
+#[test]
+fn h3_the_member_spelling_in_a_carrier_block_is_its_constructor() {
+    let decls = "
+  sort Box
+    sort V = ?
+    entity box(v: V)
+  end
+  sort BoxMon
+    provides Mon[M = Box]
+    operation pure[A](a: A) -> Box[V = A] = box(v: a)
+    operation lift(x: Int64) -> Mon.M[Int64] = box(v: x)
+  end
+  sort R2
+    sort E = ?
+    sort T = ?
+    entity r2(t: T)
+  end
+  sort R2Mon[E]
+    provides Mon[M = R2[E = E]]
+    operation pure[A](a: A) -> R2[E = E, T = A] = r2(t: a)
+    operation lift(x: Int64) -> Mon.M[Int64] = r2(t: x)
+  end
+  sort PairMon
+    provides Mon[M = Pair[Int64]]
+    operation pure[X](a: X) -> Pair[Int64, X] = Pair.pair(fst: 0, snd: a)
+    operation lift(x: Int64) -> Mon.M[Int64] = Pair.pair(fst: 1, snd: x)
+  end
+";
+    let body = "  operation viaBox() -> Box[Int64] = BoxMon.lift(7)
+  operation viaR2() -> R2[E = String, T = Int64] = R2Mon[E = String].lift(7)
+  operation viaPair() -> Pair[Int64, Int64] = PairMon.lift(7)";
+    answers(
+        "h3block",
+        decls,
+        body,
+        &[
+            ("viaBox", "box(v: 7)"),
+            ("viaR2", "r2(t: 7)"),
+            ("viaPair", "pair(fst: 1, snd: 7)"),
+        ],
+    );
+}
+
+/// A parameter of an operation's higher-kinded parameter is a type: one of its own kind
+/// (`F[G[T]]`) and a default (`F[T = Int64]`) are refused where they are written — and so is a
+/// default of the parameter itself (`F[T] = Option`; found by /code-review, MEASURED on part 3's
+/// first code: refused at the load as "leaves a slot open", which a constructor does).
+#[test]
+fn an_operations_higher_kinded_parameter_takes_types_and_no_default() {
+    let text = crate::common::parse_errs(&program(
+        "nested",
+        "",
+        "  operation lift[F[G[T]]](x: Int64) -> Int64 = x",
+    ))
+    .join("\n");
+    assert!(
+        text.contains("a parameter of a higher-kinded parameter is a type"),
+        "{text}"
+    );
+    let text = crate::common::parse_errs(&program(
+        "member_default",
+        "",
+        "  operation lift[F[T = Int64]](x: Int64) -> Int64 = x",
+    ))
+    .join("\n");
+    assert!(
+        text.contains("a parameter of a higher-kinded parameter declares no default"),
+        "{text}"
+    );
+    let text = crate::common::parse_errs(&program(
+        "param_default",
+        "",
+        "  operation lift[F[T] = Option](x: Int64) -> F[Int64] requires Mon[M = F] = Mon.pure(x)",
+    ))
+    .join("\n");
+    assert!(
+        text.contains(
+            "operation type parameter `F`: a higher-kinded parameter declares no default"
+        ),
+        "{text}"
+    );
+}
+
 // ── Back-out ledger ───────────────────────────────────────────────────────────────────────
 //
 // MEASURED 2026-11-24: each piece backed out by a temporary switch, every row of anthill-core
@@ -522,3 +756,46 @@ fn a_sibling_call_at_the_bodys_instance_or_a_required_one_answers() {
 // constructors_provider`, answered by part 1 (MEASURED after part 1: `optT(run: [some(value:
 // 7)])`, refused before the stage), and `a_sibling_call_at_the_bodys_instance_or_a_required_one_
 // answers`.
+//
+// PART 3, MEASURED 2026-11-25 the same way (control 11662 passed, 0 failed). The grammar, which
+// no switch backs out, was measured at the stage's start: `[F[T]]` in an operation's bracket was
+// a syntax error.
+//
+// p3a, an operation's `F[T]` a marked carrier — its members type parameters of its scope, its
+// variable its `SortAlias` (load.rs, `scan_operation_params` and the operation's load): 2 rows,
+// `h2_an_operations_higher_kinded_parameter_is_fixed_as_any_parameter` and
+// `h2_a_call_fitting_two_constructors_is_refused_and_kinds_count`.
+//
+// p3b, the refusal naming the two constructors a call fits (`constructors_the_call_fits`): 1 row,
+// `h2_a_call_fitting_two_constructors_is_refused_and_kinds_count`.
+//
+// p3c, the member sugar's parameter a constructor slot where the member is higher-kinded
+// (`applied_higher_kinded_member`): 1 row, `h3_the_member_spelling_at_a_higher_kinded_member`.
+//
+// p3d, the converter's refusals of a member of its own kind and a member's default: 1 row,
+// `an_operations_higher_kinded_parameter_takes_types_and_no_default`.
+//
+// The fixes of part 3's /code-review, MEASURED 2026-11-25 the same way (control 11664 passed, 0
+// failed):
+//
+// p3e, `Mon2.M` inside `Mon2`'s own declaration its own `M` (`applied_higher_kinded_member`): 1
+// row, `h3_the_member_spelling_in_the_specs_own_body_and_an_operations_body`.
+//
+// p3f, an operation's body reading the parameter its signature spelled: the same row.
+//
+// p3g, a carrier block's narrowed constructor applied: 1 row,
+// `h3_the_member_spelling_in_a_carrier_block_is_its_constructor` ("expected M[T = Int64], got
+// Box[V = Int64]" with it out). The constructor's bindings are kept as the clause writes them,
+// a parameter of the block its `Ref`: lowered to the parameter's variable, by the clause canon or
+// by the signature's own reader, `R2Mon[E = String].lift(7)` was typed `R2[E = ?E, T = Int64]`
+// (MEASURED both ways).
+//
+// p3h, an argument that fits two constructors named in the refusal (`constructor_args`): 1 row,
+// `h2_a_call_fitting_two_constructors_is_refused_and_kinds_count`.
+//
+// p3i, a higher-kinded parameter's default refused at the converter: 1 row,
+// `an_operations_higher_kinded_parameter_takes_types_and_no_default`.
+//
+// The domain the member's carrier is backed under — the operation, as an operation's own `F[T]`
+// is, where it was the spec's (the sealed `anthill.prelude.Monad` for a program) — changes no
+// row's verdict: nothing a row drives reads that domain.

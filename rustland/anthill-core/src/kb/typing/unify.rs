@@ -727,6 +727,46 @@ fn unify_constructor_application(
     kb.value_global_var(&walked)?;
     let slots: Vec<Symbol> = kb.type_param_syms_of(carrier).to_vec();
     let declared: Vec<Symbol> = kb.type_param_syms_of(other).to_vec();
+    let candidates = constructor_candidates(kb, carrier, other, other_bindings);
+    let [(split, ctor_value)] = candidates.as_slice() else {
+        return Some(false);
+    };
+    let (split, ctor_value) = (split.clone(), ctor_value.clone());
+    let short = |kb: &KnowledgeBase, s: Symbol| short_name_of(kb.local_name_of(s)).to_string();
+    let written_at = |kb: &KnowledgeBase, q: Symbol| {
+        let want = short(kb, q);
+        other_bindings
+            .iter()
+            .find(|(k, _)| short(kb, *k) == want)
+            .map(|(_, v)| v.clone())
+    };
+    let mut ok = unify_types(kb, subst, &TermIdView(var_t), &ctor_value);
+    for (slot, j) in slots.iter().zip(split.iter()) {
+        let want = short(kb, *slot);
+        let arg = args.iter().find(|(k, _)| short(kb, *k) == want).map(|(_, v)| v.clone());
+        if let (Some(arg), Some(b)) = (arg, written_at(kb, declared[*j])) {
+            ok &= unify_types(kb, subst, &arg, &b);
+        }
+    }
+    Some(ok)
+}
+
+/// Proposal 074 stage 8 — the constructors a carrier `M` (`M[T]`) can be for the application
+/// `other[other_bindings]` to be an application of it: each a split of `other`'s parameters
+/// into the application's (as many as `M` declares, in order, none with a default) and the
+/// constructor's (each written there), with the constructor value — `Result[E = Boom]` for
+/// `Result[E = Boom, T = Int64]` at `M[T]`. Where two remain, a row parameter of `other` takes
+/// no argument of `M` (a type); then, for a SPEC's own parameter, the constructors its
+/// provisions at `other` write choose. More than one left is a call the bracket must decide
+/// (an operation's own parameter, H2), none is no fit.
+pub(super) fn constructor_candidates(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    other: Symbol,
+    other_bindings: &[(Symbol, Value)],
+) -> Vec<(Vec<usize>, Value)> {
+    let slots: Vec<Symbol> = kb.type_param_syms_of(carrier).to_vec();
+    let declared: Vec<Symbol> = kb.type_param_syms_of(other).to_vec();
     let short = |kb: &KnowledgeBase, s: Symbol| short_name_of(kb.local_name_of(s)).to_string();
     let written_at = |kb: &KnowledgeBase, q: Symbol| {
         let want = short(kb, q);
@@ -783,34 +823,29 @@ fn unify_constructor_application(
             });
         }
     }
-    let [split] = candidates.as_slice() else {
-        return Some(false);
-    };
-    let ctor_bindings: Vec<(Symbol, Value)> = declared
-        .iter()
-        .enumerate()
-        .filter(|(j, _)| !split.contains(j))
-        .filter_map(|(_, q)| {
-            let v = written_at(kb, *q)?;
-            let key = kb.intern(&short(kb, *q));
-            Some((key, v))
+    let empty = crate::kb::node_occurrence::empty_span();
+    candidates
+        .into_iter()
+        .map(|split| {
+            let ctor_bindings: Vec<(Symbol, Value)> = declared
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| !split.contains(j))
+                .filter_map(|(_, q)| {
+                    let v = written_at(kb, *q)?;
+                    let key = kb.intern(&short(kb, *q));
+                    Some((key, v))
+                })
+                .collect();
+            let other_base = kb.make_sort_ref(other);
+            let ctor_value = if ctor_bindings.is_empty() {
+                Value::term(other_base)
+            } else {
+                parameterized_value(kb, other_base, &ctor_bindings, empty, None)
+            };
+            (split, ctor_value)
         })
-        .collect();
-    let other_base = kb.make_sort_ref(other);
-    let ctor_value = if ctor_bindings.is_empty() {
-        Value::term(other_base)
-    } else {
-        parameterized_value(kb, other_base, &ctor_bindings, empty, None)
-    };
-    let mut ok = unify_types(kb, subst, &TermIdView(var_t), &ctor_value);
-    for (slot, j) in slots.iter().zip(split) {
-        let want = short(kb, *slot);
-        let arg = args.iter().find(|(k, _)| short(kb, *k) == want).map(|(_, v)| v.clone());
-        if let (Some(arg), Some(b)) = (arg, written_at(kb, declared[*j])) {
-            ok &= unify_types(kb, subst, &arg, &b);
-        }
-    }
-    Some(ok)
+        .collect()
 }
 
 /// Every order-preserving choice of `k` indices out of `0..n`, in lexicographic order.

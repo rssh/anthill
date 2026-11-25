@@ -566,8 +566,13 @@ module.exports = grammar({
     // parsed but refused it at the converter until the default had a reader. Its value is
     // a type argument's (`_common_type_expr`), as a sort parameter's default is, so a row
     // parameter's is written `{}` (user, 2026-10-24); `[T = ?]` is the bare `T`.
+    //
+    // Proposal 074 stage 8 (§6, H2): a parameter may be HIGHER-KINDED, with the sort's
+    // spelling — `lift[F[T]](x: Int64) -> F[T = Int64]`; the member list only counts the
+    // constructor's parameters, which a sort at it lines up by order (H4).
     operation_type_param: $ => seq(
       field('name', $.identifier),
+      optional($.sort_type_param_list),
       optional(seq('=', field('default', $._common_type_expr))),
     ),
 

@@ -389,3 +389,36 @@ rule fix(?r, ...?args) <=> fix_of(?r, ?args) @[simp]
       (meta_entry
         key: (name
           (identifier))))))
+
+==================================
+Operation with a higher-kinded type param (proposal 074 stage 8, H2)
+==================================
+
+operation lift[F[T]](x: Int64) -> F[T = Int64]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (operation_type_param_list
+      (operation_type_param
+        name: (identifier)
+        (sort_type_param_list
+          (sort_type_param
+            name: (identifier)))))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier)))))))

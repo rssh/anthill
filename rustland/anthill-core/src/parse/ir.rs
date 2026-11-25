@@ -935,6 +935,11 @@ pub struct Operation {
 pub struct TypeParam {
     pub name: Symbol,
     pub span: Span,
+    /// Proposal 074 stage 8 (§6, H2) — a HIGHER-KINDED parameter's own parameters, written with
+    /// the sort's spelling (`lift[F[T]]` ⟹ `[T]`), in declaration order; empty for a parameter
+    /// of a type. They only count the constructor's parameters, which a sort at it lines up by
+    /// order (H4): the loader makes the parameter a marked carrier with them as its members.
+    pub members: Vec<(Symbol, Span)>,
     /// Proposal 069 §1.3 (stage 2, WI-20261023-GBH5F) — the type a call takes for this
     /// parameter where its inference leaves it unbound. Read by the loader, which resolves
     /// it in the operation's scope (`OperationTypeParamDefault`), and by the typer, which

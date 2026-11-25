@@ -8458,6 +8458,21 @@ fn scan_operation_params(
             .symbols
             .define(tp_name, &qualified, SymbolKind::Sort, op_scope);
         kb.symbols.add_type_param(op_scope, tp_name, tp_sym);
+        // Proposal 074 stage 8 (H2): a higher-kinded parameter's own parameters (`F[T]`'s
+        // `T`) are type parameters of ITS scope, as a sort's marked carrier's are (`sort
+        // Spec[F[T]]`, WI-452) — what `type_param_syms_of(F)` reads, and so what makes `F` a
+        // constructor slot.
+        if !tp.members.is_empty() {
+            let f_scope = kb.symbols.scope_id(tp_sym);
+            for (member, _) in &tp.members {
+                let m_name = parse_sym.local_name(*member);
+                let m_qualified = format!("{qualified}.{m_name}");
+                let m_sym = kb
+                    .symbols
+                    .define(m_name, &m_qualified, SymbolKind::Sort, f_scope);
+                kb.symbols.add_type_param(f_scope, m_name, m_sym);
+            }
+        }
     }
 
     // WI-352: the op's ordered argument-place symbols, recorded on the op
@@ -43767,6 +43782,137 @@ impl<'a> Loader<'a> {
         var
     }
 
+    /// Proposal 074 stage 8 (§6, H3) — `Spec.Member[args]` written in an operation signature,
+    /// where `Member` is a HIGHER-KINDED parameter of the constructor-less sort `Spec`
+    /// (`Monad.M[Int64]`): the parameter the member sugar mints for `Spec.Member`, as a
+    /// constructor slot over `Member`'s own parameters, for the application to be lowered at.
+    /// The sugar is the same as for a member of a type (`requires Spec[Member = P]`, one `P`
+    /// per signature); only the slot is new. `None` for any other name.
+    ///
+    /// MEASURED before: the application resolved `Monad.M` to the SPEC's own parameter, whose
+    /// variable nothing at a call binds, so `lift(x: Int64) -> Monad.M[Int64] = Monad.pure(x)`
+    /// loaded and `let o: Option[Int64] = lift(7)` answered `?_`.
+    ///
+    /// The member sugar's other readings hold for the applied spelling too (found by
+    /// /code-review, each MEASURED refused before): inside the spec's own declaration
+    /// `Mon.M` is its own `M` (`None`, read as written); in a carrier block that provides the
+    /// spec at one constructor it IS that constructor (`Option`, or `Result` with `E = E`
+    /// written — the second of the pair); and in the BODY of an operation whose signature
+    /// spelled it, the signature's parameter (WI-20261005-KSSA4).
+    fn applied_higher_kinded_member(
+        &mut self,
+        written_name: &str,
+        span: SourceSpan,
+    ) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+        let (head_path, member_name) = written_name.rsplit_once('.')?;
+        let head = match self
+            .kb
+            .symbols
+            .resolve_in_scope(head_path, self.current_scope)
+            .or_else(|| self.resolve_dotted(head_path, DottedVisibility::VisibleOnly))
+        {
+            ResolveResult::Found(h) => h,
+            _ => return None,
+        };
+        if !self.kb.has_kind(head, SymbolKind::Sort) || self.kb.sort_has_constructors(head) {
+            return None;
+        }
+        let member = self.kb.type_param_sym_of(head, member_name)?;
+        // A parameter of the spec that declares parameters of its own. Asked of the
+        // declaration, not of its `SortAlias` backing (`is_higher_kinded_param`), which the
+        // spec's body emits when it is loaded — after a signature that names it, where the
+        // signature is loaded first.
+        if self.kb.type_param_syms_of(member).is_empty() {
+            return None;
+        }
+        // `Mon.M` inside `Mon`'s own declaration: the qualified spelling of its own `M`.
+        if matches!(
+            self.kb.symbols.resolve_in_scope(member_name, self.current_scope),
+            ResolveResult::Found(m) if m == member
+        ) {
+            return None;
+        }
+        if self.bare_spec_sugar.is_none() {
+            let member_sym = self.kb.intern(member_name);
+            let var = self
+                .signature_spec_members
+                .iter()
+                .find(|((s, m), fixed, _)| *s == head && *m == member_sym && fixed.is_empty())
+                .map(|(_, _, v)| *v)?;
+            let Term::Var(Var::Global(vid)) = *self.kb.get_term(var) else {
+                return None;
+            };
+            return Some((self.kb.type_param_of_canonical_var(vid)?, SmallVec::new()));
+        }
+        let var = self.mint_bare_spec_carrier(head, head, member_name, SmallVec::new(), span);
+        let vid = match self.kb.get_term(var) {
+            Term::Var(Var::Global(vid)) => *vid,
+            // Narrowed to the block's one constructor: its base, and what it writes, as the
+            // clause has it — a parameter of the block its `Ref`, which is how `E` written in
+            // this signature reads too (`R2[E = E]` at `R2Mon[E = String]`'s call is
+            // `R2[E = String]`; its alias variable was left `?E` there).
+            Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() => {
+                return Some((*functor, named_args.clone()));
+            }
+            Term::Ref(base) => return Some((*base, SmallVec::new())),
+            other => panic!(
+                "a carrier block narrows a higher-kinded member to a constructor, got {other:?}"
+            ),
+        };
+        // Reused for every spelling of the member in this signature: the sugar shares `P`.
+        if let Some(carrier) = self.kb.type_param_of_canonical_var(vid) {
+            return Some((carrier, SmallVec::new()));
+        }
+        // The carrier: a SORT symbol, as an operation's `F[T]` is — a type argument's owner, so
+        // an application of it is keyed (an unresolved name took none, and its `[Int64]` was
+        // dropped) — a parameter, so nothing reads it as a concrete sort, and a slot over the
+        // member's parameters backed by the sugar's variable (WI-452). Declared under the
+        // minted name's own scope, which no name a program writes resolves through.
+        let minted = vid.name();
+        let minted_scope = self.kb.symbols.scope_id(minted);
+        let member_short = super::typing::short_name_of(member_name).to_owned();
+        let carrier_qn = format!("{}.{written_name}", self.kb.qualified_name_of(minted));
+        let carrier = self
+            .kb
+            .symbols
+            .define(&member_short, &carrier_qn, SymbolKind::Sort, minted_scope);
+        self.kb.symbols.add_type_param(minted_scope, &member_short, carrier);
+        let carrier_scope = self.kb.symbols.scope_id(carrier);
+        // The operation being lowered, as an operation's own `F[T]` is backed under it.
+        let domain = self.lowering_operation.or(self.current_owner).unwrap_or(head);
+        let slots: Vec<Symbol> = self.kb.type_param_syms_of(member).to_vec();
+        for slot in slots {
+            let short = super::typing::short_name_of(self.kb.local_name_of(slot)).to_owned();
+            let qualified = format!("{carrier_qn}.{short}");
+            let m_sym = self
+                .kb
+                .symbols
+                .define(&short, &qualified, SymbolKind::Sort, carrier_scope);
+            self.kb.symbols.add_type_param(carrier_scope, &short, m_sym);
+            let m_term = self.kb.alloc(Term::Fn {
+                functor: m_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            self.emit_type_param_backing_var(m_term, domain);
+            if let Some(t) = super::typing::resolve_sort_alias(self.kb, m_sym) {
+                if let Term::Var(Var::Global(v)) = *self.kb.get_term(t) {
+                    self.kb.record_type_param_var(m_sym, v);
+                }
+            }
+        }
+        let carrier_term = self.kb.alloc(Term::Fn {
+            functor: carrier,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        if !self.sort_alias_exists(carrier_term) {
+            self.assert_sort_alias(carrier_term, crate::eval::value::Value::term(var), domain);
+        }
+        self.kb.record_type_param_var(carrier, vid);
+        Some((carrier, SmallVec::new()))
+    }
+
     /// The type parameter the member sugar mints for `written.member`: a fresh variable
     /// under a name of its own (WI-20261006-XQGEW,
     /// [`KnowledgeBase::mint_member_param_name`]).
@@ -44607,7 +44753,7 @@ impl<'a> Loader<'a> {
                 // `fixed` is an alias's, or a guard's requirement where the head is a rule's
                 // bounded variable, which has no parameters of its own to give.
                 let mut through_alias = true;
-                let (sort_sym, mut fixed) = if self.in_rule_head_bound {
+                let (sort_sym, fixed) = if self.in_rule_head_bound {
                     match self.rule_head_tvar(&written_name) {
                         Some(RuleTvar::Bounded(requirement)) => {
                             through_alias = false;
@@ -44629,6 +44775,15 @@ impl<'a> Loader<'a> {
                 } else {
                     self.type_alias_application(written_sym)
                 };
+                // Proposal 074 stage 8 (H3): `Spec.Member[args]` in an operation signature,
+                // `Member` a higher-kinded parameter of the spec — the member sugar's own
+                // parameter, a constructor slot, or the constructor a carrier block narrows
+                // it to, applied here.
+                let (sort_sym, mut fixed, through_alias) =
+                    match self.applied_higher_kinded_member(&written_name, span) {
+                        Some((base, written)) => (base, written, false),
+                        None => (sort_sym, fixed, through_alias),
+                    };
                 // WI-709: the arguments must FIT the parameters the head's arguments bind
                 // — an undeclared name or an over-applied positional is load-blocking,
                 // decided by the same rule the VALUE position (WI-707) decides it by, so
@@ -50119,6 +50274,42 @@ impl<'a> Loader<'a> {
             };
             if let (Some(declared), Some(vid)) = (declared, vid) {
                 self.kb.record_type_param_var(declared, vid);
+            }
+            // Proposal 074 stage 8 (H2): a higher-kinded parameter is a MARKED carrier, its
+            // variable the `SortAlias` of its sort term as a sort's `F[T]` is (WI-452), so a
+            // bracket, an argument or the expected type fixing the variable fills its
+            // applications (`F[T = Int64]` at `F := Option`), and each of its own parameters a
+            // backing variable of its own.
+            if let (Some(declared), false) = (declared, tp.members.is_empty()) {
+                let f_term = self.kb.alloc(Term::Fn {
+                    functor: declared,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                });
+                if !self.sort_alias_exists(f_term) {
+                    self.assert_sort_alias(f_term, crate::eval::value::Value::term(var_tid), functor);
+                }
+                let f_scope = self.kb.symbols.scope_id(declared);
+                for (member, _) in &tp.members {
+                    let m_name = self.parsed.symbols.local_name(*member).to_owned();
+                    let m_sym = self
+                        .kb
+                        .symbols
+                        .type_param_sym(f_scope, &m_name)
+                        .expect("`scan_operation_params` defines each member of a higher-kinded parameter");
+                    let m_term = self.kb.alloc(Term::Fn {
+                        functor: m_sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::new(),
+                    });
+                    self.emit_type_param_backing_var(m_term, functor);
+                    if let Some(t) = super::typing::resolve_sort_alias(self.kb, m_sym) {
+                        if let Term::Var(Var::Global(v)) = self.kb.get_term(t) {
+                            let v = *v;
+                            self.kb.record_type_param_var(m_sym, v);
+                        }
+                    }
+                }
             }
             type_param_var_terms.push(var_tid);
         }
