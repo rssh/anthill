@@ -31168,8 +31168,9 @@ struct Loader<'a> {
     // WI-20260904-B8ESG — active inside a reflect `Term`-typed field, whose content is a
     // QUOTED PATTERN rather than a reference (§4.2). Names in there denote nothing by
     // design, so the head-argument check does not judge them. Set by
-    // [`Self::convert_arg_value`], which is the one place the field's declared type is in
-    // hand.
+    // [`Self::convert_arg_value`] for the term walk, and by `entity_ctor_children` for
+    // the occurrence walk's re-walk of the same field — the two places the field's
+    // declared type is in hand.
     in_quoted_term: bool,
     // WI-20261001-KDMQS — see [`ConstFold`]. `Off` outside a clause; the clause entry
     // points (`load_fact`, `load_rule_inner`, `load_constraint`) set `Goal`, and each walk
@@ -39741,6 +39742,70 @@ impl<'a> Loader<'a> {
         Some(occ)
     }
 
+    /// WI-20261106-BYJ0X — A PAREN-LESS DOTTED NAME IN A `@[simp]` REPLACEMENT, built by the
+    /// walk that reads one in an operation body: `K.seven` the const, `K.one` the call
+    /// `K.one()` makes, `K.mk.v` the field read on that call, `Outer.Inner` the type value.
+    /// The replacement is text the equation splices into the bodies it rewrites, and the
+    /// operation-body walk's ladder (`try_qualified_*_ref`, [`DotFieldPass`]) is the one
+    /// reading of such a name there.
+    ///
+    /// The rule-body walk builds the rest of the replacement, and its own readers of a dotted
+    /// name are a DATA slot's ([`Self::data_slot_dotted_const`] and its siblings), which a
+    /// replacement is not — it converts with the const fold off (`ConstFold::Off`), so it
+    /// keeps a const its symbol for the body it lands in to fold. They declined, the chain
+    /// stood as `field_access(K, seven)` with `K` a plain reference to the sort, and the
+    /// typer refused it where the rule fired: "a plain reference to the sort — a defect in
+    /// the walk that built this occurrence", and "`seven.name`: expected resolved name".
+    /// MEASURED for `K.seven`, `K.one`, `K.box`, `K.mk.v` and `K.In` spliced into an
+    /// operation body, and for `K.seven` fired in a rule body too, while `K.one()`, `seven`
+    /// and `mk.v` ran. (Fired in a rule body, `K.one` and `K.mk.v` already answered: the
+    /// rule-body typer reads a dotted operation, and the resolver reduces the chain.)
+    ///
+    /// Only a name that has a reading there, and that is rooted at no binding: its whole
+    /// name is a rule, a const, a sort, a constructor or an operation — the rungs of that
+    /// ladder — or a prefix of it names a value ([`Self::name_has_value_prefix`]). A name
+    /// that names nothing, or names it hidden by `internal`, keeps its chain: the head-name
+    /// check judges it, once ([`Self::judge_head_dotted_name`]), and the walk below would
+    /// report it a second time. So does a namespace, which no rung reads and the typer
+    /// refuses as the name it is (`dotted_name_without_value`).
+    ///
+    /// NOT IN A QUOTED `Term` FIELD (`in_quoted_term`): there the name is the term its
+    /// author wrote, which the fact it is matched with holds as the chain. MEASURED with the
+    /// gate out, `f(?a) <=> Q(pattern: K.seven) @[simp]` beside `fact held(q: Q(pattern:
+    /// K.seven))`: the fired `Q(pattern: seven)` loaded clean and found no fact — a silent
+    /// miss where the chain kept is refused where it fires, as before.
+    ///
+    /// The clause's term is not moved: the stored head keeps the chain, as a compound
+    /// expression's does ([`Self::compound_expression_occurrence`], whose memo this shares —
+    /// the term walk and this one reach the same parse node).
+    fn replacement_dotted_name_occurrence(
+        &mut self,
+        parse_id: ParseTermId,
+    ) -> Option<Rc<NodeOccurrence>> {
+        if !self.lowering_equation_rhs || self.in_op_body_value || self.in_quoted_term {
+            return None;
+        }
+        let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
+        let a_member = self.resolve_qualified_readonly(&name).is_some_and(|sym| {
+            self.is_paren_less_citation_target(sym)
+                || self.kb.has_kind(sym, SymbolKind::Const)
+                || self.kb.has_kind(sym, SymbolKind::Sort)
+                || self.kb.is_entity_constructor(sym)
+                || self.kb.has_kind(sym, SymbolKind::Operation)
+        });
+        if !a_member && !self.name_has_value_prefix(&name) {
+            return None;
+        }
+        if let Some(occ) = self.compound_expr_occ.get(&parse_id) {
+            return Some(Rc::clone(occ));
+        }
+        let saved = std::mem::replace(&mut self.lowering_rule_compound_expr, true);
+        let occ = self.convert_expr_term(parse_id);
+        self.lowering_rule_compound_expr = saved;
+        self.compound_expr_occ.insert(parse_id, Rc::clone(&occ));
+        Some(occ)
+    }
+
     /// A dot a query pattern writes (`(qd.Box).tag()`, `qd.box(v: 4).peek()`), lowered as an
     /// operation body lowers it — an `Expr::DotApply` for the typer's dot dispatch — or
     /// `None` for any other node. The query's variables are read as a clause's are, as
@@ -40519,9 +40584,13 @@ impl<'a> Loader<'a> {
             // (`convert_arg_value`). Re-walked with it on, the occurrence folded a const
             // the stored term kept. MEASURED: `:- holds(pattern: f(v: D_MIN))` stopped
             // matching `fact holds(pattern: f(v: D_MIN))`, the two spellings being one.
+            // And a quoted field's dotted name is the chain its term holds, not the name a
+            // `@[simp]` replacement reads it as ([`Self::replacement_dotted_name_occurrence`]).
             let prev_fold = self.const_fold;
+            let prev_quoted = self.in_quoted_term;
             if self.entity_field_is_quoted(functor, field) {
                 self.const_fold = ConstFold::Off;
+                self.in_quoted_term = true;
             }
             let occ = match origins.iter().find(|(s, _)| *s == field) {
                 Some(&(_, pid)) => self.lowered_child_occurrence(pid, kb_child),
@@ -40536,6 +40605,7 @@ impl<'a> Loader<'a> {
                 None => node_occurrence::materialize_at(self.kb, kb_child, ctor_site),
             };
             self.const_fold = prev_fold;
+            self.in_quoted_term = prev_quoted;
             named.push((field, occ));
         }
 
@@ -41113,6 +41183,9 @@ impl<'a> Loader<'a> {
                     return occ;
                 }
                 if let Some(occ) = self.lending_sort_method_call(parse_id, span) {
+                    return occ;
+                }
+                if let Some(occ) = self.replacement_dotted_name_occurrence(parse_id) {
                     return occ;
                 }
                 // WI-20261001-KDMQS — a dotted chain naming a const in a DATA slot is its

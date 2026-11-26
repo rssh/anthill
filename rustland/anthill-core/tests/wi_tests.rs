@@ -1927,6 +1927,8 @@ mod wi_fc2x4_lambda_in_a_rule_test;
 mod wi_50b2k_binder_inference_test;
 #[path = "include/wi_fcz3n_simp_rhs_occurrence_test.rs"]
 mod wi_fcz3n_simp_rhs_occurrence_test;
+#[path = "include/wi_byj0x_simp_rhs_dotted_member_test.rs"]
+mod wi_byj0x_simp_rhs_dotted_member_test;
 
 #[path = "include/wi_w9d4z_one_mistake_one_diagnosis_test.rs"]
 mod wi_w9d4z_one_mistake_one_diagnosis_test;
