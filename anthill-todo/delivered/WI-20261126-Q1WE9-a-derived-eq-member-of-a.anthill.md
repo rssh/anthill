@@ -3,9 +3,9 @@
 - id: WI-20261126-Q1WE9-a-derived-eq-member-of-a
 - created: 2026-11-26T15:33:09Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-26T15:33:09Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-26T17:04:04Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -51,4 +51,20 @@ WHY IT SURFACED: YX17K's row `wi_szkv7_later_equality_test::an_earlier_sort_witn
 ACCEPTANCE: the program above loads, and `check()` answers `true`; the written-member twin's verdict is measured and stated; the YX17K row drives `eq` at `Other`; backing the fix out fails the new row; full workspace green via rustland/scripts/test.sh, families green.
 
 REFERENCE: kb/load.rs `EqDispatchIndex` / `build_eq_dispatch_index` (the witness route), kb/eq_derive.rs `derived_eq_member_source`, `is_eq_boundary`; WI-837, WI-NNQ1S, WI-20261102-YX17K.
+
+## Changes
+
+### 2026-11-26T16:54:54Z — feedback — user
+
+WIDER THAN FILED, MEASURED 2026-11-26 (one load each of `Point`, `Point` witnessing `Other`'s `PartialEq`+`Eq`, and a probe calling `eq` at `Other`): not specific to a DERIVED member. (a) derived `Point.eq` + `eq = Other.oeq` bound: ambiguous at the call (as filed); (b) written `Point.eq(a: Point, b: Point)` + the binding: ambiguous, at load too ("ambiguous semantic equality"); (c) derived, nothing bound: loaded, answers matching structural equality; (d)/(e) written, nothing bound: LOADED, and with `Point.eq = true`, `eq(o(n: 1), o(n: 2))` answered `true` — `Point.eq` handed `Other`'s values, silently, and TV0PA's no-`eq` refusal did not fire because the member read as answering. CAUSE: the witness route (`provision_supplier`'s witness leg, `spec_op_suppliers_of_provider`'s seed) took the provider's own member through `carrier_own_op`, whose NNQ1S fit verdict is the PROVIDER's, reached "at one of" its provisions — and `Point.eq` fits at `Point`.
+
+DECIDED WITH THE USER (option 1): a witness's own member supplies a carrier it witnesses only where it fits there, at the witness's provision for that carrier — kernel-language §8.4, *A member that does not fit is no supplier*, one sentence added. DONE: `typing::record_members_that_supply_nothing` also judges each witness provision (`member_fits_at`, factored out of `member_fits_spec_op`), filing `(witness, spec op, carrier)` misfits on the sort-ops table (`witness_supplies_nothing`); `typing::witness_own_op` reads it, and both witness readers go through it. A derived member needs no rule of its own: it is typed by its composite and the comparison refuses it at another carrier's provision. `LoadError::EqualityReachesNoEq` gains `passed_over`, the witness member it passed over, named in the refusal ("none is written that takes `Other`'s values (`Point.eq` is the witness's own equality and does not)"). AFTER: (a), (b) load, `Other`'s `eq` the bound `oeq`, `Point`'s its own; (c), (d), (e) refused, `EqualityReachesNoEq`.
+
+ROWS: `tests/include/wi_q1we9_witness_member_fit_test.rs`, 5 — both bindings answer (derived, written member beside), both no-binding programs refused naming the member, and the control (a witness whose `eq` takes the witnessed values still answers; passes either way by design). `wi_szkv7_later_equality_test::an_earlier_sort_witnessing_a_later_ones_equality_is_accepted` now drives `eq` at `Other`. BACK-OUTS, MEASURED: the witness verdict left empty fails the four rows and the szkv7 one; `passed_over` left empty fails the two refusal rows. The new rows pass under ANTHILL_TEST_FRESH_LOAD=1 too. Cost, release build: a stdlib load's pass ~10 ms either way; a later load's two passes ~220 -> ~270 µs each.
+
+LEFT (read, not measured): the reverse direction — `member_fits_spec_op` still counts a provider's witness provisions toward its OWN carrier's verdict, so a witness `W` with values whose `eq(a: C, b: C)` fits at `W provides PartialEq[T = C]` may be taken as `W`'s own equality.
+
+### 2026-11-26T17:04:02Z — feedback — user
+
+Delivered in a21d3e229 — the change, rows and measurements are the feedback above. Gate 12875 / 0; families green; scaland testFull 811+51+1 / 0; the new rows also pass under ANTHILL_TEST_FRESH_LOAD=1. Left, not ticketed: the reverse direction (a witness's member fitting its witness provision still counts toward the provider's OWN equality; read, not measured).
 
