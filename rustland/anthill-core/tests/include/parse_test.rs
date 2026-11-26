@@ -1033,7 +1033,9 @@ fact parent("bob", "charlie")
 
 #[test]
 fn load_sort_with_operation() {
-    // WI-20261126-78B4M: `zero-val` replaced, as in `load_banking_namespace`.
+    // WI-20261126-78B4M: `zero-val` replaced, as in `load_banking_namespace`; and
+    // `balance(a)`, a call of a function nothing declares (`balance` is a field), since a
+    // contract clause's compound whose functor names nothing is refused too.
     let source = r#"sort Account
   sort AccountId = ?
   sort Money = ?
@@ -1046,7 +1048,7 @@ fn load_sort_with_operation() {
     = a
 
   operation withdraw(a: Self, m: Money) -> Self
-    requires gt(m, a.balance), gte(balance(a), m)
+    requires gt(m, a.balance), gte(a.balance, m)
     = a
 end
 "#;

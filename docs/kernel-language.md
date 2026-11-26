@@ -3824,7 +3824,11 @@ checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
   body refuses it too, and is refused there. A qualified name that names nothing — a member
   a sort or a namespace declares nowhere, `Spec.limm` — is refused as in the body, naming the
   segment that is missing (WI-20261126-EZQGX), and a member `internal` hides from the clause is
-  refused as that access. A type alias that owns no members is read as its sort, as in the
+  refused as that access; in a goal slot too (`requires Spec.limm`), except a discharge's,
+  whose antecedents declare the hypotheses its consequent uses. A compound whose functor
+  names nothing is refused in an argument as that name is, written bare or qualified
+  (`requires n < nosuch(1)`, `below(n, Spec.limm(1))`), and in a goal slot as the goal that
+  names nothing. A type alias that owns no members is read as its sort, as in the
   body: `CA.T` over `sort CA = P[T = String]` is `P`'s member, and `CA.Tt` is refused naming
   `P`. A field read on a value (a parameter, `result`, a const), a member one of the sort's
   provisions lends and a member read through a requirement or a type parameter are no such

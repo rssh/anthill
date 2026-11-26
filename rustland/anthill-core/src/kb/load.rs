@@ -30967,8 +30967,26 @@ struct ContractClauseReading {
     /// contract clause converts with `const_fold` [`ConstFold::Off`], since a const there
     /// stays the symbol, and `Off` reads no slot; this is the reading it would have. A name in
     /// a goal slot is a proposition, judged by the post-load goal check
-    /// ([`check_contract_clause_goals`]); what this reading judges is a DATA slot's.
+    /// ([`check_contract_clause_goals`]); what this reading judges is a DATA slot's. A
+    /// quantifier's or a discharge's BINDER slot is [`ConstFold::Off`]: it holds the variables
+    /// the form scopes, which name nothing to judge (a rule body exempts it for that reason).
     slot: ConstFold,
+    /// Inside a discharge (`(forall(?h), A -: C)`): its antecedents DECLARE the hypotheses
+    /// its consequent uses, which no clause carries, so the goal check does not enter it, and
+    /// the path check does not judge its goal slots either
+    /// ([`Loader::refuse_contract_clause_path_naming_nothing`]). Its data slots are judged.
+    in_discharge: bool,
+}
+
+/// Who reports a contract clause's dotted path whose prefix does not resolve
+/// ([`Loader::refuse_contract_path`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PathRoot {
+    /// The chain's inner node — the path one segment shorter — converted next; and its
+    /// first segment, the bare name ([`Loader::refuse_unresolved_contract_name`]).
+    InnerNode,
+    /// This walk, one segment shorter: a call's dotted functor has no inner node.
+    ThisWalk,
 }
 
 /// The ONE wording of [`LoadError::CyclicArrowProjection`].
@@ -34318,8 +34336,10 @@ impl<'a> Loader<'a> {
         Some(self.kb.alloc(term))
     }
 
-    /// WI-20261126-EZQGX — refuse a contract clause's QUALIFIED name that names nothing, in a
-    /// data slot: `requires below(n, Spec.limm)` where `Spec` declares no `limm`
+    /// WI-20261126-EZQGX — refuse a contract clause's QUALIFIED name that names nothing, in an
+    /// argument or a goal slot: `requires below(n, Spec.limm)` and `requires Spec.limm`, where
+    /// `Spec` declares no `limm` (the goal slot fixed inline after EZQGX; its binder slots and
+    /// a discharge's goal slots are not judged, [`ContractClauseReading`])
     /// ([`LoadError::DottedNameNamesNothing`], the wording an operation body's `Spec.limm`
     /// gets). It stayed the chain `field_access(Spec, limm)`: its selector is a member name,
     /// which [`Self::refuse_unresolved_contract_name`] does not judge, and
@@ -34350,30 +34370,56 @@ impl<'a> Loader<'a> {
     ///   * a member one of the sort's provisions lends ([`Self::sort_lending_member`]), which
     ///     an operation body reads as the dot on the sort.
     fn refuse_contract_clause_path_naming_nothing(&mut self, parse_id: ParseTermId) {
-        if self.contract_slot() != ConstFold::Data {
+        // Every slot of the clause: in a goal slot (`requires Spec.limm`) the goal check reads
+        // the chain's `field_access` functor, which is declared, and passed it. Not a binder
+        // slot (`Off`), and not a discharge's goal slot, whose hypotheses it declares.
+        let Some(reading) = self.contract_clause else {
+            return;
+        };
+        let goal_slot = matches!(reading.slot, ConstFold::Goal | ConstFold::GoalTuple);
+        if reading.slot == ConstFold::Off || (goal_slot && reading.in_discharge) {
             return;
         }
         let Some(name) = self.dotted_name_rooted_at_no_binding(parse_id) else {
             return;
         };
         let span = self.parsed.terms.span(parse_id);
-        if self.qualified_name_resolves(&name) {
+        self.refuse_contract_path(&name, span, PathRoot::InnerNode);
+    }
+
+    /// The path refusal of a contract clause's dotted `name` written at `span`
+    /// ([`Self::refuse_contract_clause_path_naming_nothing`], whose doc has the rule, and
+    /// [`Self::refuse_contract_clause_unknown_functor`] for a call's dotted functor). Where
+    /// `name`'s prefix does not resolve, `root` says who reports it: the chain's inner node,
+    /// converted next, or this walk, one segment shorter, for a functor, which has none.
+    fn refuse_contract_path(&mut self, name: &str, span: Span, root: PathRoot) {
+        if self.qualified_name_resolves(name) {
             // A name `internal` hides from here is refused as that access, as a clause head's
             // and an operation body's are; it stayed the chain and loaded.
-            if !self.visible_here(&name) {
-                if let Some(hidden) = hidden_dotted_internal(self.kb, &name, self.current_scope) {
-                    self.push_forbidden_internal(hidden, &name, span);
+            if !self.visible_here(name) {
+                if let Some(hidden) = hidden_dotted_internal(self.kb, name, self.current_scope) {
+                    self.push_forbidden_internal(hidden, name, span);
                 }
             }
             return;
         }
-        if self.name_has_value_prefix(&name) || self.reads_through_requirement_name(&name) {
+        if self.name_has_value_prefix(name) || self.reads_through_requirement_name(name) {
             return;
         }
-        let Some((prefix, missing)) = name.rsplit_once('.') else {
+        let split = name
+            .rsplit_once('.')
+            .filter(|(prefix, _)| !prefix.is_empty() && !prefix.ends_with('.'));
+        let Some((prefix, missing)) = split else {
+            // One segment: a functor's walk has reached a first segment that names nothing.
+            if root == PathRoot::ThisWalk {
+                self.push_unresolved_contract_name(name, span);
+            }
             return;
         };
         let Some(prefix_sym) = self.resolve_qualified_readonly(prefix) else {
+            if root == PathRoot::ThisWalk {
+                self.refuse_contract_path(prefix, span, root);
+            }
             return;
         };
         let (kind, owner) = if super::typing::namespace_only(self.kb, prefix_sym) {
@@ -34415,6 +34461,51 @@ impl<'a> Loader<'a> {
         });
     }
 
+    /// A compound written in a contract clause's DATA slot whose functor names nothing:
+    /// `requires n < nosuch(1)`, `requires below(n, Spec.limm(1))`. A clause head's argument
+    /// (`LoadError::UndefinedHeadArgument`) and a rule body's data slot
+    /// (`LoadError::UndefinedRuleBodyTerm`) refuse it; a contract clause loaded it, a term
+    /// no value equals (MEASURED). A one-segment functor is refused as a bare name is
+    /// ([`Self::refuse_unresolved_contract_name`]), a dotted one as a path
+    /// ([`Self::refuse_contract_path`]), so the message is the one the name gets written
+    /// without the parentheses. In a GOAL slot it is the goal check's
+    /// ([`check_contract_clause_goals`], which refuses `requires nosuch(1)`).
+    ///
+    /// The head check's exemptions, for its reasons: a node the converter MINTED (a marker,
+    /// which the KB declares nothing under by construction); a call through a binder in the
+    /// clause or through a requirement's name ([`Self::head_functor_is_a_binding`]); a
+    /// quoted `Term` field. And a functor whose resolution already said why it names nothing
+    /// (`reported`), so it is said once.
+    ///
+    /// `slot` is the node's OWN slot reading: by the time its functor is resolved the arm has
+    /// set the reading its children convert under, which for a goal is `Data` (MEASURED: read
+    /// off `self`, `requires nosuch(1)` was reported twice).
+    fn refuse_contract_clause_unknown_functor(
+        &mut self,
+        parse_id: ParseTermId,
+        slot: ConstFold,
+        functor: Symbol,
+        new_functor: Symbol,
+        reported: bool,
+    ) {
+        if slot != ConstFold::Data
+            || self.in_quoted_term
+            || reported
+            || self.parsed.terms.is_minted(parse_id)
+            || self.kb.symbols.is_resolved(new_functor)
+            || self.head_functor_is_a_binding(functor, new_functor)
+        {
+            return;
+        }
+        let span = self.parsed.terms.span(parse_id);
+        let written = self.parsed.symbols.local_name(functor).to_owned();
+        if written.contains('.') {
+            self.refuse_contract_path(&written, span, PathRoot::ThisWalk);
+        } else {
+            self.push_unresolved_contract_name(&written, span);
+        }
+    }
+
     /// WI-20261126-78B4M — refuse a bare name `sym` that resolved to nothing, where it stands
     /// in a DATA slot of a contract clause ([`LoadError::UnresolvedContractName`]). Outside a
     /// contract clause an unresolved bare name is a symbolic constant (kernel-language.md
@@ -34426,9 +34517,8 @@ impl<'a> Loader<'a> {
     /// binding, at the binder and at each use.
     fn refuse_unresolved_contract_name(&mut self, sym: Symbol, span: Span) {
         let Some(ContractClauseReading {
-            op,
-            clause,
             slot: ConstFold::Data,
+            ..
         }) = self.contract_clause
         else {
             return;
@@ -34443,8 +34533,18 @@ impl<'a> Loader<'a> {
         {
             return;
         }
+        let name = self.kb.local_name_of(sym).to_string();
+        self.push_unresolved_contract_name(&name, span);
+    }
+
+    /// [`LoadError::UnresolvedContractName`] for `name` written at `span` in the contract
+    /// clause being converted; nothing outside one.
+    fn push_unresolved_contract_name(&mut self, name: &str, span: Span) {
+        let Some(ContractClauseReading { op, clause, .. }) = self.contract_clause else {
+            return;
+        };
         self.errors.push(LoadError::UnresolvedContractName {
-            name: self.kb.local_name_of(sym).to_string(),
+            name: name.to_string(),
             op: self.kb.qualified_name_of(op).to_string(),
             clause,
             span,
@@ -35456,6 +35556,7 @@ impl<'a> Loader<'a> {
                     return kb_id;
                 }
 
+                let errors_before_functor = self.errors.len();
                 let mut new_functor = self.remap_functor(functor, parse_id);
                 // A WRITTEN application of one of the runtime's accounts in a clause's own
                 // term: a clause term binds the variables it meets, so here it is a
@@ -35576,6 +35677,14 @@ impl<'a> Loader<'a> {
                         }
                     }
                 }
+                let functor_reported = self.errors.len() > errors_before_functor;
+                self.refuse_contract_clause_unknown_functor(
+                    parse_id,
+                    node_slot,
+                    functor,
+                    new_functor,
+                    functor_reported,
+                );
 
                 // WI-20261001-KDMQS — which state each child converts under, now that the
                 // functor is known. An EQUATION head's subject and replacement do not fold
@@ -35597,11 +35706,31 @@ impl<'a> Loader<'a> {
                 };
                 self.const_fold = child_fold;
                 // WI-20261126-78B4M — the same table, for a contract clause's goal slots,
-                // which `ConstFold::Off` does not read ([`ContractClauseReading::slot`]).
-                let contract_goal_slots = match node_slot {
-                    ConstFold::Goal => const_fold_goal_slots(self.kb, new_functor, pos_args.len()),
+                // which `ConstFold::Off` does not read ([`ContractClauseReading::slot`]); and
+                // its binder slots, which are judged by nothing, and whether the node is a
+                // discharge, whose goal slots the path check leaves alone.
+                let contract_readings = match node_slot {
+                    ConstFold::Goal => self.kb.goal_slot_readings(new_functor, pos_args.len()),
                     _ => SmallVec::new(),
                 };
+                let contract_goal_slots: SmallVec<[crate::kb::GoalSlot; 3]> = contract_readings
+                    .iter()
+                    .filter(|s| s.reading != crate::kb::SlotReading::Binders)
+                    .cloned()
+                    .collect();
+                let contract_binder_slots: SmallVec<[usize; 2]> = contract_readings
+                    .iter()
+                    .filter(|s| s.reading == crate::kb::SlotReading::Binders)
+                    .map(|s| s.index)
+                    .collect();
+                if contract_readings
+                    .iter()
+                    .any(|s| s.reading == crate::kb::SlotReading::Assumed)
+                {
+                    if let Some(reading) = &mut self.contract_clause {
+                        reading.in_discharge = true;
+                    }
+                }
 
                 // WI-007 context-aware ListLiteral desugaring: rewrite
                 // `ListLiteral → cons/nil` unless a DECLARED type says the position
@@ -35789,9 +35918,11 @@ impl<'a> Loader<'a> {
                             Some(slot) => node_fold.child(Some(slot)),
                             None => child_fold,
                         };
-                        self.set_contract_slot(
-                            node_slot.child(contract_goal_slots.iter().find(|s| s.index == i)),
-                        );
+                        self.set_contract_slot(if contract_binder_slots.contains(&i) {
+                            ConstFold::Off
+                        } else {
+                            node_slot.child(contract_goal_slots.iter().find(|s| s.index == i))
+                        });
                         if let Some((pat_idx, first_scoped)) = binder_layout {
                             let scoped = i == pat_idx || i >= first_scoped;
                             if scoped && !binder_pushed {
@@ -54443,6 +54574,7 @@ impl<'a> Loader<'a> {
                         op,
                         clause: kind,
                         slot: ConstFold::Goal,
+                        in_discharge: false,
                     };
                     let prev_clause = self.contract_clause.replace(reading);
                     let t = self.convert_term(written.term);

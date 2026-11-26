@@ -348,3 +348,221 @@ fn members_read_through_a_requirement_a_constructor_or_a_conversion_load() {
     );
     assert_eq!(run_int64(&src, "ezq.through.go"), Ok(7));
 }
+
+// ── (3) after EZQGX's delivery, fixed inline at the user's request ────────
+//
+// Two gaps its review named, both measured on 76196564c: a qualified name that names
+// nothing in a GOAL slot of a contract clause (`requires Spec.limm` loaded — the goal check
+// reads the chain's `field_access` functor, which is declared), and a compound in an
+// argument whose functor names nothing (`requires n < nosuch(1)` loaded — a clause head and a
+// rule body's data slot refuse it, a contract clause had no twin).
+//
+// BACK-OUT, measured on the same binary (36 rows, all green as is), 10 rows here:
+//  * The path check gated on a data slot again: RED is `a_goal_path_naming_nothing_is_
+//    refused` alone.
+//  * The compound check backed out (`refuse_contract_clause_unknown_functor` reporting
+//    nothing): RED are `an_unknown_compound_in_an_argument_is_refused`, `an_unknown_dotted_
+//    compound_is_refused_as_a_path` and `an_unknown_bracket_head_is_refused`. GREEN either
+//    way, BY DESIGN, the controls and `a_goal_compound_is_refused_once_by_the_goal_check`.
+//  * The compound check reading the slot its children convert under, not its own: RED is
+//    `a_goal_compound_is_refused_once_by_the_goal_check` alone (reported twice).
+//  * A call through a binder or a requirement's name not exempt: RED is
+//    `calls_through_a_binder_or_a_requirement_load` alone.
+//  * A binder slot read as data: RED is `a_discharge_and_a_quantifier_are_judged_where_
+//    they_hold_data` (`tuple` refused). A discharge's goal slots judged: the same row RED
+//    (`Spec.hyp` refused twice).
+//  * A minted node not exempt: RED are `written_constructions_and_calls_load_and_run`,
+//    `calls_through_a_binder_or_a_requirement_load` and 78B4M's `a_lambdas_binder_is_not_
+//    refused` — a list's, a tuple's and a lambda's markers declare nothing.
+
+/// `ns`'s program with one operation `f(n, p)` carrying `clauses`, beside `Rel`'s operation
+/// `twice` and rule `good`, a rule `ok`, and a sort `A` lending `Mk`'s `viaDefault`. No call
+/// of `f`: a refused clause is a precondition no call proves, a refusal of its own
+/// ([`with_op_and_call`] is the program that runs).
+fn with_op_and_relations(ns: &str, clauses: &str) -> String {
+    with_relations(ns, clauses, "")
+}
+
+/// [`with_op_and_relations`] with `go()`, which calls `f`.
+fn with_op_and_call(ns: &str, clauses: &str) -> String {
+    with_relations(ns, clauses, "  operation go() -> Int64 = A.f(1, Pt(x: 0))")
+}
+
+fn with_relations(ns: &str, clauses: &str, call: &str) -> String {
+    program(
+        ns,
+        &format!(
+            r#"
+  rule ok(?a) :- true
+  sort Rel
+    rule good(?a) :- true
+    operation twice(n: Int64) -> Int64 = n + n
+  end
+  sort Mk
+    sort C = ?
+    operation e() -> C
+    operation viaDefault() -> C = e()
+  end
+  sort A
+    entity mk(n: Int64)
+    provides Mk[C = A]
+    operation e() -> A = mk(n: 1)
+    operation f(n: Int64, p: Pt) -> Int64
+{clauses}
+      = n + 6
+  end
+{call}
+"#
+        ),
+    )
+}
+
+#[test]
+fn a_goal_path_naming_nothing_is_refused() {
+    for (ns, clause, tokens) in [
+        ("ezq.g.req", "      requires Spec.limm", "`ezq.g.req.Spec.limm` names nothing"),
+        ("ezq.g.ens", "      ensures inner.kk", "the namespace `ezq.g.ens.inner` declares no `kk`"),
+        ("ezq.g.and", "      requires ok(n) & Spec.limm", "`ezq.g.and.Spec.limm` names nothing"),
+        ("ezq.g.not", "      requires !(Spec.limm)", "`ezq.g.not.Spec.limm` names nothing"),
+    ] {
+        refused(ns, &with_op_and_relations(ns, clause), &[tokens], 1);
+    }
+}
+
+#[test]
+fn a_goal_path_that_names_something_loads() {
+    // A relation cited by its qualified name, and a member a provision lends.
+    for (ns, clause) in [
+        ("ezq.g.rel", "      requires Rel.good"),
+        ("ezq.g.lent", "      requires A.viaDefault"),
+    ] {
+        let errs = load_errors_of(&with_op_and_relations(ns, clause));
+        assert!(errs.is_empty(), "{ns}: loads, got: {errs:?}");
+    }
+}
+
+#[test]
+fn an_unknown_compound_in_an_argument_is_refused() {
+    for (ns, clause, list) in [
+        ("ezq.c.lt", "      requires n < nosuch(1)", "requires"),
+        ("ezq.c.arg", "      requires below(n, nosuch(1))", "requires"),
+        ("ezq.c.ens", "      ensures below(result, nosuch(1))", "ensures"),
+    ] {
+        let named = format!("the `{list}` clause of operation `{ns}.A.f` names `nosuch`");
+        refused(ns, &with_op_and_relations(ns, clause), &[&named, "resolves to nothing"], 1);
+    }
+}
+
+#[test]
+fn an_unknown_dotted_compound_is_refused_as_a_path() {
+    // Named as the same name written without the parentheses is.
+    for (ns, clause, tokens) in [
+        ("ezq.d.sort", "      requires below(n, Spec.limm(1))", "the sort `ezq.d.sort.Spec` declares no `limm`"),
+        ("ezq.d.ns", "      requires below(n, inner.kk(1))", "the namespace `ezq.d.ns.inner` declares no `kk`"),
+        ("ezq.d.root", "      requires below(n, nosuchns.f(1))", "names `nosuchns`, which resolves to nothing"),
+    ] {
+        refused(ns, &with_op_and_relations(ns, clause), &[tokens], 1);
+    }
+}
+
+#[test]
+fn an_unknown_bracket_head_is_refused() {
+    refused(
+        "ezq.br",
+        &with_op_and_relations("ezq.br", "      requires below(n, Fooo[T = Int64])"),
+        &["names `Fooo`, which resolves to nothing"],
+        1,
+    );
+}
+
+#[test]
+fn a_goal_compound_is_refused_once_by_the_goal_check() {
+    // A goal is a proposition, and the goal check refuses one that names nothing.
+    for (ns, clause) in [
+        ("ezq.gc.top", "      requires nosuch(1)"),
+        ("ezq.gc.not", "      requires !nosuch(1)"),
+        ("ezq.gc.and", "      requires ok(n) & nosuch(1)"),
+    ] {
+        refused(ns, &with_op_and_relations(ns, clause), &["names `nosuch`, which is declared nowhere"], 1);
+    }
+}
+
+#[test]
+fn written_constructions_and_calls_load_and_run() {
+    // A call of a declared operation, a construction, a lent member's call, a list, a tuple
+    // and a lambda: what the converter MINTS for the literals declares nothing, and is no
+    // name that names nothing.
+    let src = with_op_and_call(
+        "ezq.ok",
+        "      requires below(n, Rel.twice(1)), below(n, Pt(x: 1)), below(n, A.viaDefault()), below(n, mk(n: 1))\n      \
+         requires below(n, [1, 2]), below(n, (1, 2)), below(n, lambda (y: Int64) -> y + 1)",
+    );
+    assert_eq!(run_int64(&src, "ezq.ok.go"), Ok(7));
+}
+
+#[test]
+fn calls_through_a_binder_or_a_requirement_load() {
+    // `g(1)` calls the lambda's own parameter; `R.add(n, n)` the operation a requirement's
+    // dictionary holds.
+    let src = program(
+        "ezq.bind",
+        r#"
+  import anthill.prelude.algebra.{Ring}
+  rule known(?x, ?f) :- true
+  sort G
+    sort F = ?
+    requires R: Ring[F]
+    entity g
+    operation r(n: F) -> F
+      requires known(n, lambda (h: (Int64) -> Int64) -> h(1)), known(n, R.add(n, n))
+      = n
+  end
+"#,
+    );
+    let errs = load_errors_of(&src);
+    assert!(errs.is_empty(), "loads, got: {errs:?}");
+}
+
+#[test]
+fn a_discharge_and_a_quantifier_are_judged_where_they_hold_data() {
+    // A discharge's binder tuple and its hypotheses declare what they name, so the clause
+    // loads (`(forall(?h), Spec.hyp -: Spec.hyp)` was refused twice for its hypothesis and
+    // once for the binder tuple's `tuple`, found by `/code-review`); a data slot inside it is
+    // judged, and a quantifier body's goal is.
+    let src = |clause: &str| {
+        program(
+            "ezq.q",
+            &format!(
+                r#"
+  import anthill.prelude.{{List}}
+  sort A
+    entity mk
+    operation f(n: Int64, xs: List[T = Int64]) -> Int64
+{clause}
+      = n
+  end
+"#
+            ),
+        )
+    };
+    for clause in [
+        "      requires (forall(?h), Spec.hyp -: Spec.hyp)",
+        "      requires (forall(?h), hyp(?h) -: hyp(?h))",
+        "      requires (forall ?x in xs: below(?x, Spec.lim))",
+    ] {
+        let errs = load_errors_of(&src(clause));
+        assert!(errs.is_empty(), "`{clause}` loads, got: {errs:?}");
+    }
+    refused(
+        "ezq.q",
+        &src("      requires (forall(?h), hyp(?h) -: below(?h, Spec.limm))"),
+        &["`ezq.q.Spec.limm` names nothing"],
+        1,
+    );
+    refused(
+        "ezq.q",
+        &src("      requires (forall ?x in xs: Spec.limm)"),
+        &["`ezq.q.Spec.limm` names nothing"],
+        1,
+    );
+}
