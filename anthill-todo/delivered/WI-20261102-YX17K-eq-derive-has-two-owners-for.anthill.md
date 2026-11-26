@@ -3,9 +3,9 @@
 - id: WI-20261102-YX17K-eq-derive-has-two-owners-for
 - created: 2026-11-02T17:48:33Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-02T17:48:33Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-26T15:38:02Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -26,4 +26,10 @@ DIRECTION, not decided: make the two domains DISJOINT by construction. Restrict 
 ACCEPTANCE: each derived row has one owner; backing out either pass fails rows of its own (the `derive_total_eq` call back-out fails wi1098's five rows again, or the header says by measurement why not); the QF5JT row's both-passes note restated if it changes; full workspace green via rustland/scripts/test.sh, families green.
 
 REFERENCE: kb/eq_derive.rs `derive_total_eq`, `total_composites`, `derive_conditional_eq`, `record_derived_conditions`; WI-1098, WI-20260918-CKD4J, WI-20260831-QF5JT.
+
+## Changes
+
+### 2026-11-26T15:37:47Z — feedback — user
+
+Delivered in 2518e895a and 62806cafa. ONE OWNER: derive_total_eq, total_composites and every_field_names_a_sort are deleted; derive_conditional_eq derives every Eq+PartialEq row, a non-parametric composite's unconditional row (Colour, Duration) recorded as one clause with no conditions, as a written provides Eq[T = Colour] is — the record question the ticket owed, answered by the fold. Its readers answer one unconditioned clause as they answered none (alternative_condition_goals, provision_layout_key, coherence's ProvisionScope, check_member_blocks_have_one_clause), measured: an optimized anthill-core run over the fold moved 3 rows, all clause-count pins. BACK-OUTS, MEASURED 2026-11-26: skipping wi1098's non-Partial sorts in the one pass fails its five rows again (now as load refusals, "no impl provides Eq") and two more (a_direct_eq_call…, declaring_neq…); wi300's total row alone (every test.wi300 sort: its Partial row beside it). The candidate guards each fail a row of their own — boundary (declaring_neq…'s capeq), witness (a_carrier_a_witness…), Partial for Eq (new a_partial_holder_of_a_written_eq_is_not_refused_for_it: a holder of a sort writing Eq over a Float was refused a second time for nothing it wrote); the field-type translation fails 18 of 24. Restated pins (wi1098 Duration, wi_ank4x Colour: 0 -> 1) fail on the two-pass tree. Headers restated (wi1098, wi300's QF5JT row, wi_ank4x's index back-outs re-measured on the fold). Load time unchanged (~48 ms for the derivation step, both trees). The ANTHILL_LOAD_TIMING mark for the derivation stands after it now (it measured ~10 us). KERNEL-LANGUAGE §8.3, decided with the user: a later load may not CHANGE an earlier composite's equality; a provision the sort already has (same spec, instantiation, conditions, the same eq if it binds one), written again, is no change — derived or written by the earlier load. The fold made a restatement of a DERIVED provision load where the two-pass tree refused it (its derived row had no clause); 2518e895a refused it by a written mark, 62806cafa takes the mark back for the rule as decided. Rows: a_later_restatement_of_a_derived_provision_is_accepted and its written twin, an_earlier_sort_witnessing_a_later_ones_equality_is_accepted, a_later_provision_binding_an_eq_is_refused (binding provision new, derived one unchanged); on the two-pass tree three fail and the written twin passes; with the record's merge backed out all four fail (and HWD8A's SHED7 layout). Gate 12870 / 0; families green; scaland testFull 811+51+1 / 0; anthill-core under ANTHILL_TEST_TWO_STEP_LOAD=1 green. Pre-existing under ANTHILL_TEST_FRESH_LOAD=1, same on HEAD, not ticketed: 6 (wi_2ksaa, wi_5cz9f, wi_64272). Found and filed: WI-20261126-Q1WE9 (a derived eq member of a witness sort counted as a supplier of the sort it witnesses). Left, not ticketed: a holder whose field's sort provides Eq only conditionally (two clauses, or a condition over none of its parameters) no longer derives Eq, where the total pass claimed it outright; no row pins it.
 
