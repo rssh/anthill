@@ -26,7 +26,8 @@
 //!  * Type relations — `unify`, `subtype`, `type_pattern` (what a type pattern admits),
 //!    `effects`, `guarded_row` (a body held to the guarded elements of its own row),
 //!    `tuples` (under `tuple_align`), `sort_alias`, `type_preds`, `extract`, `value_type`.
-//!  * Declaration checks — `sorts` (`type_check_sorts`), `signature`, `elaborate`,
+//!  * Declaration checks — `sorts` (`type_check_sorts`), `signature`, `contract_renaming`
+//!    (an override's contract clauses up to a renaming of their variables), `elaborate`,
 //!    `op_bodies`.
 //!  * Rules — `rules`, `rule_requirements`, `call_shape`, `rule_dispatch`, `rule_constraints`.
 use std::collections::{HashMap, HashSet};
@@ -46,7 +47,9 @@ use super::persist_subst::BindValue;
 use super::resolve::PositionalPlan;
 use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, Var, VarId};
-use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
+use super::term_view::{
+    views_equal_matching_vars, views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem,
+};
 use super::{KnowledgeBase, MintedParam, RuleId, SortKind};
 use crate::eval::value::{Dictionary, Value};
 use crate::intern::{is_positional_label_at, positional_label, ScopeId, Symbol};
@@ -93,6 +96,7 @@ mod carrier;
 mod checked_provisions;
 mod coherence;
 mod constructor;
+mod contract_renaming;
 mod dep_projection;
 mod dict;
 mod dispatch;
@@ -157,6 +161,7 @@ pub use carrier::*;
 pub use checked_provisions::*;
 pub use coherence::*;
 use constructor::*;
+use contract_renaming::*;
 pub use dep_projection::*;
 pub use dict::*;
 pub use dispatch::*;

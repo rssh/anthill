@@ -2216,13 +2216,33 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
     b: &B,
 ) -> bool {
     // WI-392: a rigid (Skolem) or DeBruijn var has a comparable identity (its
-    // `Var`); `head` now surfaces it (no `Opaque` collapse), so the `Var`/`Var`
-    // arm below compares two var heads by full `Var` identity for every kind —
-    // two occurrences of the same rigid effect / type parameter are the same.
-    // A rigid vs a different-flavoured var or a non-var head is unequal (`Var`'s
-    // `Eq`, else the `_ => false` arm). `Global` vars are handled identically.
+    // `Var`); `head` now surfaces it (no `Opaque` collapse), so two var heads
+    // compare by full `Var` identity for every kind — two occurrences of the same
+    // rigid effect / type parameter are the same. A rigid vs a different-flavoured
+    // var or a non-var head is unequal (`Var`'s `Eq`, else the walk's `_ => false`
+    // arm). `Global` vars are handled identically.
+    views_equal_matching_vars(kb, a, b, &mut |va, vb| va == vb)
+}
+
+/// [`views_structurally_equal`], with `vars` deciding whether two variable heads are
+/// equal: every other head compares as it does there, and a `Var` opposite a `Var` is
+/// equal exactly when `vars(a's, b's)` says so. A `Var` opposite anything else is
+/// unequal, whatever `vars` would say.
+///
+/// WI-20261126-JR3AD — for a comparison UP TO A RENAMING of some variables: an
+/// override's contract clause restates the spec operation's under variables of its
+/// own, and `vars` is where the renaming is read and extended (`Renaming::extended_to`
+/// in `kb/typing/contract_renaming.rs`). `vars` may record what it answered; a walk that comes back
+/// `false` can have consulted it on a pair before the mismatch, so a caller that
+/// extends state there extends a copy and keeps it only when the whole walk is `true`.
+pub fn views_equal_matching_vars<A: TermView, B: TermView, F: FnMut(&Var, &Var) -> bool>(
+    kb: &KnowledgeBase,
+    a: &A,
+    b: &B,
+    vars: &mut F,
+) -> bool {
     match (a.head(kb), b.head(kb)) {
-        (ViewHead::Var(va), ViewHead::Var(vb)) => va == vb,
+        (ViewHead::Var(va), ViewHead::Var(vb)) => vars(&va, &vb),
         (ViewHead::Const(la), ViewHead::Const(lb)) => la == lb,
         (ViewHead::Ident(sa), ViewHead::Ident(sb)) => sa == sb,
         (ViewHead::Bottom, ViewHead::Bottom) => true,
@@ -2243,7 +2263,7 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
             }
             for i in 0..pa {
                 match (a.pos_arg(kb, i), b.pos_arg(kb, i)) {
-                    (Some(ca), Some(cb)) if views_structurally_equal(kb, &ca, &cb) => {}
+                    (Some(ca), Some(cb)) if views_equal_matching_vars(kb, &ca, &cb, vars) => {}
                     _ => return false,
                 }
             }
@@ -2252,7 +2272,7 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
             // canonical order, so no extra-key escape).
             for key in a.named_keys(kb) {
                 match (a.named_arg(kb, key), b.named_arg(kb, key)) {
-                    (Some(ca), Some(cb)) if views_structurally_equal(kb, &ca, &cb) => {}
+                    (Some(ca), Some(cb)) if views_equal_matching_vars(kb, &ca, &cb, vars) => {}
                     _ => return false,
                 }
             }

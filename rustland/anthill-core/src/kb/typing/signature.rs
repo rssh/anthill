@@ -3712,18 +3712,47 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // and that return type failed open here. What still fails open is a
             // return type σ does not ground — a parameter the provision binds
             // nothing to, or a higher-kinded one.
+            // WI-20261126-JR3AD — the variables the two signatures bind; every other
+            // variable a contract clause holds is the clause's own, and the contract legs
+            // and the discharge question below compare it up to a renaming
+            // ([`contract_misfits`]). GATED ON A CLAUSE EXISTING, for the result binder's
+            // reason above: the walk is per (spec-op, impl-op) pair on every load, and the
+            // disjuncts are the two legs' driving lists — with neither, the legs compare
+            // nothing and no clause pair can discharge the binder, so `None` decides no
+            // verdict.
+            let clause_vars = (!spec_info.ensures.is_empty()
+                || impl_info
+                    .requires
+                    .iter()
+                    .any(|c| !is_effects_runtime_clause(kb, c)))
+            .then(|| ClauseVariables::of_pair(kb, spec_op, &spec_info, impl_op, &impl_info));
+            // The override's clauses with the paired type parameters it spells as variables
+            // written as the spec operation spells them — for BOTH legs, and for the discharge
+            // question, which asks it of the comparison the legs make. The `ensures` leg read
+            // them unaligned until WI-20261126-JR3AD's review, so `ensures holds(result, ?q)`
+            // over a `b: Box[T = ?q]` was refused where the same clause as a `requires` loaded.
+            let impl_pre: Vec<Value> = user_precondition_clauses(kb, &impl_info.requires)
+                .iter()
+                .map(|ic| substitute_clause_vars(kb, ic, &type_param_var_align))
+                .collect();
+            let impl_ensures: Vec<Value> = impl_info
+                .ensures
+                .iter()
+                .map(|ic| substitute_clause_vars(kb, ic, &type_param_var_align))
+                .collect();
+            let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
             let mut ret_mismatch: Option<(String, String)> = None;
-            if result_binders.is_some() {
-                let impl_pre = user_precondition_clauses(kb, &impl_info.requires);
-                let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
+            if let (Some(_), Some(clause_vars)) = (result_binders, &clause_vars) {
                 let discharges = result_binder_discharges(
                     kb,
-                    &impl_info.ensures,
+                    clause_vars,
+                    &impl_ensures,
                     &spec_info.ensures,
                     &full_align,
                     &param_align,
                 ) || result_binder_discharges(
                     kb,
+                    clause_vars,
                     &impl_pre,
                     &spec_pre,
                     &full_align,
@@ -3957,50 +3986,33 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // type-param, so σ is not applied). The loader's auto-
             // `EffectsRuntime` requires are filtered out — those are the
             // effects check's concern. Conservative: clauses match by
-            // carrier-agnostic structural equality (`views_structurally_equal`;
-            // for the ground clauses here == hash-consed `TermId` equality); a
-            // logically-equivalent but syntactically-different refinement is not
-            // yet recognized (a future SMT-backed entailment check would subsume
-            // this).
+            // carrier-agnostic structural equality, up to ONE renaming of the
+            // clauses' own variables across both legs (WI-20261126-JR3AD,
+            // [`contract_misfits`]); a logically-equivalent but syntactically-
+            // different refinement is not yet recognized (a future SMT-backed
+            // entailment check would subsume this).
             // precondition no-stronger: every impl precondition must be one the
             // spec also requires (the override demands no more than the spec).
-            let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
-            for ic in user_precondition_clauses(kb, &impl_info.requires) {
-                let ic = substitute_clause(kb, &ic, &align);
-                let ic = substitute_clause_vars(kb, &ic, &type_param_var_align);
-                if !spec_pre
-                    .iter()
-                    .any(|sp| views_structurally_equal(kb, sp, &ic))
-                {
-                    errors.push(LoadError::IncompatibleOverride {
-                        carrier: kb.qualified_name_of(p.carrier).to_string(),
-                        spec: kb.qualified_name_of(p.spec).to_string(),
-                        op: sn.clone(),
-                        reason: "it strengthens the precondition — the override `requires` a \
-                                 condition the spec operation does not"
-                            .to_string(),
-                    });
-                }
-            }
             // postcondition no-weaker: every spec postcondition must be one the
             // impl also ensures (the override promises no less than the spec).
-            let impl_post: Vec<Value> = impl_info
-                .ensures
-                .iter()
-                .map(|c| substitute_clause(kb, c, &align))
-                .collect();
-            for sc in &spec_info.ensures {
-                if !impl_post
-                    .iter()
-                    .any(|ip| views_structurally_equal(kb, ip, sc))
-                {
+            if let Some(clause_vars) = &clause_vars {
+                let impl_pre: Vec<Value> =
+                    impl_pre.iter().map(|ic| substitute_clause(kb, ic, &align)).collect();
+                let impl_post: Vec<Value> =
+                    impl_ensures.iter().map(|ic| substitute_clause(kb, ic, &align)).collect();
+                for misfit in contract_misfits(
+                    kb,
+                    clause_vars,
+                    &impl_pre,
+                    &spec_pre,
+                    &spec_info.ensures,
+                    &impl_post,
+                ) {
                     errors.push(LoadError::IncompatibleOverride {
                         carrier: kb.qualified_name_of(p.carrier).to_string(),
                         spec: kb.qualified_name_of(p.spec).to_string(),
                         op: sn.clone(),
-                        reason: "it weakens the postcondition — the override does not `ensure` a \
-                                 condition the spec operation promises"
-                            .to_string(),
+                        reason: misfit.reason(),
                     });
                 }
             }

@@ -2943,15 +2943,20 @@ pub(super) fn align_effect_label(
 /// made the two clauses compare equal, so the two `result`s must denote values of the
 /// same type for the discharge to mean anything.
 ///
-/// Asked by RUNNING THE COMPARISON THE LEGS RUN — [`substitute_clause`] then
-/// [`views_structurally_equal`], twice — rather than by a hand-written "does this clause
-/// mention the binder" walk. A separate reader listing the carriers
-/// [`substitute_impl_params_alloc`] rewrites would drift from it the first time a
+/// Asked by RUNNING THE COMPARISON THE LEGS RUN — [`substitute_clause`] then the clause
+/// comparison up to a renaming of the clauses' own variables
+/// ([`restates_up_to_renaming`], WI-20261126-JR3AD), twice — rather than by a
+/// hand-written "does this clause mention the binder" walk. A separate reader listing the
+/// carriers [`substitute_impl_params_alloc`] rewrites would drift from it the first time a
 /// carrier is added, and it would answer the WRONG QUESTION besides: a clause can
 /// mention `result` and still be refused for weakening the postcondition, and naming the
-/// return types there sends the author to a line whose repair would not load.
+/// return types there sends the author to a line whose repair would not load. And it is
+/// the legs' comparison, variables included: compared by identity here while the legs
+/// rename, `ensures holds(result, ?k)` restated over a `result` of another type matched
+/// under neither alignment, discharged nothing, and loaded clean.
 pub(super) fn result_binder_discharges(
     kb: &mut KnowledgeBase,
+    vars: &ClauseVariables,
     impl_clauses: &[Value],
     spec_clauses: &[Value],
     with_result: &[(Symbol, TermId)],
@@ -2960,11 +2965,11 @@ pub(super) fn result_binder_discharges(
     for ic in impl_clauses {
         let with = substitute_clause(kb, ic, with_result);
         for sc in spec_clauses {
-            if !views_structurally_equal(kb, &with, sc) {
+            if !restates_up_to_renaming(kb, vars, sc, &with) {
                 continue;
             }
             let without = substitute_clause(kb, ic, params_only);
-            if !views_structurally_equal(kb, &without, sc) {
+            if !restates_up_to_renaming(kb, vars, sc, &without) {
                 return true;
             }
         }

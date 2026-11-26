@@ -1929,6 +1929,8 @@ mod wi_50b2k_binder_inference_test;
 mod wi_fcz3n_simp_rhs_occurrence_test;
 #[path = "include/wi_byj0x_simp_rhs_dotted_member_test.rs"]
 mod wi_byj0x_simp_rhs_dotted_member_test;
+#[path = "include/wi_jr3ad_contract_clause_renaming_test.rs"]
+mod wi_jr3ad_contract_clause_renaming_test;
 
 #[path = "include/wi_w9d4z_one_mistake_one_diagnosis_test.rs"]
 mod wi_w9d4z_one_mistake_one_diagnosis_test;
