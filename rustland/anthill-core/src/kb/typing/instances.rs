@@ -679,6 +679,65 @@ pub(crate) fn abstract_carrier_of(kb: &KnowledgeBase, ty: &Value) -> Option<Symb
     is_abstract_carrier_sort(kb, head).then_some(head)
 }
 
+/// The sorts with constructors whose values are values of `sort`, a sort with abstract values
+/// ([`is_abstract_carrier_sort`]): each sort with constructors that provides it, once — its own
+/// providers in the order their provisions are filed, then those reached through a provider
+/// that has no constructors of its own. What a value read at `sort` from outside is tagged
+/// among (`term_ser`).
+pub(crate) fn data_providers_of_abstract_sort(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
+    let mut providers: Vec<Symbol> = Vec::new();
+    let mut seen: Vec<Symbol> = vec![kb.canonical_sort_sym(sort)];
+    let mut pending: Vec<Symbol> = vec![sort];
+    while let Some(spec) = pending.pop() {
+        for row in provides_rows_of_spec(kb, spec) {
+            let provider = kb.canonical_sort_sym(row.provider);
+            if seen.contains(&provider) {
+                continue;
+            }
+            seen.push(provider);
+            if kb.sort_has_constructors(provider) {
+                providers.push(provider);
+            } else {
+                pending.push(provider);
+            }
+        }
+    }
+    providers
+}
+
+/// Does `provider`, a sort with constructors that provides the sort with abstract values `sort`
+/// ([`data_providers_of_abstract_sort`]), provide it at an application the bindings `written`
+/// (each a parameter's short name and its ground type) admit? A binding its provision writes as
+/// a ground type must be the written one: `Bike provides Sk[T = String]` is no `Sk[T = Int64]`.
+/// One the provision leaves to the provider's parameters, one `written` does not name, and a
+/// provider reaching `sort` through another provider with no provision of its own, admit any.
+/// Read off the provisions without resolution, for a reader holding the KB alone (`term_ser`'s
+/// shape, which a writer walks); the dictionary a value read there is paired with is still built
+/// by resolution, and refused where the provision's contract has no answer.
+pub(crate) fn provider_admitted_at(
+    kb: &KnowledgeBase,
+    provider: Symbol,
+    sort: Symbol,
+    written: &[(String, Value)],
+) -> bool {
+    let text = |v: &Value| type_is_ground(kb, v).then(|| type_qualified_text(kb, &crate::kb::term_view::ViewItem::Value(v)));
+    let mut rows = provides_rows_of_provider(kb, provider)
+        .filter(|row| same_sort_canonical(kb, row.spec_base, sort))
+        .peekable();
+    if rows.peek().is_none() {
+        return true;
+    }
+    rows.any(|row| {
+        row.bindings(kb).iter().all(|(key, provided)| {
+            let name = kb.local_name_of(*key);
+            match (written.iter().find(|(w, _)| w == name), text(provided)) {
+                (Some((_, wanted)), Some(provided)) => text(wanted).is_none_or(|wanted| wanted == provided),
+                _ => true,
+            }
+        })
+    })
+}
+
 /// `value` paired with `dict`, `Instance(dict, value)`, as a node at `value`'s place.
 pub(crate) fn instance_pair_node(
     instance: Symbol,

@@ -135,6 +135,8 @@ fn shape_name(kb: &KnowledgeBase, ty: &DeclaredType) -> Result<String, ValueProb
         TypeShape::Type => "Type".into(),
         TypeShape::Option(inner) => format!("Option[{}]", shape_name(kb, &inner)?),
         TypeShape::List(elem) => format!("List[{}]", shape_name(kb, &elem)?),
+        TypeShape::Set(elem) => format!("Set[{}]", shape_name(kb, &elem)?),
+        TypeShape::Map { key, value } => format!("Map[{}, {}]", shape_name(kb, &key)?, shape_name(kb, &value)?),
         TypeShape::Tuple(_) => "tuple".into(),
         TypeShape::Data(data) => kb.qualified_name_of(data.sort()).to_owned(),
     })

@@ -971,23 +971,11 @@ fn pack_instance_argument(
         );
         return Err(refusal(kb, why));
     }
-    // The column's own written type first: `Car provides Sp[T = Int64]` is no `Sp[T = String]`.
     let context = TypeErrorContext::Rule {
         name: callee,
         field: RuleField::Body,
     };
-    let fits = matches!(
-        validate_arg_against_param(kb, &mut Substitution::new(), &ty, column, None, context, None),
-        ArgValidation::Ok
-    );
-    let carrier = sort_functor_of_view(kb, &ty).expect("read above");
-    let carrier = kb.canonical_sort_sym(kb.type_arg_owner(carrier).unwrap_or(carrier));
-    let built = if fits {
-        instance_dictionary_at(kb, sort, carrier, &ty, column)
-    } else {
-        Err(format!("it is no `{}`", type_display_name_value(kb, column)))
-    };
-    let dict = match built {
+    let dict = match instance_dictionary_at_place(kb, sort, &ty, column, context) {
         Ok(dict) => dict,
         Err(why) => {
             let why = format!("a `{}`: {why}", type_display_name_value(kb, &ty));
@@ -995,6 +983,58 @@ fn pack_instance_argument(
         }
     };
     Ok(instance_pair_node(instance_sym, dict, arg))
+}
+
+/// The dictionary a value of the concrete type `ty` is paired with at a place of type `column`,
+/// headed by `sort`, a sort with abstract values (073 §2): the place's own written type first —
+/// `Car provides Sp[T = Int64]` is no `Sp[T = String]`, though `Car`'s provision answers for
+/// `Sp` — and then the instance `ty`'s provision answers with. `context` is read only where the
+/// type does not fit, to build a message this does not keep.
+fn instance_dictionary_at_place(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    ty: &Value,
+    column: &Value,
+    context: TypeErrorContext,
+) -> Result<Value, String> {
+    let fits = matches!(
+        validate_arg_against_param(kb, &mut Substitution::new(), ty, column, None, context, None),
+        ArgValidation::Ok
+    );
+    if !fits {
+        return Err(format!("it is no `{}`", type_display_name_value(kb, column)));
+    }
+    let carrier = sort_functor_of_view(kb, ty)
+        .ok_or_else(|| format!("`{}` names no sort", type_display_name_value(kb, ty)))?;
+    let carrier = kb.canonical_sort_sym(kb.type_arg_owner(carrier).unwrap_or(carrier));
+    instance_dictionary_at(kb, sort, carrier, ty, column)
+}
+
+/// The dictionary `value`, read from outside any body at its declared type `column` — a type
+/// headed by a sort with abstract values (073 §2) — is paired with: the pair an operation body
+/// builds where a value of a provider is used at the abstract sort, and a rule body's argument at
+/// such a column ([`pack_instance_argument`]). For `term_ser`'s decoder. The value's type is the
+/// one a host's value reads as ([`host_value_type`]); refused where it is no `column`, or where no
+/// provision answers for it.
+pub(crate) fn instance_dictionary_of_read_value(
+    kb: &mut KnowledgeBase,
+    value: &Value,
+    column: &Value,
+) -> Result<Value, String> {
+    let sort = abstract_carrier_of(kb, column).ok_or_else(|| {
+        format!("`{}` is no sort with abstract values", type_display_name_value(kb, column))
+    })?;
+    let ty = host_value_type(kb, value);
+    if !instance_is_concrete(kb, &ty) {
+        return Err(format!(
+            "a value at `{}`, a type nothing fixes, so no instance of `{}` is known for it",
+            type_display_name_value(kb, &ty),
+            short_name_of(kb.qualified_name_of(sort)),
+        ));
+    }
+    // No operation, rule or field is being checked: the place is the value's own.
+    let context = TypeErrorContext::LetBinding { var: sort };
+    instance_dictionary_at_place(kb, sort, &ty, column, context)
 }
 
 /// Proposal 073 §2 — the body of `rid` with each argument of an operation's call at a parameter

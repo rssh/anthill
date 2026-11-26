@@ -11,7 +11,7 @@
 //! on and asserted as a fact ([`load_json`], [`load_toml`]); [`serialize_json`] and
 //! [`serialize_toml`] write facts back the same way. TOML is converted to and from
 //! `serde_json::Value`, so it follows the same mapping.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use ordered_float::OrderedFloat;
@@ -37,6 +37,16 @@ const OPTION_NONE: &str = "anthill.prelude.Option.none";
 const LIST: &str = "anthill.prelude.List";
 const LIST_CONS: &str = "anthill.prelude.List.cons";
 const LIST_NIL: &str = "anthill.prelude.List.nil";
+// A set's and a map's values in a term are the chains of their operations a fact writes
+// (`insert(insert(empty, 2), 1)`, `put(empty, "a", 1)`); a running map is a host handle.
+const SET: &str = "anthill.prelude.Set";
+const SET_INSERT: &str = "anthill.prelude.Set.insert";
+const SET_EMPTY: &str = "anthill.prelude.Set.empty";
+const MAP: &str = "anthill.prelude.Map";
+const MAP_PUT: &str = "anthill.prelude.Map.put";
+const MAP_EMPTY: &str = "anthill.prelude.Map.empty";
+// A value at a sort with abstract values, as an operation body builds it (proposal 073 §2).
+const INSTANCE: &str = "anthill.realization.runtime.Instance";
 
 // ── Options ────────────────────────────────────────────────────
 
@@ -54,19 +64,56 @@ pub struct CodecOptions {
     pub tag_names: TagNames,
     pub big_int: BigIntSpelling,
     pub wider_tuple: WiderTuple,
+    pub spec_values: SpecValues,
+    pub collection_order: CollectionOrder,
 }
 
 impl CodecOptions {
-    /// The options a data file is read and written with: the defaults, with variables on and a
-    /// wider tuple refused, so a data file has one format and a fact is written whole (a
-    /// projected tuple would reload as another fact).
+    /// The options a data file is read and written with: the defaults, with variables on, a
+    /// wider tuple refused, a value at a sort with abstract values read as its provider's value
+    /// alone, and a set or a map written as it was built, so a data file has one format and a
+    /// fact is written whole and reads back as the source fact (a projected tuple, a value
+    /// paired with its dictionary, or a set's chain in another order would reload as another
+    /// fact).
     pub fn data_file() -> Self {
         CodecOptions {
             variables: true,
             wider_tuple: WiderTuple::Refuse,
+            spec_values: SpecValues::Plain,
+            collection_order: CollectionOrder::AsBuilt,
             ..CodecOptions::default()
         }
     }
+}
+
+/// How a set's elements and a map's entries are written and read. A set or a map is one value
+/// with many chains (`insert(insert(empty, 2), 1)` and `insert(insert(empty, 1), 2)` are one set,
+/// and two terms).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CollectionOrder {
+    /// One text per value: the elements, or the entries by their keys, in [`json_order`], each
+    /// once (a later `put` of a key shadowing an earlier one); the reader refuses an element or
+    /// a key written twice.
+    #[default]
+    Canonical,
+    /// One text per chain: the elements, or the entries, in the order the chain was built,
+    /// an element inserted twice or a key put twice written each time; the reader builds that
+    /// chain again, so the term reads back as itself.
+    AsBuilt,
+}
+
+/// What a value read at a sort with abstract values (a spec whose values are its providers'
+/// values, proposal 073 §2: `Sp`, with `Car` and `Van` providing it) is built as. The writer
+/// takes both, and writes them alike.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpecValues {
+    /// `Instance(dict, value)`: the provider's value paired with the dictionary of its
+    /// provision, as an operation body builds a value it uses at the abstract sort and as a
+    /// call at one takes it. The dictionary is built where the value is read.
+    #[default]
+    Instances,
+    /// The provider's value alone, as a source fact holds it.
+    Plain,
 }
 
 /// Whether a constructed value always carries its constructor's tag.
@@ -172,6 +219,22 @@ pub enum ValueProblem {
     MissingField { name: String },
     /// A tag, or a value's constructor, that is no constructor of the declared type.
     UnknownConstructor { name: String, sort: String },
+    /// A tag that names several constructors the declared type admits — at a sort with abstract
+    /// values, constructors of two of its providers that share a short name. `constructors` are
+    /// their qualified names, which [`TagNames::Qualified`] writes.
+    AmbiguousTag { tag: String, constructors: Vec<String> },
+    /// With [`CollectionOrder::Canonical`], an element of a set written a second time: `first` is
+    /// the index it was first written at.
+    RepeatedElement { first: usize },
+    /// With [`CollectionOrder::Canonical`], a key of a map written a second time: `first` is the
+    /// index of its first entry.
+    RepeatedKey { first: usize },
+    /// A map's entry that is not the array of two, its key and its value.
+    NotAnEntry { found: String },
+    /// A value read at a sort with abstract values for which no dictionary can be built: its
+    /// provider provides the sort at no application the declared type admits, or its provision
+    /// asks for one nothing answers.
+    NoInstance { reason: String },
     /// An object where a constructed value is expected that is not the object of one key, its
     /// constructor's tag (`tags` are the ones the declared type admits).
     NotTagged { found: String, tags: Vec<String> },
@@ -180,7 +243,9 @@ pub enum ValueProblem {
     NotOneField { constructor: String, fields: usize },
     /// A constructor reserved to the runtime ([`crate::kb::RuntimeAccount`]), at any depth.
     RuntimeAccount { constructor: String },
-    /// The declared type has no data spelling (`Set`, `Map`, a function type).
+    /// The declared type has no data spelling: a function type, a sort with no constructors
+    /// that is neither one the mapping spells (`Set`, `Map`, …) nor a sort with abstract values
+    /// some sort with constructors provides (`Cell`, a spec no data sort provides).
     NoDataSpelling,
     /// With [`WiderTuple::Refuse`], a tuple value with components its type does not name.
     WiderThanDeclared { labels: Vec<String> },
@@ -218,6 +283,25 @@ impl std::fmt::Display for ValueProblem {
             ValueProblem::UnknownConstructor { name, sort } => {
                 write!(f, "'{name}' is not a constructor of sort '{sort}'")
             }
+            ValueProblem::AmbiguousTag { tag, constructors } => write!(
+                f,
+                "'{tag}' names {} constructors ({}), so a value tagged so has no one reading; \
+                 tag them by their qualified names (TagNames::Qualified)",
+                constructors.len(),
+                constructors.join(", ")
+            ),
+            ValueProblem::RepeatedElement { first } => write!(
+                f,
+                "found the element written at index {first} again; a set holds an element once"
+            ),
+            ValueProblem::RepeatedKey { first } => write!(
+                f,
+                "found the key of the entry at index {first} again; a map holds a key once"
+            ),
+            ValueProblem::NotAnEntry { found } => {
+                write!(f, "found {found}, where a map's entry is the array [key, value]")
+            }
+            ValueProblem::NoInstance { reason } => write!(f, "the value has no instance: {reason}"),
             ValueProblem::NotTagged { found, tags } => write!(
                 f,
                 "found {found}, where a constructed value is its constructor's tag ({})",
@@ -407,7 +491,9 @@ impl std::error::Error for SerError {}
 /// Read `json` as ONE value of type `ty` (on any carrier) and return its term, hash-consed
 /// into `kb`'s store. Nothing is asserted: the KB's facts and rules are as they were. With
 /// `opts.variables` on, the value's variables are fresh, and their scope is this one call.
-/// To pass the result to an operation, wrap it as `Value::term(id)`.
+/// To pass the result to an operation, wrap it as `Value::term(id)`. A set and a map are read
+/// as the chains of their operations a fact writes (`insert(insert(empty, 2), 1)`, `put(empty,
+/// "a", 1)`); a running `Map` operation takes a host handle, and refuses the chain.
 pub fn decode_value(
     kb: &mut KnowledgeBase,
     json: &serde_json::Value,
@@ -419,8 +505,9 @@ pub fn decode_value(
 }
 
 /// Write `value` at type `ty`, each on any carrier: a `TermId`, a `Value` an operation
-/// returned, an occurrence. One term encodes to the same bytes on every carrier. Reads `kb`
-/// and changes nothing. A value that is not data — a closure, a stream, a map, a cell — is
+/// returned, an occurrence. One term encodes to the same bytes on every carrier, and a map to
+/// the same bytes as its `put` chain or its running handle, which carries its own arena. Reads
+/// `kb` and changes nothing. A value that is not data — a closure, a stream, a cell — is
 /// refused, as is a type with no data spelling.
 pub fn encode_value(
     kb: &KnowledgeBase,
@@ -657,8 +744,9 @@ impl DeclaredType {
     /// What the type is, once a parameter it names is looked up in its place's bindings:
     /// `T` at `Cell`'s `value` within `Cell[T = Int64]` is `Int64`. A parameter nothing binds —
     /// left unwritten with no default, or free in a type handed in — is refused by its name
-    /// (`UnboundParameter`); a type with no data spelling (`Set`, a function type) is
-    /// `NoDataSpelling`.
+    /// (`UnboundParameter`); a type with no data spelling (a function type, `Cell`) is
+    /// `NoDataSpelling`. A sort with abstract values (proposal 073 §2) is the [`DataShape`] of
+    /// its providers' constructors ([`DataShape::provider`]).
     pub fn shape(&self, kb: &KnowledgeBase) -> Result<TypeShape, ValueProblem> {
         let (ty, extracted) = resolve(kb, self)?;
         let (head, bindings) = match extracted {
@@ -672,10 +760,14 @@ impl DeclaredType {
             _ => return Err(ValueProblem::NoDataSpelling),
         };
         let sort = head.plain();
-        let arg = |name: &str| {
+        // A prelude sort's parameter, by its name or its position in the sort's declaration.
+        let arg = |name: &str, index: usize| {
             bindings
                 .iter()
-                .find(|(k, _)| kb.local_name_of(*k) == name || is_positional_label_at(kb.local_name_of(*k), 0))
+                .find(|(k, _)| {
+                    let label = kb.local_name_of(*k);
+                    label == name || is_positional_label_at(label, index)
+                })
                 .map(|(_, v)| ty.within(v.clone()))
                 .ok_or_else(|| ValueProblem::UnboundParameter {
                     name: name.to_owned(),
@@ -689,23 +781,70 @@ impl DeclaredType {
                 "anthill.prelude.BigInt" => return Ok(TypeShape::BigInt),
                 "anthill.prelude.Bool" => return Ok(TypeShape::Bool),
                 "anthill.prelude.Type" => return Ok(TypeShape::Type),
-                OPTION => return Ok(TypeShape::Option(arg("T")?)),
-                LIST => return Ok(TypeShape::List(arg("T")?)),
+                OPTION => return Ok(TypeShape::Option(arg("T", 0)?)),
+                LIST => return Ok(TypeShape::List(arg("T", 0)?)),
+                SET => return Ok(TypeShape::Set(arg("T", 0)?)),
+                MAP => {
+                    return Ok(TypeShape::Map {
+                        key: arg("K", 0)?,
+                        value: arg("V", 1)?,
+                    })
+                }
                 _ => {}
             }
         }
         let ctors = kb.field_constructors_of_sort(sort);
-        if ctors.is_empty() {
-            return Err(ValueProblem::NoDataSpelling);
+        if !ctors.is_empty() {
+            let own = ctors.len() == 1 && ctors[0] == sort;
+            let env = sort_env(kb, sort, &ty, &bindings);
+            return Ok(TypeShape::Data(DataShape {
+                sort,
+                ctors,
+                own,
+                homes: Homes::Sort(env),
+            }));
         }
-        let own = ctors.len() == 1 && ctors[0] == sort;
-        let env = sort_env(kb, sort, &ty, &bindings);
-        Ok(TypeShape::Data(DataShape {
-            sort,
-            ctors,
-            own,
-            env,
-        }))
+        // A sort with abstract values: a value of it is a value of one of its providers, each
+        // constructor's fields typed in its provider's own parameters. The type applying the
+        // abstract sort binds the abstract sort's parameters, not the provider's, so these are
+        // at their defaults, and one with none is refused where a field names it.
+        if crate::kb::typing::is_abstract_carrier_sort(kb, sort) {
+            // The abstract sort's own bindings, each by its parameter's name: a provider that
+            // provides it at another application (`Bike provides Sk[T = String]`, at `Sk[T =
+            // Int64]`) has no value here, and a writer walking the shape writes none.
+            let params = kb.type_param_syms_of(sort);
+            let written: Vec<(String, Value)> = bindings
+                .iter()
+                .filter_map(|(k, v)| {
+                    let label = kb.local_name_of(*k);
+                    let name = crate::intern::positional_label_index(label)
+                        .and_then(|i| params.get(i))
+                        .map_or(label, |p| kb.local_name_of(*p));
+                    closed_type(kb, &ty.within(v.clone())).ok().map(|t| (name.to_owned(), t))
+                })
+                .collect();
+            let mut ctors = Vec::new();
+            let mut providers = Vec::new();
+            for provider in crate::kb::typing::data_providers_of_abstract_sort(kb, sort)
+                .into_iter()
+                .filter(|p| crate::kb::typing::provider_admitted_at(kb, *p, sort, &written))
+            {
+                let env = sort_env(kb, provider, &ty, &[]);
+                for ctor in kb.field_constructors_of_sort(provider) {
+                    ctors.push(ctor);
+                    providers.push((provider, env.clone()));
+                }
+            }
+            if !ctors.is_empty() {
+                return Ok(TypeShape::Data(DataShape {
+                    sort,
+                    ctors,
+                    own: false,
+                    homes: Homes::Providers(providers),
+                }));
+            }
+        }
+        Err(ValueProblem::NoDataSpelling)
     }
 
     /// The type as the KB prints one, with the parameters its place binds substituted
@@ -728,49 +867,90 @@ pub enum TypeShape {
     Option(DeclaredType),
     /// `List`, at its element's type.
     List(DeclaredType),
+    /// `Set`, at its element's type: written as the array of its elements.
+    Set(DeclaredType),
+    /// `Map`, at its key's and its value's types: written as the array of its `[key, value]`
+    /// entries.
+    Map { key: DeclaredType, value: DeclaredType },
     /// Components in the type's order, each `(label, type)`.
     Tuple(Vec<(Symbol, DeclaredType)>),
-    /// A sort or an entity: the constructors its values may be.
+    /// A sort or an entity: the constructors its values may be. At a sort with abstract values,
+    /// its providers' constructors.
     Data(DataShape),
 }
 
 /// A sort or an entity at the type that applies it: its constructors, and the bindings of its
-/// parameters there — the place its constructors' fields are typed in.
+/// parameters there — the place its constructors' fields are typed in. At a sort with abstract
+/// values (proposal 073 §2: a spec whose values are its providers'), the constructors of the
+/// sorts with constructors that provide it, each typed in its own provider's parameters.
 #[derive(Debug)]
 pub struct DataShape {
     sort: Symbol,
     ctors: Vec<Symbol>,
     /// The type's one constructor is the type itself (an entity's type).
     own: bool,
-    env: Env,
+    homes: Homes,
+}
+
+/// Where a [`DataShape`]'s constructors' fields are typed.
+#[derive(Debug)]
+enum Homes {
+    /// A sort's or an entity's: every constructor's, in the bindings of the type's parameters.
+    Sort(Env),
+    /// A sort with abstract values': each constructor's provider and the bindings of the
+    /// provider's parameters, in the order of the constructors.
+    Providers(Vec<(Symbol, Env)>),
 }
 
 impl DataShape {
-    /// The sort the type is headed by (for an entity's type, the entity).
+    /// The sort the type is headed by (for an entity's type, the entity; for a sort with
+    /// abstract values, that sort).
     pub fn sort(&self) -> Symbol {
         self.sort
     }
 
-    /// The constructors a value of the type may be, in declared order.
+    /// The constructors a value of the type may be, in declared order; at a sort with abstract
+    /// values, its providers' constructors, provider by provider.
     pub fn constructors(&self) -> &[Symbol] {
         &self.ctors
     }
 
+    /// The provider `ctor` is a constructor of, where the type is a sort with abstract values
+    /// (`Car` for `car` at `Sp`): a value of `ctor` at the type is an instance of that provider
+    /// (`Instance(dict, car(n: 1))`, [`SpecValues`]). `None` at any other type, and for a
+    /// constructor that is not one of the type's.
+    pub fn provider(&self, ctor: Symbol) -> Option<Symbol> {
+        let i = self.ctors.iter().position(|c| *c == ctor.plain())?;
+        match &self.homes {
+            Homes::Sort(_) => None,
+            Homes::Providers(providers) => Some(providers[i].0),
+        }
+    }
+
+    /// Is the type a sort with abstract values?
+    fn is_abstract(&self) -> bool {
+        matches!(self.homes, Homes::Providers(_))
+    }
+
     /// `ctor`'s fields, each `(field, type)` in declared order, each type in this type's
     /// bindings: `Cell`'s `value` at `Cell[T = Int64]` is read as `Int64` by its
-    /// [`DeclaredType::shape`]. A parameter the type leaves open is refused there, at the
-    /// field that names it. Refused here: a constructor that is not one of the type's
-    /// (`UnknownConstructor`), and one the KB records a field's name for and no type for
-    /// (`NoDataSpelling`).
+    /// [`DeclaredType::shape`]; at a sort with abstract values, in its provider's. A parameter
+    /// the type leaves open is refused there, at the field that names it. Refused here: a
+    /// constructor that is not one of the type's (`UnknownConstructor`), and one the KB records
+    /// a field's name for and no type for (`NoDataSpelling`).
     pub fn fields(&self, kb: &KnowledgeBase, ctor: Symbol) -> Result<Vec<(Symbol, DeclaredType)>, ValueProblem> {
         // A constructor is its plain symbol; a type names one by its face.
         let ctor = ctor.plain();
-        if !self.ctors.contains(&ctor) {
+        let Some(i) = self.ctors.iter().position(|c| *c == ctor) else {
             return Err(ValueProblem::UnknownConstructor {
                 name: kb.qualified_name_of(ctor).to_owned(),
                 sort: kb.qualified_name_of(self.sort).to_owned(),
             });
-        }
+        };
+        let env = match &self.homes {
+            Homes::Sort(env) => env,
+            Homes::Providers(providers) => &providers[i].1,
+        };
         declared_fields(kb, ctor)
             .into_iter()
             .map(|(field, fty)| match fty {
@@ -778,12 +958,22 @@ impl DataShape {
                     field,
                     DeclaredType {
                         view,
-                        env: self.env.clone(),
+                        env: env.clone(),
                     },
                 )),
                 None => Err(ValueProblem::NoDataSpelling),
             })
             .collect()
+    }
+
+    /// The constructors of the type a tag names (more than one only at a sort with abstract
+    /// values, whose providers' constructors may share a short name).
+    fn tagged(&self, kb: &KnowledgeBase, tag: &str, names: TagNames) -> Vec<Symbol> {
+        let names_it = |c: Symbol| match names {
+            TagNames::Short => kb.local_name_of(c) == tag,
+            TagNames::Qualified => kb.qualified_name_of(c) == tag,
+        };
+        self.ctors.iter().copied().filter(|c| names_it(*c)).collect()
     }
 }
 
@@ -909,6 +1099,36 @@ fn shown_type(kb: &KnowledgeBase, ty: &DeclaredType) -> Value {
     }
 }
 
+/// The type `ty` stands for as a type the typer reads, every parameter its place binds
+/// substituted (`Sp[T = Int64]` for a field `x: Sp[T = A]` within `Holder[A = Int64]`): the
+/// place a value read at a sort with abstract values is used at, which its dictionary is
+/// built for. A parameter nothing binds is refused by its name, as [`DeclaredType::shape`]
+/// refuses it.
+fn closed_type(kb: &KnowledgeBase, ty: &DeclaredType) -> Result<Value, ValueProblem> {
+    let (ty, extracted) = resolve(kb, ty)?;
+    if ty.env.is_empty() {
+        return Ok(ty.view);
+    }
+    match (ty.view.head(kb), extracted) {
+        (ViewHead::Functor { functor, .. }, TypeExtractor::Parameterized { bindings, .. }) if !bindings.is_empty() => {
+            let named = bindings
+                .into_iter()
+                .map(|(k, v)| Ok((k, closed_type(kb, &ty.within(v))?)))
+                .collect::<Result<Vec<(Symbol, Value)>, ValueProblem>>()?;
+            Ok(Value::Entity {
+                functor,
+                pos: Rc::from(Vec::new()),
+                named: named.into(),
+            })
+        }
+        // A tuple or a function type naming a parameter: no data place reads one so.
+        _ if holds_variable(kb, &ty.view) => Err(ValueProblem::UnboundParameter {
+            name: describe_value(kb, &ty.view),
+        }),
+        _ => Ok(ty.view),
+    }
+}
+
 /// A short rendering of a JSON value for a message.
 fn describe_json(v: &serde_json::Value) -> String {
     match v {
@@ -942,6 +1162,58 @@ fn tag_of(kb: &KnowledgeBase, ctor: Symbol, names: TagNames) -> String {
     }
 }
 
+/// The refusal of a tag that names each of `ctors`, by their qualified names.
+fn ambiguous_tag(kb: &KnowledgeBase, tag: &str, ctors: &[Symbol]) -> ValueProblem {
+    let mut constructors: Vec<String> = ctors.iter().map(|c| kb.qualified_name_of(*c).to_owned()).collect();
+    constructors.sort();
+    ValueProblem::AmbiguousTag {
+        tag: tag.to_owned(),
+        constructors,
+    }
+}
+
+/// The order a set's elements and a map's entries are written in: by their spellings, so one
+/// set or map is written the same whatever order it was built in. Kinds rank null, booleans,
+/// numbers, strings, arrays, objects; numbers by value (an integer exactly, then the text when
+/// two read as one float), strings by code point, arrays and objects element by element (an
+/// object's keys in its order, each key before its value), a shorter one first.
+fn json_order(a: &serde_json::Value, b: &serde_json::Value) -> std::cmp::Ordering {
+    use serde_json::Value as J;
+    use std::cmp::Ordering;
+    let rank = |v: &J| match v {
+        J::Null => 0,
+        J::Bool(_) => 1,
+        J::Number(_) => 2,
+        J::String(_) => 3,
+        J::Array(_) => 4,
+        J::Object(_) => 5,
+    };
+    match (a, b) {
+        (J::Bool(x), J::Bool(y)) => x.cmp(y),
+        (J::Number(x), J::Number(y)) => match (x.as_i64(), y.as_i64()) {
+            (Some(i), Some(j)) => i.cmp(&j),
+            _ => {
+                let (f, g) = (x.as_f64().unwrap_or(f64::NAN), y.as_f64().unwrap_or(f64::NAN));
+                f.total_cmp(&g).then_with(|| x.to_string().cmp(&y.to_string()))
+            }
+        },
+        (J::String(x), J::String(y)) => x.cmp(y),
+        (J::Array(x), J::Array(y)) => x
+            .iter()
+            .zip(y)
+            .map(|(p, q)| json_order(p, q))
+            .find(|o| *o != Ordering::Equal)
+            .unwrap_or_else(|| x.len().cmp(&y.len())),
+        (J::Object(x), J::Object(y)) => x
+            .iter()
+            .zip(y)
+            .map(|((k, p), (l, q))| k.cmp(l).then_with(|| json_order(p, q)))
+            .find(|o| *o != Ordering::Equal)
+            .unwrap_or_else(|| x.len().cmp(&y.len())),
+        _ => rank(a).cmp(&rank(b)),
+    }
+}
+
 /// A constructor's declared fields, each `(field, type)`, in declared order. A constructor the
 /// KB records names for and no types for is not one the mapping can read.
 fn declared_fields(kb: &KnowledgeBase, ctor: Symbol) -> Vec<(Symbol, Option<Value>)> {
@@ -964,6 +1236,14 @@ fn runtime_account(kb: &KnowledgeBase, ctor: Symbol) -> Result<(), ValueProblem>
         }),
         None => Ok(()),
     }
+}
+
+/// An operation application's operand, by its parameter's name or its position (a fact writes
+/// `insert(s, x)` positionally).
+fn operand(kb: &KnowledgeBase, v: &Value, name: &str, index: usize) -> Option<Value> {
+    v.named_field(kb, name)
+        .or_else(|| v.pos_arg(kb, index))
+        .map(|a| a.to_value())
 }
 
 /// The `TupleLiteral` functor a tuple value is built on, as a rule writes it.
@@ -1107,9 +1387,86 @@ impl<'k> Decoder<'k> {
                 }
                 _ => Err(wrong(self)),
             },
+            TypeShape::Set(elem) => match json {
+                J::Array(items) => self.set(items, ty, &elem),
+                _ => Err(wrong(self)),
+            },
+            TypeShape::Map { key, value } => match json {
+                J::Array(entries) => self.map(entries, ty, &key, &value),
+                _ => Err(wrong(self)),
+            },
             TypeShape::Tuple(comps) => self.tuple(json, ty, &comps),
             TypeShape::Data(data) => self.data(json, ty, &data),
         }
+    }
+
+    /// A set from the array of its elements: `insert(insert(empty, 2), 1)` from `[2, 1]`, each
+    /// element inserted in the array's order, as a fact writing that chain builds it. An element
+    /// written twice — the same term, however spelled — is refused at its second place, but with
+    /// [`CollectionOrder::AsBuilt`], whose writer writes a chain that inserts one twice.
+    fn set(&mut self, items: &[serde_json::Value], ty: &DeclaredType, elem: &DeclaredType) -> Result<TermId, ValueError> {
+        let empty = self.kb.resolve_symbol(SET_EMPTY);
+        let insert = self.kb.resolve_symbol(SET_INSERT);
+        // Each element read so far, and the index it was read at.
+        let mut members: HashMap<TermId, usize> = HashMap::with_capacity(items.len());
+        let mut set = self.kb.alloc(Term::Ref(empty));
+        for (i, item) in items.iter().enumerate() {
+            let member = self.at(PathStep::Index(i), |me| me.value(item, elem))?;
+            if let Some(&first) = members.get(&member) {
+                if self.opts.collection_order == CollectionOrder::Canonical {
+                    return Err(self.at(PathStep::Index(i), |me| me.err(ty, ValueProblem::RepeatedElement { first })));
+                }
+            }
+            members.entry(member).or_insert(i);
+            set = self.kb.alloc(Term::Fn {
+                functor: insert,
+                pos_args: SmallVec::from_slice(&[set, member]),
+                named_args: SmallVec::new(),
+            });
+        }
+        Ok(set)
+    }
+
+    /// A map from the array of its `[key, value]` entries: `put(put(empty, k1, v1), k2, v2)`,
+    /// each entry put in the array's order, as a fact writing that chain builds it. A key written
+    /// twice — the same term, however spelled — is refused at its second entry, since which value
+    /// it maps to would be the array's order alone; with [`CollectionOrder::AsBuilt`] that order is
+    /// the chain's, and the later entry shadows the earlier, as its `put` does.
+    fn map(
+        &mut self,
+        entries: &[serde_json::Value],
+        ty: &DeclaredType,
+        key: &DeclaredType,
+        value: &DeclaredType,
+    ) -> Result<TermId, ValueError> {
+        use serde_json::Value as J;
+        let empty = self.kb.resolve_symbol(MAP_EMPTY);
+        let put = self.kb.resolve_symbol(MAP_PUT);
+        // Each key read so far, and the index of its entry.
+        let mut keys: HashMap<TermId, usize> = HashMap::with_capacity(entries.len());
+        let mut map = self.kb.alloc(Term::Ref(empty));
+        for (i, entry) in entries.iter().enumerate() {
+            let (k, v) = self.at(PathStep::Index(i), |me| match entry {
+                J::Array(pair) if pair.len() == 2 => {
+                    let k = me.at(PathStep::Index(0), |me| me.value(&pair[0], key))?;
+                    let v = me.at(PathStep::Index(1), |me| me.value(&pair[1], value))?;
+                    Ok((k, v))
+                }
+                other => Err(me.err(ty, ValueProblem::NotAnEntry { found: describe_json(other) })),
+            })?;
+            if let Some(&first) = keys.get(&k) {
+                if self.opts.collection_order == CollectionOrder::Canonical {
+                    return Err(self.at(PathStep::Index(i), |me| me.err(ty, ValueProblem::RepeatedKey { first })));
+                }
+            }
+            keys.entry(k).or_insert(i);
+            map = self.kb.alloc(Term::Fn {
+                functor: put,
+                pos_args: SmallVec::from_slice(&[map, k, v]),
+                named_args: SmallVec::new(),
+            });
+        }
+        Ok(map)
     }
 
     /// The variable `json` spells, with variables on: `"?name"`, or `"?"` for an anonymous one.
@@ -1216,6 +1573,41 @@ impl<'k> Decoder<'k> {
     }
 
     fn data(&mut self, json: &serde_json::Value, ty: &DeclaredType, data: &DataShape) -> Result<TermId, ValueError> {
+        let value = self.constructed(json, ty, data)?;
+        if !data.is_abstract() || self.opts.spec_values == SpecValues::Plain {
+            return Ok(value);
+        }
+        self.paired(value, ty)
+    }
+
+    /// `value`, read at `ty`, a type headed by a sort with abstract values, paired with its
+    /// provider's dictionary there, `Instance(dict, value)`: the pair an operation body builds
+    /// where it uses the provider's value at the abstract sort (073 §2), which is the term a
+    /// call at one takes. Refused where no provision answers at the place's type
+    /// (`NoInstance`).
+    fn paired(&mut self, value: TermId, ty: &DeclaredType) -> Result<TermId, ValueError> {
+        let place = closed_type(self.kb, ty).map_err(|p| self.err(ty, p))?;
+        let value = Value::term(value);
+        let dict = crate::kb::typing::instance_dictionary_of_read_value(self.kb, &value, &place)
+            .map_err(|reason| self.err(ty, ValueProblem::NoInstance { reason }))?;
+        let no_instance = |me: &Self, reason: String| me.err(ty, ValueProblem::NoInstance { reason });
+        let instance = self
+            .kb
+            .try_resolve_symbol(INSTANCE)
+            .ok_or_else(|| no_instance(self, format!("this knowledge base never loaded `{INSTANCE}`")))?;
+        // The term the running pair lowers to: its two components positional, as eval makes it.
+        let pair = Value::Entity {
+            functor: instance,
+            pos: vec![dict, value].into(),
+            named: Vec::new().into(),
+        };
+        self.kb
+            .alloc_from_value(&pair)
+            .map_err(|e| no_instance(self, format!("the pair has no term: {e:?}")))
+    }
+
+    /// The constructed value `json` spells at `ty`: a tag, or a tag and its payload.
+    fn constructed(&mut self, json: &serde_json::Value, ty: &DeclaredType, data: &DataShape) -> Result<TermId, ValueError> {
         use serde_json::Value as J;
         let ctors = data.constructors();
         if data.own && self.opts.entity_tags == EntityTags::OmitAtEntityType {
@@ -1227,7 +1619,7 @@ impl<'k> Decoder<'k> {
         }
         match json {
             J::String(tag) => {
-                let ctor = self.ctor_by_tag(tag, ctors, data.sort, ty)?;
+                let ctor = self.ctor_by_tag(tag, data, ty)?;
                 let fields = declared_fields(self.kb, ctor).len();
                 if fields != 0 {
                     return Err(self.err(
@@ -1242,7 +1634,7 @@ impl<'k> Decoder<'k> {
             }
             J::Object(m) if m.len() == 1 => {
                 let (tag, payload) = m.iter().next().expect("one key");
-                let ctor = self.ctor_by_tag(tag, ctors, data.sort, ty)?;
+                let ctor = self.ctor_by_tag(tag, data, ty)?;
                 let ctor_ty = ty.within(Value::SymbolRef(self.kb.type_face_of(ctor)));
                 self.at(PathStep::Key(tag.clone()), |me| match payload {
                     J::Object(fields) => me.fields(ctor, data, fields, &ctor_ty),
@@ -1253,6 +1645,7 @@ impl<'k> Decoder<'k> {
                 let mut tags: Vec<String> =
                     ctors.iter().map(|c| tag_of(self.kb, *c, self.opts.tag_names)).collect();
                 tags.sort();
+                tags.dedup();
                 Err(self.err(
                     ty,
                     match other {
@@ -1268,21 +1661,23 @@ impl<'k> Decoder<'k> {
     }
 
     /// The constructor of the declared type a tag names — among those constructors and nowhere
-    /// else (WI-912): a tag outside the type is a wrong-typed value, not a name to look up.
-    fn ctor_by_tag(&self, tag: &str, ctors: &[Symbol], sort: Symbol, ty: &DeclaredType) -> Result<Symbol, ValueError> {
-        let ctor = ctors
-            .iter()
-            .copied()
-            .find(|c| tag_of(self.kb, *c, self.opts.tag_names) == tag)
-            .ok_or_else(|| {
-                self.err(
+    /// else (WI-912): a tag outside the type is a wrong-typed value, not a name to look up. A tag
+    /// naming two of them (two providers' constructors sharing a short name) is refused, naming
+    /// both: no one value is meant.
+    fn ctor_by_tag(&self, tag: &str, data: &DataShape, ty: &DeclaredType) -> Result<Symbol, ValueError> {
+        let ctor = match data.tagged(self.kb, tag, self.opts.tag_names).as_slice() {
+            [] => {
+                return Err(self.err(
                     ty,
                     ValueProblem::UnknownConstructor {
                         name: tag.to_owned(),
-                        sort: self.kb.qualified_name_of(sort).to_owned(),
+                        sort: self.kb.qualified_name_of(data.sort).to_owned(),
                     },
-                )
-            })?;
+                ))
+            }
+            [ctor] => *ctor,
+            several => return Err(self.err(ty, ambiguous_tag(self.kb, tag, several))),
+        };
         runtime_account(self.kb, ctor).map_err(|p| self.err(ty, p))?;
         Ok(ctor)
     }
@@ -1513,9 +1908,138 @@ impl<'k> Encoder<'k> {
                 _ => Err(self.wrong(ty, v)),
             },
             TypeShape::List(elem) => self.list(v, ty, &elem),
+            TypeShape::Set(elem) => self.set(v, ty, &elem),
+            TypeShape::Map { key, value } => self.map(v, ty, &key, &value),
             TypeShape::Tuple(comps) => self.tuple(v, ty, &comps),
             TypeShape::Data(data) => self.data(v, ty, &data),
         }
+    }
+
+    /// A set as the array of its elements, in [`json_order`] and each once, so one set is one
+    /// text whatever order its `insert`s were made in or how often one was; with
+    /// [`CollectionOrder::AsBuilt`], in the order they were inserted, each time. Read off its
+    /// `insert` / `empty` chain; an element's error is at its place in the order the set was
+    /// built, the innermost `insert` first. A chain of another operation (`union(s1, s2)`, not
+    /// reduced) has no spelling.
+    fn set(&mut self, v: &Value, ty: &DeclaredType, elem: &DeclaredType) -> Result<serde_json::Value, ValueError> {
+        let kb = self.kb;
+        let mut members: Vec<Value> = Vec::new();
+        let mut cell = v.clone();
+        loop {
+            match cell.head(kb) {
+                ViewHead::Functor {
+                    functor,
+                    pos_arity: 0,
+                    named_arity: 0,
+                } if kb.qualified_name_of(functor) == SET_EMPTY => break,
+                ViewHead::Functor { functor, .. } if kb.qualified_name_of(functor) == SET_INSERT => {
+                    let (Some(rest), Some(member)) = (operand(kb, &cell, "s", 0), operand(kb, &cell, "x", 1)) else {
+                        return Err(self.wrong(ty, &cell));
+                    };
+                    members.push(member);
+                    cell = rest;
+                }
+                ViewHead::Var(_) => {
+                    return Err(self.err(
+                        ty,
+                        ValueProblem::Unrepresentable {
+                            what: "a set with a variable tail".to_owned(),
+                        },
+                    ))
+                }
+                _ => return Err(self.wrong(ty, &cell)),
+            }
+        }
+        members.reverse();
+        let mut items = Vec::with_capacity(members.len());
+        for (i, member) in members.iter().enumerate() {
+            items.push(self.at(PathStep::Index(i), |me| me.value(member, elem))?);
+        }
+        if self.opts.collection_order == CollectionOrder::Canonical {
+            items.sort_by(json_order);
+            items.dedup();
+        }
+        Ok(serde_json::Value::Array(items))
+    }
+
+    /// A map as the array of its `[key, value]` entries, in [`json_order`] of their keys, so one
+    /// map is one text whatever order it was built in; with [`CollectionOrder::AsBuilt`], every
+    /// `put` in the order made. Read off a running map's handle (which
+    /// carries its own arena) or off its `put` / `empty` chain, where a later `put` of a key
+    /// written the same as an earlier one's shadows it. An entry's error is at its place in the
+    /// order the map was built, the first `put` first.
+    fn map(
+        &mut self,
+        v: &Value,
+        ty: &DeclaredType,
+        key: &DeclaredType,
+        value: &DeclaredType,
+    ) -> Result<serde_json::Value, ValueError> {
+        use serde_json::Value as J;
+        let kb = self.kb;
+        // The entries in the order they were made, each with its place there.
+        let entries: Vec<(Value, Value)> = match v {
+            Value::Map(handle) => {
+                handle.with_body(|body| body.iter().map(|(k, x)| (k.to_value(), x.clone())).collect())
+            }
+            _ => {
+                let mut puts: Vec<(Value, Value)> = Vec::new();
+                let mut cell = v.clone();
+                loop {
+                    match cell.head(kb) {
+                        ViewHead::Functor {
+                            functor,
+                            pos_arity: 0,
+                            named_arity: 0,
+                        } if kb.qualified_name_of(functor) == MAP_EMPTY => break,
+                        ViewHead::Functor { functor, .. } if kb.qualified_name_of(functor) == MAP_PUT => {
+                            let (Some(rest), Some(k), Some(x)) = (
+                                operand(kb, &cell, "m", 0),
+                                operand(kb, &cell, "key", 1),
+                                operand(kb, &cell, "value", 2),
+                            ) else {
+                                return Err(self.wrong(ty, &cell));
+                            };
+                            puts.push((k, x));
+                            cell = rest;
+                        }
+                        ViewHead::Var(_) => {
+                            return Err(self.err(
+                                ty,
+                                ValueProblem::Unrepresentable {
+                                    what: "a map with a variable tail".to_owned(),
+                                },
+                            ))
+                        }
+                        _ => return Err(self.wrong(ty, &cell)),
+                    }
+                }
+                puts.reverse();
+                puts
+            }
+        };
+        if self.opts.collection_order == CollectionOrder::AsBuilt {
+            let mut written = Vec::with_capacity(entries.len());
+            for (i, (k, x)) in entries.iter().enumerate() {
+                let k = self.at(PathStep::Index(i), |me| me.at(PathStep::Index(0), |me| me.value(k, key)))?;
+                let x = self.at(PathStep::Index(i), |me| me.at(PathStep::Index(1), |me| me.value(x, value)))?;
+                written.push(J::Array(vec![k, x]));
+            }
+            return Ok(J::Array(written));
+        }
+        // The last entry of a key first, so it is the one written.
+        let mut written: Vec<(J, J)> = Vec::with_capacity(entries.len());
+        let mut spelled: HashSet<String> = HashSet::with_capacity(entries.len());
+        for (i, (k, x)) in entries.iter().enumerate().rev() {
+            let k = self.at(PathStep::Index(i), |me| me.at(PathStep::Index(0), |me| me.value(k, key)))?;
+            if !spelled.insert(k.to_string()) {
+                continue;
+            }
+            let x = self.at(PathStep::Index(i), |me| me.at(PathStep::Index(1), |me| me.value(x, value)))?;
+            written.push((k, x));
+        }
+        written.sort_by(|(a, _), (b, _)| json_order(a, b));
+        Ok(J::Array(written.into_iter().map(|(k, x)| J::Array(vec![k, x])).collect()))
     }
 
     /// With variables on, a string of zero or more `\` and then `?` gains one `\`.
@@ -1606,6 +2130,18 @@ impl<'k> Encoder<'k> {
 
     fn data(&mut self, v: &Value, ty: &DeclaredType, data: &DataShape) -> Result<serde_json::Value, ValueError> {
         let kb = self.kb;
+        // At a sort with abstract values a value is its provider's value paired with the
+        // provider's dictionary, as an operation body makes it, or the provider's value alone, as
+        // a fact holds it: both are written as the provider's value, which is what the dictionary
+        // is built from where the value is read back.
+        let opened;
+        let v = match data.is_abstract().then(|| crate::kb::typing::instance_value_of(kb, v)).flatten() {
+            Some(carried) => {
+                opened = carried;
+                &opened
+            }
+            None => v,
+        };
         let ViewHead::Functor { functor, .. } = v.head(kb) else {
             return Err(self.wrong(ty, v));
         };
@@ -1628,6 +2164,14 @@ impl<'k> Encoder<'k> {
             return Ok(serde_json::Value::Object(self.fields(v, ctor, data, ty)?));
         }
         let tag = tag_of(kb, ctor, self.opts.tag_names);
+        // A tag that reads back as two constructors is not written: the reader refuses it. Only
+        // two providers' constructors can share one; a sort's own are named apart.
+        if data.is_abstract() {
+            let tagged = data.tagged(kb, &tag, self.opts.tag_names);
+            if tagged.len() > 1 {
+                return Err(self.err(ty, ambiguous_tag(kb, &tag, &tagged)));
+            }
+        }
         if declared_fields(kb, ctor).is_empty() {
             return Ok(serde_json::Value::String(tag));
         }

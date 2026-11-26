@@ -603,14 +603,16 @@ fn keys_in_declared_order() {
     assert_eq!(text(&term_ser::encode_value(&kb, &t, &late, opts()).unwrap()), r#"{"Late":{"zz":1,"aa":2}}"#);
 }
 
-/// A type with no data spelling is refused at both ends, naming the type.
+/// A type with no data spelling is refused at both ends, naming the type. (`Map` was the row of
+/// a sort with no constructors here until WI-20261125-SCPW9 gave it a spelling; `Cell` is one
+/// still, and `wi_scpw9_set_map_spec_values_test` has a spec no data sort provides.)
 ///
 /// FAILS when backed out (measured): a sort with no constructors read as a data sort (the
 /// refusal is then `WrongShape`, a shape no value could have).
 #[test]
 fn a_type_with_no_data_spelling_is_refused() {
     let mut kb = kb();
-    for text_ty in ["anthill.prelude.Map[K = anthill.prelude.Int64, V = anthill.prelude.Int64]", "(anthill.prelude.Int64) -> anthill.prelude.Int64"] {
+    for text_ty in ["anthill.prelude.Cell[V = anthill.prelude.Int64]", "(anthill.prelude.Int64) -> anthill.prelude.Int64"] {
         let ty = term_ser::type_from_text(&mut kb, text_ty).unwrap_or_else(|e| panic!("{text_ty}: {e}"));
         let err = term_ser::decode_value(&mut kb, &serde_json::json!([]), &ty, opts()).expect_err(text_ty);
         assert_eq!(err.problem, ValueProblem::NoDataSpelling, "{err}");

@@ -1,6 +1,6 @@
 # Proposal 021: Term Serialization to TOML/JSON
 
-**Status:** Proposed; revised 2026-11-22 (WI-20261122-WC18Y, see [Revision of 2026-11-22](#revision-of-2026-11-22))
+**Status:** Proposed; revised 2026-11-22 (WI-20261122-WC18Y, see [Revision of 2026-11-22](#revision-of-2026-11-22)) and 2026-11-25 (WI-20261125-SCPW9, see [Revision of 2026-11-25](#revision-of-2026-11-25))
 **Depends on:** None
 **Affects:** Persistence layer (`rustland/anthill-core/src/persistence/term_ser.rs`), KB load pipeline, Stage 0 design
 
@@ -41,6 +41,8 @@ pub struct CodecOptions {
     pub tag_names: TagNames,         // Short
     pub big_int: BigIntSpelling,     // NumberWhenItFits
     pub wider_tuple: WiderTuple,     // Project
+    pub spec_values: SpecValues,     // Instances
+    pub collection_order: CollectionOrder, // Canonical
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,6 +53,10 @@ pub enum TagNames { #[default] Short, Qualified }
 pub enum BigIntSpelling { #[default] NumberWhenItFits, AlwaysDigits }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WiderTuple { #[default] Project, Refuse }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpecValues { #[default] Instances, Plain }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CollectionOrder { #[default] Canonical, AsBuilt }
 
 pub fn decode_value(kb: &mut KnowledgeBase, json: &serde_json::Value,
                     ty: &impl TermView, opts: CodecOptions) -> Result<TermId, ValueError>;
@@ -82,12 +88,14 @@ pub enum PathStep { Key(String), Index(usize) }
 | `tag_names` | `Short`: the constructor's short name, `"Open"`, `{"Verified": …}` | `Qualified`: its qualified name, `"app.Status.Open"`, `{"app.Status.Verified": …}`, which reads without the schema at hand |
 | `big_int` | `NumberWhenItFits`: a number in the `i64` range, digits past it | `AlwaysDigits`: always its digits, for a reader that loses integers past 2^53 |
 | `wider_tuple` | `Project`: a wider tuple value is written at the declared labels (see [Tuples](#tuples)) | `Refuse`: it is an error (`ValueProblem::WiderThanDeclared`) |
+| `collection_order` | `Canonical`: one text per set or map, its elements or entries in one order and each once, an element or a key written twice refused (see [Sets](#sets), [Maps](#maps)) | `AsBuilt`: one text per chain, in the order it was built, repeats included, read back as that chain |
+| `spec_values` | `Instances`: a value read at a sort with abstract values is its provider's value paired with the provider's dictionary, `Instance(dict, value)` (see [Values at a sort with abstract values](#values-at-a-sort-with-abstract-values)) | `Plain`: the provider's value alone. The writer takes both and writes them alike |
 
-The file readers and writers use the defaults with `variables` on and `wider_tuple: Refuse` (`CodecOptions::data_file()`), so a data file has one format and a fact is written whole: a fact may hold a tuple wider than its field's type (kernel §4.5), and projected it would reload as another fact.
+The file readers and writers use the defaults with `variables` on, `wider_tuple: Refuse`, `spec_values: Plain` and `collection_order: AsBuilt` (`CodecOptions::data_file()`), so a data file has one format and a fact is written whole and reads back as itself: a fact may hold a tuple wider than its field's type (kernel §4.5), and projected it would reload as another fact; a source fact holds a provider's value at an abstract sort alone, and paired it would reload as another fact too; and a set's chain written in another order than it was built in reloads as another chain of the same set, another fact.
 
-**`decode_value`** reads `json` as one value of type `ty` and returns its term. The term is hash-consed into `kb`'s term store. With `variables` on, its variables are fresh, and their scope is this one call. Nothing is asserted, so the KB's facts and rules are as they were. To pass the result to an operation, wrap it as `Value::term(id)`.
+**`decode_value`** reads `json` as one value of type `ty` and returns its term. The term is hash-consed into `kb`'s term store. With `variables` on, its variables are fresh, and their scope is this one call. Nothing is asserted, so the KB's facts and rules are as they were. To pass the result to an operation, wrap it as `Value::term(id)`; a value at a sort with abstract values is passed at its declared type (`HostValue::typed`), since a host call reads a bare pair as the value it carries. A set and a map are read as the chains of their operations a fact writes, and a running `Map` operation takes a host handle and refuses the chain (see [Maps](#maps)).
 
-**`encode_value`** writes `value` at type `ty`. It reads `kb` and changes nothing. `value` may ride any carrier: a `TermId`, a `Value` an operation returned (`Value::Entity`, `Value::Tuple`, a scalar, `Value::Term`), or an occurrence. One term encodes to the same bytes on every carrier. A value that is not data, such as a closure, a stream, a map or a cell handle, is refused.
+**`encode_value`** writes `value` at type `ty`. It reads `kb` and changes nothing. `value` may ride any carrier: a `TermId`, a `Value` an operation returned (`Value::Entity`, `Value::Tuple`, a scalar, `Value::Term`), or an occurrence. One term encodes to the same bytes on every carrier. A running map's handle encodes as the `put` chain of the same map does: the handle carries its own arena, so no interpreter is passed. A value that is not data, such as a closure, a stream or a cell handle, is refused.
 
 **The type** `ty` is a term on any carrier. An embedder takes it from the KB, as an operation's declared parameter or result type or an entity's field type (`KnowledgeBase::entity_field_types`), or reads it from text with `type_from_text`. A sort parameter it leaves unwritten takes its declared default (see [Mapping rules](#mapping-rules)). Any other type variable in it is refused.
 
@@ -102,10 +110,14 @@ The file readers and writers use the defaults with `variables` on and `wider_tup
 | `UnknownField { name }` | a key that names no field of the constructor, or no label of the tuple |
 | `MissingField { name }` | a required field or tuple component is absent |
 | `UnknownConstructor { name, sort }` | a tag that is no constructor of the declared type |
+| `AmbiguousTag { tag, constructors }` | a tag naming several constructors the type admits: at a sort with abstract values, two providers' constructors sharing a short name, refused at both ends; `constructors` are their qualified names, which `tag_names: Qualified` writes |
+| `RepeatedElement { first }`, `RepeatedKey { first }` | a set's element, or a map's key, written a second time; `first` is the index of its first place |
+| `NotAnEntry { found }` | a map's entry that is not the array `[key, value]` |
+| `NoInstance { reason }` | a value read at a sort with abstract values for which no dictionary can be built: its provider provides the sort at no application the type admits, or its provision asks for one nothing answers |
 | `NotTagged { found, tags }` | an object where a constructed value is expected that is not the object of one key, its constructor's tag; `tags` are the ones the declared type admits |
 | `NotOneField { constructor, fields }` | a shorthand payload for a constructor without exactly one field, or a bare tag for one with fields |
 | `RuntimeAccount { constructor }` | a constructor reserved to the runtime, at any depth |
-| `NoDataSpelling` | the declared type has no data spelling (`Set`, `Map`, a function type) |
+| `NoDataSpelling` | the declared type has no data spelling (a function type, `Cell`, a spec no sort with constructors provides; see [Types with no data spelling](#types-with-no-data-spelling)) |
 | `WiderThanDeclared { labels }` | with `wider_tuple: Refuse`, a tuple value with components its declared type does not name |
 | `UnboundParameter { name }` | a field's type still holds a parameter after substitution and defaults |
 | `Variable` | a variable where none has a spelling: any with variables off, a rigid or de Bruijn one, one standing for a whole `Option` |
@@ -140,8 +152,11 @@ The declared type decides how a JSON value is read. A JSON value of a shape the 
 | `Type` | the type's anthill text, names qualified | `"anthill.prelude.List[T = test.shop.Order]"` |
 | `Option[T = U]` | `null` for `none()`, otherwise the value at `U` | |
 | `List[T = U]` | array of values at `U` | `["a", "b"]` |
+| `Set[T = U]` | array of values at `U`, each once | `[1, 2, 10]` |
+| `Map[K = A, V = B]` | array of `[key, value]` arrays, each key once | `[["a", 1], ["b", 2]]` |
 | a tuple type | array, or object keyed by label | `[1, "a"]`, `{"state": …, "order": …}` |
 | a sort or an entity | the constructor's tag | `"Open"`, `{"Verified": {"at": "2027-03-15"}}`, `{"Point": {"x": 1, "y": 2}}` |
+| a sort with abstract values (`Sp`, which `Car` and `Van` provide) | the provider's value, tagged among the providers' constructors | `{"car": 1}`, `{"van": {"n": 2}}` |
 
 Under `Int64`, `3.5`, `3.0` and `1e3` are errors: a number written with a fraction or an exponent is not read as an integer, since past 2^53 it cannot be read exactly. A number past the range is out of range however it is written: the JSON parser rounds an integer past it to a float and keeps no trace of how the number was spelled, so `1e19` and `10000000000000000000000` are one refusal. Under `Float`, NaN and ±∞ have no JSON spelling and are refused when encoding. A `BigInt` is written as a number where it fits `i64` and as its digits past that. An unquoted integer past the `u64` range is refused under `BigInt`: the JSON parser has already rounded it to a float before the mapping sees it, so it must be written as its digits.
 
@@ -214,9 +229,44 @@ A tuple type is `NamedTuple` applied to its components, one per label, in the ty
 
 Encoding writes the components the declared type names and no others. An operation declared to return `(a: Int64)` may return `(b: 2, a: 1)`, which conforms to it by width (kernel §4.5). At that type the value is written `{"a": 1}`. A value carries no type of its own, so the declared type is all a reader of the trace can know of it. The file writers refuse such a value instead (`WiderTuple::Refuse`, above).
 
+#### Sets
+
+A set's value is the chain of its operations a fact writes, `insert(insert(empty, 2), 1)`: `Set` has no constructors, no sort provides it, and its equality is membership (`insert` is commutative and idempotent, `set.anthill`). It is the array of its elements:
+
+```
+insert(insert(insert(empty, 2), 10), 1)  →  [1, 2, 10]
+```
+
+The reader inserts the elements in the array's order: `[2, 10, 1]` is the chain above, and `[1, 2, 10]` another chain of the same set. An element written twice is refused (`RepeatedElement`), compared as the term it reads as, so `{"P": {"id": 1, "name": "a"}}` and the same object with its keys in another order are one element. The writer writes each element once and in one order, so one set is one text however its chain was built: the elements' spellings are sorted, kinds ranking null, booleans, numbers, strings, arrays, objects; numbers by value, strings by code point, arrays and objects element by element, a shorter one first. So `[1, 2, 10]`, not `[1, 10, 2]`. Two elements written alike are one; two that an `eq` of their own calls equal and that are written apart stay two. That is `collection_order: Canonical`. A set is one value with many chains, and a fact holds one of them, so a data file (`AsBuilt`) writes the chain as it was built, an element inserted twice each time, and reads it back as that chain: `Ints(s: insert(insert(insert(empty, 2), 10), 1))` is the row `{"s": [2, 10, 1]}`. A chain of another operation (`union(s1, s2)`, which the relational rules do not reduce) and a set with a variable tail have no spelling, and are refused when encoding.
+
+#### Maps
+
+A map is the array of its entries, each the array `[key, value]`:
+
+```
+put(put(empty, "b", 2), "a", 1)  →  [["a", 1], ["b", 2]]
+```
+
+A map has two carriers. In a fact or a rule it is the chain of its operations, `put(put(empty, "b", 2), "a", 1)`, and that is what the reader builds, putting the entries in the array's order. A running operation's map is a host handle (`Value::Map`), which `TermView` shows as opaque. The handle carries its own arena (WI-20260922-BRT4Y), so the writer reads its entries with the KB alone, and one map is written alike on both carriers. A running `Map` operation takes the handle and refuses the chain (`Map.size` given `put(empty, "a", 1)` is a type mismatch, `Map` against `Term`). Building a handle needs the interpreter and `K`'s `Hash` instance, and is not in this proposal.
+
+A key written twice is refused (`RepeatedKey`): which value it maps to would be the array's order alone. In a chain, a later `put` of a key written the same as an earlier one's shadows it, as `Map`'s laws say, so `put(put(empty, "a", 1), "a", 3)` is `[["a", 3]]`. The writer orders the entries by their keys' spellings, as a set's elements are ordered. A data file (`AsBuilt`) writes every `put` of the chain in the order made, a key put twice each time, and reads them back so, the later shadowing the earlier as before. A map is an array of entries whatever its keys. An object keyed by string keys would be a second spelling of a `Map[K = String, …]`, and `serde_json` reads an object that repeats a key as its last entry, so the repeat could not be refused.
+
+#### Values at a sort with abstract values
+
+A sort with no constructors of its own that receives on itself, and that sorts with constructors provide, is a sort with abstract values (proposal 073 §2): `sort Sp { operation size(s: Sp) -> Int64 }`, which `Car` (`entity car(n: Int64)`) and `Van` (`entity van(n: Int64)`) provide. A value at `Sp` is a value of one of its providers. It is written as that value, with its constructor's tag looked up among the constructors of the sorts with constructors that provide `Sp`, directly or through a provider with none of its own:
+
+```
+car(n: 1)               at Sp            →  {"car": 1}
+[car(n: 1), van(n: 2)]  at List[T = Sp]  →  [{"car": 1}, {"van": 2}]
+```
+
+The value an operation body builds at `Sp` is the pair of the provider's dictionary and its value, `Instance(Dictionary(impl: Car), car(n: 1))`, and a call at `Sp` takes nothing else: given `car(n: 1)` alone it is refused when it runs ("holds no instance"). So the reader builds the pair (`spec_values: Instances`). The dictionary is built where the value is read, from the provision of the value's sort, and the place's own type is read first. A provider whose provision writes the abstract sort's binding as another ground type is none of its providers there: `Bike provides Sk[T = String]` is no `Sk[T = Int64]`, so at `Sk[T = Int64]` `bike` is no constructor, written or read (`UnknownConstructor`). One whose provision binds it through its own parameter (`Gen provides Sk[T = T]`) is one on its face, and the dictionary decides, at the value's type: `{"gen": "x"}`, a `Gen[T = String]`, is refused at `Sk[T = Int64]` (`NoInstance`). A source fact holds the provider's value alone (`fact Fleet(xs: [car(n: 1), van(n: 2)])`), and a data file reads it so (`spec_values: Plain`), so that its row reads back as the source fact. The writer writes the pair and the value alone alike. A host passes the pair to a call at its declared type (`HostValue::typed`): a host call reads a bare pair as the value it carries.
+
+Two providers' constructors may share a short name (`Bus.mk` and `Tram.mk`, both providing `Sq`). The tag `mk` then has no one reading, and is refused at both ends (`AmbiguousTag`), naming both; `tag_names: Qualified` writes and reads `{"test.Tram.mk": 2}`. A tag no provider's constructor has is `UnknownConstructor`. A provider's fields are typed in the provider's own parameters, which the type applying the abstract sort does not bind: they take their defaults, and a field naming one with no default is refused (`UnboundParameter`).
+
 #### Types with no data spelling
 
-A type whose values are not data is refused, naming the type, at both ends: a sort with no constructors that is none of the types above (`Set`, `Map`, `Stream`), a function type, `Cell`. A `Map` value is a host handle, which `TermView` shows as opaque, so the KB alone gives nothing to encode. `SortedSet` is a data sort (`tip`, `bin`) and is mapped like any other.
+A type whose values are not data is refused, naming the type, at both ends: a function type, `Cell`, and a sort with no constructors that is none of the types above, such as a spec no sort with constructors provides. `SortedSet` is a data sort (`tip`, `bin`) and is mapped like any other.
 
 ### Variables
 
@@ -463,13 +513,14 @@ Two commands deliberately do **not** read data files, for reasons specific to ea
 
 1. **The pair** (`term_ser::decode_value` / `encode_value`): one walk directed by the declared type, reading the value through `TermView` and the type through `typing::extract_type`. The type arguments reach the fields through an environment: a constructor's field type is read with each of its sort's parameters (their canonical variables) bound to the type the declared type writes there, or to the parameter's default, and that binding is itself read in the bindings of the place it was written in. So a parameter is substituted at any depth without building a type term, which the encoder, given `&KnowledgeBase`, could not.
 2. **The file readers and writers** (`load_json` / `load_toml`, `serialize_json` / `serialize_toml`): the envelope, and one call of the pair per entry with variables on. TOML is converted to and from `serde_json::Value`.
-3. **Schema lookup**: the entity's declared field names and types (`entity_field_names`, `entity_field_types`); a tag is looked up among the declared sort's constructors.
+3. **Schema lookup**: the entity's declared field names and types (`entity_field_names`, `entity_field_types`); a tag is looked up among the declared sort's constructors, or, at a sort with abstract values, among its providers' (`typing::data_providers_of_abstract_sort`), whose dictionary the reader builds as a rule body's argument at such a column is built (`typing::instance_dictionary_of_read_value`).
 4. **Type text**: written by `typing::type_qualified_text`, the text a proof record's name is made of; read by `load::lower_type_text`, which lends the loader's own type lowering (`Loader::type_expr_to_value`) to the one type of a host-supplied `const` the text is wrapped in, at `<global>`.
 5. **Key order**: `serde_json` with `preserve_order` in `anthill-core/Cargo.toml`.
 
 ## Not in this proposal
 
-- Encoding `Set`, `Map` and other host-carried values. It needs the interpreter's arenas, not the KB, and their spelling (`Set` as an array, `Map` as an array of pairs) is left to that proposal.
+- Decoding a `Map` into a running handle, which needs the interpreter and `K`'s `Hash` instance (see [Maps](#maps)). The other host-carried values (a stream, a cell, a closure) have no spelling.
+- Binding a provider's parameters from the type applying the abstract sort it provides (see [Values at a sort with abstract values](#values-at-a-sort-with-abstract-values)).
 - TOML beyond following the same mapping. It still cannot hold `null`.
 
 ## Revision of 2026-11-22
@@ -495,3 +546,17 @@ What changes for a file that loaded before:
 - A labelled tuple is written in its own order, which it reads back in (measured before: `H(p: (n: 3, state: Open))` reloaded as a second fact, in the type's order), and a tuple wider than its field's type is refused by the writer, where its extra components were dropped.
 
 An earlier example of this proposal loaded provisions (`entity = "anthill.prelude.Eq"`, `T = "Int64"`, as `fact Eq[T = Int64]`). It has been refused since WI-926, because `Eq` declares no fields, and is removed: a provision is a declaration, not data.
+
+## Revision of 2026-11-25
+
+WI-20261125-SCPW9 gave a spelling to three kinds of value that had none. MEASURED on 8ed4765f3 through anthill-traces' test binary, which reads and writes the traces of a spec's operations through this pair: `Set[T = Int64]` from `[1, 2]`, `Map[K = Int64, V = Int64]` from `[[1, 2]]`, and a spec sort with no constructors from `{}` were each refused `NoDataSpelling`, so a spec whose state or parameters hold one could be neither checked nor generated.
+
+- A set is the array of its elements, read as the `insert` chain a fact writes ([Sets](#sets)).
+- A map is the array of its `[key, value]` entries, read as the `put` chain a fact writes, and written from that chain or from a running map's handle ([Maps](#maps)). Decided with the user 2026-11-25: the reader builds the chain, the term a fact holds, because `decode_value` returns a term and a running map is a handle with no term; a running `Map` operation refuses the chain.
+- A value at a sort with abstract values is its provider's value, tagged among the providers' constructors ([Values at a sort with abstract values](#values-at-a-sort-with-abstract-values)). Decided with the user 2026-11-25: the reader pairs it with its provider's dictionary, as an operation body does and as a call needs, and a data file reads it alone, as a source fact holds it (`spec_values`).
+
+The choices the ticket left to this proposal: an element or a key written twice is refused; the writer orders a set's elements and a map's entries by their spellings, and writes a set's element once — and a data file, decided with the user 2026-11-25 once the canonical order was measured reloading `Ints(s: …2, 10, 1)` as another fact, writes and reads them as the chain was built (`collection_order`); a map is an array of entries whatever its keys; and writing a running map needs no interpreter, since its handle carries its arena.
+
+`DeclaredType::shape` (WI-20261125-CMQJ4) reads the three as `TypeShape::Set`, `TypeShape::Map` and a `TypeShape::Data` whose constructors are the providers', with `DataShape::provider` naming the provider of each, so a value generator walking a declared type reads them as the codec does.
+
+Nothing that loaded before reads differently: a value at any of these types was refused at both ends.
