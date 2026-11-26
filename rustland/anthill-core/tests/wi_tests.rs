@@ -1935,6 +1935,8 @@ mod wi_jr3ad_contract_clause_renaming_test;
 mod wi_7bjgq_host_call_assuming_requires_test;
 #[path = "include/wi_78b4m_contract_clause_names_test.rs"]
 mod wi_78b4m_contract_clause_names_test;
+#[path = "include/wi_ezqgx_contract_clause_path_names_nothing_test.rs"]
+mod wi_ezqgx_contract_clause_path_names_nothing_test;
 
 #[path = "include/wi_w9d4z_one_mistake_one_diagnosis_test.rs"]
 mod wi_w9d4z_one_mistake_one_diagnosis_test;

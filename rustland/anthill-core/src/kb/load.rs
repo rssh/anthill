@@ -34318,6 +34318,103 @@ impl<'a> Loader<'a> {
         Some(self.kb.alloc(term))
     }
 
+    /// WI-20261126-EZQGX — refuse a contract clause's QUALIFIED name that names nothing, in a
+    /// data slot: `requires below(n, Spec.limm)` where `Spec` declares no `limm`
+    /// ([`LoadError::DottedNameNamesNothing`], the wording an operation body's `Spec.limm`
+    /// gets). It stayed the chain `field_access(Spec, limm)`: its selector is a member name,
+    /// which [`Self::refuse_unresolved_contract_name`] does not judge, and
+    /// [`Self::contract_clause_qualified_reference`] answers only a name that resolves — so on
+    /// an operation no spec stands over it loaded clean, a datum no value equals, and on an
+    /// override it was refused only as a strengthened precondition (MEASURED).
+    ///
+    /// A PATH, not a read on a value, and the tests are the ones a clause head's dotted name
+    /// takes ([`Self::judge_head_dotted_name`]) and the typer's [`super::typing::namespace_only`]
+    /// and [`super::typing::declares_its_members`], which decide the body's refusal. Not
+    /// judged:
+    ///   * a chain rooted at a binder in the clause ([`Self::dotted_name_rooted_at_no_binding`]);
+    ///   * a whole name that has an answer ([`Self::qualified_name_resolves`]) — but one
+    ///     `internal` hides from here is refused as that access, as a clause head's is
+    ///     (found by `/code-review`: `Other.secret` loaded); a contested one is not this
+    ///     check's;
+    ///   * a value prefix — a rule, a const, a nullary operation ([`Self::name_has_value_prefix`])
+    ///     — or one read through a requirement's name ([`Self::reads_through_requirement_name`]):
+    ///     a field read on that value. An operation parameter or `result` as the root resolves to
+    ///     the parameter, neither a namespace nor a sort, and is a field read too;
+    ///   * a prefix that does not resolve: a longer one is left to the inner node, which is
+    ///     the chain one segment shorter and is converted next, and a first segment is the bare
+    ///     name [`Self::refuse_unresolved_contract_name`] refuses — so a chain is reported once;
+    ///   * a prefix that is a constructor (its name is its instance), or a type parameter or a
+    ///     requirement's name (read through what it is bound to). A type alias that owns no
+    ///     members is judged among its sort's (`CA.T` loads, `CA.Tt` is refused naming the
+    ///     sort — found by `/code-review`: every alias was let through);
+    ///   * a member one of the sort's provisions lends ([`Self::sort_lending_member`]), which
+    ///     an operation body reads as the dot on the sort.
+    fn refuse_contract_clause_path_naming_nothing(&mut self, parse_id: ParseTermId) {
+        if self.contract_slot() != ConstFold::Data {
+            return;
+        }
+        let Some(name) = self.dotted_name_rooted_at_no_binding(parse_id) else {
+            return;
+        };
+        let span = self.parsed.terms.span(parse_id);
+        if self.qualified_name_resolves(&name) {
+            // A name `internal` hides from here is refused as that access, as a clause head's
+            // and an operation body's are; it stayed the chain and loaded.
+            if !self.visible_here(&name) {
+                if let Some(hidden) = hidden_dotted_internal(self.kb, &name, self.current_scope) {
+                    self.push_forbidden_internal(hidden, &name, span);
+                }
+            }
+            return;
+        }
+        if self.name_has_value_prefix(&name) || self.reads_through_requirement_name(&name) {
+            return;
+        }
+        let Some((prefix, missing)) = name.rsplit_once('.') else {
+            return;
+        };
+        let Some(prefix_sym) = self.resolve_qualified_readonly(prefix) else {
+            return;
+        };
+        let (kind, owner) = if super::typing::namespace_only(self.kb, prefix_sym) {
+            ("namespace", prefix_sym)
+        } else if super::typing::declares_its_members(self.kb, prefix_sym) {
+            // A type alias that owns no members reads its sort's, at its parameters
+            // (`CA.T` over `sort CA = P[T = String]`), as an operation body's dot on the alias
+            // does: the name is judged among the sort's members, and named through it.
+            let owner = if self.kb.is_scan_alias(prefix_sym)
+                && !super::typing::owns_members(self.kb, prefix_sym)
+            {
+                match self.kb.alias_head(prefix_sym) {
+                    Some(head) if super::typing::declares_its_members(self.kb, head) => head,
+                    _ => return,
+                }
+            } else {
+                prefix_sym
+            };
+            let declared = owner != prefix_sym
+                && self
+                    .kb
+                    .symbols
+                    .by_qualified_name
+                    .contains_key(&format!("{}.{missing}", self.kb.qualified_name_of(owner)));
+            if declared || self.sort_lending_member(prefix, missing).is_some() {
+                return;
+            }
+            ("sort", owner)
+        } else {
+            return;
+        };
+        let qualified_owner = self.kb.qualified_name_of(owner).to_string();
+        self.errors.push(LoadError::DottedNameNamesNothing {
+            path: format!("{qualified_owner}.{missing}"),
+            prefix: Some((kind, qualified_owner)),
+            missing: missing.to_string(),
+            scope_name: self.scope_display_name(),
+            span: Some(span),
+        });
+    }
+
     /// WI-20261126-78B4M — refuse a bare name `sym` that resolved to nothing, where it stands
     /// in a DATA slot of a contract clause ([`LoadError::UnresolvedContractName`]). Outside a
     /// contract clause an unresolved bare name is a symbolic constant (kernel-language.md
@@ -35113,6 +35210,7 @@ impl<'a> Loader<'a> {
                     self.term_map.insert(parse_id, kb_id);
                     return kb_id;
                 }
+                self.refuse_contract_clause_path_naming_nothing(parse_id);
                 if let Some(c) = self.data_slot_dotted_const(parse_id) {
                     if let Some(lit) = self.data_slot_const_value(c, parse_id) {
                         let kb_id = self.kb.alloc(Term::Const(lit));

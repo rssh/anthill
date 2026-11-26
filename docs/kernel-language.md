@@ -3821,7 +3821,14 @@ checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
   inside `Spec`, so a caller's precondition written in either spelling discharges a callee's
   written in the other, and a provider restates a spec operation's clause naming the spec's
   const by its qualified name (§8.7). The bare `lim` reaches no const in the provider, whose
-  body refuses it too, and is refused there.
+  body refuses it too, and is refused there. A qualified name that names nothing — a member
+  a sort or a namespace declares nowhere, `Spec.limm` — is refused as in the body, naming the
+  segment that is missing (WI-20261126-EZQGX), and a member `internal` hides from the clause is
+  refused as that access. A type alias that owns no members is read as its sort, as in the
+  body: `CA.T` over `sort CA = P[T = String]` is `P`'s member, and `CA.Tt` is refused naming
+  `P`. A field read on a value (a parameter, `result`, a const), a member one of the sort's
+  provisions lends and a member read through a requirement or a type parameter are no such
+  name.
 
   **A load's proofs are made over its whole program, as a later load's are over an earlier
   one** (WI-20261117-8J8NG). A load types and elaborates its rules — their requirement reads,

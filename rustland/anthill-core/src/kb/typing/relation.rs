@@ -590,8 +590,10 @@ fn name_refusal(
 /// A sort whose members are the names it declares, asked of a prefix that lacks one: not a
 /// constructor, whose name is its instance, and not a type parameter — a requirement's
 /// name among them (`R.zero` under `requires R: Ring[F]`) — whose members are read through
-/// what it is bound to.
-fn declares_its_members(kb: &KnowledgeBase, prefix: Symbol) -> bool {
+/// what it is bound to. Asked by the loader of a contract clause's dotted name too
+/// (WI-20261126-EZQGX, `Loader::refuse_contract_clause_path_naming_nothing`), so the two
+/// positions agree on which prefix declares its members.
+pub(crate) fn declares_its_members(kb: &KnowledgeBase, prefix: Symbol) -> bool {
     kb.has_kind(prefix, crate::intern::SymbolKind::Sort)
         && !kb.is_entity_constructor(prefix)
         && !is_type_parameter(kb, prefix)
@@ -605,7 +607,8 @@ fn is_type_parameter(kb: &KnowledgeBase, sym: Symbol) -> bool {
 }
 
 /// A namespace and nothing else: no sort or constructor of its name gives it a reading.
-fn namespace_only(kb: &KnowledgeBase, s: Symbol) -> bool {
+/// Asked by the loader too, as [`declares_its_members`] is.
+pub(crate) fn namespace_only(kb: &KnowledgeBase, s: Symbol) -> bool {
     let kinds = kb.kinds(s);
     let ns = crate::intern::SymbolKind::Namespace;
     kinds.contains(ns) && kinds.without(ns).is_empty()
