@@ -2141,6 +2141,8 @@ mod wi_5mmgp_query_refutation_test;
 mod wi_xgrkz_higher_kinded_dispatch_test;
 #[path = "include/wi_517y5_contract_as_written_test.rs"]
 mod wi_517y5_contract_as_written_test;
+#[path = "include/wi_mcwnf_carrier_neutral_builder_test.rs"]
+mod wi_mcwnf_carrier_neutral_builder_test;
 #[path = "include/wi_yr3n7_domain_check_test.rs"]
 mod wi_yr3n7_domain_check_test;
 #[path = "include/wi_sxz3g_clause_order_test.rs"]

@@ -9930,6 +9930,30 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-20261123-MCWNF — put the named args of a functor that DECLARES its fields in
+    /// that declared order, and leave every other functor's as given: the order
+    /// [`Self::fn_value`] builds in, and exactly what [`Self::named_out_of_declared_order`]
+    /// reads as written in order.
+    ///
+    /// NOT [`Self::canonicalize_record_named_args`], whose fallback re-sorts a functor
+    /// with no field schema into INTERNING order. For a builder that rebuilds what it
+    /// read, that fallback reorders: a sort's type application (`Iterable[C = …, Element
+    /// = …, E = …]`) holds its arguments in the order its sort declares its parameters,
+    /// and no field schema says so. MEASURED 2026-11-26 by a probe in `fn_value` over the
+    /// workspace gate, the gate under `ANTHILL_TEST_NODE_CARRIER=1` and `anthill-core`
+    /// under `ANTHILL_TEST_FRESH_LOAD=1`: the fallback would have moved 1 300 such
+    /// applications (every one schema-less, most of them type applications the node
+    /// control rebuilds), while a functor WITH a schema was out of declared order zero
+    /// times — so over those runs this order moves nothing a caller builds.
+    pub(crate) fn order_declared_named_args<T>(&self, functor: Symbol, named: &mut [(Symbol, T)]) {
+        if named.len() < 2 || self.is_ordered_product_functor(functor) {
+            return;
+        }
+        if let Some(fields) = self.entity_field_names(functor) {
+            named.sort_by_key(|(s, _)| Self::declared_rank(fields, *s));
+        }
+    }
+
     /// Where `key` stands in a declared field list — the key
     /// [`Self::canonicalize_record_named_args`] sorts a record's named args by; a label
     /// that names no declared field ranks last.

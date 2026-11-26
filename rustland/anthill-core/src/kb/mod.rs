@@ -10277,10 +10277,16 @@ impl KnowledgeBase {
     }
 
     /// Assemble a functor application `functor(pos…, named…)` from child
-    /// `Value`s into its canonical head carrier (WI-348) — the **single source**
-    /// of the `Term`-vs-`Value::Entity` decision, shared by [`Self::reify`]
-    /// (rebuilding a reified `Fn`) and [`Self::assert_fact_carrier`] (asserting
-    /// the result). Children that are all LEAVES rebuild a hash-consed
+    /// `Value`s into its canonical head carrier (WI-348) — THE CARRIER-NEUTRAL
+    /// CONSTRUCTOR, and the **single source** of the `Term`-vs-`Value::Entity`
+    /// decision, shared by [`Self::reify`] (rebuilding a reified `Fn`),
+    /// [`Self::assert_fact_carrier`] (asserting the result) and the loader's
+    /// `contract_goal_as_written` (a contract goal holding a binding's occurrence).
+    /// PUBLIC (WI-20261123-MCWNF): a client that rebuilds an application it read
+    /// through [`crate::kb::term_view::TermView`] with values put in builds it here,
+    /// over children on any carrier, rather than lowering them to terms for
+    /// [`Self::make_entity_term`] or writing a `Value::Entity` by hand — either of
+    /// which restates this decision outside it. Children that are all LEAVES rebuild a hash-consed
     /// `Value::Term(Fn)` (the universal case — dedup-able, indexes identically);
     /// any other child forces a `Value::Entity`, which cannot hash-cons but reads
     /// back through `TermView` like its term twin.
@@ -10317,13 +10323,27 @@ impl KnowledgeBase {
     /// transient: the term it becomes is a CHILD of a hash-consed application that
     /// is about to be asserted or answered, and `Term::Ref` is one node per symbol
     /// — the persistent, heavily-shared structure hash-consing is for.
-    fn fn_value(
+    ///
+    /// NAMED ARGUMENTS: A RECORD'S ARE PUT IN ITS DECLARED FIELD ORDER, on either
+    /// carrier — the order [`Self::make_entity_term`] gives the same record and the
+    /// loader gives a written one, so a caller building one from scratch may name its
+    /// fields in any order and gets the term the loader would. EVERY OTHER FUNCTOR'S
+    /// ARE TAKEN AS GIVEN (`order_declared_named_args`): an ordered product
+    /// (a named tuple), whose order is its identity; and a functor that declares no
+    /// fields — a sort's type application, a predicate, `conjunction` — for which this
+    /// does NOT do what `make_entity_term` does (re-sort into interning order). A
+    /// type application holds its arguments in the order its sort declares its
+    /// parameters, and the interning order would move them (measured: at the helper).
+    /// So a caller rebuilding what it read keeps the order it read, and one building a
+    /// type application from scratch gives its parameters in declared order itself.
+    pub fn fn_value(
         &mut self,
         functor: Symbol,
         pos: Vec<crate::eval::value::Value>,
-        named: Vec<(Symbol, crate::eval::value::Value)>,
+        mut named: Vec<(Symbol, crate::eval::value::Value)>,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
+        self.order_declared_named_args(functor, &mut named);
         // `alloc_from_value` is the one owner of every carrier's lowering (it is
         // where `SymbolRef → Term::Ref` is written); restating its arms here would
         // be a second, untied statement of the variant's whole contract — which is
@@ -12567,7 +12587,9 @@ impl KnowledgeBase {
     /// no error. `pos_args` pass through unchanged (positional order is already
     /// significant). When the functor has no registered field list,
     /// `canonicalize_record_named_args` falls back to interning order — preserving the
-    /// prior behavior for anonymous shapes.
+    /// prior behavior for anonymous shapes. Over children on any carrier, the
+    /// constructor is [`Self::fn_value`], which orders a record's named args the same
+    /// way and takes a schema-less functor's as given.
     pub fn make_entity_term(
         &mut self,
         functor: Symbol,

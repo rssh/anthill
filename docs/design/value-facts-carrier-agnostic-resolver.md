@@ -438,6 +438,17 @@ Three consequences worth having written down:
   `Value::Entity` child lowers too, but to an application, and admitting it would
   make `fn_value`'s `Err` reachable (`OverArityConstructor`) — demoting a
   broken-invariant panic to a real failure mode.
+
+  **`fn_value` is public, the carrier-neutral constructor** (WI-20261123-MCWNF): a
+  client rebuilding an application it read through `TermView` — a stored contract
+  clause with values put in — builds it there over children on any carrier, instead
+  of lowering them to terms for `make_entity_term` or writing a `Value::Entity` by
+  hand. It puts a RECORD's named arguments in declared field order, as
+  `make_entity_term` does, and takes every other functor's as given: unlike
+  `make_entity_term` it does not re-sort a functor with no field schema into
+  interning order, because a type application holds its arguments in the order its
+  sort declares its parameters, and that re-sort would have moved 1 300 of them in
+  the node-carrier control run, where a schema'd functor was out of order zero times.
 - **The lossy-key guard moved from the root to the whole key.** The old rule
   rejected a key whose ROOT reified to `Term::Bottom`; the new one rejects any key
   containing a payload-free `Opaque` token (`GoalKey::is_opaque_free`, sharing its

@@ -399,7 +399,11 @@ Integration tests in `anthill-core/tests/` follow:
 - Named args canonicalized for stable hash-consing/discrim matching — by DECLARED
   field order when the functor has a schema, else interning order
   (`canonicalize_record_named_args`). Not alphabetical. Exempt: an ORDERED
-  PRODUCT (named tuple), whose source order is its identity.
+  PRODUCT (named tuple), whose source order is its identity. The carrier-neutral
+  builder `KnowledgeBase::fn_value` orders a schema'd record the same way but takes
+  a schema-less functor's as given (`order_declared_named_args`): a type
+  application holds its arguments in its sort's declared parameter order, which the
+  interning fallback would move (WI-20261123-MCWNF).
 - Positional field labels are `_1`, `_2`, … (ONE-based, spec §4.5). Never spell
   them with a local `format!` or `strip_prefix('_')` — mint via
   `intern::positional_label(i)` and read via `positional_label_index` /
