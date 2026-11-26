@@ -3,9 +3,9 @@
 - id: WI-20261126-QG6ZR-a-witness-provision-of-a-spec
 - created: 2026-11-26T20:36:18Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-26T20:36:18Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-26T21:36:42Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -45,4 +45,24 @@ DIRECTION, not decided: the dispatch key cannot say it. A call's supplier is cho
 ACCEPTANCE: t1's call at `W` refused (nothing provides `Sp` at `A = W`); t2 and t4 answer 7 at `Other` and 0 at `W`; t5's `cnt` at `W` refused; t3, t6, wi_rydnv, wi_me8wr and wi_8f38f unchanged; backing the fix out fails the new rows; full workspace green via rustland/scripts/test.sh, families green.
 
 REFERENCE: kb/typing/apply.rs the defaulted arm (`carrier_override_suppliers`, `call_arg_carriers`, `supplier_answers_at`); kb/typing/provision.rs `spec_carrier_param`, `provision_supplier`; kb/typing/call_class.rs `witness_own_op`; kb/typing/coherence.rs `witness_dispatch_carrier`; kb/typing/sort_carrier.rs `provision_is_own`, `SpecApplication`; WI-20261126-8F38F, WI-20261126-Q1WE9, WI-20260926-Y6ZCD, WI-20261122-CXR5B.
+
+## Changes
+
+### 2026-11-26T21:36:33Z — feedback — user
+
+DONE (25264cc5f; kernel-language §8.7 and §5.1 wording approved by the user 2026-11-26). WIDER THAN FILED, MEASURED: a spec of ONE type-var shows both defects too, at two applications of one parameterized sort — `WB provides Show[T = Box[E = Int64]]` and `Show[T = Box[E = String]]` are both filed under `Box`; with both, `Show.show(box(v: 1))` answered 0 where `WB.show(x: Box[E = Int64])` answers 7, and with the `Int64` one alone `Show.show(box(v: "s"))` answered 7, the member run on a box of a string (u1, u3).
+
+WHAT WAS GOING ON, MEASURED: (1) the witness member's verdict (`witness_supplies_nothing`, Q1WE9) was keyed `(witness, operation, sort dispatch files at)`, so one misfit (`W.count` at `A = W`) made the member supply nothing at `A = Other` too (t2, t4, u1); (2) the defaulted arm took the supplier found at that sort (`carrier_override_suppliers`) and the Y6ZCD filter reads a call's carriers by argument sort only, so nothing checked `A` inside `List[T = A]` (t1, u3).
+
+DONE: (1) the verdict is keyed by the provision row — `KnowledgeBase::witness_member_supplies_nothing(witness, op, row)`, `witness_own_op`, `provision_own_op(…, witness_row)`, the per-application seed of `spec_op_suppliers_of_provider`, the NNQ1S clause, `equality_reaching_no_eq`'s passed-over member. (2) a witness's member or a provision's binding answers a call only where a provision the resolver matches for the call's goal supplies it (`supplier_answers_goal`, `AnsweringProvisions`): by provider and application, not by row — the resolver takes a body provision and a `namespace` entry's at one application for one candidate (WI-1032), and by row id the binding was dropped and 13 supplier-tie refusals went silent (MEASURED). FOLDED IN, the same kind: (3) a call in a generic body at a carrier an argument pins (`b: B`), open at the caller's type parameter, which no provision answers and a requirement in scope does, is deferred to the requirement (`requirement_alone_answers_call`, carrier-param shape only): t4's `G.g` ran `W.count` for every `X` (7/7 with (1) alone; 0/0 before); (4) a call of a spec with no dispatch parameter whose fixed type-vars no provision answers is refused "no provision of `Sp` binds `A = W`" (`written_slots_no_provision_answers`), in an operation body and a rule's (t5: it ran the default, 0, in both).
+
+VERDICTS: t1 refused at `A = W`; t2 7 / 0; t4 7 / 0; t5 refused at `A = W` (7 at `Other`); u1 7 / 0; u3 refused; t3, t6, u2 unchanged; the 8F38F probes unchanged; wi_rydnv, wi_me8wr, wi_8f38f green.
+
+ROWS: `tests/include/wi_qg6zr_witness_at_the_application_test.rs`, 7. BACK-OUTS, MEASURED over the file: the verdict keyed by the sort fails three; the call filter off four; the deferral off one; the refusal off one; answering by row fails wi1012 and twelve more tie rows elsewhere.
+
+/code-review (high): four fixed — a doc attached to the wrong function; the deferral gated on the carrier-param shape (a self receiver is its own provider's value); one row walk for the filter (gate test time unchanged, 256.6 s → 258.3 s); the refusal extended to rule bodies (MEASURED answering 0). Gate 12904 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1.
+
+### 2026-11-26T21:36:44Z — feedback — user
+
+Delivered in 25264cc5f — the change, rows and measurements are the feedback above. Gate 12904 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1.
 
