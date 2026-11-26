@@ -2901,8 +2901,8 @@ impl Provider {
 /// WI-450 — the canonical DISPATCH CARRIER a provision names when that provision
 /// is a WITNESS, else `None`.
 ///
-/// A provision is a WITNESS exactly when the spec's carrier param (its first type
-/// parameter) is bound to a sort DISTINCT from the provider — `sort TagCombiner
+/// A provision is a WITNESS exactly when the spec's dispatch parameter
+/// ([`spec_carrier_param`]) is bound to a sort DISTINCT from the provider — `sort TagCombiner
 /// provides Combiner[T = Tag]` (carrier `Tag` ≠ provider `TagCombiner`). That
 /// excludes (a) instance facts and normal self-providers, whose derived/own
 /// carrier IS the provider, and (b) bare / carrier-less provisions (`provides

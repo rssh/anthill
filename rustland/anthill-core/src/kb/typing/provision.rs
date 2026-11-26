@@ -124,19 +124,90 @@ pub(super) fn provision_carrier_sort(
 /// second gate — this predicate answers "which parameter an operation takes", and that is
 /// not by itself "which parameter names the carrier".
 ///
+/// A SPEC OF ONE TYPE-VAR THAT NO OPERATION TAKES, BUT WHOSE TYPE-VAR A PARAMETER'S TYPE
+/// MENTIONS, has that type-var here (WI-20261126-8F38F): inside an application (`xs: List[T =
+/// T]`), an arrow (`f: (x: T) -> Int64`), a tuple. Read as "takes" alone, `sort Sp { sort T = ?
+/// operation count(xs: List[T = T]) -> Int64 = 0 }` had no parameter, so no provision of it was a
+/// witness's ([`witness_dispatch_carrier`]) and each was filed at its provider: `W provides Sp[T =
+/// Other]` answered `Sp` at `W`, and `W`'s `count(xs: List[T = Other])` was handed a list of `W`s
+/// — `Sp.count([w(n: 1)])` answered 7 where nothing provides `Sp` at `W`, and 7 beside `provides
+/// Sp[T = W]`, where `W.count` does not fit and the default's 0 runs (MEASURED). For a spec of
+/// one type-var the provision's binding of it is where decision 6 of
+/// `docs/design/spec-carrier-set.md` reads whose provision it is ([`provision_is_own`]), so the
+/// witness criterion and the derivations agree about such a row where its binding is headed by a
+/// sort (a binding to a type parameter, `AnyS provides Sp[T = E]`, is no witness to the first and
+/// one to the second, as for every spec). The second rung, and
+/// [`spec_taken_type_vars`] — what a written provision must bind (decision 3) — keeps "takes".
+///
+/// ONLY FOR ONE TYPE-VAR, MEASURED. Over several, the first one mentioned is not where decision 6
+/// reads ownership: `Pc2 { sort C; sort Element; both2(xs: List[T = Element]) -> C }` made
+/// `Element` the parameter, and `Bag provides Pc2[C = Bag, Element = Int64]`, `Bag`'s own, was
+/// filed as a witness at `Int64` (`wi_me8wr_receiver_less_default_test`'s refusal moved). NOT
+/// FOR A SELF-REPRESENTING SPEC, whose type-vars are read off its provider (decision 8): read
+/// here, the standard library's `Stream`, `FiniteStream`, `LogicalStream` and `Option` were filed
+/// at their element, WI-1076's defect. A spec no parameter of which mentions its type-var (`Eq`,
+/// `NonEq`, `SortDomain`, `Tag { name() -> Int64 }`) still has none. MEASURED with the rung: no
+/// standard-library sort moves, and 30 fixture sorts do.
+///
 /// Keyed and computed on the CANONICAL sort symbol: `operations_of_sort` re-filters on
 /// raw symbol equality and answers empty for a twin copy, where the parameter list
 /// beside it (`sort_type_params_as_pairs` → `type_param_syms_of`) canonicalizes — so an
 /// uncanonicalized read would give one relation two answers depending on which spelling
 /// a provision was written with. Memoized on `kb.spec_carrier_param_cache`, since the
 /// walk builds an `OperationInfoFull` per declared operation.
+pub(super) fn spec_carrier_param(kb: &KnowledgeBase, spec_sort: Symbol) -> Option<Symbol> {
+    let canon = kb.canonical_sort_sym(spec_sort);
+    if let Some(cached) = kb.spec_carrier_param_cache.borrow().get(&canon) {
+        return *cached;
+    }
+    let infos: Vec<_> = crate::kb::op_requirements::operations_of_sort(kb, canon)
+        .iter()
+        .filter_map(|&op| lookup_operation_info_full(kb, op))
+        .collect();
+    // Every type-param VarId any declared operation receives on, in one pass over the
+    // operations — the dual of `self_receiver_param_index`, which matches a parameter
+    // typed as the SORT where this matches one typed as a PARAMETER of it. A parameter
+    // typed at an application of a higher-kinded type-var (`m: M[A]`) takes `M`
+    // ([`declared_type_param_head_vid`], WI-20261122-CXR5B's c1): read bare-only, `Monad`
+    // took none, and a witness of it was read as its provider's own.
+    let received: std::collections::HashSet<VarId> = infos
+        .iter()
+        .flat_map(|info| info.params.iter().filter_map(|(_, pty)| declared_type_param_head_vid(kb, pty)))
+        .collect();
+    let pairs = sort_type_params_as_pairs(kb, canon);
+    let taken = pairs
+        .iter()
+        .map(|(s, _)| *s)
+        .find(|&p| type_param_global_var(kb, p).is_some_and(|v| received.contains(&v)));
+    // The second rung (the paragraphs above): the one type-var, where a parameter's type
+    // mentions it.
+    let answer = taken.or_else(|| match pairs.as_slice() {
+        [(p, _)] if !spec_is_self_representing(kb, canon) => {
+            let v = type_param_global_var(kb, *p)?;
+            infos
+                .iter()
+                .flat_map(|info| info.params.iter())
+                .any(|(_, pty)| type_mentions_spec_param(kb, pty, &[*p], &[v]))
+                .then_some(*p)
+        }
+        _ => None,
+    });
+    kb.spec_carrier_param_cache
+        .borrow_mut()
+        .insert(canon, answer);
+    answer
+}
+
 /// WI-20261122-CXR5B (decision 3 of `docs/design/spec-carrier-set.md`) — EVERY type-var of
 /// `spec_sort` some declared operation takes a value of, in declaration order, each with the
 /// first such operation: a parameter typed at the type-var, or at an application it heads
 /// (`m: M[A]`, [`declared_type_param_head_vid`]). "Takes a value of" is the PARAMETERS, on
 /// purpose: a type-var only a result mentions may be left out of a provision, and the member
 /// check then judges whether the member returns every type there. [`spec_carrier_param`] is the
-/// first of them; [`check_provision_names_carrier`] asks a written provision to bind each.
+/// first of them where there is one; [`check_provision_names_carrier`] asks a written provision
+/// to bind each. A type-var a parameter only MENTIONS (`xs: List[T = T]`) is not taken, though
+/// [`spec_carrier_param`] reads it for a spec of one type-var (WI-20261126-8F38F): left out of
+/// such a spec's provision, it reads as the provider.
 pub(super) fn spec_taken_type_vars(kb: &KnowledgeBase, spec_sort: Symbol) -> SmallVec<[(Symbol, Symbol); 2]> {
     let canon = kb.canonical_sort_sym(spec_sort);
     let mut takers: Vec<(VarId, Symbol)> = Vec::new();
@@ -159,38 +230,6 @@ pub(super) fn spec_taken_type_vars(kb: &KnowledgeBase, spec_sort: Symbol) -> Sma
             takers.iter().find(|(w, _)| *w == v).map(|(_, op)| (*s, *op))
         })
         .collect()
-}
-
-pub(super) fn spec_carrier_param(kb: &KnowledgeBase, spec_sort: Symbol) -> Option<Symbol> {
-    let canon = kb.canonical_sort_sym(spec_sort);
-    if let Some(cached) = kb.spec_carrier_param_cache.borrow().get(&canon) {
-        return *cached;
-    }
-    // Every type-param VarId any declared operation receives on, in one pass over the
-    // operations — the dual of `self_receiver_param_index`, which matches a parameter
-    // typed as the SORT where this matches one typed as a PARAMETER of it. A parameter
-    // typed at an application of a higher-kinded type-var (`m: M[A]`) takes `M`
-    // ([`declared_type_param_head_vid`], WI-20261122-CXR5B's c1): read bare-only, `Monad`
-    // took none, and a witness of it was read as its provider's own.
-    let received: std::collections::HashSet<VarId> =
-        crate::kb::op_requirements::operations_of_sort(kb, canon)
-            .iter()
-            .filter_map(|&op| lookup_operation_info_full(kb, op))
-            .flat_map(|info| {
-                info.params
-                    .iter()
-                    .filter_map(|(_, pty)| declared_type_param_head_vid(kb, pty))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-    let answer = sort_type_params_as_pairs(kb, canon)
-        .iter()
-        .map(|(s, _)| *s)
-        .find(|&p| type_param_global_var(kb, p).is_some_and(|v| received.contains(&v)));
-    kb.spec_carrier_param_cache
-        .borrow_mut()
-        .insert(canon, answer);
-    answer
 }
 
 /// WI-1102 — WHICH type parameter of `spec` the carrier goes in, on a two-rung ladder.

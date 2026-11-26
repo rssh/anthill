@@ -2377,6 +2377,8 @@ mod wi_szkv7_later_equality_test;
 mod wi_q1we9_witness_member_fit_test;
 #[path = "include/wi_dhb0c_witness_own_equality_test.rs"]
 mod wi_dhb0c_witness_own_equality_test;
+#[path = "include/wi_8f38f_witness_at_a_mentioned_type_var_test.rs"]
+mod wi_8f38f_witness_at_a_mentioned_type_var_test;
 
 #[path = "include/wi_rah0z_one_recipe_test.rs"]
 mod wi_rah0z_one_recipe_test;
