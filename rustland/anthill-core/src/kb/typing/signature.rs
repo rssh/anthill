@@ -3129,6 +3129,65 @@ pub(crate) fn record_members_that_supply_nothing(kb: &mut KnowledgeBase) {
         }
     }
     kb.set_members_that_supply_nothing(unfit);
+
+    // WI-20261126-Q1WE9 — AND PER CARRIER A WITNESS PROVIDES THE SPEC FOR. The verdict above is
+    // the provider's, reached at any of its provisions, and the witness route took the member
+    // for every carrier the provider witnesses: `Point.eq(a: Point, b: Point)` fits at `Point`,
+    // and `Point provides PartialEq[T = Other]` then dispatched `Other`'s `eq` to it — MEASURED,
+    // `eq(o(n: 1), o(n: 2))` answered `true` with nothing refused, and beside the provision's
+    // `eq = Other.oeq` the two were a tie. Judged at the witness's provision for that carrier,
+    // a derived member as a written one. Every witness provision is judged, a sealed one too, at
+    // every run: MEASURED in a release build (2026-11-26), a standard library load's pass stays
+    // ~10 ms and a later load's goes from ~220 to ~270 µs, twice a load.
+    let mut by_spec: HashMap<Symbol, Vec<(Symbol, Symbol)>> = HashMap::new();
+    for (&short, ops) in &by_short {
+        for &(spec_op, spec) in ops {
+            by_spec.entry(kb.canonical_sort_sym(spec)).or_default().push((short, spec_op));
+        }
+    }
+    let witness_rows: Vec<(Symbol, Symbol, Symbol, Value)> = provides_rows(kb)
+        .filter_map(|row| {
+            let carrier = witness_dispatch_carrier(kb, row.spec_base, row.provider, &row.spec_view)?;
+            Some((row.provider, row.spec_base, carrier, row.spec_view.clone()))
+        })
+        .collect();
+    let mut witness_unfit: HashSet<(Symbol, Symbol, Symbol)> = HashSet::new();
+    for (provider, spec, carrier, view) in witness_rows {
+        let Some(ops) = by_spec.get(&kb.canonical_sort_sym(spec)).cloned() else {
+            continue;
+        };
+        for (short, spec_op) in ops {
+            let Some(member) = kb
+                .sort_ops_lookup(provider, short)
+                .filter(|&m| kb.canonical_sym(m) != kb.canonical_sym(spec_op))
+                .filter(|&m| impl_parent_of_op(kb, m).is_some_and(|p| same_sort_canonical(kb, p, provider)))
+            else {
+                continue;
+            };
+            // A side with no signature to compare fits, as at the provider ([`member_fits_spec_op`]).
+            // A derived member needs no rule of its own: it is typed by its composite, and the
+            // comparison at another carrier's provision refuses it as it refuses a written one.
+            let fits = match (
+                    crate::kb::op_info::lookup_operation_info(kb, spec_op),
+                    crate::kb::op_info::lookup_operation_info(kb, member),
+                ) {
+                    (Some(spec_info), Some(impl_info)) => {
+                        let named = view_named_children(kb, &view);
+                        let sigma = spec_param_sigma(kb, spec, &named);
+                        member_fits_at(kb, provider, spec, spec_op, &spec_info, &impl_info, sigma, Some(carrier))
+                    }
+                    _ => true,
+                };
+            if !fits {
+                witness_unfit.insert((
+                    kb.canonical_sort_sym(provider),
+                    kb.canonical_sym(spec_op),
+                    kb.canonical_sort_sym(carrier),
+                ));
+            }
+        }
+    }
+    kb.set_witness_members_that_supply_nothing(witness_unfit);
 }
 
 /// Does `member`, `carrier`'s own operation, fit `spec_op` of `spec` at one of the provisions of
@@ -3182,28 +3241,43 @@ fn member_fits_spec_op(
         }
         provisions.push((sigma, None));
     }
+    provisions.into_iter().any(|(sigma, witness)| {
+        member_fits_at(kb, carrier, spec, spec_op, &spec_info, &impl_info, sigma, witness)
+    })
+}
+
+/// Does a member of `carrier` (`impl_info`) fit `spec_op` of `spec` (`spec_info`) at ONE
+/// provision — its spec parameters bound by `sigma`, received as a witness's for `witness` where
+/// one is named? The provision's own comparison ([`compare_member_signature`]), its refusals
+/// discarded.
+#[allow(clippy::too_many_arguments)]
+fn member_fits_at(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+    spec_op: Symbol,
+    spec_info: &crate::kb::op_info::OpInfoRecord,
+    impl_info: &crate::kb::op_info::OpInfoRecord,
+    mut sigma: Vec<(Symbol, Value)>,
+    witness: Option<Symbol>,
+) -> bool {
     let op_short = short_name_of(kb.qualified_name_of(spec_op)).to_string();
-    for (mut sigma, witness) in provisions {
-        write_left_out_params(kb, spec, &mut sigma);
-        let provision = ProvisionMembers::new(spec, carrier, &sigma, witness);
-        let mut refusals = Vec::new();
-        let shape = compare_member_signature(
-            kb,
-            carrier,
-            spec,
-            spec_op,
-            &op_short,
-            &spec_info,
-            &impl_info,
-            &sigma,
-            &provision,
-            &mut refusals,
-        );
-        if shape == MemberSignature::Alignable && refusals.is_empty() {
-            return true;
-        }
-    }
-    false
+    write_left_out_params(kb, spec, &mut sigma);
+    let provision = ProvisionMembers::new(spec, carrier, &sigma, witness);
+    let mut refusals = Vec::new();
+    let shape = compare_member_signature(
+        kb,
+        carrier,
+        spec,
+        spec_op,
+        &op_short,
+        spec_info,
+        impl_info,
+        &sigma,
+        &provision,
+        &mut refusals,
+    );
+    shape == MemberSignature::Alignable && refusals.is_empty()
 }
 
 /// WI-347 — operation-override refinement check. A carrier's own operation

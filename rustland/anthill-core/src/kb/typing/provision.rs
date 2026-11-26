@@ -1534,7 +1534,9 @@ pub(super) fn provision_supplier(
         // answered structurally with no diagnostic from anywhere.
         Some(c) => {
             let route = SupplyRoute::Witness(provider);
-            let own = carrier_own_op(kb, provider, spec_op, op_short_sym).filter(|&t| runnable(t));
+            // The witness's member as it supplies `c` (WI-20261126-Q1WE9): `Point.eq(a: Point,
+            // b: Point)` is no supplier of `Other`'s `eq` for `Point provides PartialEq[T = Other]`.
+            let own = witness_own_op(kb, provider, c, spec_op, op_short_sym).filter(|&t| runnable(t));
             for target in own.into_iter().chain(bound()) {
                 push_supplier_deduped(kb, &mut out, SpecOpSupplier { target, route });
             }
@@ -1723,6 +1725,11 @@ pub(crate) fn spec_op_suppliers_of_provider(
     let own_target = carrier_own_op(kb, provider, spec_op, op_short_sym).filter(|&t| runnable(t));
     let seed = |about: Symbol| -> SmallVec<[SpecOpSupplier; 2]> {
         own_target
+            // At an application about another sort the member supplies it as the witness's
+            // does, only where it fits there (WI-20261126-Q1WE9, [`witness_own_op`]).
+            .filter(|_| {
+                about == provider_canon || !kb.witness_member_supplies_nothing(provider, spec_op, about)
+            })
             .map(|target| SpecOpSupplier {
                 target,
                 route: if about == provider_canon {

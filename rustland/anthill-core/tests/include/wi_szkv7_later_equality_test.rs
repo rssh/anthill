@@ -335,11 +335,10 @@ end
 /// An earlier composite made the WITNESS of a later load's own sort, by a provision that binds
 /// that sort's `eq`: the provisions are about `Other`, which this load owns, and `Point`'s
 /// equality is as it was — its suppliers, its provisions, and its clause entry, which the
-/// unconditioned witness clause shares (kernel-language §8.3). Driven: `Point` compares as
-/// before. `Other`'s `eq` is not called: a call at `Other` is an ambiguous dispatch between
-/// `Point`'s derived `eq` member and the bound `oeq` — in ONE load of the same sources as well,
-/// on the trees before and after WI-20261102-YX17K (MEASURED), so not this rule's:
-/// WI-20261126-Q1WE9, whose acceptance makes this row call it.
+/// unconditioned witness clause shares (kernel-language §8.3). Driven: `Other`'s `eq` is the
+/// bound `oeq`, `true` where the fields differ, and `Point` compares as before. Until
+/// WI-20261126-Q1WE9 the call at `Other` was an ambiguous dispatch between `Point`'s derived
+/// `eq` and `oeq`, in one load of the same sources as well, and this row could not make it.
 ///
 /// FAILS on the tree before WI-20261102-YX17K, MEASURED: refused there, "its own provision of
 /// `Eq` for it has changed" — `Point`'s derived row had no clause, and the witness clause, filed
@@ -360,7 +359,12 @@ namespace test.le.total.Point
   provides Eq[T = Other]
 end
 "#,
-        &point_check("test.le.total"),
+        &point_check("test.le.total").replacen(
+            "operation check() -> Bool =\n",
+            "operation check() -> Bool = if eq(test.le.total.Point.Other.o(n: 1), \
+             test.le.total.Point.Other.o(n: 2)) then\n",
+            1,
+        ).replacen("else false\n  end", "else false else false\n  end", 1),
         "test.le.total.check.Check.check",
     ));
 }

@@ -580,13 +580,18 @@ pub(crate) fn equality_reaching_no_eq(kb: &mut KnowledgeBase) -> Vec<super::load
     // Each composite's provisions of `PartialEq` at its carrier (WI-20261121-JE2MT), in
     // relation order; the composites in any order, the refusals being sorted below.
     let provisions = super::typing::ProvisionsOfSpec::of(kb, partial_eq);
-    let mut unanswered: Vec<(Symbol, Vec<(Symbol, Symbol)>)> = Vec::new();
+    let eq_op = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq");
+    // Interned as the sort-operations table keys a short name (`load::intern_op_short`): looked
+    // up, it can be another symbol (`record_members_that_supply_nothing` has the measurement).
+    let eq_short = eq_op.map(|_| kb.intern("eq"));
+    let mut unanswered: Vec<(Symbol, Vec<(Symbol, Symbol)>, Vec<Symbol>)> = Vec::new();
     for &carrier in &composites {
         let at = provisions.at_sort(kb, carrier);
         if at.is_empty() || !index.candidates(kb, carrier).is_empty() {
             continue;
         }
         let mut written: Vec<(Symbol, Symbol)> = Vec::new();
+        let mut passed_over: Vec<Symbol> = Vec::new();
         for p in at {
             let entry = (
                 kb.canonical_sort_sym(p.provider),
@@ -595,12 +600,24 @@ pub(crate) fn equality_reaching_no_eq(kb: &mut KnowledgeBase) -> Vec<super::load
             if !written.contains(&entry) {
                 written.push(entry);
             }
+            // A witness's own `eq` the dispatch passed over for this carrier (WI-20261126-Q1WE9).
+            if let (Some(eq_op), Some(eq_short)) = (eq_op, eq_short) {
+                if !super::typing::same_sort_canonical(kb, p.provider, carrier) {
+                    if let Some(member) = super::typing::carrier_own_op(kb, p.provider, eq_op, eq_short) {
+                        if kb.witness_member_supplies_nothing(p.provider, eq_op, carrier)
+                            && !passed_over.contains(&member)
+                        {
+                            passed_over.push(member);
+                        }
+                    }
+                }
+            }
         }
-        unanswered.push((carrier, written));
+        unanswered.push((carrier, written, passed_over));
     }
-    let mut out: Vec<(String, Vec<(String, String)>)> = unanswered
+    let mut out: Vec<(String, Vec<(String, String)>, Vec<String>)> = unanswered
         .into_iter()
-        .map(|(carrier, provisions)| {
+        .map(|(carrier, provisions, passed_over)| {
             (
                 kb.qualified_name_of(carrier).to_string(),
                 provisions
@@ -612,12 +629,17 @@ pub(crate) fn equality_reaching_no_eq(kb: &mut KnowledgeBase) -> Vec<super::load
                         )
                     })
                     .collect(),
+                passed_over.into_iter().map(|m| kb.qualified_name_of(m).to_string()).collect(),
             )
         })
         .collect();
     out.sort();
     out.into_iter()
-        .map(|(carrier, provisions)| super::load::LoadError::EqualityReachesNoEq { carrier, provisions })
+        .map(|(carrier, provisions, passed_over)| super::load::LoadError::EqualityReachesNoEq {
+            carrier,
+            provisions,
+            passed_over,
+        })
         .collect()
 }
 

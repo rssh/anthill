@@ -1635,6 +1635,23 @@ pub(crate) fn carrier_own_op(
         .filter(|_| !kb.own_member_supplies_nothing(carrier, spec_op))
 }
 
+/// WI-20261126-Q1WE9 — a WITNESS's own member for a spec op's short name, as it supplies
+/// `carrier`, a carrier the witness provides the spec for: [`carrier_own_op`]'s member at the
+/// witness, passed over where it does not fit the operation AT THAT PROVISION
+/// (`record_members_that_supply_nothing`). The two readers that seed the witness
+/// route with the provider's member go through here: [`provision_supplier`] (the eq-dispatch
+/// index, a call's suppliers) and [`spec_op_suppliers_of_provider`] (a dictionary).
+pub(crate) fn witness_own_op(
+    kb: &KnowledgeBase,
+    witness: Symbol,
+    carrier: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+) -> Option<Symbol> {
+    carrier_own_op(kb, witness, spec_op, op_short_sym)
+        .filter(|_| !kb.witness_member_supplies_nothing(witness, spec_op, carrier))
+}
+
 /// WI-444 — the carrier sort's OWN member backing a (possibly defaulted) spec
 /// op, when it genuinely OVERRIDES the spec rather than merely inheriting it —
 /// [`carrier_own_op`] narrowed to a RUNNABLE impl (the eval-side gate: a

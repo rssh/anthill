@@ -1286,6 +1286,10 @@ pub enum LoadError {
         /// Each provision about it, as `(provider, spec)` qualified — the spec the provider
         /// WROTE: for a `PartialEq` row derived from `provides Eq`, `Eq`.
         provisions: Vec<(String, String)>,
+        /// A witness's own `eq`, qualified, passed over because it does not take the
+        /// composite's values — the witness's equality of itself, written or derived
+        /// (WI-20261126-Q1WE9): what an author who wrote one needs named.
+        passed_over: Vec<String>,
     },
     /// A parametric composite writes `provides PartialEq` (or `Eq`) with no condition and no
     /// `eq`, and the derived member compares a field typed by a parameter through `PartialEq` at
@@ -4187,8 +4191,8 @@ impl LoadError {
                 eq_not_derivable_detail(carrier, field, field_type)
             }
             LoadError::EqNeedsCondition { carrier, params } => eq_needs_condition_detail(carrier, params),
-            LoadError::EqualityReachesNoEq { carrier, provisions } => {
-                equality_reaches_no_eq_detail(carrier, provisions)
+            LoadError::EqualityReachesNoEq { carrier, provisions, passed_over } => {
+                equality_reaches_no_eq_detail(carrier, provisions, passed_over)
             }
             LoadError::HandWrittenTypeValue { provider } => {
                 format!("'{provider}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: the loader derives each sort's instance.")
@@ -6210,8 +6214,8 @@ impl std::fmt::Display for LoadError {
             LoadError::EqNeedsCondition { carrier, params } => {
                 write!(f, "{}", eq_needs_condition_detail(carrier, params))
             }
-            LoadError::EqualityReachesNoEq { carrier, provisions } => {
-                write!(f, "{}", equality_reaches_no_eq_detail(carrier, provisions))
+            LoadError::EqualityReachesNoEq { carrier, provisions, passed_over } => {
+                write!(f, "{}", equality_reaches_no_eq_detail(carrier, provisions, passed_over))
             }
             LoadError::KeyWithoutEq {
                 container,
@@ -19043,7 +19047,11 @@ fn eq_needs_condition_detail(carrier: &str, params: &[String]) -> String {
 /// [`LoadError::EqualityReachesNoEq`]'s text, one for both renders. The repair is the
 /// provider's: a witness writes the `eq` or steps aside for the derivation; the carrier's own
 /// provision writes the `eq`, or a condition at `PartialEq` a derived one can compare under.
-fn equality_reaches_no_eq_detail(carrier: &str, provisions: &[(String, String)]) -> String {
+fn equality_reaches_no_eq_detail(
+    carrier: &str,
+    provisions: &[(String, String)],
+    passed_over: &[String],
+) -> String {
     let written: Vec<String> = provisions
         .iter()
         .map(|(provider, spec)| {
@@ -19071,8 +19079,19 @@ fn equality_reaches_no_eq_detail(carrier: &str, provisions: &[(String, String)])
             }
         })
         .collect();
+    let none_written = if passed_over.is_empty() {
+        "none is written".to_string()
+    } else {
+        let members: Vec<String> = passed_over.iter().map(|m| format!("`{m}`")).collect();
+        let (is, does) = if members.len() == 1 { ("is", "does") } else { ("are", "do") };
+        format!(
+            "none is written that takes `{carrier}`'s values ({} {is} the witness's own equality \
+             and {does} not)",
+            members.join(", ")
+        )
+    };
     format!(
-        "`{carrier}`'s equality is provided by {}, and no `eq` answers it: none is written, and the \
+        "`{carrier}`'s equality is provided by {}, and no `eq` answers it: {none_written}, and the \
          load derives none for a sort a provision speaks for, so a comparison of two `{carrier}` \
          values would reach no member. To repair: {}",
         written.join(" and "),

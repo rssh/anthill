@@ -918,6 +918,13 @@ pub(crate) struct SortOpsTable {
     /// over. Filled by `typing::record_members_that_supply_nothing` after each build of the
     /// table above.
     supplies_nothing: HashSet<(Symbol, Symbol)>,
+    /// WI-20261126-Q1WE9 — `(witness, spec operation, carrier)`, all canonical, where the
+    /// witness's own member of the operation's short name does NOT supply it to a carrier the
+    /// witness provides the spec for: it does not fit the operation at that provision — a
+    /// composite's own `eq`, written or derived, typed by the composite. The verdict above is the
+    /// witness's own, reached at any of its provisions; this one is per carrier it witnesses.
+    /// Read by the witness route (`typing::witness_own_op`); filled beside the set above.
+    witness_supplies_nothing: HashSet<(Symbol, Symbol, Symbol)>,
 }
 
 /// Where the law `eq_refl` decides a call of a carrier's `eq` member on identical operands
@@ -9322,6 +9329,32 @@ impl KnowledgeBase {
     /// `typing::record_members_that_supply_nothing`.
     pub(crate) fn set_members_that_supply_nothing(&mut self, pairs: HashSet<(Symbol, Symbol)>) {
         self.sort_ops.supplies_nothing = pairs;
+    }
+
+    /// WI-20261126-Q1WE9 — does `witness`'s own member of `spec_op`'s short name supply NOTHING
+    /// to `spec_op` at `carrier`, a carrier the witness provides the spec for
+    /// ([`SortOpsTable::witness_supplies_nothing`])? Read by `typing::witness_own_op` alone.
+    pub(crate) fn witness_member_supplies_nothing(
+        &self,
+        witness: Symbol,
+        spec_op: Symbol,
+        carrier: Symbol,
+    ) -> bool {
+        !self.sort_ops.witness_supplies_nothing.is_empty()
+            && self.sort_ops.witness_supplies_nothing.contains(&(
+                self.canonical_sort_sym(witness),
+                self.canonical_sym(spec_op),
+                self.canonical_sort_sym(carrier),
+            ))
+    }
+
+    /// WI-20261126-Q1WE9 — replace [`SortOpsTable::witness_supplies_nothing`]. Called only by
+    /// `typing::record_members_that_supply_nothing`.
+    pub(crate) fn set_witness_members_that_supply_nothing(
+        &mut self,
+        triples: HashSet<(Symbol, Symbol, Symbol)>,
+    ) {
+        self.sort_ops.witness_supplies_nothing = triples;
     }
 
     /// WI-240 — record a `(impl_sort, op_short) → target` entry. Called
