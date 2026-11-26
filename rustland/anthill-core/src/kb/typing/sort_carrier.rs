@@ -106,10 +106,10 @@ pub(crate) fn provision_carrier(
     }
     let type_vars = sort_carrier(kb, spec).type_vars;
     let view = Value::term(spec_view);
+    let own = provision_is_own(kb, spec, provider, &view);
     // Bindings live on the `SortView` wrapper alone; a bare spec reference binds nothing.
     let binds = view_is_sort_view(kb, &view);
     let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    let mut own = false;
     for &tv in &type_vars {
         let written = binds.then(|| provision_binding_value_at_param(kb, tv, &view)).flatten();
         let bound = match written {
@@ -123,11 +123,35 @@ pub(crate) fn provision_carrier(
             None if type_vars.len() == 1 => kb.make_name_term_from_sym(provider),
             None => continue,
         };
-        own |= composed_self_reference(kb, provider, &crate::kb::term_view::TermIdView(bound));
         bindings.push((tv, bound));
     }
     let base = kb.make_sort_ref(spec);
     ProvisionCarrier { term: kb.make_parameterized_type(base, &bindings), own }
+}
+
+/// [`ProvisionCarrier::own`] without building the carrier: does `provider` provide `spec` FOR
+/// ITSELF at the provision whose spec view is `spec_view` (decision 6) — the provider the head of
+/// one of the carrier's bindings, a binding left out of a spec of one type-var reading as the
+/// provider; every provision of a self-representing spec, or of a name with no declaration?
+/// Otherwise the provision is a WITNESS. On either carrier of the view.
+///
+/// THE ONE OWNER of "own", [`provision_carrier`] reads it too. Asked through
+/// `witness_dispatch_carrier` instead, a provision of a spec no operation of which receives on its
+/// type-var is never a witness's: `W provides Eq[T = Other]` read as `W`'s own `Eq`
+/// (WI-20261126-DHB0C).
+pub(crate) fn provision_is_own(kb: &KnowledgeBase, spec: Symbol, provider: Symbol, spec_view: &Value) -> bool {
+    let spec = kb.canonical_sort_sym(spec);
+    if kb.sort_kind(spec).is_none() || spec_is_self_representing(kb, spec) {
+        return true;
+    }
+    let type_vars = sort_carrier(kb, spec).type_vars;
+    let binds = view_is_sort_view(kb, spec_view);
+    type_vars.iter().any(|&tv| {
+        match binds.then(|| provision_binding_value_at_param(kb, tv, spec_view)).flatten() {
+            Some(bound) => composed_self_reference(kb, provider, &bound),
+            None => type_vars.len() == 1,
+        }
+    })
 }
 
 /// WI-20261122-CXR5B — WHICH APPLICATION of a spec one provider's provision is: the identity

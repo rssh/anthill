@@ -1814,7 +1814,8 @@ pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
             return;
         }
         for row in pending {
-            let (rid, view) = assert_forwarded_provides(kb, row.carrier, row.target, &row.bindings);
+            let (rid, view) =
+                assert_forwarded_provides(kb, row.carrier, row.target, &row.bindings, &row.operations);
             // Provenance, so a later refusal against this row can say where it came
             // from instead of naming a `provides` clause the author never wrote.
             kb.mark_derived_provision(rid, row.source_spec);
@@ -1847,6 +1848,28 @@ pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
     );
 }
 
+/// WI-20261126-DHB0C — does `spec`, or a spec it provides (its floors, at any depth), declare an
+/// operation named `name`? What an operation binding of a provision may name, and the floor a
+/// forwarded row carries one to. Read off the declarations and the provision relation, not the
+/// member table: the forwarding of the written rows runs before the table is built.
+pub(crate) fn spec_reaches_operation_named(kb: &KnowledgeBase, spec: Symbol, name: &str) -> bool {
+    let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    let mut stack = vec![kb.canonical_sort_sym(spec)];
+    while let Some(s) = stack.pop() {
+        if !seen.insert(s) {
+            continue;
+        }
+        let declared = kb
+            .try_resolve_symbol(&format!("{}.{name}", kb.qualified_name_of(s)))
+            .is_some_and(|op| crate::kb::op_info::operation_is_declared(kb, op));
+        if declared {
+            return true;
+        }
+        stack.extend(provides_rows_of_provider(kb, s).map(|row| kb.canonical_sort_sym(row.spec_base)));
+    }
+    false
+}
+
 /// One row [`forwarded_rows_to_derive`] finds missing.
 pub(super) struct ForwardedRow {
     pub(super) carrier: Symbol,
@@ -1857,6 +1880,11 @@ pub(super) struct ForwardedRow {
     /// Keyed by the TARGET's parameter LOCAL NAMES, already translated through
     /// [`forwarding_param_map`].
     pub(super) bindings: Vec<(String, Value)>,
+    /// WI-20261126-DHB0C — the source row's OPERATION bindings that the target, or a floor below
+    /// it, declares, keyed by the operation's name: carried to the floor (§5.1). Apart from
+    /// `bindings`, so the derived view takes the target's parameters off its own parameter list
+    /// and these, each checked where it was carried, and nothing else.
+    pub(super) operations: Vec<(String, Value)>,
     /// The source row's conditioned clauses, each a conjunction of goals, copied as they are
     /// ([`clauses_at_row`]). Empty for a source that holds outright.
     pub(super) clauses: Vec<Vec<Value>>,
@@ -1964,6 +1992,28 @@ pub(super) fn forwarded_rows_to_derive(kb: &KnowledgeBase) -> Vec<ForwardedRow> 
                         .map(|(_, v)| (target_param.clone(), v.clone()))
                 })
                 .collect();
+            // WI-20261126-DHB0C — AND EACH OPERATION BINDING GOES WITH IT, to the floor that
+            // declares the operation (decided with the user, 2026-11-26): `W provides Eq[T =
+            // Other, eq = W.oeq]` is `W provides PartialEq[T = Other, eq = W.oeq]`, `eq` being
+            // `PartialEq`'s. Copied as the type parameters are not translated: an operation is
+            // named the same at every floor that has it. Dropped, the forwarded row had no `eq`,
+            // and the load was refused "no `eq` answers it: none is written" (MEASURED).
+            // Kept apart from the parameters: each is checked here to name an operation the
+            // target or a floor below it declares, and only those reach the derived view.
+            let operations: Vec<(String, Value)> = r
+                .bindings
+                .iter()
+                .map(|(name, value)| (kb.local_name_of(*name), value))
+                .filter(|(name, _)| {
+                    !map.iter().any(|(_, subject)| subject == name)
+                        && !mapped.iter().any(|(m, _)| m == name)
+                        && spec_reaches_operation_named(kb, *target, name)
+                })
+                .map(|(name, value)| (name.to_string(), value.clone()))
+                .collect();
+            // The row asked for is the parameters and the operations both: one at the same
+            // parameters that binds an operation differently, or not at all, is not it.
+            let asked: Vec<(String, Value)> = mapped.iter().chain(&operations).cloned().collect();
             // NO GUARD ON AN EMPTY `mapped`, deliberately (WI-1111 review). A source row
             // binding none of the parameters the forwarding names translates to a row
             // with NO bindings — which is exactly what `assert_forwarded_provides` already
@@ -1974,7 +2024,7 @@ pub(super) fn forwarded_rows_to_derive(kb: &KnowledgeBase) -> Vec<ForwardedRow> 
             // answer rather than relocating it.
             let already = existing
                 .get(&(r.carrier, *target))
-                .is_some_and(|rows| rows.iter().any(|b| bindings_cover_named(kb, b, &mapped)));
+                .is_some_and(|rows| rows.iter().any(|b| bindings_cover_named(kb, b, &asked)));
             // AND THE PENDING TEST IS BINDING-AWARE, which WI-1111 measured the cost of:
             // keyed on the (carrier, target) PAIR alone it derived at most ONE binding per
             // round, so a carrier providing the forwarder at N distinct bindings needed N
@@ -1985,7 +2035,11 @@ pub(super) fn forwarded_rows_to_derive(kb: &KnowledgeBase) -> Vec<ForwardedRow> 
                 || pending.iter().any(|p| {
                     p.carrier == r.carrier
                         && p.target == *target
-                        && bindings_cover_named_pairs(kb, &p.bindings, &mapped)
+                        && bindings_cover_named_pairs(
+                            kb,
+                            &p.bindings.iter().chain(&p.operations).cloned().collect::<Vec<_>>(),
+                            &asked,
+                        )
                 })
             {
                 continue;
@@ -1995,6 +2049,7 @@ pub(super) fn forwarded_rows_to_derive(kb: &KnowledgeBase) -> Vec<ForwardedRow> 
                 target: *target,
                 source_spec: r.base,
                 bindings: mapped,
+                operations,
                 clauses: clauses.clone(),
                 unconditioned_too,
             });
@@ -2056,6 +2111,7 @@ fn assert_forwarded_provides(
     carrier: Symbol,
     target: Symbol,
     bindings: &[(String, Value)],
+    operations: &[(String, Value)],
 ) -> (RuleId, Value) {
     let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
     let sort_view_sym = kb.resolve_symbol("anthill.reflect.SortView");
@@ -2078,7 +2134,7 @@ fn assert_forwarded_provides(
     // A target parameter the source left unbound is simply absent, which is what "not
     // bound" already means everywhere else.
     let target_params: Vec<String> = kb.type_params_of_sort(target);
-    let named_args: Vec<(Symbol, Value)> = target_params
+    let mut named_args: Vec<(Symbol, Value)> = target_params
         .iter()
         .filter_map(|param| {
             bindings
@@ -2087,6 +2143,11 @@ fn assert_forwarded_provides(
                 .map(|(_, value)| (kb.intern(param), value.clone()))
         })
         .collect();
+    // WI-20261126-DHB0C — the operation bindings [`forwarded_rows_to_derive`] carried, after
+    // the parameters: each names an operation the target, or a floor below it, declares.
+    for (name, value) in operations {
+        named_args.push((kb.intern(name), value.clone()));
+    }
     // The view over the source row's bindings as they are: the term a stored view is
     // while each binding is one.
     let spec_view = kb.fn_value(sort_view_sym, vec![Value::term(spec_name)], named_args);

@@ -783,6 +783,55 @@ pub(crate) fn check_provision_names_carrier(
     errors
 }
 
+/// WI-20261126-DHB0C — every name a written `provides` clause binds is a type parameter of its
+/// spec, or an operation the spec or a spec it provides declares (decided with the user,
+/// 2026-11-26). A binding of any other name is read by nothing: MEASURED, `provides
+/// PartialEq[T = Other, foo = W.oeq]` loaded the binding as written, and the load was then
+/// refused downstream "no `eq` answers it: none is written", which named the absence and not the
+/// typo. An operation the spec inherits is a name of the spec's: the forwarding carries its
+/// binding to the floor that declares it (`derive_forwarded_provisions`).
+pub(crate) fn check_provision_binding_names(
+    kb: &KnowledgeBase,
+    clauses: &[crate::kb::WrittenProvidesClause],
+) -> Vec<crate::kb::load::LoadError> {
+    let mut errors = Vec::new();
+    for clause in clauses {
+        if !view_is_sort_view(kb, &clause.spec_view) {
+            continue;
+        }
+        let params: Vec<String> = kb
+            .type_param_syms_of(clause.spec)
+            .iter()
+            .map(|p| short_name_of(kb.local_name_of(*p)).to_string())
+            .collect();
+        for key in clause.spec_view.named_keys(kb) {
+            let name = short_name_of(kb.local_name_of(key));
+            if params.iter().any(|p| p == name)
+                || crate::kb::typing::spec_reaches_operation_named(kb, clause.spec, name)
+            {
+                continue;
+            }
+            let spec = kb.qualified_name_of(clause.spec);
+            let declared = if params.is_empty() {
+                "it declares no parameter".to_string()
+            } else {
+                let params: Vec<String> = params.iter().map(|p| format!("`{p}`")).collect();
+                format!("its parameters are {}", params.join(", "))
+            };
+            errors.push(crate::kb::load::LoadError::Other {
+                message: format!(
+                    "{site}: `provides {spec}[…]` on `{provider}` binds `{name}`, which is no \
+                     parameter of `{spec}` and no operation of it or of a spec it provides, so \
+                     nothing reads the binding ({declared}; an operation is bound by its name)",
+                    site = crate::kb::load::render_decl_site(kb, clause.span),
+                    provider = kb.qualified_name_of(clause.provider),
+                ),
+            });
+        }
+    }
+    errors
+}
+
 /// Proposal 074 stage 8 (§6, H4's rule; kernel-language §5.4) — a `provides` clause binding a
 /// HIGHER-KINDED parameter of its spec to a constructor whose open parameters do not line up
 /// with the slot's: `provides Monad[M = Pair]` leaves two open for `M[T]`'s one, and `Monad[M =
@@ -1722,20 +1771,18 @@ pub(crate) fn spec_op_suppliers_of_provider(
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
     let self_representing = spec_is_self_representing(kb, spec_canon);
-    let own_target = carrier_own_op(kb, provider, spec_op, op_short_sym).filter(|&t| runnable(t));
     let seed = |about: Symbol| -> SmallVec<[SpecOpSupplier; 2]> {
-        own_target
-            // At an application about another sort the member supplies it as the witness's
-            // does, only where it fits there (WI-20261126-Q1WE9, [`witness_own_op`]).
-            .filter(|_| {
-                about == provider_canon || !kb.witness_member_supplies_nothing(provider, spec_op, about)
-            })
+        // At an application about another sort the member supplies it as the witness's does,
+        // only where it fits there (WI-20261126-Q1WE9); about the provider, by the provider's
+        // own verdict, which its witness provisions do not reach (WI-20261126-DHB0C).
+        let witnessed = (about != provider_canon).then_some(about);
+        provision_own_op(kb, provider, witnessed, spec_op, op_short_sym)
+            .filter(|&t| runnable(t))
             .map(|target| SpecOpSupplier {
                 target,
-                route: if about == provider_canon {
-                    SupplyRoute::Own
-                } else {
-                    SupplyRoute::Witness(provider)
+                route: match witnessed {
+                    Some(_) => SupplyRoute::Witness(provider),
+                    None => SupplyRoute::Own,
                 },
             })
             .into_iter()

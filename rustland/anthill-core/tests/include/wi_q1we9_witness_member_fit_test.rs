@@ -1,5 +1,5 @@
 //! WI-20261126-Q1WE9 — A WITNESS'S OWN MEMBER SUPPLIES A CARRIER IT WITNESSES ONLY WHERE IT FITS
-//! THERE (kernel-language §8.4, *A member that does not fit is no supplier*).
+//! THERE (kernel-language §8.7, *A member that does not fit is no supplier*).
 //!
 //! `Point` is a composite, with an `eq` of its own — derived, or written as `eq(a: Point, b:
 //! Point)` — and it is also the WITNESS of `Other`'s equality: its provisions `PartialEq[T =
@@ -28,6 +28,13 @@
 //! * the refusal not naming the passed-over member (`passed_over` left empty): both
 //!   `…_answers_nothing_…` rows.
 //!
+//! WI-20261126-DHB0C moved one row: a written `Point.eq(a: Point, b: Point)` with no provision of
+//! `Point`'s own is the author's equality of `Point`s, and is held to writing one, as a `Point`
+//! that witnesses nothing is. It loaded here only because the provider's verdict was reached at
+//! its witness provision first, where the member does not fit. The written-member row writes
+//! `provides PartialEq[T = Point]`, and `a_written_eq_with_no_provision_of_its_own_is_held_to_one`
+//! is the refusal without it.
+//!
 //! `a_witness_whose_eq_takes_the_witnessed_values_still_answers` passes through both BY DESIGN:
 //! it is the witness the route is for, and the control that the verdict passes it.
 
@@ -40,7 +47,7 @@ use crate::common::try_load_kb_with_files;
 /// `Point`, with `point_member` among its declarations, in `test.q1we9.<ns>`.
 fn point(ns: &str, point_member: &str) -> String {
     format!(
-        "namespace test.q1we9.{ns}\n  import anthill.prelude.{{Int64, Bool}}\n  sort Point\n    \
+        "namespace test.q1we9.{ns}\n  import anthill.prelude.{{Int64, Bool, PartialEq}}\n  sort Point\n    \
          entity point(x: Int64, y: Int64)\n{point_member}  end\nend\n"
     )
 }
@@ -89,6 +96,9 @@ fn answers(ns: &str, point_member: &str, binding: &str) -> (bool, bool) {
 }
 
 const WRITTEN_FALSE: &str = "    operation eq(a: Point, b: Point) -> Bool = false\n";
+/// `Point`'s written `eq` with the provision of its own it is held to (WI-20261126-DHB0C).
+const WRITTEN_FALSE_PROVIDED: &str =
+    "    provides PartialEq[T = Point]\n    operation eq(a: Point, b: Point) -> Bool = false\n";
 const WRITTEN_TRUE: &str = "    operation eq(a: Point, b: Point) -> Bool = true\n";
 
 /// The ticket's program: `Point`'s `eq` derived, and the provision binding `Other.oeq`. `Other`'s
@@ -99,9 +109,29 @@ fn a_witness_binding_the_eq_answers_beside_its_derived_member() {
 }
 
 /// The same with `Point`'s `eq` written: no tie with the binding, and `Point` compares by its own.
+/// `Point` writes its own `provides PartialEq[T = Point]`, as any composite writing an `eq` of its
+/// own does (WI-20261126-DHB0C, the next row).
 #[test]
 fn a_witness_binding_the_eq_answers_beside_its_written_member() {
-    assert_eq!(answers("written", WRITTEN_FALSE, ", eq = Other.oeq"), (true, false));
+    assert_eq!(answers("written", WRITTEN_FALSE_PROVIDED, ", eq = Other.oeq"), (true, false));
+}
+
+/// WI-20261126-DHB0C — A WRITTEN `eq` WITH NO PROVISION OF ITS OWN IS HELD TO ONE, whatever its
+/// sort witnesses. `Point.eq(a: Point, b: Point)` is the author's equality of `Point`s, so nothing
+/// is derived for `Point` (§8.3, a boundary), and with no `provides PartialEq` for `Point` a
+/// comparison of two is refused, as it is for a `Point` that witnesses nothing. This program loaded
+/// before DHB0C only because the provider's verdict on `Point.eq` was reached at its witness
+/// provision `PartialEq[T = Other]` first, where the member does not fit, so the derivation gave
+/// `Point` a `PartialEq` the written `eq` then backed. Fails with that change backed out.
+#[test]
+fn a_written_eq_with_no_provision_of_its_own_is_held_to_one() {
+    match load("bare", WRITTEN_FALSE, ", eq = Other.oeq") {
+        Ok(_) => panic!("`Point`'s own `eq` with no provision of `Point`'s must be refused"),
+        Err(errors) => assert!(
+            errors.iter().any(|e| e.contains("PartialEq[T = test.q1we9.bare.Point]")),
+            "refused at the comparison of two `Point`s: {errors:#?}"
+        ),
+    }
 }
 
 /// `Point.eq` written to answer `true`, nothing bound: it was handed `Other`'s values and

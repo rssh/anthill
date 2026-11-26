@@ -19979,6 +19979,10 @@ fn load_phase_inner(
         kb,
         &written_provides,
     ));
+    all_errors.extend(super::typing::check_provision_binding_names(
+        kb,
+        &written_provides,
+    ));
     mark!("check_provision_names_carrier");
     // WI-20260923-ZBWMC: a bare `Spec.Member` the loader narrowed from its block's
     // provisions must be the carrier's ONE binding across every block and file —
@@ -24151,8 +24155,14 @@ fn neq_supplier_is_the_carriers(
         }
         super::typing::SupplyRoute::Fact => true,
         super::typing::SupplyRoute::Witness(w) => {
-            let by_name =
-                super::typing::carrier_own_op(kb, w, neq_index.eq_spec, neq_index.eq_short);
+            // The member the NAME reaches on the witness, whatever it supplies the witness's
+            // own values: that verdict is not this leg's question (WI-20261126-DHB0C).
+            let by_name = super::typing::member_declared_under(
+                kb,
+                w,
+                neq_index.eq_spec,
+                neq_index.eq_short,
+            );
             // Matched by NAME on the witness ⇒ ask whose values it compares. Reached
             // any other way it is the provision's written binding ⇒ deliberate.
             by_name != Some(cand.target)
@@ -24333,20 +24343,21 @@ impl EqDispatchIndex {
         let eq_spec = kb.try_resolve_symbol(spec_op_qn)?;
         // Interned up front so the walk below stays `&self`-read-only.
         let eq_short = kb.intern(short);
-        // BOTH specs are swept: the member may be bound under `PartialEq` (where the
-        // family canonically lives post-WI-644) or under `Eq` by a user who wrote only
-        // `fact Eq[…, eq = …]`. `PartialEq` first, so a carrier binding it in both
-        // renders in the order the author is likelier to recognize.
-        let specs: SmallVec<[Symbol; 2]> = ["anthill.prelude.PartialEq", "anthill.prelude.Eq"]
-            .into_iter()
-            .filter_map(|qn| kb.try_resolve_symbol(qn))
-            .collect();
+        // `PartialEq`'s rows alone, where the family's operations live (WI-644). An `eq`
+        // bound on a provision of `Eq` is on a `PartialEq` row too: the forwarding carries an
+        // operation binding to the floor that declares it (WI-20261126-DHB0C,
+        // `typing::derive_forwarded_provisions`). Swept here as well, a WITNESS's `Eq` row was
+        // read as its provider's own — `Eq` declares no operation receiving on `T`, so
+        // `witness_dispatch_carrier` finds no carrier there — and `W provides Eq[T = Other,
+        // eq = W.oeq]` keyed `W.oeq` to `W`: `W` a boundary, its own values given no equality
+        // (MEASURED). The sweep was for `fact Eq[…, eq = …]`, a spelling WI-20260917-S8JYF
+        // retired.
         let mut by_carrier: HashMap<Symbol, SmallVec<[super::typing::SpecOpSupplier; 2]>> =
             HashMap::new();
-        for spec in specs {
+        if let Some(partial_eq) = kb.try_resolve_symbol("anthill.prelude.PartialEq") {
             super::typing::collect_spec_op_suppliers_by_carrier(
                 kb,
-                spec,
+                partial_eq,
                 eq_spec,
                 eq_short,
                 &mut by_carrier,

@@ -1561,8 +1561,8 @@ pub(crate) fn resolve_dictionary_op(
 /// its provision's binding was listed by `ops` where `resolveOp` refuses the two.
 ///
 /// The operation is read off each provided spec's own table row for the short name, and
-/// the member is confirmed as its backing by [`carrier_own_op`], the relation the
-/// resolution itself reads.
+/// the member is confirmed as its backing by [`provision_own_op`] at that row — the relation
+/// the resolution itself reads, a witness row by the verdict at the carrier it witnesses.
 pub(crate) fn spec_op_backed_by(
     kb: &KnowledgeBase,
     provider: Symbol,
@@ -1579,9 +1579,10 @@ pub(crate) fn spec_op_backed_by(
         let Some(spec_op) = kb.sort_ops_lookup(row.spec_base, short_sym) else {
             continue;
         };
+        let witnessed = witness_dispatch_carrier(kb, row.spec_base, provider, &row.spec_view);
         if (defaulted_spec_op_parent(kb, spec_op).is_none()
             && lookup_spec_op_dispatch(kb, spec_op).is_none())
-            || carrier_own_op(kb, provider, spec_op, short_sym)
+            || provision_own_op(kb, provider, witnessed, spec_op, short_sym)
                 .is_none_or(|o| kb.canonical_sym(o) != member_canon)
         {
             continue;
@@ -1621,12 +1622,7 @@ pub(crate) fn carrier_own_op(
     spec_op: Symbol,
     op_short_sym: Symbol,
 ) -> Option<Symbol> {
-    let carrier_canon = kb.canonical_sort_sym(carrier);
-    kb.sort_ops_lookup(carrier, op_short_sym)
-        .filter(|&o| o != spec_op)
-        .filter(|&o| {
-            impl_parent_of_op(kb, o).map(|p| kb.canonical_sort_sym(p)) == Some(carrier_canon)
-        })
+    member_declared_under(kb, carrier, spec_op, op_short_sym)
         // WI-20261020-NNQ1S / WI-20260930-FB53M — and a member that SUPPLIES `spec_op`: where
         // the operation has an implementation of its own, a member that does not fit it at
         // this carrier is another operation of the same name, and the implementation runs.
@@ -1635,12 +1631,32 @@ pub(crate) fn carrier_own_op(
         .filter(|_| !kb.own_member_supplies_nothing(carrier, spec_op))
 }
 
+/// The member `sort` itself declares under `spec_op`'s short name, whatever it supplies: the
+/// table's entry, not the spec operation and not another spec's default `sort` inherits
+/// ([`carrier_own_op`]'s two cases). No verdict is read. [`carrier_own_op`] reads the one for
+/// `sort`'s own values, [`witness_own_op`] the one for a carrier `sort` witnesses; a reader that
+/// asks which member a NAME reaches, whatever it supplies, reads this.
+pub(crate) fn member_declared_under(
+    kb: &KnowledgeBase,
+    sort: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+) -> Option<Symbol> {
+    let sort_canon = kb.canonical_sort_sym(sort);
+    kb.sort_ops_lookup(sort, op_short_sym)
+        .filter(|&o| o != spec_op)
+        .filter(|&o| impl_parent_of_op(kb, o).map(|p| kb.canonical_sort_sym(p)) == Some(sort_canon))
+}
+
 /// WI-20261126-Q1WE9 — a WITNESS's own member for a spec op's short name, as it supplies
-/// `carrier`, a carrier the witness provides the spec for: [`carrier_own_op`]'s member at the
-/// witness, passed over where it does not fit the operation AT THAT PROVISION
-/// (`record_members_that_supply_nothing`). The two readers that seed the witness
-/// route with the provider's member go through here: [`provision_supplier`] (the eq-dispatch
-/// index, a call's suppliers) and [`spec_op_suppliers_of_provider`] (a dictionary).
+/// `carrier`, a carrier the witness provides the spec for: the member the witness declares
+/// ([`member_declared_under`]), passed over where it does not fit the operation AT THAT
+/// PROVISION (`record_members_that_supply_nothing`).
+///
+/// NOT through [`carrier_own_op`] (WI-20261126-DHB0C): that verdict is the witness's about its
+/// OWN values, and its witness provisions are not read there. `W.eq(a: Other, b: Other)` supplies
+/// `W` nothing and `Other` its `eq`; read through it, a witness with no values of its own gave
+/// `Other` no `eq`.
 pub(crate) fn witness_own_op(
     kb: &KnowledgeBase,
     witness: Symbol,
@@ -1648,8 +1664,26 @@ pub(crate) fn witness_own_op(
     spec_op: Symbol,
     op_short_sym: Symbol,
 ) -> Option<Symbol> {
-    carrier_own_op(kb, witness, spec_op, op_short_sym)
+    member_declared_under(kb, witness, spec_op, op_short_sym)
         .filter(|_| !kb.witness_member_supplies_nothing(witness, spec_op, carrier))
+}
+
+/// `provider`'s own member for a spec op's short name as it supplies ONE of its provisions:
+/// [`witness_own_op`] where the provision witnesses `witnessed`, a sort other than the
+/// provider, and [`carrier_own_op`] where it is about the provider's own values (`None`). Every
+/// reader that walks a provider's provisions and asks what its member puts at each goes through
+/// here: the two verdicts answer different questions (WI-20261126-DHB0C).
+pub(crate) fn provision_own_op(
+    kb: &KnowledgeBase,
+    provider: Symbol,
+    witnessed: Option<Symbol>,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+) -> Option<Symbol> {
+    match witnessed {
+        Some(carrier) => witness_own_op(kb, provider, carrier, spec_op, op_short_sym),
+        None => carrier_own_op(kb, provider, spec_op, op_short_sym),
+    }
 }
 
 /// WI-444 — the carrier sort's OWN member backing a (possibly defaulted) spec

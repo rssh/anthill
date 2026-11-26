@@ -2443,6 +2443,27 @@ pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -
     carrier_canon == spec_canon || provides_reaches(kb, carrier_canon, spec_canon)
 }
 
+/// Does `carrier` provide `spec` for its OWN values — through a provision of its own that
+/// witnesses no other sort, of `spec` or of a spec that provides it ([`sort_provides`] from
+/// there)? [`sort_provides`] asks whether `carrier` is a PROVIDER of `spec` anywhere, a witness
+/// row included: `W provides Eq[T = Other]` answers yes for `W`.
+///
+/// WI-20261126-DHB0C — the equality derivation asks this one. Asked the other, a composite that
+/// witnessed another sort's equality was read as already having its own, so which specs it
+/// witnessed decided whether its values had an equality — MEASURED, `W` with `entity w(n:
+/// Int64)` and `provides PartialEq[T = Other, eq = W.oeq]` was derived nothing, and `eq(w(n:
+/// 1), w(n: 2))` refused, "unresolved: PartialEq[T = W]"; writing `provides Eq[T = Other]`
+/// beside it made `W` a `Hash` candidate (it "provides `Eq`"), and the forwarding from that
+/// `Hash[T = W]` gave it the `Eq` and `PartialEq` the derivation had not.
+pub(crate) fn sort_provides_for_itself(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+    let spec_canon = kb.canonical_sort_sym(spec);
+    provides_rows_of_provider(kb, carrier).any(|row| {
+        provision_is_own(kb, row.spec_base, carrier, &row.spec_view)
+            && (kb.canonical_sort_sym(row.spec_base) == spec_canon
+                || sort_provides(kb, row.spec_base, spec))
+    })
+}
+
 /// WI-660/WI-672 — the spec-base targets of the `SortProvidesInfo` edges OUT of `node` (the
 /// specs `node` directly provides). Uses the provider index's carrier direction (canonical
 /// bucket + canonical exactness), so the transitive walk queries only the out-edges per hop

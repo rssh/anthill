@@ -276,8 +276,10 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
             seen.insert(cs)
                 && !c.boundary.contains(&cs)
                 && !spoken_for.speak_for(kb, cs)
-                && !super::typing::sort_provides(kb, s, eq)
-                && !super::typing::sort_provides(kb, s, partial_eq)
+                // For its own values: a witness row of the composite's is about another sort
+                // (WI-20261126-DHB0C, `sort_provides_for_itself`).
+                && !super::typing::sort_provides_for_itself(kb, s, eq)
+                && !super::typing::sort_provides_for_itself(kb, s, partial_eq)
         })
         .collect();
     for spec in [partial_eq, eq] {
@@ -397,8 +399,12 @@ pub(crate) fn derive_hash(kb: &mut KnowledgeBase, c: &EqClassification, given: &
             seen.insert(kb.canonical_sort_sym(s))
                 && !c.boundary.contains(&kb.canonical_sort_sym(s))
                 && (given.contains(&s) || !super::typing::provision_is_conditional(kb, s, eq))
-                && super::typing::sort_provides(kb, s, eq)
-                && !super::typing::sort_provides(kb, s, hash)
+                // Its own `Eq`, not one it witnesses for another sort: read as its own, a
+                // witness of another's `Eq` was given `Hash` and, forwarded from it, an `Eq`
+                // and a `PartialEq` of its values the derivation had not given it
+                // (WI-20261126-DHB0C, `sort_provides_for_itself`).
+                && super::typing::sort_provides_for_itself(kb, s, eq)
+                && !super::typing::sort_provides_for_itself(kb, s, hash)
                 // An operation `hash` the sort writes is its author's, which the row would
                 // take as its member unread: such a sort writes its `provides Hash`.
                 && kb.try_resolve_symbol(&format!("{}.hash", kb.qualified_name_of(s))).is_none()
@@ -600,10 +606,14 @@ pub(crate) fn equality_reaching_no_eq(kb: &mut KnowledgeBase) -> Vec<super::load
             if !written.contains(&entry) {
                 written.push(entry);
             }
-            // A witness's own `eq` the dispatch passed over for this carrier (WI-20261126-Q1WE9).
+            // A witness's own `eq` the dispatch passed over for this carrier (WI-20261126-Q1WE9):
+            // the member its name reaches, whatever it supplies the witness's own values
+            // (WI-20261126-DHB0C).
             if let (Some(eq_op), Some(eq_short)) = (eq_op, eq_short) {
                 if !super::typing::same_sort_canonical(kb, p.provider, carrier) {
-                    if let Some(member) = super::typing::carrier_own_op(kb, p.provider, eq_op, eq_short) {
+                    if let Some(member) =
+                        super::typing::member_declared_under(kb, p.provider, eq_op, eq_short)
+                    {
                         if kb.witness_member_supplies_nothing(p.provider, eq_op, carrier)
                             && !passed_over.contains(&member)
                         {

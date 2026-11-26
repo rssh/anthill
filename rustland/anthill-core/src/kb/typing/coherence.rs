@@ -1128,37 +1128,56 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::
     let eq_canon = kb.canonical_sort_sym(eq_sym);
     let noneq_canon = kb.canonical_sort_sym(noneq_sym);
 
-    // canonical carrier symbol → (provides Eq, provides NonEq)
-    let mut seen: std::collections::HashMap<Symbol, (bool, bool)> =
+    // canonical carrier symbol → the providers of its `Eq` rows, and of its `NonEq` rows.
+    type Providers = SmallVec<[Symbol; 1]>;
+    let mut seen: std::collections::HashMap<Symbol, (Providers, Providers)> =
         std::collections::HashMap::new();
     for row in provides_rows(kb) {
         let spec_canon = kb.canonical_sort_sym(row.spec_base);
-        let entry = seen
-            .entry(kb.canonical_sort_sym(row.provider))
-            .or_insert((false, false));
-        if spec_canon == eq_canon {
-            entry.0 = true;
-        } else if spec_canon == noneq_canon {
-            entry.1 = true;
+        if spec_canon != eq_canon && spec_canon != noneq_canon {
+            continue;
+        }
+        // AT THE CARRIER THE ROW IS ABOUT (WI-20261126-DHB0C): its provider's own values, or the
+        // sort a witness's binding names. Keyed by provider, a witness's `Eq[T = Other]` was
+        // `W`'s, so a composite with a `Float` field that witnessed another sort's `Eq` was
+        // refused once it derived its own `NonEq`, "`W` provides both" (MEASURED), while the
+        // witness's claim about `Other` was judged at no carrier at all. A witness binding no
+        // sort (a tuple) is about a former, whose `NonEq` is its components' and no row.
+        let carrier = if provision_is_own(kb, row.spec_base, row.provider, &row.spec_view) {
+            Some(row.provider)
+        } else {
+            sort_carrier(kb, row.spec_base)
+                .type_vars
+                .first()
+                .and_then(|&tv| provision_binding_value_at_param(kb, tv, &row.spec_view))
+                .and_then(|bound| spec_view_base(kb, &bound))
+                .filter(|&base| kb.has_kind(base, crate::intern::SymbolKind::Sort))
+        };
+        let Some(carrier) = carrier else {
+            continue;
+        };
+        let entry = seen.entry(kb.canonical_sort_sym(carrier)).or_default();
+        let side = if spec_canon == eq_canon { &mut entry.0 } else { &mut entry.1 };
+        if !side.contains(&row.provider) {
+            side.push(row.provider);
         }
     }
 
     // WI-20260919-9KYPA — both sides present is no longer the whole test; at least one
-    // must be UNCONDITIONAL. Asked only of the carriers that hold both, so the
+    // must be UNCONDITIONAL — its provider's provision of the spec with no condition clause
+    // (the coarse reading above). Asked only of the carriers that hold both, so the
     // `provision_conditions` scan (a per-functor fact walk) costs nothing on the
     // overwhelming majority that hold one or neither.
-    let both: Vec<Symbol> = seen
+    let outright = |kb: &KnowledgeBase, providers: &Providers, spec: Symbol| {
+        providers.iter().any(|&p| !provision_is_conditional(kb, p, spec))
+    };
+    let mut conflicts: Vec<String> = seen
         .into_iter()
-        .filter(|(_, (has_eq, has_noneq))| *has_eq && *has_noneq)
-        .map(|(carrier, _)| carrier)
-        .collect();
-    let mut conflicts: Vec<String> = both
-        .into_iter()
-        .filter(|&carrier| {
-            !provision_is_conditional(kb, carrier, eq_canon)
-                || !provision_is_conditional(kb, carrier, noneq_canon)
+        .filter(|(_, (eqs, noneqs))| !eqs.is_empty() && !noneqs.is_empty())
+        .filter(|(_, (eqs, noneqs))| {
+            outright(kb, eqs, eq_canon) || outright(kb, noneqs, noneq_canon)
         })
-        .map(|carrier| kb.qualified_name_of(carrier).to_string())
+        .map(|(carrier, _)| kb.qualified_name_of(carrier).to_string())
         .collect();
     conflicts.sort();
     conflicts.dedup();
@@ -1985,7 +2004,10 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // died `OperationBodyMissing`. Without a default it was `UnbackedProviderOperation`,
             // whose text said `C` has no own `f`.
             let op_short_sym = kb.intern(&op_short);
-            let own = carrier_own_op(kb, p.carrier, spec_op, op_short_sym);
+            // A witness provision's member is the witness's as it supplies the carrier named
+            // (WI-20261126-DHB0C, [`provision_own_op`]).
+            let witnessed = witness_dispatch_carrier(kb, p.spec, p.carrier, &p.spec_view);
+            let own = provision_own_op(kb, p.carrier, witnessed, spec_op, op_short_sym);
             let bound = instance_fact_op_in_bindings(kb, &bindings, &op_short);
             let own_canon = own.map(|o| kb.canonical_sym(o));
             let simp_alone: SmallVec<[Symbol; 2]> = own

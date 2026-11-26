@@ -3045,9 +3045,11 @@ fn static_override_refused(
 /// call, "expected 1 args, got 2"; `Car.peek(s: Car)` behind `Sp.peek(s: Sp, k: Int64) = 0`
 /// died the same way, and a member taking `k: String` answered for an `Int64` (MEASURED,
 /// 2026-11-21). The comparison is the provision's ([`compare_member_signature`]), at each
-/// provision of the spec that dispatches to the carrier — its own, and a witness's that names it —
-/// and it fits where it fits at one of them. Where none does it is compared at the carrier itself,
-/// as a call that names no provision asks it (equality is asked of any type).
+/// provision of the spec about the carrier's values — its own that witness no other sort, and a
+/// witness's that names it — and it fits where it fits at one of them. Where none is it is
+/// compared at the carrier itself, as a call that names no provision asks it (equality is asked
+/// of any type). The carrier's own WITNESS provisions are judged apart, per carrier witnessed
+/// (below, WI-20261126-Q1WE9), and count toward neither verdict of the other (WI-20261126-DHB0C).
 ///
 /// Every `(carrier, operation)` pair whose names collide is judged, whether or not a call ever
 /// asks it. The spec operations are those of a sort some provision names as its spec. Run after
@@ -3191,9 +3193,18 @@ pub(crate) fn record_members_that_supply_nothing(kb: &mut KnowledgeBase) {
 }
 
 /// Does `member`, `carrier`'s own operation, fit `spec_op` of `spec` at one of the provisions of
-/// `spec` that dispatch to `carrier`, or at the carrier itself where none does
+/// `spec` about `carrier`'s own values, or at the carrier itself where none is
 /// ([`record_members_that_supply_nothing`])? The provision's own comparison, its refusals
 /// discarded.
+///
+/// NOT AT THE CARRIER'S WITNESS PROVISIONS (WI-20261126-DHB0C): those are about another sort's
+/// values, and the verdict there is per carrier witnessed (the second half of
+/// [`record_members_that_supply_nothing`], read by [`witness_own_op`]). Counted here, `W
+/// provides PartialEq[T = Other]` made `W.eq(a: Other, b: Other)` the equality of `W`'s own
+/// values too — MEASURED, `eq(w(n: 1), w(n: 2))` refused at load, "no impl matches —
+/// unresolved: PartialEq[T = W]": `W` a boundary of the derivation, its `eq` read as the
+/// author's, and the member taking no `W`. Now it fits nowhere `W`'s values are compared, and
+/// beside `W`'s derived provision it is NNQ1S's refused `eq` ([`check_override_refinement`]).
 fn member_fits_spec_op(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
@@ -3208,24 +3219,24 @@ fn member_fits_spec_op(
         // No signature to compare on one side: nothing says it is not the spec's.
         return true;
     };
-    // The provisions the member answers: the carrier's own (where it may itself be a witness,
-    // receiving another sort's values), and a witness's that names the carrier and writes no
-    // member of its own (`W3 provides Conv[A = Leaf2, B = Int64]` beside `Leaf2.conv`,
-    // WI-20260930-Y6ZCD), which binds the carrier to the declaring sort itself.
-    let mut provisions: Vec<(Vec<(Symbol, Value)>, Option<Symbol>)> = Vec::new();
+    // The provisions about the carrier's values: its own that witness no other sort, and a
+    // witness's that names the carrier and writes no member of its own (`W3 provides Conv[A =
+    // Leaf2, B = Int64]` beside `Leaf2.conv`, WI-20260930-Y6ZCD), which binds the carrier to the
+    // declaring sort itself. The carrier's own witness provisions are not among them (above).
+    let mut provisions: Vec<Vec<(Symbol, Value)>> = Vec::new();
     let rows: Vec<(Symbol, SmallVec<[(Symbol, Value); 2]>, Value)> = provides_rows_of_spec(kb, spec)
         .map(|row| (row.provider, view_named_children(kb, &row.spec_view), row.spec_view.clone()))
         .collect();
     for (provider, named, view) in rows {
         let dispatch = witness_dispatch_carrier(kb, spec, provider, &view);
-        let witness = if same_sort_canonical(kb, provider, carrier) {
-            dispatch
-        } else if dispatch.is_some_and(|d| same_sort_canonical(kb, d, carrier)) {
-            None
+        let about_the_carrier = if same_sort_canonical(kb, provider, carrier) {
+            dispatch.is_none()
         } else {
-            continue;
+            dispatch.is_some_and(|d| same_sort_canonical(kb, d, carrier))
         };
-        provisions.push((spec_param_sigma(kb, spec, &named), witness));
+        if about_the_carrier {
+            provisions.push(spec_param_sigma(kb, spec, &named));
+        }
     }
     // NONE: compared at the carrier itself, its spec parameter bound to the carrier at its own
     // parameters. Equality is asked of any type: a sort's own `eq` is its equality with no
@@ -3239,11 +3250,11 @@ fn member_fits_spec_op(
             let own = own_application(kb, carrier);
             sigma.push((param, Value::term(own)));
         }
-        provisions.push((sigma, None));
+        provisions.push(sigma);
     }
-    provisions.into_iter().any(|(sigma, witness)| {
-        member_fits_at(kb, carrier, spec, spec_op, &spec_info, &impl_info, sigma, witness)
-    })
+    provisions
+        .into_iter()
+        .any(|sigma| member_fits_at(kb, carrier, spec, spec_op, &spec_info, &impl_info, sigma, None))
 }
 
 /// Does a member of `carrier` (`impl_info`) fit `spec_op` of `spec` (`spec_info`) at ONE
@@ -3278,6 +3289,36 @@ fn member_fits_at(
         &mut refusals,
     );
     shape == MemberSignature::Alignable && refusals.is_empty()
+}
+
+/// WI-20261126-DHB0C — what NNQ1S's refusal of `carrier`'s `eq` adds where the member FITS a
+/// witness provision of the carrier's, at each of `witnessed`: it is the `eq` the author wrote
+/// for another sort's equality, and the way out is a name of its own, bound there. `None` where
+/// it fits none. Decided with the user (2026-11-26): the load is refused, and says this.
+fn eq_fits_only_as_a_witness(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+    witnessed: &[Symbol],
+) -> Option<String> {
+    if witnessed.is_empty() {
+        return None;
+    }
+    let own = kb.local_name_of(carrier);
+    let spec = kb.local_name_of(spec);
+    let others: Vec<String> = witnessed.iter().map(|&c| format!("`{}`", kb.local_name_of(c))).collect();
+    let (provisions, sorts, there) = if witnessed.len() == 1 {
+        ("provision", "that sort's", "in that provision")
+    } else {
+        ("provisions", "those sorts'", "in each of them")
+    };
+    Some(format!(
+        ". It fits `{own}`'s {provisions} of `{spec}` for {}, where it answers {sorts} equality — \
+         but `{own}` has values of its own, and their equality is the `eq` the load derives for \
+         them, under the name this member holds. Give the member another name and bind it \
+         {there} (`eq = {own}.<name>`)",
+        others.join(", "),
+    ))
 }
 
 /// WI-347 — operation-override refinement check. A carrier's own operation
@@ -3323,6 +3364,8 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         sigma: Vec<(Symbol, Value)>,
         /// A witness's carrier — the sort its operations receive on.
         witness: Option<Symbol>,
+        /// The names the provision binds, its parameters' and its operations'.
+        bound_names: SmallVec<[Symbol; 2]>,
     }
     let mut provs: Vec<Prov> = provides_rows(kb)
         .map(|row| {
@@ -3333,6 +3376,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                 spec: row.spec_base,
                 sigma: spec_param_sigma(kb, row.spec_base, &named),
                 witness: witness_dispatch_carrier(kb, row.spec_base, row.provider, &row.spec_view),
+                bound_names: named.iter().map(|(k, _)| *k).collect(),
             }
         })
         .collect();
@@ -3410,10 +3454,17 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // Int64, b: Int64) -> Bool }` loaded and `eq(p2(x: 1), p2(x: 1))` died at the call,
             // "EqualityWithNoMember" (MEASURED, 2026-11-21); before the rule the member was
             // handed two `P2`s. Refused in the comparison's words, once per carrier.
+            //
+            // At a provision about the carrier's OWN values (WI-20261126-DHB0C): the verdict is
+            // reached at those alone, and a witness provision of the carrier's is about another
+            // sort, where the member may fit — asked there, the comparison refused nothing and
+            // the once-per-carrier mark then silenced the refusal at the carrier's own row.
             if eq_spec_op.is_some_and(|e| kb.canonical_sym(e) == kb.canonical_sym(spec_op))
+                && p.witness.is_none()
                 && kb.own_member_supplies_nothing(p.carrier, spec_op)
             {
                 if unfit_eq_refused.insert(kb.canonical_sort_sym(p.carrier)) {
+                    let first = errors.len();
                     compare_member_signature(
                         kb,
                         p.carrier,
@@ -3426,6 +3477,29 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                         &provision,
                         &mut errors,
                     );
+                    let witnessed: Vec<Symbol> = provs
+                        .iter()
+                        .filter(|q| {
+                            same_sort_canonical(kb, q.carrier, p.carrier)
+                                && same_sort_canonical(kb, q.spec, p.spec)
+                                // One that binds the operation is answered by its binding.
+                                && !q.bound_names.iter().any(|&k| short_name_of(kb.local_name_of(k)) == sn)
+                        })
+                        .filter_map(|q| q.witness)
+                        .filter(|&c| !kb.witness_member_supplies_nothing(p.carrier, spec_op, c))
+                        .fold(Vec::new(), |mut seen, c| {
+                            if !seen.iter().any(|&s| same_sort_canonical(kb, s, c)) {
+                                seen.push(c);
+                            }
+                            seen
+                        });
+                    if let Some(clause) = eq_fits_only_as_a_witness(kb, p.carrier, p.spec, &witnessed) {
+                        for e in &mut errors[first..] {
+                            if let LoadError::IncompatibleMemberSignature { reason, .. } = e {
+                                reason.push_str(&clause);
+                            }
+                        }
+                    }
                 }
                 continue;
             }
