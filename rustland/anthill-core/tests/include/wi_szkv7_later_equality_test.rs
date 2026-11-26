@@ -21,8 +21,8 @@
 //!
 //! WHAT FAILS WHEN (measured by making the change and running this file):
 //!
-//! * the check reporting nothing: SEVENTEEN rows fail — every row that expects a
-//!   refusal.
+//! * the check reporting nothing: EIGHTEEN rows fail — every row that expects a
+//!   refusal (measured again 2026-11-26, WI-20261102-YX17K's row among them).
 //! * who supplies the `eq` left out of the signature: the rows whose later load changes
 //!   only that — `…_eq_member_of_the_sort_…`, `…_eq_member_of_an_earlier_witness_…`,
 //!   `…_redeclaration_of_the_sort_…` — and `…_provision_binding_an_eq_…`, which names it.
@@ -31,6 +31,9 @@
 //!   `…_provision_for_another_instantiation_…`, `…_provision_binding_an_eq_…`.
 //! * a provision's conditions and clause count left out of its entry:
 //!   `…_condition_on_an_earlier_provision_…` and `…_provision_binding_an_eq_…`.
+//! * whether one of a provision's clauses was WRITTEN left out of its entry (WI-20261102-YX17K,
+//!   `EqualityProvision.written`), or the record not marking a derived clause a written one
+//!   folds into: `…_restatement_of_a_derived_provision_…` and `…_provision_binding_an_eq_…`.
 //! * a provision's ROW left out of its entry: `…_provision_for_another_instantiation_…`
 //!   and `…_witness_writing_eq_alone_…`.
 //! * `Eq` / `NonEq` provisions read by the carrier parameter a DISPATCH reads (the one an
@@ -224,6 +227,39 @@ end
         &[
             "its own provision of `PartialEq` for it has changed",
             "`test.le.total.Point.peq` now supplies its `eq`",
+        ],
+    );
+}
+
+/// A later entry that RESTATES what the earlier load derived — `PartialEq` and `Eq` for the
+/// sort, no `eq`, no condition — still adds two provisions about it: what the earlier load
+/// did about the sort's equality, derived it or wrote it, does not enter (kernel-language
+/// §8.3). The clauses are WRITTEN and the earlier ones DERIVED: each folds into the derived
+/// entry of its conditions and makes it a written one, and the derived provisions read as
+/// changed.
+///
+/// FAILS with the entry left derived (the mark in `KnowledgeBase::record_provides_clause`
+/// backed out), and with the closure not reading the mark (`EqualityProvision.written`),
+/// MEASURED 2026-11-26: the load is ADMITTED, and
+/// `a_later_provision_binding_an_eq_is_refused` fails beside it, its derived row no longer
+/// reading as changed. WI-20261102-YX17K exposed it, by giving every derived unconditional
+/// row a clause; on the tree before it, where the total pass filed none, the written clause
+/// moved the count from 0 and the row passed.
+#[test]
+fn a_later_restatement_of_a_derived_provision_is_refused() {
+    assert_later_load_refused(
+        POINT,
+        r#"
+namespace test.le.total.Point
+  import anthill.prelude.{Eq, PartialEq}
+  provides PartialEq[T = Point]
+  provides Eq[T = Point]
+end
+"#,
+        "test.le.total.Point",
+        &[
+            "its own provision of `Eq` for it has changed",
+            "its own provision of `PartialEq` for it has changed",
         ],
     );
 }

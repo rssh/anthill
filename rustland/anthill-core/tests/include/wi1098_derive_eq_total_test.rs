@@ -28,14 +28,23 @@
 //! are absence assertions, and the neighbour is what stops them passing on a KB where
 //! the derivation never ran at all.
 //!
-//! IT NO LONGER DOES, MEASURED 2026-11-02 (WI-20260831-QF5JT): the same back-out fails
-//! ONE row, `a_parametric_sort_derives_a_conditional_row`, whose `Duration` gets a
+//! IT STOPPED DOING SO, MEASURED 2026-11-02 (WI-20260831-QF5JT): the same back-out
+//! failed ONE row, `a_parametric_sort_derives_a_conditional_row`, whose `Duration` got a
 //! clause record (count 1, not 0). Since WI-20260918-CKD4J, `derive_conditional_eq`
-//! derives the same `Eq`+`PartialEq` pair, with no condition, for every composite the
-//! total pass leaves, so the five rows above stay green. The derivation as a whole is
-//! backed out only by skipping a sort in BOTH passes, as
-//! `wi300_rule_body_requires_test::a_carrier_whose_fields_provide_eq_derives_it_and_passes_the_guard`
-//! measures.
+//! derived the same `Eq`+`PartialEq` pair, with no condition, for every composite the
+//! total pass left, so the five rows above stayed green: two owners of one row.
+//!
+//! ONE OWNER SINCE WI-20261102-YX17K, which folded the total pass into
+//! `derive_conditional_eq`: every derived row here is that pass's. Backing it out for
+//! this file's sorts — skipping each `wi1098.` sort that is not `Partial` in its
+//! candidates — fails the five again, MEASURED 2026-11-26, as LOAD refusals now ("no impl
+//! provides anthill.prelude.Eq" at the `contains` call) rather than as the evaluator's
+//! `DeferToRequirement` quoted above; and fails
+//! two more: `a_direct_eq_call_at_a_derived_carrier_still_dispatches` (its `eq(a, b)`
+//! refused at load, `C` providing no `PartialEq`) and
+//! `declaring_neq_on_a_derived_carrier_is_not_a_capture_but_is_still_refused` (the
+//! capture no longer excused by a derived provision). Skipping the `Partial` ones too
+//! takes their `PartialEq` with it, which is this pass's as well.
 //!
 //! Backing out only the `build_sort_ops_table(kb)` refresh beside the derivation —
 //! the delta that makes the derived provision inherit the spec's `eq` onto its
@@ -44,15 +53,33 @@
 //! That is not a hypothetical ordering note: it is what the first cut did, and it
 //! broke seven `wi664_composite_eq_test` cases that had loaded clean for a year.
 //!
-//! Backing out only the PARAMETRIC-FIELD guard in `total_composites` fails
+//! Backing out only the PARAMETRIC-FIELD guard in `total_composites` failed
 //! `a_float_behind_a_parametric_field_is_not_claimed_lawful`, and nothing else. With
 //! the guard `HoldFloatPair` derives nothing; without it it derives `Eq`+`PartialEq` —
 //! a lawfulness claim over a `Float` the classifier cannot see through `Pair`.
 //!
-//! Backing out only the BOUNDARY exclusion from the seed fails
+//! Backing out only the BOUNDARY exclusion from the seed failed
 //! `a_dispatched_eq_is_not_shadowed_by_a_derived_provision`, and nothing else: `Pebble`
 //! picks up BOTH `("Pebble", "Eq")` and `("Pebble", "PartialEq")` beside the witness's
 //! own row.
+//!
+//! BOTH WERE `total_composites`', which WI-20261102-YX17K deleted, folding the pass into
+//! `derive_conditional_eq`. On the fold, MEASURED 2026-11-26 over this file and
+//! `wi_ckd4j_*` (24 rows, this ticket's new one among them):
+//! * the parametric-field guard is the TRANSLATION of a field type's provision through
+//!   its arguments (`field_conditions`: `Pair[A = Float, …]` rests on `Eq[Float]`).
+//!   Read as resting on nothing instead, 18 of 24 fail — this row among them, most
+//!   because the stdlib's own derived members then compare an `Option[T =
+//!   NodeOccurrence]` field nothing equates, and every load is refused;
+//! * the boundary exclusion (`!c.boundary.contains` in the candidates) fails
+//!   `declaring_neq_on_a_derived_carrier_is_not_a_capture_but_is_still_refused` alone —
+//!   its `capeq` carrier, whose declared `eq` is what makes it a boundary.
+//!   `a_dispatched_eq_is_not_shadowed_by_a_derived_provision` PASSES under it: `Pebble`'s
+//!   witness speaks for it, and `spoken_for` excludes it as well;
+//! * the witness exclusion (`!spoken_for.speak_for`) fails
+//!   `a_carrier_a_witness_already_speaks_for_derives_nothing` alone;
+//! * the `Partial` exclusion from the `Eq` candidates fails
+//!   `a_partial_holder_of_a_written_eq_is_not_refused_for_it` alone.
 //!
 //! `declaring_neq_on_a_derived_carrier_is_an_override_not_a_capture` records a
 //! CONSEQUENCE this ticket did not set out to produce and which is nonetheless right;
@@ -389,8 +416,13 @@ end
 /// half is this ticket's, and the BOUNDARY exclusion is what decides it — `Pebble`'s
 /// only field is an `Int64`, so without that exclusion it would be seeded Total and
 /// derive `Eq`, asserting REFLEXIVITY of an `eq` the compiler has not read. MEASURED:
-/// removing the `!boundary.contains` clause from `total_composites`' seed adds
-/// `("Pebble", "Eq")` to the rows below.
+/// removing the `!boundary.contains` clause from `total_composites`' seed added
+/// `("Pebble", "Eq")` to the rows below. Since WI-20261102-YX17K the same clause in
+/// `derive_conditional_eq`'s candidates is not what decides it alone, MEASURED both ways:
+/// without it this row passes (the header lists the row that does not); without it AND
+/// the `spoken_for` clause beside it, it fails — `PebbleEq` speaks for `Pebble`, and only
+/// when neither clause holds is `Pebble` derived, its structural `eq` answering the
+/// dispatch (0 where the witness says 1).
 #[test]
 fn a_dispatched_eq_is_not_shadowed_by_a_derived_provision() {
     let src = r#"
@@ -494,8 +526,10 @@ end
 ///     with `sort_provides(C, PartialEq)` false, so the derivation filed a SECOND
 ///     `(PartialEq, C)` claim beside the author's.
 ///
-/// Both rows are the ones that come back if the `spoken_for` clause is removed from
-/// the seed in `total_composites`, and nothing else in this file moves.
+/// Both rows are the ones that came back if the `spoken_for` clause was removed from
+/// the seed in `total_composites`, and nothing else in this file moved. Since
+/// WI-20261102-YX17K the clause stands in `derive_conditional_eq`'s candidates, and
+/// removing it there fails this row and nothing else here or in `wi_ckd4j_*`, MEASURED.
 ///
 /// Since WI-20261121-TV0PA a witness's provision no `eq` answers is a load error
 /// (`EqualityReachesNoEq`) — the carrier derives none, and a comparison would reach no member —
@@ -558,7 +592,8 @@ end
 /// `Eq` ⊥ `NonEq` over the WHOLE SHIPPED CORPUS, asserted rather than assumed.
 ///
 /// The two halves are disjoint by construction — one fixpoint puts a sort in exactly
-/// one class, and `total_composites` excludes the `Partial` set from its seed — but
+/// one class, and `derive_conditional_eq` leaves the `Partial` set out of its `Eq`
+/// candidates (`a_partial_holder_of_a_written_eq_is_not_refused_for_it`) — but
 /// "by construction" is the claim, not the evidence. A carrier that picked up both
 /// would be a `check_eq_noneq_exclusive` load error blaming a program nobody wrote,
 /// and the two halves are asserted at DIFFERENT points in the pipeline, which is
@@ -621,6 +656,47 @@ fn no_carrier_derives_both_eq_and_noneq_over_the_corpus() {
                 .all(|n| both.iter().any(|c| c.as_str() == *n)),
         "the conditional pairs must be present or the exemption above measures nothing; \
          got {both:?}"
+    );
+}
+
+/// The `Partial` exclusion from the `Eq` candidates, where the field rule alone does not
+/// refuse: a field of a sort that WRITES `provides Eq` over a `Float`. `Inner` is the
+/// author's error — its written `Eq` beside the `NonEq` its `Float` derives — and is
+/// refused for it. `Outer`, which writes nothing, is `Partial` through `Inner`; its field's
+/// `Eq` holds (written), so without the exclusion it derives `Eq` too, beside its own
+/// derived `NonEq`, and a SECOND refusal names a carrier nobody wrote a provision for.
+///
+/// FAILS when the exclusion is backed out, MEASURED (2026-11-26, WI-20261102-YX17K: drop
+/// `!c.partial.contains` from `derive_conditional_eq`'s `Eq` candidates): the load reports
+/// both carriers. Nothing else in this file or in `wi_ckd4j_*` moves under that back-out —
+/// over every other fixture, and the corpus above, the field rule refuses a `Partial`
+/// composite's `Eq` by itself.
+#[test]
+fn a_partial_holder_of_a_written_eq_is_not_refused_for_it() {
+    let errors = crate::common::load_errors_of(
+        r#"
+namespace wi1098.partialwritten
+  import anthill.prelude.{Eq, PartialEq, Float}
+  sort Inner
+    entity inner(x: Float)
+    provides Eq[T = Inner]
+  end
+  sort Outer
+    entity outer(i: Inner)
+  end
+end
+"#,
+    );
+    let naming = |carrier: &str| -> Vec<&String> {
+        errors
+            .iter()
+            .filter(|e| e.contains(&format!("'wi1098.partialwritten.{carrier}' provides both")))
+            .collect()
+    };
+    assert_eq!(naming("Inner").len(), 1, "the written `Eq` beside a `Float` is refused; got {errors:?}");
+    assert!(
+        naming("Outer").is_empty(),
+        "`Outer` wrote no provision and is refused for none; got {errors:?}"
     );
 }
 
@@ -700,7 +776,10 @@ end
 /// `wi_ckd4j_conditional_eq_derivation_test` drives the rows; this pins their SHAPE.
 ///
 /// `Duration` is the non-parametric neighbour, in the same scan and the same KB: it
-/// picks up the unconditional pair (one clause, no condition).
+/// picks up the unconditional pair (one clause, no condition) — from the same pass, filed
+/// as a written `provides Eq[T = Duration]` would be (WI-20261102-YX17K). FAILS on the
+/// tree before that fold, MEASURED: the total pass derived `Duration` and filed no clause
+/// (count 0).
 #[test]
 fn a_parametric_sort_derives_a_conditional_row() {
     let kb = crate::common::load_kb_with("namespace wi1098.empty\nend\n");
@@ -749,11 +828,15 @@ fn a_parametric_sort_derives_a_conditional_row() {
         assert_eq!(kb.provides_clause_count(c, s), 1, "{carrier}/{spec}: one clause");
     }
     let duration = kb.try_resolve_symbol("anthill.prelude.Duration").expect("Duration");
-    let eq = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq");
-    assert_eq!(
-        kb.provides_clause_count(duration, eq),
-        0,
-        "the non-parametric neighbour's row is the TOTAL derivation's, unconditional and \
-         outside the clause record"
-    );
+    for spec in ["PartialEq", "Eq"] {
+        let s = kb
+            .try_resolve_symbol(&format!("anthill.prelude.{spec}"))
+            .expect("spec");
+        assert_eq!(
+            (kb.provides_clause_count(duration, s), kb.provision_has_conditions(duration, s)),
+            (1, false),
+            "Duration/{spec}: the non-parametric neighbour's row is one clause with no \
+             condition, as a written unconditional provision is"
+        );
+    }
 }

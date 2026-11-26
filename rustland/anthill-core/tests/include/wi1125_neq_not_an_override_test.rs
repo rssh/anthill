@@ -431,7 +431,7 @@ fn a_carrier_that_claims_no_equality_is_refused_too() {
     // the carrier SELF-PROVIDING `Eq`/`PartialEq`, the way
     // `typing::carrier_has_unbacked_eq_override` gates its own `eq` probe. That gate
     // cannot be asked here and must not be: `build_eq_dispatch_index` runs BEFORE
-    // WI-1098's `derive_total_eq`, so a total composite provides nothing YET — and
+    // WI-1098's `Eq` derivation, so a total composite provides nothing YET — and
     // this fixture is `wi1098_derive_eq_total_test`'s own shape with different names.
     // Gating on provisions would have excused the ticket's headline case by an
     // accident of pass order.

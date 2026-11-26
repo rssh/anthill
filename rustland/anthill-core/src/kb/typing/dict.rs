@@ -298,7 +298,7 @@ impl DictRefusal {
 /// derived `NonEq` would make `provides Eq[…]` a line the loader then refuses
 /// (`check_eq_noneq_exclusive`). The classification that knows is
 /// [`crate::kb::eq_derive::EqClassification`], a `load.rs` local held between
-/// `derive_total_eq` and `eq_derive::run` — and `run`, which asserts the `NonEq` half,
+/// `derive_conditional_eq` and `eq_derive::run` — and `run`, which asserts the `NonEq` half,
 /// stands AFTER this diagnostic is rendered. Reading the provision relation for `NonEq`
 /// here would therefore answer `false` for exactly the carriers it is meant to catch,
 /// and threading the classification through the typer would give the rule the second

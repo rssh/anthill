@@ -101,7 +101,7 @@ Deriving the **row** rather than teaching each reader is the load-bearing choice
 
 Two constraints on that pass, both learned by measurement:
 
-- **Placement.** A derived row is worthless before its first consumer. Asserted below `req_insertion` the rows were correct and read by nobody; they must land beside `derive_total_eq`, whose own comment already says so.
+- **Placement.** A derived row is worthless before its first consumer. Asserted below `req_insertion` the rows were correct and read by nobody; they must land beside the `Eq` derivation (`derive_total_eq` when this was written; `derive_conditional_eq` since WI-20261102-YX17K folded the two), whose own comment already says so.
 - **Conditional provisions derive nothing.** A `:- goals` tail rides in separate `ProvidesConditionInfo` facts, so a conditional provision's row is a plain fact and copying only its head would claim the lower floor *unconditionally* — the `ProvisionConditionsTooWeak` over-claim, manufactured by the deriver. A conditional provider writes both floors by hand, each with its own tail; `Pair` does, and its two tails genuinely differ (weak iff both components weak, strong iff both strong).
 
 `Ord` **also** `requires WeakOrd[T]`, and the two clauses are not redundant: `provides` says every `Ord` *carrier* is a `WeakOrd` carrier (what the derivation reads); `requires` says every `Ord` *dictionary* contains a `WeakOrd` one (what a **use site** reads). Without the second, a body written `requires Ord[T] … WeakOrd.compare(a, b)` — every ordering-generic in every downstream program — fails to resolve its own call.

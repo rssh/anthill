@@ -17594,12 +17594,12 @@ pub struct LoadOptions {
     ///
     /// STOPPING HERE AND NOT EARLIER IS THE POINT. Everything the typer reads is built by
     /// then — the sort-ops table, the provider/requires indexes, `derive_forwarded_provisions`
-    /// and `eq_derive::derive_total_eq` — so a hand-driven
+    /// and `eq_derive::derive_conditional_eq` — so a hand-driven
     /// `type_check_sorts(kb, result.loaded())` sees the same KB this function's own call
     /// would, and is handed the same work list: the sorts this load defined and the
     /// clauses it asserted (WI-20261006-SZKV7). The retired `load` stopped far earlier, which is
     /// why its typer could DISAGREE with the pipeline's: WI-20260901-7ZZ1Z was a shipped
-    /// test asserting a refusal that only held because `derive_total_eq` had not run.
+    /// test asserting a refusal that only held because the `Eq` derivation had not run.
     pub run_typer: bool,
 }
 
@@ -19582,10 +19582,11 @@ fn load_phase_inner(
     // before `eq_derive` re-runs. Do not read the split as "below the check ⇒ exempt"
     // and delete the mark — that re-opens a five-carrier phase-2 refusal.
     let eq_classification = super::eq_derive::classify(kb);
-    let mut given_partial_eq = super::eq_derive::derive_total_eq(kb, &eq_classification);
-    // WI-20260918-CKD4J — the CONDITIONAL rows, after the total ones so a composite
-    // with a field of a derived-total sort reads that row as a provision.
-    given_partial_eq.extend(super::eq_derive::derive_conditional_eq(kb, &eq_classification));
+    // WI-20260918-CKD4J / WI-20261102-YX17K — every derived `Eq`+`PartialEq` row, the
+    // unconditional (`Colour`) and the conditional (`List :- Eq[T]`) alike: ONE pass, so
+    // each row has one owner and backing it out fails the rows it derives.
+    let given_partial_eq = super::eq_derive::derive_conditional_eq(kb, &eq_classification);
+    mark!("eq_derive::classify + derive_conditional_eq");
     // The `eq` member of each composite given `PartialEq` above, before the typer, which
     // types the members and pins every call at the composite to its member. Not over a
     // load already refused: its field types are what the refusals are about, and a member
@@ -19613,14 +19614,13 @@ fn load_phase_inner(
         ));
     }
     mark!("load_derived_eq_members");
-    // WI-20260919-HXGXF — BEFORE THE TYPER, for `derive_total_eq`'s reason and measured
+    // WI-20260919-HXGXF — BEFORE THE TYPER, for `derive_conditional_eq`'s reason and measured
     // the same way. The typer RESOLVES a call's `requires TypeValue[…]` against the
     // provider relation, so a row asserted after it does not exist for the only reader
     // that would have used it: with this pass below the typer every `tv[B = Boom]()` was
     // refused "no impl provides anthill.reflect.TypeValue" while the rows were sitting in
     // the KB. Unlike `eq_derive::run`'s half there is no reason to be late — these rows
     // introduce no unbacked operation, so `check_provider_operations` passes them.
-    mark!("eq_derive::classify + derive_total_eq + derive_conditional_eq");
     all_errors.extend(super::type_value_derive::run(kb));
     // No sort provides `NamedTuple`, and no `SortDomain` is written at a tuple (proposal 004's
     // extension): read whether or not the reflect library that `TypeValue`'s pass needs is
@@ -24031,7 +24031,7 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 /// nothing shown, because the author said it.
 ///
 /// WHAT THIS DOES NOT ASK is whether the carrier PROVIDES `Eq`/`PartialEq`. It
-/// cannot: this pass runs before WI-1098's `derive_total_eq`, so the total composite
+/// cannot: this pass runs before WI-1098's `Eq` derivation, so the total composite
 /// that is the ticket's headline case provides nothing yet. See
 /// [`member_operands_are_the_carrier`] — a provides-gate here would excuse that case
 /// by pass order, so the criterion is the member's own shape.
@@ -24161,7 +24161,7 @@ fn neq_supplier_is_the_carriers(
 ///
 /// This is NOT [`super::typing::carrier_has_unbacked_eq_override`]'s exclusion, which
 /// asks whether the carrier SELF-PROVIDES `Eq`/`PartialEq`. That question cannot be
-/// asked here: [`build_eq_dispatch_index`] runs BEFORE WI-1098's `derive_total_eq`,
+/// asked here: [`build_eq_dispatch_index`] runs BEFORE WI-1098's `Eq` derivation,
 /// so a total composite that will provide `PartialEq` a few lines later still
 /// provides nothing at this point — and that composite (`sort C { entity c(n: Int64);
 /// operation neq(…) }`) is precisely the shape WI-1098's own row is about. A

@@ -9,7 +9,7 @@
 //! * `d(c: C)` beside `sort W { provides Eq[T = C]; operation eq(…) = true }` — and beside a
 //!   `PartialEq` witness alike — derived `D` no equality, and `eq(d(…), d(…))` was refused at the
 //!   call, "`D` provides no `PartialEq`" (`EqualityProvisions::witnessed`, read by both halves of
-//!   the derivation: `total_composites` and `field_conditions`);
+//!   the derivation then: `total_composites` and `field_conditions`, one since WI-20261102-YX17K);
 //! * with a `Float` inside `C`, the classifier did not see the witness's `eq`: the `PartialEq` row
 //!   `Eq provides PartialEq[T = T]` forwards was written below it, and `W.eq` was judged at `W`
 //!   alone, where it fits nothing. So `C` was `Partial`, `D` with it, and `D` — a candidate for

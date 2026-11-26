@@ -277,11 +277,13 @@ principles forbid.
   loader path. Generated items are built from resolved `Symbol`s and `Expr` occurrences,
   so they need minting but NO name resolution — hygiene the way 043.1 already has it. A
   generated body is typed by the ordinary typer pass, so there is no re-type step.
-- **Firing point.** Not the typer. `derive_total_eq`'s doc comment measured why: "a
+- **Firing point.** Not the typer. The `Eq` derivation's doc comment measured why
+  (`derive_total_eq`'s then; `derive_conditional_eq`'s since WI-20261102-YX17K folded the
+  two passes into one): "a
   provision only reaches a call site through the typer… Asserted [after it] the fact
   exists and NO call site was ever rewritten to read it." So: after the declarations
   load, BEFORE provider coverage, the sort-ops table, and the typer — where
-  `derive_total_eq` sits today, minus its table refresh.
+  `derive_conditional_eq` sits today, minus its table refresh.
 
 All derive redexes fire against the WRITTEN knowledge base and their output lands
 together. That makes expansion order-independent, and it is Rust's rule: a derive sees the

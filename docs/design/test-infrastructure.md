@@ -212,6 +212,10 @@ what a `wi_tests` thread actually pays.
 | `eq_derive::classify + derive_total_eq + derive_conditional_eq` | 0.54–0.60 s | 12 % |
 | `check_provider_requires` | 0.45 s | 9 % |
 | `type_value_derive::run` | 0.18–0.26 s | 5 % |
+
+(The equality row's mark reads `eq_derive::classify + derive_conditional_eq` since
+WI-20261102-YX17K, which folded the total pass into the conditional one; the measurements
+here are of the two.)
 | `sort_domain_derive::run` | 0.16–0.22 s | 4 % |
 | everything else (≈45 phases) | ~0.35 s | 8 % |
 
@@ -730,7 +734,7 @@ sealed:
   question per pass is "which items can this call have changed the verdict of", and the
   honest answer for each is a short set — provider/requirer edges, override edges, eq
   derivation over fields that mention the new sorts.
-- `eq_derive::classify + derive_total_eq + derive_conditional_eq` and `eq_derive::run`:
+- `eq_derive::classify + derive_conditional_eq` and `eq_derive::run`:
   derive for the new sorts and for old sorts whose fields mention them.
 - `check_provider_requires`: check the new provisions, and old provisions whose spec the
   new file touched.
@@ -1077,7 +1081,9 @@ Measured, by backing the update out three ways (the raw file's §4): left short 
 own check, or without it as a refusal of the stdlib, an error a carrier; left short of
 them through `derive_conditional_eq` ONLY and put right after, 35 of 37
 equality-derivation tests PASS, the value of a call included, and two fail on a count (a
-total composite derived a second time).
+total composite derived a second time). That was two passes; WI-20261102-YX17K folded
+them into one, leaving no earlier pass whose row a later one could miss, and the first
+back-out was measured again on the fold (`wi_ank4x_provider_index_takes_rows_test`'s header).
 So a value is not this change's control. What holds the filed index to
 the relation is (1) a check in every load, in a build with debug assertions, where the
 last rebuild stood, and where a load stops before the typer — the filed index against a

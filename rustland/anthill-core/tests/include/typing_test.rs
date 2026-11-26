@@ -5693,7 +5693,7 @@ fn load_with_result(source: &str) -> (KnowledgeBase, LoadResult) {
 ///
 /// `run_typer: false` and NOT the retired `load::load`, which is what this replaces. That
 /// entry point stopped far earlier — before the sort-ops table, the provider indexes and
-/// `eq_derive::derive_total_eq` — so its hand-driven typer ran on a half-built KB and
+/// `eq_derive::derive_conditional_eq` — so its hand-driven typer ran on a half-built KB and
 /// could DISAGREE with the pipeline's own: WI-20260901-7ZZ1Z was a shipped test asserting
 /// a refusal that held only because the equality derivation had not run. Stopping
 /// immediately before the typer means the typer sees exactly the KB `load_all` would have
@@ -6902,7 +6902,7 @@ end
 // (WI-20260901-7ZZ1Z). They used to load through `load::load` and then drive
 // `type_check_sorts` by hand, and the refusing half PASSED FOR A FALSE REASON: its
 // element was `sort NonEq { entity ne(id: Int64) }`, which is TOTALLY EQUATABLE —
-// `eq_derive::derive_total_eq` derives `Eq` for it, before the typer — so `Eq[T =
+// `eq_derive::derive_conditional_eq` derives `Eq` for it, before the typer — so `Eq[T =
 // List[T = NonEq]]` genuinely holds and refusing it was wrong. The test only saw a
 // refusal because `load::load` runs none of `load_phase_inner`'s passes, including the
 // derivation, so NOTHING was equatable on that route and the pair could not discriminate

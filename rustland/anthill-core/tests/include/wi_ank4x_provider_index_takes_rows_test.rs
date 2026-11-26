@@ -9,42 +9,52 @@
 //!
 //! THE TRAP of an index that takes rows as they come is a read that MISSES one asserted
 //! a moment before. The fixture is the shape that needs such a row: `Holder`'s field is
-//! a parametric sort at `Colour`, and `Colour`'s `Eq` is asserted by `derive_total_eq`
-//! in the same load, one pass before `derive_conditional_eq` reads it — to leave
-//! `Colour` out of its own candidates, and to decide `Holder`'s field.
+//! a parametric sort at `Colour`, and `Colour`'s `Eq` and `Holder`'s are asserted by
+//! `derive_conditional_eq` in the same load, a moment before what reads them — the
+//! derived members, `Hash`, the forwarded rows and the typer, which resolves
+//! `contains`'s `requires Eq[T = Holder]` through `Option[T = Colour]` to `Colour`.
 //!
 //! ── WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT ───────────────────────────────
 //!
 //! MEASURED 2026-10-11 on the tree as delivered, three ways, each by making the change in
 //! `load::load_phase_inner` and running this file with `wi_ckd4j`, `wi1098` and `wi664`
-//! (37 tests; 37 pass as it stands). `before` is the index as it is above
-//! `derive_total_eq` (`kb.provides_index.borrow().clone()`).
+//! (37 tests; 37 pass as it stands). `before` is the index as it was above the
+//! derivation (`kb.provides_index.borrow().clone()`). There were TWO passes then:
+//! `derive_total_eq` asserted `Colour`'s rows one pass before `derive_conditional_eq`
+//! read them, to leave `Colour` out of its own candidates and to decide `Holder`'s
+//! field. WI-20261102-YX17K folded them into one; the first row below is measured again
+//! on the fold, and the third no longer has a pass to stand between.
 //!
-//! * THE INDEX LEFT AS IT STOOD BEFORE `derive_total_eq`'S ROWS (put back to `before`
-//!   below that call) — an index that took no row while the pass asserted: 37 of 37
-//!   FAIL, and not on a row. The stdlib's own load panics at the load's check of the
-//!   index against the relation (where the last rebuild stood), which names the 94
-//!   buckets short of rows — the providers of `Eq` and of `PartialEq`, and the
-//!   provisions and the edges of 46 carriers — so the shared base is never built.
-//! * THE SAME, WITH THAT CHECK TAKEN OUT: 37 of 37 FAIL again, the stdlib REFUSED, one
-//!   error a carrier: "'anthill.reflect.MemberKind' provides 'anthill.prelude.Eq', which
-//!   requires 'anthill.prelude.PartialEq', but … does not provide" it. Nothing files the
-//!   rows later, so the typer's checks read an index without them. Loud both ways.
-//! * THE INDEX SHORT OF THOSE ROWS THROUGH `derive_conditional_eq` ONLY, put right after
-//!   it (`ProvidesIndex::from_scan(kb)`) — what a read that misses a row asserted a pass
-//!   before is, with everything downstream served: 2 of 37 FAIL.
-//!   `a_total_composite_is_derived_once`, under each of the three recipes — `Colour` is
-//!   not seen to provide `Eq`, is taken for a candidate of the conditional pass too, and
-//!   is derived a second time, which files a clause for a provision that has none; and
-//!   `wi1098_derive_eq_total_test::a_parametric_sort_derives_a_conditional_row`, on the
-//!   same count for its own fixture.
-//!   PASS EITHER WAY, and that is the finding rather than a gap in the row:
-//!   `a_holder_of_a_total_composite_answers`, and the 34 others. The second derivation of
-//!   `Colour` is what then answers for `Holder`'s field, so the value of the call is
-//!   right through a wrong derivation — the green suite over a stale index that the
+//! * THE INDEX LEFT AS IT STOOD BEFORE THE DERIVATION'S ROWS (put back to `before`
+//!   below the call) — an index that took no row while the pass asserted: 37 of 37
+//!   FAIL, and not on a row; the stdlib's own load panics, so the shared base is never
+//!   built. On the two passes (`before` above `derive_total_eq`) the panic was the load's
+//!   check of the index against the relation, naming the 94 buckets short of rows — the
+//!   providers of `Eq` and of `PartialEq`, and the provisions and the edges of 46
+//!   carriers. On the fold, MEASURED 2026-11-26, it is the forwarding of the derived rows
+//!   that stops first (`provides_index.rs`, WI-20261121-TV0PA's debug assertion:
+//!   "`anthill.prelude.Result`'s provision of `anthill.prelude.Eq` is conditioned and no
+//!   clause is filed at its view"), which runs before that check is reached.
+//! * THE SAME, WITH THAT CHECK TAKEN OUT (two passes): 37 of 37 FAIL again, the stdlib
+//!   REFUSED, one error a carrier: "'anthill.reflect.MemberKind' provides
+//!   'anthill.prelude.Eq', which requires 'anthill.prelude.PartialEq', but … does not
+//!   provide" it. Nothing files the rows later, so the typer's checks read an index
+//!   without them. Loud both ways.
+//! * THE INDEX SHORT OF `derive_total_eq`'S ROWS THROUGH `derive_conditional_eq` ONLY
+//!   (two passes), put right after it (`ProvidesIndex::from_scan(kb)`) — what a read that
+//!   misses a row asserted a pass before is, with everything downstream served: 2 of 37
+//!   FAILED. `a_total_composite_is_derived_once`, under each of the three recipes —
+//!   `Colour` was not seen to provide `Eq`, was taken for a candidate of the conditional
+//!   pass too, and was derived a second time, filing a clause the total pass's row did
+//!   not have; and `wi1098_derive_eq_total_test::a_parametric_sort_derives_a_conditional_row`,
+//!   on the same count. `a_holder_of_a_total_composite_answers` and the 34 others PASSED:
+//!   the second derivation of `Colour` answered for `Holder`'s field, the value of the
+//!   call right through a wrong derivation — the green suite over a stale index that the
 //!   ticket names. Which is why this change is held by the load's own check and by the
 //!   agreement run (`ANTHILL_PROVIDES_INDEX_AGREEMENT=1`, `rustland/CLAUDE.md`), and a
 //!   value is asserted here only to say that the derivation still does its work.
+//!   Since the fold there is no such row to miss: `Holder`'s field reads `Colour`'s
+//!   verdict inside the one pass's fixpoint, and `Colour` has one owner.
 //!
 //! NOT THE RECIPE, BY NAME: each row runs on the shared base — a later load, into a
 //! copy — and under both fresh recipes by name, because where the passes assert between
@@ -128,41 +138,38 @@ fn a_holder_of_a_total_composite_answers() {
     }
 }
 
-/// `Colour` is derived by the TOTAL pass, which files a provision and no clause; the
-/// conditional pass, reading that provision, leaves it alone. A conditional pass that
-/// does not see the row derives `Colour` again and files a clause for it — the count
-/// below is where a second derivation shows. `Holder`, which the conditional pass does
-/// derive, is the positive beside it: one clause, and no condition on it, its field
-/// resting on nothing but `Colour`.
+/// `Colour` and `Holder` are derived by ONE pass (WI-20261102-YX17K): each provides both
+/// specs in one clause with no condition — `Colour` resting on nothing, `Holder`'s field
+/// on nothing but `Colour` — filed as a written unconditional provision is. FAILS on the
+/// tree before the fold, MEASURED, under each of the three recipes: there the TOTAL pass
+/// derived `Colour` and filed no clause (count 0), and this row pinned that 0 as the sign
+/// that the conditional pass had not derived it a second time. The record cannot show a
+/// second derivation now — it keeps one derived entry per distinct condition list — and the
+/// fold leaves none to show: no earlier pass asserts a row this one could miss.
 #[test]
 fn a_total_composite_is_derived_once() {
     // Every recipe is asked before any is judged, so a run says which of them differ.
     let mut wrong: Vec<String> = Vec::new();
     for (how, kb) in loaded_each_way() {
-        let colour = kb.try_resolve_symbol("wiank4x.derive.Colour").expect("Colour");
-        let holder = kb.try_resolve_symbol("wiank4x.derive.Holder").expect("Holder");
-        for spec in ["anthill.prelude.PartialEq", "anthill.prelude.Eq"] {
-            let spec_sym = kb.try_resolve_symbol(spec).expect(spec);
-            let colour_clauses = kb.provides_clause_count(colour, spec_sym);
-            if colour_clauses != 0 {
-                wrong.push(format!(
-                    "{how}: `Colour` provides {spec} by the total derivation, which files \
-                     no clause, and has {colour_clauses} — the conditional pass derived it \
-                     a second time"
-                ));
-            }
-            let holder_clauses = kb.provides_clause_count(holder, spec_sym);
-            if holder_clauses != 1 {
-                wrong.push(format!(
-                    "{how}: `Holder` provides {spec} by the conditional derivation, in one \
-                     clause, and has {holder_clauses}"
-                ));
-            }
-            if kb.provision_has_conditions(holder, spec_sym) {
-                wrong.push(format!(
-                    "{how}: `Holder` provides {spec} under a condition, where \
-                     `Option[T = Colour]` rests on `Colour`'s {spec}, which holds outright"
-                ));
+        for carrier in ["Colour", "Holder"] {
+            let sym = kb
+                .try_resolve_symbol(&format!("wiank4x.derive.{carrier}"))
+                .expect(carrier);
+            for spec in ["anthill.prelude.PartialEq", "anthill.prelude.Eq"] {
+                let spec_sym = kb.try_resolve_symbol(spec).expect(spec);
+                let clauses = kb.provides_clause_count(sym, spec_sym);
+                if clauses != 1 {
+                    wrong.push(format!(
+                        "{how}: `{carrier}` provides {spec} by the derivation, in one clause, \
+                         and has {clauses}"
+                    ));
+                }
+                if kb.provision_has_conditions(sym, spec_sym) {
+                    wrong.push(format!(
+                        "{how}: `{carrier}` provides {spec} under a condition, where its \
+                         fields' {spec} holds outright"
+                    ));
+                }
             }
         }
     }

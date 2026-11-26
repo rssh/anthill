@@ -584,8 +584,8 @@ fn guard_src(rival: &str) -> String {
 /// `Noeq`'s field is typed by `Opaque`, a sort that provides NOTHING, and that is what
 /// makes `Noeq` a carrier with no equality. Typed `Int64`, it would HAVE one: a
 /// composite whose `eq` nothing supplies derives `PartialEq` and `Eq` from its fields
-/// (kernel-language §8.3; `eq_derive::derive_total_eq` and `derive_conditional_eq`,
-/// either of which derives it), `Int64` provides `Eq`, and the guard rightly admits
+/// (kernel-language §8.3; `eq_derive::derive_conditional_eq`, one pass since
+/// WI-20261102-YX17K), `Int64` provides `Eq`, and the guard rightly admits
 /// it — MEASURED, `Noeq(v: Int64)` answers 1 and `Noeq(v: Opaque)` answers 0, with
 /// `Witheq` answering 1 in both. That was filed as the guard not discriminating
 /// (WI-20260831-QF5JT); the row that pins the derivation instead is

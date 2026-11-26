@@ -47,8 +47,8 @@ const SRC: &str = r#"
       -- only. A composite whose `eq` nothing supplies DERIVES its equality from its
       -- fields: `Eq` if every field is, `NonEq` if one reaches a `Float`, `PartialEq`
       -- with either (kernel-language §8.3, "Closed by the load that defines the
-      -- carrier"; `eq_derive::derive_total_eq`, and `derive_conditional_eq`, which
-      -- derives the same rows for a sort the first pass leaves). `Int64` provides
+      -- carrier"; `eq_derive::derive_conditional_eq`, the one pass that derives every
+      -- `Eq`/`PartialEq` row since WI-20261102-YX17K). `Int64` provides
       -- `Eq` — the host bindings say so, and they always load — so `Derived` provides
       -- it as well; a second field typed `Opaque` withholds it from `Mixed`; `Partial`
       -- gets `PartialEq` and `NonEq` but no `Eq`.
@@ -149,7 +149,7 @@ fn provides(kb: &KnowledgeBase, sort: &str, spec: &str) -> bool {
 
 /// WI-20260831-QF5JT — A CARRIER THAT WRITES NO PROVISION STILL PASSES THE GUARD WHEN
 /// ITS FIELDS GIVE IT EQUALITY. `Derived(v: Int64)` derives `PartialEq` and `Eq` from
-/// its field (`eq_derive`, both passes; the fixture's comment), and the guard reads the
+/// its field (`eq_derive`; the fixture's comment), and the guard reads the
 /// provision relation, derived rows included. This is the behaviour that was filed as
 /// the guard "not discriminating by carrier" once the host bindings loaded: the
 /// fixture's carrier was `Noeq(v: Int64)`, and `Int64` provides `Eq` only in the
@@ -157,10 +157,15 @@ fn provides(kb: &KnowledgeBase, sort: &str, spec: &str) -> bool {
 ///
 /// FAILS when the derivation is backed out for this file's sorts, MEASURED: skip
 /// `test.wi300` sorts in BOTH `derive_total_eq` and `derive_conditional_eq`'s
-/// candidates (the conditional pass derives the same rows, with no conditions, for a
-/// sort the total pass leaves) and `Derived` provides nothing — the row fails there,
+/// candidates (the conditional pass derived the same rows, with no conditions, for a
+/// sort the total pass left) and `Derived` provides nothing — the row fails there,
 /// and a probe of the same shape found the guard answering 0. With the total pass
-/// alone skipped it still provides, and the row passes.
+/// alone skipped it still provided, and the row passed: two owners of one row.
+/// WI-20261102-YX17K folded the two into `derive_conditional_eq`, and MEASURED again on
+/// the fold (2026-11-26): skip the `test.wi300` sorts that are not `Partial` in its
+/// candidates and this row fails alone (`[false, false, false]`); skip every
+/// `test.wi300` sort and [`a_partial_composite_passes_a_partial_eq_guard`] fails beside
+/// it, the `Partial` composite's `PartialEq` being the same pass's.
 #[test]
 fn a_carrier_whose_fields_provide_eq_derives_it_and_passes_the_guard() {
     let mut kb = load_with(SRC);
@@ -184,10 +189,13 @@ fn a_carrier_whose_fields_provide_eq_derives_it_and_passes_the_guard() {
 /// substitution at `builtin_find_dictionary`'s spec read) while the guard was
 /// `requires(PartialEq[T])`, and was the only row that did: every other carrier here that
 /// passes provides `Eq` as well. The introducer's guard reads the instance whole
-/// (`carrier_type: true`), and that substitution was not measured on it. Passes under both
-/// derivation back-outs above, which leave the Partial half alone. That half cannot be
-/// backed out under this row: a derived `NonEq` without its `PartialEq` is refused at
-/// load ("provides NonEq, which requires PartialEq"), MEASURED.
+/// (`carrier_type: true`), and that substitution was not measured on it. Passes under the
+/// derivation back-outs above that leave the Partial half alone (the two-pass ones, and the
+/// fold's non-`Partial` skip). The fold's skip of EVERY `test.wi300` sort fails it, MEASURED:
+/// `Partial` then derives no `PartialEq`, and `run` derives no `NonEq` for a carrier without
+/// one. The `NonEq` half alone cannot be backed out under this row: a derived `NonEq`
+/// without its `PartialEq` is refused at load ("provides NonEq, which requires
+/// PartialEq"), MEASURED.
 #[test]
 fn a_partial_composite_passes_a_partial_eq_guard() {
     let mut kb = load_with(SRC);
@@ -210,7 +218,8 @@ fn a_partial_composite_passes_a_partial_eq_guard() {
 /// field is `Opaque`, cannot.
 ///
 /// FAILS under an any-field derivation, MEASURED: let a `test.wi300` composite stay
-/// derivable while ONE of its fields has equality, in both passes, and `Mixed` provides
+/// derivable while ONE of its fields has equality, in both passes (there were two then;
+/// WI-20261102-YX17K made them one, and this was not measured again), and `Mixed` provides
 /// `PartialEq` and `Eq` while `Noeq` still provides nothing. Passes under the plain
 /// derivation back-out, by design. It is also the row a guard that grounded its witness
 /// to a FIELD's carrier would fail (QF5JT's first hypothesis); no such mutation was

@@ -1538,7 +1538,7 @@ pub fn load_stdlib_kb_with_source(
 /// For a test that drives `type_check_sorts` itself — because its subject is what the
 /// TYPER produces, or because its fixture is refused by a pass above the loader on
 /// purpose. The retired `load::load` is what these reached for; it stopped far earlier
-/// (before the sort-ops table, the provider indexes and `eq_derive::derive_total_eq`), so
+/// (before the sort-ops table, the provider indexes and the `Eq` derivation, `eq_derive::derive_conditional_eq`), so
 /// a hand-driven typer ran on a half-built KB and could disagree with the pipeline's own
 /// — WI-20260901-7ZZ1Z was a shipped test asserting a refusal that held only because the
 /// equality derivation had not run. Stopping immediately before the typer removes that
