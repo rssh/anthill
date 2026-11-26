@@ -905,6 +905,9 @@ fn load_fact_and_query_by_sort() {
 
 #[test]
 fn load_banking_namespace() {
+    // WI-20261126-78B4M: the `requires` compared `m` with `zero-val`, the additive identity's
+    // name before WI-20260825-1WBZT, which names nothing since; a contract clause's name that
+    // resolves to nothing is refused now, so the clause compares a parameter's field.
     let source = r#"namespace banking
   import anthill.prelude.Additive.{add}
   import anthill.prelude.PartialEq.{eq}
@@ -919,7 +922,7 @@ fn load_banking_namespace() {
   entity Account(id: AccountId, balance: Money)
 
   operation deposit(a: Account, m: Money) -> Account
-    requires gt(m, zero-val)
+    requires gt(m, a.balance)
     ensures eq(result.balance, a.balance)
     = a
 
@@ -1030,6 +1033,7 @@ fact parent("bob", "charlie")
 
 #[test]
 fn load_sort_with_operation() {
+    // WI-20261126-78B4M: `zero-val` replaced, as in `load_banking_namespace`.
     let source = r#"sort Account
   sort AccountId = ?
   sort Money = ?
@@ -1037,12 +1041,12 @@ fn load_sort_with_operation() {
   entity savings(id: AccountId, balance: Money, rate: Money)
 
   operation deposit(a: Self, m: Money) -> Self
-    requires gt(m, zero-val)
+    requires gt(m, a.balance)
     ensures eq(result.balance, a.balance)
     = a
 
   operation withdraw(a: Self, m: Money) -> Self
-    requires gt(m, zero-val), gte(balance(a), m)
+    requires gt(m, a.balance), gte(balance(a), m)
     = a
 end
 "#;

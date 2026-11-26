@@ -914,6 +914,26 @@ pub enum LoadError {
         /// the functor so the line within it is unambiguous.
         span: Span,
     },
+    /// WI-20261126-78B4M — the DATA-SLOT twin of [`Self::UndefinedContractGoal`]: a bare
+    /// name in an argument of a `requires` / `ensures` clause that resolves to nothing in
+    /// the operation's scope (`requires n < lim` where no `lim` is declared or imported
+    /// there). It was kept as a symbolic constant (kernel-language.md §5.3, a head's
+    /// reading), which a contract clause has no use for: the clause is a condition on the
+    /// operation's values, proved at its calls and compared by override refinement with a
+    /// spec operation's clause by what each name denotes. So a provider restating a spec's
+    /// `requires n < lim` with the spec's const written bare restated a name that is not
+    /// the const, and was refused as strengthening the precondition, while the same clause
+    /// on an operation no spec stands over loaded with a name that holds no value.
+    UnresolvedContractName {
+        /// The name, as written.
+        name: String,
+        /// The operation whose contract carries it, qualified.
+        op: String,
+        /// `"requires"` or `"ensures"` — which clause list it was written in.
+        clause: &'static str,
+        /// Where the name is written.
+        span: Span,
+    },
     /// A goal of an effect guard (`Error[D] :- nosuchpred(d, 0)`) whose functor names
     /// nothing. The guard twin of [`Self::UndefinedRuleBodyGoal`], with its own
     /// consequence: a guard is not proved, its NEGATION is, and negation as failure proves
@@ -3549,6 +3569,7 @@ impl LoadError {
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UndefinedContractGoal { span, .. }
+            | LoadError::UnresolvedContractName { span, .. }
             | LoadError::UndefinedEffectGuardGoal { span, .. }
             | LoadError::UndefinedSortGoal { span, .. }
             | LoadError::SortGoalNamesAnotherParameter { span, .. }
@@ -4004,6 +4025,18 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     undefined_contract_goal_message(functor, op, clause)
+                )
+            }
+            LoadError::UnresolvedContractName {
+                name,
+                op,
+                clause,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    unresolved_contract_name_message(name, op, clause)
                 )
             }
             LoadError::HostImplementedUnsupplied {
@@ -5899,6 +5932,20 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     undefined_contract_goal_message(functor, op, clause),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::UnresolvedContractName {
+                name,
+                op,
+                clause,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    unresolved_contract_name_message(name, op, clause),
                     span.start,
                     span.end
                 )
@@ -17793,6 +17840,21 @@ fn undefined_contract_goal_message(functor: &str, op: &str, clause: &str) -> Str
          mismatches every declared one — deciding whether a provider is accepted on a \
          name that denotes nothing. {}",
         undefined_name_repair(functor),
+    )
+}
+
+/// WI-20261126-78B4M — the ONE wording of [`LoadError::UnresolvedContractName`], shared by
+/// both renderings. The repair names the qualified spelling because the case that found it
+/// is a provider restating a spec operation's clause: the spec's const is not in the
+/// provider's scope, and `Spec.lim` is how the provider's body reaches it too.
+fn unresolved_contract_name_message(name: &str, op: &str, clause: &str) -> String {
+    format!(
+        "the `{clause}` clause of operation `{op}` names `{name}`, which resolves to nothing \
+         in the operation's scope. A name in a contract clause denotes what it names there, as \
+         in the operation's body — it is not a symbolic constant: the clause is a condition \
+         on the operation's values, and override refinement compares it with a spec \
+         operation's clause by what each name denotes. A name another sort declares is \
+         written qualified (`Sort.{name}`) or imported; otherwise fix the spelling."
     )
 }
 
@@ -30888,6 +30950,27 @@ impl ConstFold {
     }
 }
 
+/// WI-20261126-78B4M — how the loader reads a name in a contract clause it is converting
+/// ([`Loader::contract_clause`]).
+#[derive(Clone, Copy)]
+struct ContractClauseReading {
+    /// The operation whose contract the clause is.
+    op: Symbol,
+    /// `"requires"` or `"ensures"` — the clause list, as [`LoadError::UnresolvedContractName`]
+    /// names it.
+    clause: &'static str,
+    /// The reading of the slot the term being converted stands in: [`ConstFold::Goal`] for
+    /// the clause's goal and a goal slot of a connective standing in one (`not(…)`,
+    /// `… & …`), [`ConstFold::GoalTuple`] for a quantifier body's wrapper, [`ConstFold::Data`]
+    /// for every other argument — the states `const_fold` moves through in a clause, by the
+    /// same [`ConstFold::child`] and the same goal-slot table ([`const_fold_goal_slots`]). A
+    /// contract clause converts with `const_fold` [`ConstFold::Off`], since a const there
+    /// stays the symbol, and `Off` reads no slot; this is the reading it would have. A name in
+    /// a goal slot is a proposition, judged by the post-load goal check
+    /// ([`check_contract_clause_goals`]); what this reading judges is a DATA slot's.
+    slot: ConstFold,
+}
+
 /// The ONE wording of [`LoadError::CyclicArrowProjection`].
 fn cyclic_arrow_projection_msg(cycle: &str) -> String {
     format!(
@@ -31267,6 +31350,15 @@ struct Loader<'a> {
     // The flag scopes the rung to the contract clauses rather than widening the whole
     // term walk, where a dotted name is an ordinary reference and must stay one.
     in_op_contract_clause: bool,
+    /// WI-20261126-78B4M — how a NAME in the contract clause being converted is read
+    /// ([`ContractClauseReading`]); `None` outside one. Unlike [`Self::in_op_contract_clause`]
+    /// it covers `ensures` as well, since how a name is read is one question in both lists:
+    /// a bare name that resolves to nothing is refused ([`LoadError::UnresolvedContractName`])
+    /// and a qualified one is the reference its one-segment spelling is
+    /// ([`Self::contract_clause_qualified_reference`]). Set per goal by
+    /// `convert_written_clauses`, its slot per child where the `Term::Fn` arm sets
+    /// `const_fold`, and put back by `convert_term_with_expected`.
+    contract_clause: Option<ContractClauseReading>,
     /// WI-20260929-TJ3G4 — the term `convert_term` is converting is a TYPE ARGUMENT of a
     /// bracket in an operation's `requires`: set by the bracket's arm over its own children
     /// and put back after them, so a bracket under any other term — the goal itself, or a
@@ -31732,6 +31824,7 @@ impl<'a> Loader<'a> {
             in_rule_head_bound: false,
             rule_head_bound_anchors: Vec::new(),
             in_op_contract_clause: false,
+            contract_clause: None,
             contract_bracket_arg: false,
             contract_goal_aliases: HashMap::new(),
             expr_syms,
@@ -34170,6 +34263,97 @@ impl<'a> Loader<'a> {
         const_named(self.kb, &name, self.current_scope)
     }
 
+    /// WI-20261126-78B4M — the slot reading of the contract clause being converted
+    /// ([`ContractClauseReading::slot`]), [`ConstFold::Off`] outside one.
+    fn contract_slot(&self) -> ConstFold {
+        self.contract_clause.map_or(ConstFold::Off, |c| c.slot)
+    }
+
+    /// Set the slot reading of the contract clause being converted; nothing outside one.
+    fn set_contract_slot(&mut self, slot: ConstFold) {
+        if let Some(reading) = &mut self.contract_clause {
+            reading.slot = slot;
+        }
+    }
+
+    /// WI-20261126-78B4M — a contract clause's QUALIFIED name of a const, an entity
+    /// constructor or a sort, in a data slot, as the term its one-segment spelling is:
+    /// `Spec.lim` written in a provider's `requires` is `Ref(Spec.lim)`, the term the spec's
+    /// own `requires n < lim` holds, and `Colour.red` is `red`. A name and its qualified
+    /// spelling are one reference, as a clause data slot reads them
+    /// ([`Self::data_slot_dotted_const`], [`Self::data_slot_dotted_ctor`],
+    /// [`Self::data_slot_dotted_type`]) and as an operation body does
+    /// ([`Self::try_qualified_const_ref`]); a contract clause read neither, so the chain
+    /// stayed `field_access(Spec, lim)` — compared structurally by override refinement, it
+    /// matched no clause holding the reference, and a provider restating a spec's clause
+    /// that names the spec's const was refused as strengthening the precondition (measured
+    /// on the ticket's probe). The bare name does not reach the const in the provider —
+    /// nothing declares it there — and is refused ([`Self::refuse_unresolved_contract_name`]).
+    ///
+    /// The term is [`Self::resolved_name_term`]'s, the one the `Term::Ident` arm builds for
+    /// the bare name, so the two spellings cannot build different terms. A const stays the
+    /// symbol, as a contract clause keeps every const ([`ConstFold::Off`]).
+    ///
+    /// A DATA slot's only. A goal slot's name is read as a proposition or a requirement
+    /// (`requires Eq[T = A]`), which is not this question. A chain rooted at a binder in the
+    /// clause is a projection on it ([`Self::dotted_name_rooted_at_no_binding`]); one rooted at
+    /// an operation parameter or `result` resolves no whole name, the parameter shadowing a
+    /// namespace or sort of its name (MEASURED: `p.x` beside a namespace `p` declaring a const
+    /// `x` stays the field read). One whose whole name is anything else — a parameter, a rule,
+    /// an operation, a field read on a value — is left to the walk.
+    fn contract_clause_qualified_reference(&mut self, parse_id: ParseTermId) -> Option<TermId> {
+        if self.contract_slot() != ConstFold::Data {
+            return None;
+        }
+        let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
+        let sym = self.resolve_qualified_readonly(&name)?;
+        let reference = self.kb.has_kind(sym, SymbolKind::Const)
+            || self.kb.is_entity_constructor(sym)
+            || self.kb.has_kind(sym, SymbolKind::Sort);
+        if !reference {
+            return None;
+        }
+        let span = self.parsed.terms.span(parse_id);
+        let term = self.resolved_name_term(sym, parse_id, span);
+        Some(self.kb.alloc(term))
+    }
+
+    /// WI-20261126-78B4M — refuse a bare name `sym` that resolved to nothing, where it stands
+    /// in a DATA slot of a contract clause ([`LoadError::UnresolvedContractName`]). Outside a
+    /// contract clause an unresolved bare name is a symbolic constant (kernel-language.md
+    /// §5.3), and so is one inside a quoted `Term` field, whose names denote nothing by
+    /// design; in a GOAL slot it is a proposition, which the post-load goal check refuses
+    /// ([`check_contract_clause_goals`]), so it is not reported twice. A name a binder form
+    /// in the clause binds (`known(x, lambda (y: Int64) -> y + x)`) resolves to the binder's
+    /// own symbol, which is no declaration's and so is not `is_resolved`; it names the
+    /// binding, at the binder and at each use.
+    fn refuse_unresolved_contract_name(&mut self, sym: Symbol, span: Span) {
+        let Some(ContractClauseReading {
+            op,
+            clause,
+            slot: ConstFold::Data,
+        }) = self.contract_clause
+        else {
+            return;
+        };
+        if self.in_quoted_term {
+            return;
+        }
+        if self
+            .local_names_stack
+            .iter()
+            .any(|frame| frame.values().any(|&bound| bound == sym))
+        {
+            return;
+        }
+        self.errors.push(LoadError::UnresolvedContractName {
+            name: self.kb.local_name_of(sym).to_string(),
+            op: self.kb.qualified_name_of(op).to_string(),
+            clause,
+            span,
+        });
+    }
+
     /// Is this walk at a GOAL the term walk folds a `Bool` const in: a goal that is not a
     /// clause head — a constraint's, or a goal slot the rule-body walk handed over. A head
     /// names its relation, and a const there is refused (`Self::refuse_if_head_names_no_relation`).
@@ -34848,7 +35032,7 @@ impl<'a> Loader<'a> {
     ///
     /// WI-20261001-KDMQS: and `const_fold` the same way. A node sets its children's state
     /// before converting each one, so the CALLER's state must come back when the node is
-    /// done.
+    /// done. WI-20261126-78B4M: and `contract_clause`, whose slot is its contract-clause twin.
     fn convert_term_with_expected(
         &mut self,
         parse_id: ParseTermId,
@@ -34857,11 +35041,13 @@ impl<'a> Loader<'a> {
         let saved = self.term_depth;
         let saved_fold = self.const_fold;
         let saved_type_binding = self.in_type_binding;
+        let saved_contract_clause = self.contract_clause;
         self.term_depth = saved + 1;
         let converted = self.convert_term_inner(parse_id, expected);
         self.term_depth = saved;
         self.const_fold = saved_fold;
         self.in_type_binding = saved_type_binding;
+        self.contract_clause = saved_contract_clause;
         converted
     }
 
@@ -34920,6 +35106,13 @@ impl<'a> Loader<'a> {
                     self.const_fold
                 };
                 self.const_fold = node_fold;
+                // WI-20261126-78B4M — read before the children change it; `Off` outside a
+                // contract clause, which every child keeps.
+                let node_slot = self.contract_slot();
+                if let Some(kb_id) = self.contract_clause_qualified_reference(parse_id) {
+                    self.term_map.insert(parse_id, kb_id);
+                    return kb_id;
+                }
                 if let Some(c) = self.data_slot_dotted_const(parse_id) {
                     if let Some(lit) = self.data_slot_const_value(c, parse_id) {
                         let kb_id = self.kb.alloc(Term::Const(lit));
@@ -34963,6 +35156,7 @@ impl<'a> Loader<'a> {
                 // in goal position, whose goal slots the positional loop below sets per
                 // child. `convert_term_with_expected` restores the caller's state.
                 self.const_fold = node_fold.child(None);
+                self.set_contract_slot(node_slot.child(None));
                 // WI-20260902-JB6RS — and its children are a bracket's bindings, a type
                 // context, exactly when it is a bracket. Set HERE, below the two names a
                 // dotted chain can be, which are read in the context the chain stands in.
@@ -35304,6 +35498,12 @@ impl<'a> Loader<'a> {
                     _ => SmallVec::new(),
                 };
                 self.const_fold = child_fold;
+                // WI-20261126-78B4M — the same table, for a contract clause's goal slots,
+                // which `ConstFold::Off` does not read ([`ContractClauseReading::slot`]).
+                let contract_goal_slots = match node_slot {
+                    ConstFold::Goal => const_fold_goal_slots(self.kb, new_functor, pos_args.len()),
+                    _ => SmallVec::new(),
+                };
 
                 // WI-007 context-aware ListLiteral desugaring: rewrite
                 // `ListLiteral → cons/nil` unless a DECLARED type says the position
@@ -35491,6 +35691,9 @@ impl<'a> Loader<'a> {
                             Some(slot) => node_fold.child(Some(slot)),
                             None => child_fold,
                         };
+                        self.set_contract_slot(
+                            node_slot.child(contract_goal_slots.iter().find(|s| s.index == i)),
+                        );
                         if let Some((pat_idx, first_scoped)) = binder_layout {
                             let scoped = i == pat_idx || i >= first_scoped;
                             if scoped && !binder_pushed {
@@ -35539,6 +35742,7 @@ impl<'a> Loader<'a> {
                 // WI-20261001-KDMQS — a named argument is never a goal slot; the
                 // positional loop above left the state at its LAST slot's.
                 self.const_fold = child_fold;
+                self.set_contract_slot(node_slot.child(None));
                 // WI-20260902-2SZ88 — WHICH PARSE CHILD PRODUCED EACH NAMED SLOT.
                 // Recorded at the three sites that ASSIGN one — this by-name pass, the
                 // `some(x)` coercion below, and WI-433's positional plan — and never
@@ -36134,6 +36338,7 @@ impl<'a> Loader<'a> {
                     Term::Var(Var::Global(vid))
                 } else {
                     let span = self.parsed.terms.span(parse_id);
+                    let errors_before = self.errors.len();
                     let new_sym = self.remap_symbol(sym, span);
                     // Promote to Ref if the symbol resolved to a defined name — or, for a
                     // const in a clause data slot, to its value (WI-20261001-KDMQS), and for a
@@ -36141,6 +36346,11 @@ impl<'a> Loader<'a> {
                     if self.kb.symbols.is_resolved(new_sym) {
                         self.resolved_name_term(new_sym, parse_id, span)
                     } else {
+                        // WI-20261126-78B4M — unless resolving it already said why it names
+                        // nothing (`Self` outside a type, a hidden `internal`): one report.
+                        if self.errors.len() == errors_before {
+                            self.refuse_unresolved_contract_name(new_sym, span);
+                        }
                         Term::Ident(new_sym)
                     }
                 }
@@ -51058,7 +51268,7 @@ impl<'a> Loader<'a> {
         // restore rather than set/clear: an operation declared inside another
         // declaration's conversion must not inherit or erase the outer flag.
         let prev_contract = std::mem::replace(&mut self.in_op_contract_clause, true);
-        let written_requires = self.convert_written_clauses(&o.requires);
+        let written_requires = self.convert_written_clauses(&o.requires, functor, "requires");
         // `ensures` IS NOT COVERED, and the asymmetry is the point. A `requires` clause
         // that names a SPEC carries a type bracket (`Desc[T = x.E]`); an `ensures` clause
         // is a predicate over VALUES (`ensures eq(?result, Variant1)`), whose dotted
@@ -51067,7 +51277,7 @@ impl<'a> Loader<'a> {
         // does not merely classify, it MINTS terms and pushes visibility / ambiguity
         // errors of its own. Found by `/code-review`; the flag was set across both.
         self.in_op_contract_clause = prev_contract;
-        let written_ensures = self.convert_written_clauses(&o.ensures);
+        let written_ensures = self.convert_written_clauses(&o.ensures, functor, "ensures");
         // `OperationInfo` holds the written clauses, then the loader's (WI-320 / WI-201) —
         // the order `OperationContract` promises its reader.
         let requires_clauses: Vec<Value> = written_requires
@@ -54106,8 +54316,13 @@ impl<'a> Loader<'a> {
     /// alias holds that binding's occurrence ([`Self::contract_goal_as_written`]), and any
     /// other is the term it always was. The loader's own clauses (WI-320, WI-201) are not
     /// converted here; `load_operation` appends them after these.
-    fn convert_written_clauses(&mut self, clauses: &[Vec<ContractGoal>]) -> Vec<WrittenClause> {
-        clauses
+    fn convert_written_clauses(
+        &mut self,
+        clauses: &[Vec<ContractGoal>],
+        op: Symbol,
+        kind: &'static str,
+    ) -> Vec<WrittenClause> {
+        let written = clauses
             .iter()
             .map(|clause| {
                 let (Some(first), Some(last)) = (clause.first(), clause.last()) else {
@@ -54122,7 +54337,18 @@ impl<'a> Loader<'a> {
                     // WI-552: canonicalize each goal's param/`result` refs to var_ref
                     // at the producer, so the stored clause carries the binder as the
                     // variable it is (the discharge-time normalize pass is retired).
+                    //
+                    // WI-20261126-78B4M — how a name in it is read ([`Self::contract_clause`]),
+                    // the goal itself in a goal slot. Saved and put back, as
+                    // `in_op_contract_clause` is at the caller.
+                    let reading = ContractClauseReading {
+                        op,
+                        clause: kind,
+                        slot: ConstFold::Goal,
+                    };
+                    let prev_clause = self.contract_clause.replace(reading);
                     let t = self.convert_term(written.term);
+                    self.contract_clause = prev_clause;
                     let goal = self.var_ref_signature_places(t);
                     let goal = self.contract_goal_as_written(written.term, goal);
                     let at = SourceSpan::from_span(self.source_id, written.written);
@@ -54141,7 +54367,8 @@ impl<'a> Loader<'a> {
                     goals: occurrences,
                 }
             })
-            .collect()
+            .collect();
+        written
     }
 
     /// WI-20261122-517Y5 — the occurrence of a contract goal as loaded, located at `site`,
