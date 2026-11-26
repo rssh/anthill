@@ -614,7 +614,7 @@ pub(crate) fn equality_reaching_no_eq(kb: &mut KnowledgeBase) -> Vec<super::load
                     if let Some(member) =
                         super::typing::member_declared_under(kb, p.provider, eq_op, eq_short)
                     {
-                        if kb.witness_member_supplies_nothing(p.provider, eq_op, carrier)
+                        if kb.witness_member_supplies_nothing(p.provider, eq_op, p.row)
                             && !passed_over.contains(&member)
                         {
                             passed_over.push(member);

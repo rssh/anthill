@@ -918,13 +918,20 @@ pub(crate) struct SortOpsTable {
     /// over. Filled by `typing::record_members_that_supply_nothing` after each build of the
     /// table above.
     supplies_nothing: HashSet<(Symbol, Symbol)>,
-    /// WI-20261126-Q1WE9 — `(witness, spec operation, carrier)`, all canonical, where the
-    /// witness's own member of the operation's short name does NOT supply it to a carrier the
-    /// witness provides the spec for: it does not fit the operation at that provision — a
-    /// composite's own `eq`, written or derived, typed by the composite. The verdict above is the
-    /// witness's own, reached at any of its provisions; this one is per carrier it witnesses.
+    /// WI-20261126-Q1WE9 — `(witness, spec operation, provision)`, the two symbols canonical,
+    /// where the witness's own member of the operation's short name does NOT supply it at one of
+    /// the witness's provisions of the spec: it does not fit the operation there — a composite's
+    /// own `eq`, written or derived, typed by the composite. The verdict above is the witness's
+    /// own, reached at any of its provisions; this one is per witness provision.
+    ///
+    /// PER PROVISION, NOT PER CARRIER WITNESSED (WI-20261126-QG6ZR): one witness may provide a
+    /// spec at two applications that share the carrier dispatch files them at — `Show[T =
+    /// Box[E = Int64]]` and `Show[T = Box[E = String]]` at `Box`, `Sp[A = Other, B = Int64]` and
+    /// `Sp[A = W, B = Int64]` at `Int64` — and a member fitting one does not fit the other. Keyed
+    /// by the carrier, one misfit made the member supply nothing at both (MEASURED, a call that
+    /// fits answered the default's 0 where the member's 7 runs).
     /// Read by the witness route (`typing::witness_own_op`); filled beside the set above.
-    witness_supplies_nothing: HashSet<(Symbol, Symbol, Symbol)>,
+    witness_supplies_nothing: HashSet<(Symbol, Symbol, RuleId)>,
 }
 
 /// Where the law `eq_refl` decides a call of a carrier's `eq` member on identical operands
@@ -9332,19 +9339,18 @@ impl KnowledgeBase {
     }
 
     /// WI-20261126-Q1WE9 — does `witness`'s own member of `spec_op`'s short name supply NOTHING
-    /// to `spec_op` at `carrier`, a carrier the witness provides the spec for
-    /// ([`SortOpsTable::witness_supplies_nothing`])? Read by `typing::witness_own_op` alone.
+    /// to `spec_op` at the witness provision `row` ([`SortOpsTable::witness_supplies_nothing`])?
     pub(crate) fn witness_member_supplies_nothing(
         &self,
         witness: Symbol,
         spec_op: Symbol,
-        carrier: Symbol,
+        row: RuleId,
     ) -> bool {
         !self.sort_ops.witness_supplies_nothing.is_empty()
             && self.sort_ops.witness_supplies_nothing.contains(&(
                 self.canonical_sort_sym(witness),
                 self.canonical_sym(spec_op),
-                self.canonical_sort_sym(carrier),
+                row,
             ))
     }
 
@@ -9352,7 +9358,7 @@ impl KnowledgeBase {
     /// `typing::record_members_that_supply_nothing`.
     pub(crate) fn set_witness_members_that_supply_nothing(
         &mut self,
-        triples: HashSet<(Symbol, Symbol, Symbol)>,
+        triples: HashSet<(Symbol, Symbol, RuleId)>,
     ) {
         self.sort_ops.witness_supplies_nothing = triples;
     }

@@ -3147,14 +3147,14 @@ pub(crate) fn record_members_that_supply_nothing(kb: &mut KnowledgeBase) {
             by_spec.entry(kb.canonical_sort_sym(spec)).or_default().push((short, spec_op));
         }
     }
-    let witness_rows: Vec<(Symbol, Symbol, Symbol, Value)> = provides_rows(kb)
+    let witness_rows: Vec<(Symbol, Symbol, Symbol, Value, RuleId)> = provides_rows(kb)
         .filter_map(|row| {
             let carrier = witness_dispatch_carrier(kb, row.spec_base, row.provider, &row.spec_view)?;
-            Some((row.provider, row.spec_base, carrier, row.spec_view.clone()))
+            Some((row.provider, row.spec_base, carrier, row.spec_view.clone(), row.rid))
         })
         .collect();
-    let mut witness_unfit: HashSet<(Symbol, Symbol, Symbol)> = HashSet::new();
-    for (provider, spec, carrier, view) in witness_rows {
+    let mut witness_unfit: HashSet<(Symbol, Symbol, RuleId)> = HashSet::new();
+    for (provider, spec, carrier, view, rid) in witness_rows {
         let Some(ops) = by_spec.get(&kb.canonical_sort_sym(spec)).cloned() else {
             continue;
         };
@@ -3181,11 +3181,7 @@ pub(crate) fn record_members_that_supply_nothing(kb: &mut KnowledgeBase) {
                     _ => true,
                 };
             if !fits {
-                witness_unfit.insert((
-                    kb.canonical_sort_sym(provider),
-                    kb.canonical_sym(spec_op),
-                    kb.canonical_sort_sym(carrier),
-                ));
+                witness_unfit.insert((kb.canonical_sort_sym(provider), kb.canonical_sym(spec_op), rid));
             }
         }
     }
@@ -3366,6 +3362,8 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         witness: Option<Symbol>,
         /// The names the provision binds, its parameters' and its operations'.
         bound_names: SmallVec<[Symbol; 2]>,
+        /// The provision's row, which a witness member's verdict is keyed by.
+        row: RuleId,
     }
     let mut provs: Vec<Prov> = provides_rows(kb)
         .map(|row| {
@@ -3377,6 +3375,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                 sigma: spec_param_sigma(kb, row.spec_base, &named),
                 witness: witness_dispatch_carrier(kb, row.spec_base, row.provider, &row.spec_view),
                 bound_names: named.iter().map(|(k, _)| *k).collect(),
+                row: row.rid,
             }
         })
         .collect();
@@ -3485,8 +3484,8 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                                 // One that binds the operation is answered by its binding.
                                 && !q.bound_names.iter().any(|&k| short_name_of(kb.local_name_of(k)) == sn)
                         })
+                        .filter(|q| !kb.witness_member_supplies_nothing(p.carrier, spec_op, q.row))
                         .filter_map(|q| q.witness)
-                        .filter(|&c| !kb.witness_member_supplies_nothing(p.carrier, spec_op, c))
                         .fold(Vec::new(), |mut seen, c| {
                             if !seen.iter().any(|&s| same_sort_canonical(kb, s, c)) {
                                 seen.push(c);

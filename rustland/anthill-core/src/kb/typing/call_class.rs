@@ -1582,7 +1582,7 @@ pub(crate) fn spec_op_backed_by(
         let witnessed = witness_dispatch_carrier(kb, row.spec_base, provider, &row.spec_view);
         if (defaulted_spec_op_parent(kb, spec_op).is_none()
             && lookup_spec_op_dispatch(kb, spec_op).is_none())
-            || provision_own_op(kb, provider, witnessed, spec_op, short_sym)
+            || provision_own_op(kb, provider, witnessed.map(|_| row.rid), spec_op, short_sym)
                 .is_none_or(|o| kb.canonical_sym(o) != member_canon)
         {
             continue;
@@ -1648,10 +1648,11 @@ pub(crate) fn member_declared_under(
         .filter(|&o| impl_parent_of_op(kb, o).map(|p| kb.canonical_sort_sym(p)) == Some(sort_canon))
 }
 
-/// WI-20261126-Q1WE9 — a WITNESS's own member for a spec op's short name, as it supplies
-/// `carrier`, a carrier the witness provides the spec for: the member the witness declares
-/// ([`member_declared_under`]), passed over where it does not fit the operation AT THAT
-/// PROVISION (`record_members_that_supply_nothing`).
+/// WI-20261126-Q1WE9 — a WITNESS's own member for a spec op's short name, as it supplies the
+/// witness provision `row`: the member the witness declares ([`member_declared_under`]), passed
+/// over where it does not fit the operation AT THAT PROVISION
+/// (`record_members_that_supply_nothing`). Per provision, not per carrier witnessed: two
+/// provisions dispatch files at one carrier may be two applications (WI-20261126-QG6ZR).
 ///
 /// NOT through [`carrier_own_op`] (WI-20261126-DHB0C): that verdict is the witness's about its
 /// OWN values, and its witness provisions are not read there. `W.eq(a: Other, b: Other)` supplies
@@ -1660,28 +1661,28 @@ pub(crate) fn member_declared_under(
 pub(crate) fn witness_own_op(
     kb: &KnowledgeBase,
     witness: Symbol,
-    carrier: Symbol,
+    row: crate::kb::RuleId,
     spec_op: Symbol,
     op_short_sym: Symbol,
 ) -> Option<Symbol> {
     member_declared_under(kb, witness, spec_op, op_short_sym)
-        .filter(|_| !kb.witness_member_supplies_nothing(witness, spec_op, carrier))
+        .filter(|_| !kb.witness_member_supplies_nothing(witness, spec_op, row))
 }
 
 /// `provider`'s own member for a spec op's short name as it supplies ONE of its provisions:
-/// [`witness_own_op`] where the provision witnesses `witnessed`, a sort other than the
+/// [`witness_own_op`] where the provision `witness_row` witnesses a sort other than the
 /// provider, and [`carrier_own_op`] where it is about the provider's own values (`None`). Every
 /// reader that walks a provider's provisions and asks what its member puts at each goes through
 /// here: the two verdicts answer different questions (WI-20261126-DHB0C).
 pub(crate) fn provision_own_op(
     kb: &KnowledgeBase,
     provider: Symbol,
-    witnessed: Option<Symbol>,
+    witness_row: Option<crate::kb::RuleId>,
     spec_op: Symbol,
     op_short_sym: Symbol,
 ) -> Option<Symbol> {
-    match witnessed {
-        Some(carrier) => witness_own_op(kb, provider, carrier, spec_op, op_short_sym),
+    match witness_row {
+        Some(row) => witness_own_op(kb, provider, row, spec_op, op_short_sym),
         None => carrier_own_op(kb, provider, spec_op, op_short_sym),
     }
 }
@@ -1851,6 +1852,75 @@ pub(crate) fn supplier_answers_at(
             })
         }
     }
+}
+
+/// WI-20261126-QG6ZR — the provisions that answer a call: the resolver's candidates for its goal
+/// (`collect_provides_candidates`), each as its provider and the application it is
+/// ([`SpecApplication`]). By application and not by row, because the resolver takes two
+/// provisions of one provider that say the same thing for ONE candidate, read off the first
+/// (WI-1032): `Leaf`'s `provides Desc[T = Leaf]` and a `namespace Leaf` entry's `provides Desc[T =
+/// Leaf, describe = otherDescribe]` are one dictionary, and the binding is the second row's.
+/// Read by row, the binding was no answer and the tie between it and `Leaf.describe` went
+/// unrefused (MEASURED, `wi1012_static_supplier_tie_test` and twelve more).
+pub(crate) struct AnsweringProvisions {
+    /// Every row of the spec at a candidate's provider and application, read once.
+    rows: Vec<ProvidesRow>,
+}
+
+impl AnsweringProvisions {
+    pub(crate) fn of_rows(kb: &KnowledgeBase, spec_sort: Symbol, rows: &[crate::kb::RuleId]) -> Self {
+        let all: Vec<(ProvidesRow, Symbol, SpecApplication)> = provides_rows_of_spec(kb, spec_sort)
+            .map(|row| {
+                let provider = kb.canonical_sort_sym(row.provider);
+                let application = SpecApplication::of_view(kb, spec_sort, &row.spec_view);
+                (row, provider, application)
+            })
+            .collect();
+        let candidates: Vec<(Symbol, &SpecApplication)> = all
+            .iter()
+            .filter(|(row, ..)| rows.contains(&row.rid))
+            .map(|(_, p, a)| (*p, a))
+            .collect();
+        let held: Vec<bool> = all
+            .iter()
+            .map(|(_, p, a)| candidates.iter().any(|(q, b)| q == p && b.same(kb, a)))
+            .collect();
+        AnsweringProvisions {
+            rows: all.into_iter().zip(held).filter(|(_, h)| *h).map(|((row, ..), _)| row).collect(),
+        }
+    }
+}
+
+/// WI-20261126-QG6ZR — does `supplier`, one of [`carrier_override_suppliers`], answer a call
+/// that the provisions `answering` answer ([`AnsweringProvisions`])? A witness's member or a
+/// provision's binding answers where one of them supplies it ([`provision_supplier`]); the
+/// carrier's own member is no provision's and answers by its own verdict, as
+/// [`supplier_answers_at`] reads it.
+///
+/// The suppliers are found by the sort dispatch files a provision at — its binding of the
+/// spec's ONE dispatch parameter, by its head — and a call is at every type-var of the spec,
+/// whole (decision 1 of `docs/design/spec-carrier-set.md`). MEASURED before: beside `W provides
+/// Sp[A = Other, B = Int64]` over `count(xs: List[T = A], b: B) -> Int64 = 0`,
+/// `Sp.count([w(n: 1)], 1)` ran `W.count`, written for `Other`'s lists, on a list of `W`s, and
+/// beside `WB provides Show[T = Box[E = Int64]]` `Show.show(box(v: "s"))` ran `WB.show(x:
+/// Box[E = Int64])` on a `Box[E = String]`, each answering 7 where nothing provides the spec at
+/// what the call fixes.
+pub(crate) fn supplier_answers_goal(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+    supplier: &SpecOpSupplier,
+    answering: &AnsweringProvisions,
+) -> bool {
+    if matches!(supplier.route, SupplyRoute::Own) {
+        return true;
+    }
+    let target = kb.canonical_sym(supplier.target);
+    answering.rows.iter().any(|row| {
+        let (_, suppliers) = provision_supplier(kb, spec_sort, spec_op, op_short_sym, row, &|_| true);
+        suppliers.iter().any(|s| kb.canonical_sym(s.target) == target)
+    })
 }
 
 /// WI-20261025-ZAWX9 — [`carrier_override_suppliers`] for a reader that holds a

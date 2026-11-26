@@ -3422,6 +3422,28 @@ fn check_apply_call(
                     }
                 }
             }
+            // WI-20261126-QG6ZR — A CARRIER AN ARGUMENT PINS DOES NOT DECIDE A CALL ONLY THE
+            // CALLER'S REQUIREMENT ANSWERS ([`requirement_alone_answers_call`]): over `G { sort X =
+            // ?  requires Sp[A = X, B = Int64]  operation g(xs: List[T = X]) = Sp.count(xs, 1) }`
+            // the call is at `Sp[A = X, B = Int64]`, which no provision answers and the
+            // requirement does. It is deferred to the requirement, as a call no carrier is
+            // classified for is (below); read at the carrier `1` pins, a witness's member was
+            // pinned for every `X` (MEASURED: `G.g([w(n: 1)])` ran `W.count`, written for
+            // `Other`'s lists, beside `W`'s own `Sp[A = W, B = Int64]`).
+            let requirement_answers = carrier.is_some()
+                // A self-receiver is its own provider's value, and its member is the call's.
+                && matches!(recv_carrier, ReceiverCarrier::NotApplicable)
+                && env.in_evaluated_body()
+                && requirement_alone_answers_call(
+                    kb,
+                    env,
+                    &subst,
+                    spec_sort,
+                    fn_sym,
+                    &selections,
+                    self_recv_carrier.clone(),
+                );
+            let carrier = if requirement_answers { None } else { carrier };
             if let Some(carrier_sym) = carrier.as_ref().map(|c| c.sort) {
                 // A parameter a bracket leaves unwritten is the one the provisions answering
                 // the rest say ([`bind_params_the_provisions_say`]): `Pc[C = Bag].both()` is
@@ -3473,6 +3495,27 @@ fn check_apply_call(
                             )
                         });
                     }
+                }
+                // WI-20261126-QG6ZR: and a witness's member or a provision's binding answers
+                // only where a provision ANSWERING THE CALL supplies it — the provisions at
+                // what the call fixes (decision 1), every type-var of the spec and inside a
+                // parameter's type too, as the resolver matches them ([`supplier_answers_goal`]).
+                if cands.iter().any(|s| !matches!(s.route, SupplyRoute::Own)) {
+                    let sigma = SigmaCtx {
+                        subst: &subst,
+                        param_rigids: env.param_rigids(),
+                    };
+                    let goal =
+                        sort_goal_from_subst(kb, &subst, spec_sort, self_recv_carrier.clone());
+                    let rows: SmallVec<[RuleId; 4]> =
+                        collect_provides_candidates(kb, &goal, Some(&sigma))
+                            .iter()
+                            .map(|c| c.row)
+                            .collect();
+                    let answering = AnsweringProvisions::of_rows(kb, spec_sort, &rows);
+                    cands.retain(|s| {
+                        supplier_answers_goal(kb, spec_sort, fn_sym, op_short_sym, s, &answering)
+                    });
                 }
                 // WI-1012 — a TIE on a STATICALLY CONCRETE carrier is refused HERE, at
                 // load. WI-1010 left it to eval, which costs three things: `anthill check`
@@ -4001,6 +4044,32 @@ fn check_apply_call(
                             })),
                         });
                     }
+                    // WI-20261126-QG6ZR — and one whose fixed parameters NO provision answers is
+                    // refused, as a call at a carrier none answers is: `Sp.cnt([w(n: 1)])`, `A =
+                    // W` fixed inside the list and `B` left out, beside a provision at `A = Other`
+                    // alone, ran the default at no instance (MEASURED, it answered 0, in an
+                    // operation body and in a rule's).
+                    if env.in_evaluated_body() || env.in_rule_body_evaluation() {
+                        if let Some(bindings) = written_slots_no_provision_answers(kb, &goal) {
+                            return Err(TypeError::NoProvisionAtCarriers {
+                                span,
+                                callee_op: fn_sym,
+                                spec_sort_sym: spec_sort,
+                                bindings,
+                                body: if env.enclosing_op().is_some() {
+                                    CallBody::Operation
+                                } else if env.in_rule_body() {
+                                    CallBody::Rule
+                                } else {
+                                    CallBody::Constant
+                                },
+                                declares: env
+                                    .op_requires()
+                                    .iter()
+                                    .any(|r| same_sort_canonical(kb, r.required_sort, spec_sort)),
+                            });
+                        }
+                    }
                 }
                 // A rule's scope holds none of its sort's `requires`, which a citation supplies:
                 // there a requirement of the spec in scope answers the bracket, as the caller's
@@ -4142,6 +4211,7 @@ fn check_apply_call(
             if carrier.is_none()
                 // DF0TS: a receiver-precise clause can forward its dictionary too.
                 && (enclosing_requires_clause.is_some()
+                    || requirement_answers
                     || call_names_no_carrier(
                         kb,
                         spec_sort,
@@ -4160,7 +4230,7 @@ fn check_apply_call(
                     fn_sym,
                     op_short_sym,
                     &selections,
-                    enclosing_requires_clause.is_some(),
+                    enclosing_requires_clause.is_some() || requirement_answers,
                 ) {
                     // The requirement the call is deferred to says what the call leaves open
                     // ([`bind_params_the_requirement_says`]), for its own `requires` and its
@@ -7798,6 +7868,40 @@ fn the_one_requirement_of(
         }
     }
     found
+}
+
+/// WI-20261126-QG6ZR — is a defaulted call whose carrier an argument pins answered by a
+/// requirement in scope ALONE: its goal open at a type the caller does not fix (a type
+/// parameter of the enclosing declaration, `Sp[A = X, B = Int64]`), no provision answering that
+/// goal ([`collect_provides_candidates`], the resolver's match), and a requirement in scope
+/// answering it at the call's bindings ([`defaulted_call_defer_class`])? Then the requirement's
+/// dictionary is the instance, whichever provider stands at the carrier the argument pins.
+/// A provision that answers the open goal — a generic one, `AnyW[A0] provides Sp[A = A0, B =
+/// Int64]` — keeps the call at the carrier, as before.
+fn requirement_alone_answers_call(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    selections: &[InstanceSelection],
+    self_recv_carrier: Option<GoalCarrier>,
+) -> bool {
+    let goal = sort_goal_from_subst(kb, subst, spec_sort, self_recv_carrier);
+    if goal.bindings.iter().all(|(_, v)| type_is_ground(kb, v))
+        || !requirement_of_spec_in_scope(kb, env, spec_sort)
+    {
+        return false;
+    }
+    let sigma = SigmaCtx {
+        subst,
+        param_rigids: env.param_rigids(),
+    };
+    if !collect_provides_candidates(kb, &goal, Some(&sigma)).is_empty() {
+        return false;
+    }
+    let op_short_sym = kb.intern(short_name_of(&kb.qualified_name_of(fn_sym).to_string()));
+    defaulted_call_defer_class(kb, env, subst, spec_sort, fn_sym, op_short_sym, selections, true).is_some()
 }
 
 /// Is a requirement of `spec` in scope at a call — a `requires` of the enclosing declaration

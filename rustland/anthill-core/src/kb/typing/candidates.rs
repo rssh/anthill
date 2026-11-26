@@ -397,6 +397,30 @@ pub(super) fn params_the_provisions_say(
         .collect()
 }
 
+/// WI-20261126-QG6ZR — the parameters of its spec a goal writes, each with the sort it fixes
+/// there, where NO provision answers them ([`open_slots_said`]): `Sp.cnt([w(n: 1)])` over `cnt(xs:
+/// List[T = A]) -> Int64 = 0` fixes `A = W` and leaves `B` out, and the only provision is at `A =
+/// Other`. Decision 1 of `docs/design/spec-carrier-set.md`: what a call leaves unfixed is read off
+/// the provisions at what it fixes, and where there is none nothing can run it. `None` where the
+/// goal leaves nothing out, writes a binding that is no ground type at a sort, or a provision
+/// answers.
+pub(super) fn written_slots_no_provision_answers(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+) -> Option<Vec<(Symbol, Symbol)>> {
+    let (written, unwritten) = left_out_of(kb, goal)?;
+    let bindings: Vec<(Symbol, Symbol)> = written
+        .bindings
+        .iter()
+        .filter(|(_, v)| type_is_fixed(kb, v))
+        .filter_map(|(k, v)| carrier_sort_of_value(kb, v).map(|sort| (*k, sort)))
+        .collect();
+    if bindings.is_empty() || bindings.len() != written.bindings.len() {
+        return None;
+    }
+    matches!(open_slots_said(kb, &written, &unwritten), OpenSlotsSaid::Nothing).then_some(bindings)
+}
+
 /// `goal` split into the parameters of its spec it writes and those it leaves out — unbound,
 /// or bound to a variable nothing has fixed ([`params_the_provisions_say`]). `None` where it
 /// leaves none out, or writes none.

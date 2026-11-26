@@ -1624,7 +1624,7 @@ pub(super) fn provision_supplier(
             let route = SupplyRoute::Witness(provider);
             // The witness's member as it supplies `c` (WI-20261126-Q1WE9): `Point.eq(a: Point,
             // b: Point)` is no supplier of `Other`'s `eq` for `Point provides PartialEq[T = Other]`.
-            let own = witness_own_op(kb, provider, c, spec_op, op_short_sym).filter(|&t| runnable(t));
+            let own = witness_own_op(kb, provider, row.rid, spec_op, op_short_sym).filter(|&t| runnable(t));
             for target in own.into_iter().chain(bound()) {
                 push_supplier_deduped(kb, &mut out, SpecOpSupplier { target, route });
             }
@@ -1810,16 +1810,18 @@ pub(crate) fn spec_op_suppliers_of_provider(
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
     let self_representing = spec_is_self_representing(kb, spec_canon);
-    let seed = |about: Symbol| -> SmallVec<[SpecOpSupplier; 2]> {
+    // `row` is the application's provision, where there is one.
+    let seed = |about: Symbol, row: Option<crate::kb::RuleId>| -> SmallVec<[SpecOpSupplier; 2]> {
         // At an application about another sort the member supplies it as the witness's does,
-        // only where it fits there (WI-20261126-Q1WE9); about the provider, by the provider's
-        // own verdict, which its witness provisions do not reach (WI-20261126-DHB0C).
-        let witnessed = (about != provider_canon).then_some(about);
-        provision_own_op(kb, provider, witnessed, spec_op, op_short_sym)
+        // only where it fits at that provision (WI-20261126-Q1WE9, WI-20261126-QG6ZR); about the
+        // provider, by the provider's own verdict, which its witness provisions do not reach
+        // (WI-20261126-DHB0C).
+        let witness_row = row.filter(|_| about != provider_canon);
+        provision_own_op(kb, provider, witness_row, spec_op, op_short_sym)
             .filter(|&t| runnable(t))
             .map(|target| SpecOpSupplier {
                 target,
-                route: match witnessed {
+                route: match witness_row {
                     Some(_) => SupplyRoute::Witness(provider),
                     None => SupplyRoute::Own,
                 },
@@ -1845,7 +1847,7 @@ pub(crate) fn spec_op_suppliers_of_provider(
                 applications.push(ProvisionApplication {
                     about,
                     application,
-                    suppliers: seed(about),
+                    suppliers: seed(about, Some(row.rid)),
                 });
                 applications.len() - 1
             }
@@ -1860,7 +1862,7 @@ pub(crate) fn spec_op_suppliers_of_provider(
         applications.push(ProvisionApplication {
             about: provider_canon,
             application: SpecApplication::of_bindings(kb, spec_sort, &[]),
-            suppliers: seed(provider_canon),
+            suppliers: seed(provider_canon, None),
         });
     }
     let same_targets = |a: &[SpecOpSupplier], b: &[SpecOpSupplier]| {

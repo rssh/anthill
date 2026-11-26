@@ -2007,7 +2007,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // A witness provision's member is the witness's as it supplies the carrier named
             // (WI-20261126-DHB0C, [`provision_own_op`]).
             let witnessed = witness_dispatch_carrier(kb, p.spec, p.carrier, &p.spec_view);
-            let own = provision_own_op(kb, p.carrier, witnessed, spec_op, op_short_sym);
+            let own = provision_own_op(kb, p.carrier, witnessed.map(|_| p.rid), spec_op, op_short_sym);
             let bound = instance_fact_op_in_bindings(kb, &bindings, &op_short);
             let own_canon = own.map(|o| kb.canonical_sym(o));
             let simp_alone: SmallVec<[Symbol; 2]> = own
