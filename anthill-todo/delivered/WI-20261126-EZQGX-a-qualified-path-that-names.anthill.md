@@ -34,3 +34,7 @@ DONE: tests/include/wi_ezqgx_contract_clause_path_names_nothing_test.rs (wi_test
 SPEC: kernel-language.md §5.4 states it (refused naming the missing segment; internal as that access; an alias read as its sort; what is no such name).
 Gate: workspace 12850 passed, 0 failed; scripts/families.sh green, no verdicts moved. Scaland not run (no Scala touched; acceptance cargo-test).
 
+### 2026-11-26T10:14:38Z — feedback — user
+
+Follow-up 2026-11-26 (a56f7de6a), at the user's request, inline: the two PRE-EXISTING gaps above are fixed. (1) A qualified name naming nothing in a contract clause's GOAL slot (requires Spec.limm, ensures inner.kk, under & and !( ), a quantifier body) is refused as DottedNameNamesNothing: the path check judges every slot but a binder slot and a discharge's goal slots (its antecedents declare hypotheses). (2) A compound in an argument whose functor names nothing (requires n < nosuch(1), below(n, Spec.limm(1)), Fooo[T = Int64]) is refused, bare as UnresolvedContractName, dotted as the path; at the goal it stays the goal check's, once. /code-review found the first cut refused a discharge's binder tuple (tuple) and its dotted hypothesis; fixed. Rows in wi_ezqgx_contract_clause_path_names_nothing_test.rs section (3), 10, back-outs at its head. parse_test's balance(a) placeholder named no function. Gate: 12858 passed, 1 failed (that fixture), fixed after with no source change and the two parse tests rerun green; families green. Still open: names under a disjunction (QJ9NW).
+
