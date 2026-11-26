@@ -3,9 +3,9 @@
 - id: WI-20261126-8F38F-a-witness-provision-of-a-spec
 - created: 2026-11-26T19:20:18Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-26T19:20:18Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-26T20:33:25Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -44,4 +44,20 @@ DIRECTION, not decided: the dispatch key counts a type parameter wherever an ope
 ACCEPTANCE: the program above is refused at `atW` (nothing provides `Sp` at `W`); with `provides Sp[T = W]` beside it `atW()` answers the default's 0 and `atOther()` 7; wi_rydnv's rows unchanged; backing the fix out fails the new rows; full workspace green via rustland/scripts/test.sh, families green.
 
 REFERENCE: kb/typing/provision.rs `spec_carrier_param`, `declared_type_param_head_vid`; kb/typing/coherence.rs `witness_dispatch_carrier`; kb/typing/sort_carrier.rs `provision_is_own`; kb/typing/signature.rs `member_fits_spec_op`; WI-20261122-CXR5B (step 4, step 13), WI-20261126-DHB0C, WI-20261020-NNQ1S.
+
+## Changes
+
+### 2026-11-26T20:33:10Z — feedback — user
+
+DONE (f8afae506; kernel-language §5.1 wording approved by the user 2026-11-26): `spec_carrier_param` — the one type-var dispatch, the witness criterion (`witness_dispatch_carrier`), the coherence grouping and the supplier walks read — has a second rung: a spec with a dictionary of ONE type-var that no operation takes has it where a parameter's type MENTIONS it, inside an application, an arrow, an option (`count(xs: List[T = T])`). So `W provides Sp[T = Other]` is a witness at `Other`, as decision 6 (`provision_is_own`) already read it. MEASURED (the ticket's three programs): refused at `atW`, "no impl matches — unresolved: Sp[T = W]"; beside `provides Sp[T = W]` `atW()` 0 and `atOther()` 7; `provides Sp[T = W]` alone refused at `atOther` (unchanged). The same through a `requires` dictionary (`G.g([w(n: 1)])` 7 → 0), and the arrow and `Option` shapes at `W` (7 → refused). wi_rydnv unchanged.
+
+THE CORPUS, MEASURED (a census of the sorts whose answer moved): with the rung for every spec, 6 stdlib sorts moved — `Stream`, `FiniteStream`, `LogicalStream`, `Option` (self-representing) and `MappedStreamFinite`, `FilteredStreamFinite` (provider sorts of 5 type-vars). Gated to one type-var and a spec that is not self-representing: no stdlib sort moves, 30 fixture sorts do, anthill-core green. Why each gate: over several type-vars the first mentioned is not where decision 6 reads ownership (`Bag provides Pc2[C = Bag, Element = Int64]` beside `both2(xs: List[T = Element])` filed as a witness at `Int64`; wi_me8wr's refusal moves); for a self-representing spec the element is filed as the carrier (WI-1076), 13 rows of eight files fail. Decision 3's "takes" (`spec_taken_type_vars`) is unchanged. THE SECOND QUESTION (refuse a provision of a spec with no such parameter): its defaulted shape (`Tag { sort T; name() -> Int64 = 0 }` with a witness overriding `name`) is already refused at load (CBRD2); not taken further.
+
+ROWS: `tests/include/wi_8f38f_witness_at_a_mentioned_type_var_test.rs`, 7. BACK-OUT, MEASURED: the rung off fails four, the three controls pass either way.
+
+/code-review (high): one doc overclaim fixed (the two readers agree only for a binding headed by a sort). LEFT, not ticketed: (1) a spec of TWO type-vars keeps the defect in the defaulted route, before and after — `Sp { sort A; sort B; count(xs: List[T = A], b: B) -> Int64 = 0 }` with `W provides Sp[A = Other, B = Int64]` answers `Sp.count([w(n: 1)], 1)` 7 (its dispatch key is `B`, and nothing checks `A`), and a defaulted `cnt(xs: List[T = A]) = 0` beside a body-less op answers 0 at `A = W`, where nothing provides `Sp`; (2) the one-type-var gate is pinned by wi_me8wr's refusal text alone — no wrong answer was found with it dropped. Gate 12897 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1.
+
+### 2026-11-26T20:33:27Z — feedback — user
+
+Delivered in f8afae506 — the change, rows and measurements are the feedback above. Gate 12897 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1. Left, not ticketed: a spec of two type-vars keeps the defect in the defaulted route (`count(xs: List[T = A], b: B) = 0` answers 7 at `A = W`); the one-type-var gate is pinned by a refusal text alone.
 
