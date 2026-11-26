@@ -323,6 +323,26 @@ pub struct TypingEnv {
     /// operation whose row has one; cleared for a lambda's body, whose effects are incurred
     /// where the function is applied.
     guarded_row: Option<Rc<GuardedRow>>,
+    /// WI-20261126-7BJGQ — the operation whose VALUE preconditions the caller vouches for:
+    /// a call of it is typed as if each `requires` value goal were established, and none is
+    /// proved. Set only by a host that takes them on itself
+    /// ([`crate::eval::Interpreter::call_assuming_requires`]), having decided them on the
+    /// values it passes; a body never vouches.
+    ///
+    /// THE OPERATION THE HOST NAMES, AND THE DEFAULTS SPLICED INTO ITS CALL — no other call.
+    /// A default the call leaves out is typed again where the call is, its own callees'
+    /// preconditions with it (MEASURED: `withdef(n, m: Int64 = h(n)) requires tiny(n)` over
+    /// `h(n) requires tiny(n)` refused `tiny(…)` at the splice when only `withdef`'s were
+    /// vouched for). Those are vouched for too, and soundly: a default loads only where its
+    /// preconditions are proved from the operation's own `requires` (`check_operation_bodies`
+    /// types it in the body's Γ₀) — the clauses the host vouches for — so they hold wherever
+    /// the operation's do. Any other call the typing reaches is proved as in a body: one a
+    /// `@[simp]` equation rewrites the named operation into holds preconditions of its own
+    /// that the host never vouched for (MEASURED, with every call of the host's typing
+    /// vouched for: `outer(n) requires small(n)` rewritten to `inner(n) requires tiny(n)` ran
+    /// `inner(7)`, where a body calling `outer(x)` under `small(x)` is refused). A requirement
+    /// over a spec is no value goal and is still owed.
+    preconditions_vouched_for: Option<Symbol>,
 }
 
 impl TypingEnv {
@@ -356,7 +376,29 @@ impl TypingEnv {
             // drains installs a sink.
             deferred_preconditions: None,
             guarded_row: None,
+            preconditions_vouched_for: None,
         }
+    }
+
+    /// WI-20261126-7BJGQ — type a call of `op` in this env as if its `requires` value goals
+    /// were established, and the defaults spliced into it with it (see the field doc). For a
+    /// host that has decided them itself.
+    pub fn vouch_for_preconditions_of(&mut self, op: Symbol) {
+        self.preconditions_vouched_for = Some(op);
+    }
+
+    /// Does the caller vouch for the value preconditions of the call `occ` of `op`
+    /// ([`Self::vouch_for_preconditions_of`])? A call of the operation it vouches for, by
+    /// canonical symbol, or a call in a default spliced into that call, by its provenance.
+    pub(super) fn vouches_for_preconditions_of(
+        &self,
+        kb: &KnowledgeBase,
+        op: Symbol,
+        occ: &NodeOccurrence,
+    ) -> bool {
+        self.preconditions_vouched_for.is_some_and(|vouched| {
+            kb.canonical_sym(vouched) == kb.canonical_sym(op) || is_spliced_default(kb, occ)
+        })
     }
 
     /// Hold the calls of this body to `row` (see the field doc); `None` for a body that is

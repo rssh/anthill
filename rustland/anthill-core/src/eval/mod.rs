@@ -409,12 +409,25 @@ impl FieldSymbols {
 }
 
 /// A typed host call's key in `Interpreter::host_calls`: the operation, the hash-consed type of
-/// each argument, and the bracket's entries, each its key and its type's term.
+/// each argument, the bracket's entries, each its key and its type's term, and whether the host
+/// vouched for the operation's preconditions ([`Interpreter::call_assuming_requires`]) — a call
+/// typed under that vouching is no typing of the call a plain [`Interpreter::call`] makes, which
+/// must still be refused.
 type HostCallKey = (
     Symbol,
     Vec<crate::kb::term::TermId>,
     Vec<(Option<Symbol>, crate::kb::term::TermId)>,
+    Preconditions,
 );
+
+/// WI-20261126-7BJGQ — who establishes a host call's value preconditions: the typing of the
+/// call, as for a call written in a body ([`Interpreter::call`]), or the host, which vouches
+/// for them ([`Interpreter::call_assuming_requires`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Preconditions {
+    Proved,
+    Vouched,
+}
 
 /// WI-1045 — why [`Interpreter::frame_requirements_from_trees`] could not build a
 /// frame's requirement channel. Two causes with different owners, kept apart
@@ -995,10 +1008,46 @@ impl Interpreter {
     /// no requirement: it is called with the values.
     ///
     /// The call writes no bracket; [`Self::call_bracketed`] is the call that writes one. They
-    /// are the host's only entries: a host hands an operation no dictionary by hand
+    /// and their twins for a host that vouches for the callee's preconditions
+    /// ([`Self::call_assuming_requires`], [`Self::call_bracketed_assuming_requires`]) are the
+    /// host's only entries: a host hands an operation no dictionary by hand
     /// (`docs/design/operation-call-model.md` §"Host-to-entry-op boundary").
     pub fn call(&mut self, qualified_name: &str, args: &[HostValue]) -> Result<HostValue, EvalError> {
-        self.call_bracketed(qualified_name, &[], args)
+        self.call_entry(qualified_name, &[], args, Preconditions::Proved)
+    }
+
+    /// WI-20261126-7BJGQ — [`Self::call`] for a host that has decided the operation's
+    /// `requires` itself, on the values it passes: the call is typed as if each of its value
+    /// preconditions were established, the host taking them on itself as a caller outside the
+    /// language. [`Self::call`] types `op(x1, …, xn)` where nothing can establish a
+    /// precondition over a parameter — no enclosing guard, no prior `ensures`, no fact about
+    /// the names — so it refuses every operation with one, whatever the values.
+    ///
+    /// WHAT THE HOST TAKES ON IS THE CALLEE'S value goals, and those of the defaults spliced
+    /// into the call, which hold wherever the callee's do — not those of a call a `@[simp]`
+    /// equation rewrites it into, which are proved as in a body — and nothing checks them when
+    /// the call runs: a value that does not satisfy one runs the body. A requirement over a spec (`requires Ord[T = X]`) is no value goal — its
+    /// dictionary is still owed, and a call nothing at its types supplies one for is refused
+    /// as by [`Self::call`]. An operation run through a spec — a provider's member, or the
+    /// spec operation's own body — is vouched for by the precondition of the operation the
+    /// host names, the one the call is typed against.
+    pub fn call_assuming_requires(
+        &mut self,
+        qualified_name: &str,
+        args: &[HostValue],
+    ) -> Result<HostValue, EvalError> {
+        self.call_entry(qualified_name, &[], args, Preconditions::Vouched)
+    }
+
+    /// [`Self::call_bracketed`] for a host that has decided the operation's `requires`
+    /// itself ([`Self::call_assuming_requires`]).
+    pub fn call_bracketed_assuming_requires(
+        &mut self,
+        qualified_name: &str,
+        bracket: &[(Option<&str>, Value)],
+        args: &[HostValue],
+    ) -> Result<HostValue, EvalError> {
+        self.call_entry(qualified_name, bracket, args, Preconditions::Vouched)
     }
 
     /// [`Self::call`] with the call's bracket: `op[k1 = t1, …](x1, …, xn)`, each entry a key
@@ -1015,6 +1064,18 @@ impl Interpreter {
         qualified_name: &str,
         bracket: &[(Option<&str>, Value)],
         args: &[HostValue],
+    ) -> Result<HostValue, EvalError> {
+        self.call_entry(qualified_name, bracket, args, Preconditions::Proved)
+    }
+
+    /// The host's four entries' one body: [`Self::call_bracketed`], with `preconditions`
+    /// saying whether the host vouches for the callee's value preconditions.
+    fn call_entry(
+        &mut self,
+        qualified_name: &str,
+        bracket: &[(Option<&str>, Value)],
+        args: &[HostValue],
+        preconditions: Preconditions,
     ) -> Result<HostValue, EvalError> {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
             EvalError::UnknownOperation {
@@ -1098,7 +1159,7 @@ impl Interpreter {
                     .map(|(k, t)| ground(&self.kb, t).map(|id| (*k, id)))
                     .collect::<Option<Vec<_>>>(),
             )
-            .map(|(arguments, bracket)| (sym, arguments, bracket));
+            .map(|(arguments, bracket)| (sym, arguments, bracket, preconditions));
         let cached = key.as_ref().and_then(|k| self.host_calls.get(k).cloned());
         let (node, result_ty) = match cached {
             Some(hit) => hit,
@@ -1130,6 +1191,9 @@ impl Interpreter {
                 let host_op = self.kb.intern("anthill.host.call");
                 let mut env = crate::kb::typing::TypingEnv::empty();
                 env.set_enclosing_op(&mut self.kb, host_op);
+                if preconditions == Preconditions::Vouched {
+                    env.vouch_for_preconditions_of(sym);
+                }
                 for (n, ty) in names.iter().zip(&types) {
                     env.bind_var(*n, ty.clone());
                 }

@@ -2654,7 +2654,15 @@ fn check_apply_call(
             .flat_map(|c| clause_conjuncts(kb, c))
             .filter(|c| is_value_precondition_clause(kb, c))
             .collect();
-        if !value_reqs.is_empty() {
+        // WI-20261126-7BJGQ: a host that vouches for this call's value preconditions has
+        // decided them on the values it passes (`Interpreter::call_assuming_requires`), so the
+        // call is typed as if each were established — a caller outside the language takes
+        // them on itself, where a body establishes them by a guard, a prior `ensures` or a
+        // fact. Nothing else is skipped: a requirement over a spec is no value goal. Which
+        // calls that reaches — the operation the host names and the defaults spliced into
+        // its call, not one a rewrite reaches — is the field's doc
+        // ([`TypingEnv::vouch_for_preconditions_of`]).
+        if !value_reqs.is_empty() && !env.vouches_for_preconditions_of(kb, fn_sym, occ) {
             let req_sigma =
                 build_call_guard_sigma(kb, &op.params, &pos_call_params, pos_args, named_args);
             let in_rule_body = env.in_rule_body();

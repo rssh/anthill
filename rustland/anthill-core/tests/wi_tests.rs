@@ -1931,6 +1931,8 @@ mod wi_fcz3n_simp_rhs_occurrence_test;
 mod wi_byj0x_simp_rhs_dotted_member_test;
 #[path = "include/wi_jr3ad_contract_clause_renaming_test.rs"]
 mod wi_jr3ad_contract_clause_renaming_test;
+#[path = "include/wi_7bjgq_host_call_assuming_requires_test.rs"]
+mod wi_7bjgq_host_call_assuming_requires_test;
 
 #[path = "include/wi_w9d4z_one_mistake_one_diagnosis_test.rs"]
 mod wi_w9d4z_one_mistake_one_diagnosis_test;
