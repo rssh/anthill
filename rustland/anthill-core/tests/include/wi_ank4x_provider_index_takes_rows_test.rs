@@ -144,7 +144,7 @@ fn a_holder_of_a_total_composite_answers() {
 /// tree before the fold, MEASURED, under each of the three recipes: there the TOTAL pass
 /// derived `Colour` and filed no clause (count 0), and this row pinned that 0 as the sign
 /// that the conditional pass had not derived it a second time. The record cannot show a
-/// second derivation now — it keeps one derived entry per distinct condition list — and the
+/// second derivation now — it keeps one entry per distinct condition list — and the
 /// fold leaves none to show: no earlier pass asserts a row this one could miss.
 #[test]
 fn a_total_composite_is_derived_once() {

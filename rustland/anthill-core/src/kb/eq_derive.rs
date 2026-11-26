@@ -1299,10 +1299,6 @@ struct EqualityProvision {
     /// too: that is how the provision is read from then on, for this carrier as well.
     conditional: bool,
     clauses: u32,
-    /// Whether a program WROTE one of those clauses, whatever the others are — the
-    /// provider's for the spec too. A later load writing exactly what an earlier one derived
-    /// moves this alone ([`KnowledgeBase::provides_written_clause`], WI-20261102-YX17K).
-    written: bool,
 }
 
 /// The equality-family specs, in the order a diagnostic lists them.
@@ -1478,9 +1474,9 @@ fn equality_signatures(
         .iter()
         .map(|&s| (s, EqualitySignature::default()))
         .collect();
-    // (provider, spec) → (conditional?, clause count, written?), asked once per pair rather
-    // than once per row: the three are the provider's for the spec, whichever row asks.
-    let mut read: std::collections::HashMap<(Symbol, Symbol), (bool, u32, bool)> =
+    // (provider, spec) → (conditional?, clause count), asked once per pair rather than
+    // once per row: the two are the provider's for the spec, whichever row asks.
+    let mut read: std::collections::HashMap<(Symbol, Symbol), (bool, u32)> =
         std::collections::HashMap::new();
     // Read per composite: a provision at a primitive, an abstract sort or a spec's own
     // parameter is out of this check's domain — see [`later_equality_refusals`].
@@ -1494,11 +1490,10 @@ fn equality_signatures(
             };
             for provision in provisions.at_sort(kb, composite) {
             let provider = kb.canonical_sort_sym(provision.provider);
-            let (conditional, clauses, written) = *read.entry((provider, spec_canon)).or_insert_with(|| {
+            let (conditional, clauses) = *read.entry((provider, spec_canon)).or_insert_with(|| {
                 (
                     kb.provision_has_conditions(provision.provider, spec),
                     kb.provides_clause_count(provision.provider, spec),
-                    kb.provides_written_clause(provision.provider, spec),
                 )
             });
             signature.provisions.insert(EqualityProvision {
@@ -1507,7 +1502,6 @@ fn equality_signatures(
                 spec: spec_canon,
                 conditional,
                 clauses,
-                written,
             });
             }
         }

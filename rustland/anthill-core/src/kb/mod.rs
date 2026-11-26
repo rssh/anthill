@@ -3084,8 +3084,7 @@ pub(crate) struct ProvisionClause {
     pub(crate) conditions: Vec<crate::eval::value::Value>,
     /// The view it provides, as its provision row holds it.
     pub(crate) spec_view: crate::eval::value::Value,
-    /// Where it was written. A derived clause has no site, until a written clause with its
-    /// conditions folds into it ([`KnowledgeBase::record_provides_clause`]).
+    /// Where it was written. A derived clause has no site.
     pub(crate) site: Option<crate::span::SourceSpan>,
 }
 
@@ -9489,8 +9488,18 @@ impl KnowledgeBase {
             self.canonical_sort_sym(carrier),
             self.canonical_sort_sym(spec),
         );
-        let known = self.provides_clause_counts.get(&key).and_then(|seen| {
-            seen.iter().position(|c| {
+        // ONE entry per conditions, whoever filed the clause: a written clause and a derived
+        // one with the same conditions are one entry. That is what makes a later load's
+        // identical restatement of an earlier provision, derived or written, no change to the
+        // equality closure (kernel-language §8.3, WI-20261102-YX17K). The entries are keyed by
+        // PROVIDER, and the dictionary layout reads the count (`provision_layout_key`). Kept
+        // apart, MEASURED: `wi_szkv7_later_equality_test`'s three `…_is_accepted` rows (two
+        // restatements, an earlier sort witnessing a later one's equality) are refused and its
+        // `…_provision_binding_an_eq_…` reports the derived row changed;
+        // and a provider's written clause at another carrier and its own derived row put
+        // `wi_hwd8a_…::a_written_sort_domain_at_a_tuple_is_refused`'s SHED7 layout out.
+        let known = self.provides_clause_counts.get(&key).is_some_and(|seen| {
+            seen.iter().any(|c| {
                 c.conditions.len() == conditions.len()
                     && c.conditions
                         .iter()
@@ -9498,52 +9507,13 @@ impl KnowledgeBase {
                         .all(|(a, b)| crate::kb::term_view::views_structurally_equal(self, a, b))
             })
         });
-        match known {
-            // A WRITTEN clause folded into a DERIVED entry makes the entry a written one:
-            // still one clause — the count, and the dictionary layout read off it
-            // (`provision_layout_key`), are as they were — but no longer one nobody wrote, which
-            // is what the equality closure reads (`provides_written_clause`). A later load's
-            // `provides Eq[T = Point]` written over an earlier load's DERIVED `Eq[Point]` adds a
-            // provision about `Point` (kernel-language §8.3: derived or written "does not
-            // enter"), and folded silently it changed nothing and loaded (WI-20261102-YX17K).
-            // Without the mark, MEASURED: `wi_szkv7_later_equality_test`'s
-            // `a_later_restatement_of_a_derived_provision_is_refused` (admitted) and
-            // `a_later_provision_binding_an_eq_is_refused` (its derived row unchanged) fail.
-            // The entries are keyed by PROVIDER, so the two need not be one provision: a
-            // provider's written clause at another carrier and its own derived row, with the
-            // same conditions, are one entry — which the layout relies on (MEASURED: kept as two,
-            // `wi_hwd8a_…::a_written_sort_domain_at_a_tuple_is_refused` gains a SHED7 layout
-            // disagreement).
-            Some(i) => {
-                if site.is_some() {
-                    let entry = &mut self.provides_clause_counts.get_mut(&key).expect("found above")[i];
-                    if entry.site.is_none() {
-                        entry.site = site;
-                    }
-                }
-            }
-            None => {
-                self.provides_clause_counts.entry(key).or_default().push(ProvisionClause {
-                    conditions,
-                    spec_view,
-                    site,
-                });
-            }
+        if !known {
+            self.provides_clause_counts.entry(key).or_default().push(ProvisionClause {
+                conditions,
+                spec_view,
+                site,
+            });
         }
-    }
-
-    /// Did a program write one of `carrier`'s (the provider's) clauses of `spec`, whatever
-    /// the others are? Read by the equality closure (`eq_derive::equality_signatures`): a
-    /// later load writing a provision an earlier load derived, with the same conditions,
-    /// changes this and nothing else.
-    pub(crate) fn provides_written_clause(&self, carrier: Symbol, spec: Symbol) -> bool {
-        let key = (
-            self.canonical_sort_sym(carrier),
-            self.canonical_sort_sym(spec),
-        );
-        self.provides_clause_counts
-            .get(&key)
-            .is_some_and(|clauses| clauses.iter().any(|c| c.site.is_some()))
     }
 
     /// Every recorded `provides` clause with its (carrier, spec) key, canonical, and its

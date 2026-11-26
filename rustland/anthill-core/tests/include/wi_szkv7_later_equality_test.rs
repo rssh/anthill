@@ -21,8 +21,8 @@
 //!
 //! WHAT FAILS WHEN (measured by making the change and running this file):
 //!
-//! * the check reporting nothing: EIGHTEEN rows fail — every row that expects a
-//!   refusal (measured again 2026-11-26, WI-20261102-YX17K's row among them).
+//! * the check reporting nothing: SEVENTEEN rows fail — every row that expects a
+//!   refusal (measured again 2026-11-26).
 //! * who supplies the `eq` left out of the signature: the rows whose later load changes
 //!   only that — `…_eq_member_of_the_sort_…`, `…_eq_member_of_an_earlier_witness_…`,
 //!   `…_redeclaration_of_the_sort_…` — and `…_provision_binding_an_eq_…`, which names it.
@@ -30,10 +30,13 @@
 //!   `…_witness_writing_eq_alone_…`, `…_condition_on_an_earlier_provision_…`,
 //!   `…_provision_for_another_instantiation_…`, `…_provision_binding_an_eq_…`.
 //! * a provision's conditions and clause count left out of its entry:
-//!   `…_condition_on_an_earlier_provision_…` and `…_provision_binding_an_eq_…`.
-//! * whether one of a provision's clauses was WRITTEN left out of its entry (WI-20261102-YX17K,
-//!   `EqualityProvision.written`), or the record not marking a derived clause a written one
-//!   folds into: `…_restatement_of_a_derived_provision_…` and `…_provision_binding_an_eq_…`.
+//!   `…_condition_on_an_earlier_provision_…` (measured again 2026-11-26; until
+//!   WI-20261102-YX17K `…_provision_binding_an_eq_…` too, its derived row then filing no clause).
+//! * the clause record keeping a clause apart from the one it repeats
+//!   (`KnowledgeBase::record_provides_clause`, WI-20261102-YX17K): both
+//!   `…_restatement_of_a_…_provision_is_accepted` rows,
+//!   `an_earlier_sort_witnessing_a_later_ones_equality_is_accepted` and
+//!   `…_provision_binding_an_eq_…`.
 //! * a provision's ROW left out of its entry: `…_provision_for_another_instantiation_…`
 //!   and `…_witness_writing_eq_alone_…`.
 //! * `Eq` / `NonEq` provisions read by the carrier parameter a DISPATCH reads (the one an
@@ -112,8 +115,9 @@ fn later(kb: &mut KnowledgeBase, source: &str) -> Result<LoadResult, Vec<LoadErr
 }
 
 /// `earlier`, then `later_source` in a call of its own, which must be refused naming
-/// `carrier` and each of `added`.
-fn assert_later_load_refused(earlier: &str, later_source: &str, carrier: &str, added: &[&str]) {
+/// `carrier` and each of `added`. The refusals, rendered, for a row that also asserts what
+/// they do NOT name.
+fn assert_later_load_refused(earlier: &str, later_source: &str, carrier: &str, added: &[&str]) -> Vec<String> {
     let mut kb = load_kb_with(earlier);
     let errors = match later(&mut kb, later_source) {
         Err(errors) => rendered_load_errors(errors),
@@ -127,6 +131,7 @@ fn assert_later_load_refused(earlier: &str, later_source: &str, carrier: &str, a
         &tokens,
         "the refusal names the earlier sort and what this load added to its equality",
     );
+    errors
 }
 
 fn bool_of(kb: KnowledgeBase, op: &str) -> bool {
@@ -212,9 +217,16 @@ end
 
 /// The BINDING route: no witness sort, a provision of the sort's own that binds its `eq`
 /// to an operation — written in a later entry of the sort.
+///
+/// What changes is who supplies `eq`, and the provision binding it is NEW; the derived
+/// `PartialEq` is not reported changed. The written clause has its conditions, none, so it is
+/// the derived clause's entry, and a clause a provision already has changes nothing
+/// (kernel-language §8.3, WI-20261102-YX17K). On the tree before WI-20261102-YX17K the total
+/// pass filed the derived row no clause, the written one moved the count from 0, and the row
+/// was reported changed as well — MEASURED: that tree fails the absence assertion below.
 #[test]
 fn a_later_provision_binding_an_eq_is_refused() {
-    assert_later_load_refused(
+    let errors = assert_later_load_refused(
         POINT,
         r#"
 namespace test.le.total.Point
@@ -225,29 +237,59 @@ end
 "#,
         "test.le.total.Point",
         &[
-            "its own provision of `PartialEq` for it has changed",
+            "its own provision of `PartialEq` for it is new",
             "`test.le.total.Point.peq` now supplies its `eq`",
         ],
     );
+    let joined = errors.join(" | ");
+    assert!(
+        !joined.contains("its own provision of `PartialEq` for it has changed"),
+        "the derived provision did not change — the written clause is its entry: {joined}"
+    );
 }
 
-/// A later entry that RESTATES what the earlier load derived — `PartialEq` and `Eq` for the
-/// sort, no `eq`, no condition — still adds two provisions about it: what the earlier load
-/// did about the sort's equality, derived it or wrote it, does not enter (kernel-language
-/// §8.3). The clauses are WRITTEN and the earlier ones DERIVED: each folds into the derived
-/// entry of its conditions and makes it a written one, and the derived provisions read as
-/// changed.
+/// `earlier`, then `restatement` in a call of its own and `probe` in a third, both accepted;
+/// the probe's `Check.check()`, which compares two equal and two different points with `eq` and
+/// reaches `Eq` through `contains`.
+fn restated_then_checked(earlier: &str, restatement: &str, probe: &str, op: &str) -> bool {
+    let mut kb = load_kb_with(earlier);
+    expect_loaded(later(&mut kb, restatement));
+    expect_loaded(later(&mut kb, probe));
+    bool_of(kb, op)
+}
+
+/// The probe of [`restated_then_checked`], over `Point` in `ns`.
+fn point_check(ns: &str) -> String {
+    format!(
+        "namespace {ns}.check\n  \
+           import anthill.prelude.{{Bool, List}}\n  \
+           import anthill.prelude.List.{{cons, nil, contains}}\n  \
+           import {ns}.{{Point}}\n  \
+           import {ns}.Point.{{point}}\n  \
+           sort Check\n    \
+             import anthill.prelude.PartialEq.{{eq}}\n    \
+             operation check() -> Bool =\n      \
+               if eq(point(x: 1, y: 2), point(x: 1, y: 3)) then false\n      \
+               else if contains(cons(head: point(x: 1, y: 2), tail: nil), point(x: 1, y: 2))\n        \
+                 then eq(point(x: 1, y: 2), point(x: 1, y: 2)) else false\n  \
+           end\n\
+         end\n"
+    )
+}
+
+/// A later entry that RESTATES what the earlier load DERIVED — `PartialEq` and `Eq` for the
+/// sort, no `eq`, no condition — adds nothing: the clauses are the ones the sort has, each the
+/// derived entry of its conditions, and the equality is what the earlier load decided
+/// (kernel-language §8.3, WI-20261102-YX17K: an identical provision written again is no
+/// change, derived or written). Driven: `eq` and `contains` answer as before.
 ///
-/// FAILS with the entry left derived (the mark in `KnowledgeBase::record_provides_clause`
-/// backed out), and with the closure not reading the mark (`EqualityProvision.written`),
-/// MEASURED 2026-11-26: the load is ADMITTED, and
-/// `a_later_provision_binding_an_eq_is_refused` fails beside it, its derived row no longer
-/// reading as changed. WI-20261102-YX17K exposed it, by giving every derived unconditional
-/// row a clause; on the tree before it, where the total pass filed none, the written clause
-/// moved the count from 0 and the row passed.
+/// FAILS on the tree before WI-20261102-YX17K, MEASURED: refused there, "its own provision of
+/// `Eq` for it has changed" — the total pass filed the derived row no clause, and the written
+/// one moved the count from 0. FAILS too with the clause record keeping the written clause apart
+/// from the derived one (`record_provides_clause`'s merge backed out), MEASURED.
 #[test]
-fn a_later_restatement_of_a_derived_provision_is_refused() {
-    assert_later_load_refused(
+fn a_later_restatement_of_a_derived_provision_is_accepted() {
+    assert!(restated_then_checked(
         POINT,
         r#"
 namespace test.le.total.Point
@@ -256,12 +298,70 @@ namespace test.le.total.Point
   provides Eq[T = Point]
 end
 "#,
-        "test.le.total.Point",
-        &[
-            "its own provision of `Eq` for it has changed",
-            "its own provision of `PartialEq` for it has changed",
-        ],
-    );
+        &point_check("test.le.total"),
+        "test.le.total.check.Check.check",
+    ));
+}
+
+/// The same restatement of provisions the earlier load WROTE: accepted as well — what the
+/// earlier load did about the sort's equality does not enter. PASSES on the tree before
+/// WI-20261102-YX17K too, MEASURED: a written clause was always the entry of a written one.
+/// FAILS with `record_provides_clause`'s merge backed out, MEASURED.
+#[test]
+fn a_later_restatement_of_a_written_provision_is_accepted() {
+    assert!(restated_then_checked(
+        r#"
+namespace test.le.written
+  import anthill.prelude.{Int64, Eq, PartialEq}
+  sort Point
+    entity point(x: Int64, y: Int64)
+    provides PartialEq[T = Point]
+    provides Eq[T = Point]
+  end
+end
+"#,
+        r#"
+namespace test.le.written.Point
+  import anthill.prelude.{Eq, PartialEq}
+  provides PartialEq[T = Point]
+  provides Eq[T = Point]
+end
+"#,
+        &point_check("test.le.written"),
+        "test.le.written.check.Check.check",
+    ));
+}
+
+/// An earlier composite made the WITNESS of a later load's own sort, by a provision that binds
+/// that sort's `eq`: the provisions are about `Other`, which this load owns, and `Point`'s
+/// equality is as it was — its suppliers, its provisions, and its clause entry, which the
+/// unconditioned witness clause shares (kernel-language §8.3). Driven: `Point` compares as
+/// before. `Other`'s `eq` is not called: a call at `Other` is an ambiguous dispatch between
+/// `Point`'s derived `eq` member and the bound `oeq` — in ONE load of the same sources as well,
+/// on the trees before and after WI-20261102-YX17K (MEASURED), so not this rule's.
+///
+/// FAILS on the tree before WI-20261102-YX17K, MEASURED: refused there, "its own provision of
+/// `Eq` for it has changed" — `Point`'s derived row had no clause, and the witness clause, filed
+/// under `Point` as its provider, moved the count from 0. FAILS too with
+/// `record_provides_clause`'s merge backed out, MEASURED.
+#[test]
+fn an_earlier_sort_witnessing_a_later_ones_equality_is_accepted() {
+    assert!(restated_then_checked(
+        POINT,
+        r#"
+namespace test.le.total.Point
+  import anthill.prelude.{Eq, PartialEq, Bool, Int64}
+  sort Other
+    entity o(n: Int64)
+    operation oeq(a: Other, b: Other) -> Bool = true
+  end
+  provides PartialEq[T = Other, eq = Other.oeq]
+  provides Eq[T = Other]
+end
+"#,
+        &point_check("test.le.total"),
+        "test.le.total.check.Check.check",
+    ));
 }
 
 /// The MEMBER route, which writes no provision at all: a later entry of the sort itself
