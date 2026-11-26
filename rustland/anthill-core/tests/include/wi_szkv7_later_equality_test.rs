@@ -338,7 +338,8 @@ end
 /// unconditioned witness clause shares (kernel-language §8.3). Driven: `Point` compares as
 /// before. `Other`'s `eq` is not called: a call at `Other` is an ambiguous dispatch between
 /// `Point`'s derived `eq` member and the bound `oeq` — in ONE load of the same sources as well,
-/// on the trees before and after WI-20261102-YX17K (MEASURED), so not this rule's.
+/// on the trees before and after WI-20261102-YX17K (MEASURED), so not this rule's:
+/// WI-20261126-Q1WE9, whose acceptance makes this row call it.
 ///
 /// FAILS on the tree before WI-20261102-YX17K, MEASURED: refused there, "its own provision of
 /// `Eq` for it has changed" — `Point`'s derived row had no clause, and the witness clause, filed
