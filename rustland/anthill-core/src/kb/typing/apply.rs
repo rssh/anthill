@@ -955,6 +955,23 @@ fn check_apply_call(
                 )
             });
         }
+        // WI-20260929-7XNSK — a parameter of a sort the join above does not instantiate (a
+        // spec's) takes, in a slot one argument leaves open, what a later one says
+        // ([`fill_open_spec_params`]); after the three binders above, so it fills only what
+        // they left free. Only a sort with parameters, and a call with more than one argument.
+        if let Some(sort) = callee_parent_sort.filter(|s| {
+            pos_results.len() + named_results.len() > 1
+                && !sort_params_join(kb, *s)
+                && !sort_type_params_as_pairs(kb, *s).is_empty()
+        }) {
+            let arg_pairs = supplied_arg_pairs(kb, &op.params, &pos_call_params, pos_results, named_args, named_results);
+            let refs: Vec<(Symbol, &Value, &Value)> = arg_pairs
+                .iter()
+                .filter(|(_, pty, _)| !value_contains_projection(kb, pty))
+                .map(|(p, d, a)| (*p, d, a))
+                .collect();
+            fill_open_spec_params(kb, &mut subst, sort, &refs);
+        }
 
         // WI-379: synthesize from the ARGUMENTS first (the two loops below);
         // the caller-side `expected` is consulted only AFTER (moved below the

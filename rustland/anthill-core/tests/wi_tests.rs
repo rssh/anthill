@@ -2258,6 +2258,8 @@ mod wi_9wxk2_value_name_in_binding_test;
 mod wi_tk8x4_carrier_grounding_value_in_type_test;
 #[path = "include/wi_020th_two_hop_chain_test.rs"]
 mod wi_020th_two_hop_chain_test;
+#[path = "include/wi_7xnsk_open_slot_spec_param_test.rs"]
+mod wi_7xnsk_open_slot_spec_param_test;
 #[path = "include/wi_jn09w_holder_gate_test.rs"]
 mod wi_jn09w_holder_gate_test;
 #[path = "include/wi_2kv4y_unfixed_carrier_test.rs"]

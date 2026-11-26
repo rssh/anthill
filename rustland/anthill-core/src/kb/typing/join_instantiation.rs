@@ -207,6 +207,95 @@ pub(super) fn join_repeated_sort_params(
     }
 }
 
+/// WI-20260929-7XNSK — A PARAMETER OF A SORT THAT IS NOT JOINED ([`sort_params_join`]: a
+/// spec's, a provision's to say) TAKES, WHERE ONE ARGUMENT LEAVES A SLOT OF IT OPEN, WHAT A
+/// LATER ARGUMENT SAYS THERE. An open slot takes the instance it meets — the parameter it is
+/// passed to (kernel-language §5.4) — and the instance of a spec parameter is what every
+/// argument naming it says, not the first of them.
+///
+/// The call's own loop let the FIRST argument decide and checked every later one against
+/// it, and an open slot is admitted at every instance, so a goal bound from an argument that
+/// left one open kept it open and every provider matched there. Over `peek2(s: State, t:
+/// State)` with providers at `Buf[T = Int64, N = Bool]` and `Buf[T = String, N = Bool]`,
+/// `peek2(mkb([]), y)` — `y` a `Buf[T = Int64, N = Bool]` — was refused as ambiguous while
+/// `peek2(y, mkb([]))` ran the `Int64` provider, and beside the `String` provider alone it
+/// RAN that one, though `y` says `T = Int64` (MEASURED, the value-in-type spelling `N = 3`
+/// alike). The bare spelling (`Buf.empty()`, every slot left out) was refused "nothing here
+/// fixes `T`" where the other order ran.
+///
+/// A FILL, NOT A JOIN: the open slots of the first argument's contribution are written from
+/// the later ones ([`open_slots_said_by`]), and nothing said is widened — `Cmp.cmp(c, s)`
+/// stays at the receiver's `T = Circle`, the reason a spec's parameter is not joined. Where
+/// the first contribution leaves nothing open, or a later one says nothing it leaves open,
+/// nothing is bound and the loop decides as before; so this only moves a call whose goal held
+/// an open slot an argument said. A contribution that is not determined (a variable of the
+/// walk in it) keeps the parameter out of this pass: what it would say is not known yet.
+///
+/// Asked after the receiver's carrier and the sort's own clauses bind what they bind, so it
+/// fills only what they left free.
+pub(super) fn fill_open_spec_params(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    sort: Symbol,
+    pairs: &[(Symbol, &Value, &Value)],
+) {
+    if pairs.len() < 2 {
+        return;
+    }
+    let params: SmallVec<[(Symbol, VarId); 2]> = sort_type_params_as_pairs(kb, sort)
+        .iter()
+        .filter_map(|(name, canonical)| match kb.get_term(*canonical) {
+            Term::Var(Var::Global(vid)) => Some((*name, *vid)),
+            _ => None,
+        })
+        .filter(|(_, vid)| {
+            resolved_var(kb, &walk_view(kb, subst, &Value::Var(Var::Global(*vid)))) == Some(*vid)
+        })
+        .collect();
+    if params.is_empty() {
+        return;
+    }
+    let mut contributions = Contributions::new();
+    let mut opaque: Vec<VarId> = Vec::new();
+    for (param, declared, actual) in pairs {
+        collect(
+            kb,
+            subst,
+            Some(&params),
+            *param,
+            Polarity::Covariant,
+            declared,
+            actual,
+            &mut contributions,
+            &mut opaque,
+        );
+    }
+    for (_, vid) in &params {
+        if opaque.contains(vid) {
+            continue;
+        }
+        let mine: Vec<Value> = contributions
+            .iter()
+            .filter(|(v, ..)| v == vid)
+            .map(|(.., ty)| ty.clone())
+            .collect();
+        if mine.len() < 2 || mine.iter().any(|ty| !resolved_type_is_determined(kb, ty)) {
+            continue;
+        }
+        let mut acc = mine[0].clone();
+        let mut filled = false;
+        for ty in &mine[1..] {
+            if let Some(said) = open_slots_said_by(kb, &acc, ty) {
+                acc = said;
+                filled = true;
+            }
+        }
+        if filled {
+            bind_resolved(kb, subst, *vid, acc);
+        }
+    }
+}
+
 /// DOES A CALL INTO `sort` INSTANTIATE ITS PARAMETERS BY [`join_repeated_sort_params`] — is
 /// it a DATA sort, and has it a parameter? The one gate of the three sites that ask.
 ///
@@ -360,15 +449,32 @@ pub(super) fn join_repeated_type_params(
         // `Circle` is `A = Shape`, which the `Circle` conforms to — the join of the covariant
         // arguments alone (`Circle`) would refuse the box. Invariant occurrences that DISAGREE
         // fix nothing here; the site's own checks refuse them, as they always did.
+        //
+        // AGREEING IS NOT SAYING (WI-20260929-7XNSK): an open slot is equivalent to every
+        // instance, so the first occurrence was bound with its slot still open where a later
+        // one said it — `h[X](a: Cell[T = X], b: Cell[T = X]) requires Store2[State = X]`
+        // given `cell(c: mkb([]))` and `cell(c: y)` asked the requirement at `Buf[T = ?T]`,
+        // ambiguous between two providers and answered by the wrong one beside one, while the
+        // other order asked it at `y`'s type (MEASURED). The slot takes what another
+        // invariant occurrence says ([`open_slots_said_by`]); a covariant one only conforms.
+        // A FILLED occurrence is bound even where a later one disagrees: left to the site, the
+        // open one decided again and the disagreeing one fit it, so a third argument at `T =
+        // String` was asked at `?T` with the open one first and refused as a mismatch with
+        // the said one first (review). Bound, the site refuses it in both orders.
         let invariant = determined(kb, Polarity::Invariant);
         if let Some((_, first)) = invariant.first() {
-            let first = first.clone();
+            let mut fixed = first.clone();
             let mut agree = true;
+            let mut filled = false;
             for (_, ty) in &invariant[1..] {
-                agree &= types_equivalent(kb, &first, ty);
+                agree &= types_equivalent(kb, &fixed, ty);
+                if let Some(said) = open_slots_said_by(kb, &fixed, ty) {
+                    fixed = said;
+                    filled = true;
+                }
             }
-            if agree {
-                bind_resolved(kb, subst, vid, first);
+            if agree || filled {
+                bind_resolved(kb, subst, vid, fixed);
             }
             continue;
         }
