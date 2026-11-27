@@ -2700,6 +2700,8 @@ mod wi_cbrd2_typed_execute_test;
 mod wi_cbrd2_typed_query_variable_test;
 #[path = "include/wi_c6vn0_typed_query_variable_value_test.rs"]
 mod wi_c6vn0_typed_query_variable_value_test;
+#[path = "include/wi_vtkq4_query_goal_list_test.rs"]
+mod wi_vtkq4_query_goal_list_test;
 #[path = "include/wi_4kxpd_waiting_clause_test.rs"]
 mod wi_4kxpd_waiting_clause_test;
 #[path = "include/wi_fsnz5_reflect_form_identity_test.rs"]

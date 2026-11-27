@@ -28275,6 +28275,11 @@ fn convert_query_term_expecting(
     // What lowering a compound expression refused ([`query_compound_expression`]).
     errors: &mut Vec<LoadError>,
 ) -> Rc<NodeOccurrence> {
+    if fold == ConstFold::Goal {
+        if let Some(conjunction) = query_goal_list(kb, parsed, parse_id, scope, var_map, errors) {
+            return conjunction;
+        }
+    }
     let occ = convert_query_node(kb, parsed, parse_id, scope, var_map, expected, fold, errors);
     if fold != ConstFold::Goal {
         return occ;
@@ -28307,6 +28312,73 @@ fn convert_query_term_expecting(
             occ
         }
     }
+}
+
+/// A PARENTHESIZED GOAL LIST written where a query proves a goal — the pattern's branch, a
+/// negand, a quantifier's body — is the conjunction of its goals (§5.3), as a clause's walk reads
+/// it ([`Loader::goal_list_conjunction`]): `(g₁, …, gₙ)` is `and(g₁, and(g₂, … gₙ))`, each
+/// component converted as a goal of its own, so the typed variables it writes declare their goals
+/// around it; `()` is `true`, the empty conjunction. `None` for anything else. A NAMED tuple is
+/// refused, as at a clause's goal, and converted as written.
+///
+/// MEASURED before (WI-20261127-VTKQ4): the list was the tuple at every query position, so a
+/// branch holding one failed with no diagnostic — `(pos(1), pos(2)) | false` answered nothing —
+/// and under `not` it held; and the `=` in it was reached by no type, since the typer descends
+/// only a connective's goal slots, so `(1 = 1, 1 > 0) | (0 = 1, 1 <= 0)` was left undecided with
+/// "no type reached the comparison" on each `eq`. The same list in a rule body answered.
+fn query_goal_list(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    parse_id: ParseTermId,
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+    errors: &mut Vec<LoadError>,
+) -> Option<Rc<NodeOccurrence>> {
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = parsed.terms.get(parse_id)
+    else {
+        return None;
+    };
+    if !pos_args.is_empty() {
+        return None;
+    }
+    let tuple_literal = kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))?;
+    if resolve_query_name(kb, parsed.symbols.local_name(*functor), scope) != tuple_literal {
+        return None;
+    }
+    let positional = named_args.iter().enumerate().all(|(i, &(label, _))| {
+        crate::intern::is_positional_label_at(parsed.symbols.local_name(label), i)
+    });
+    if !positional {
+        errors.push(
+            LoadError::GoalIsANamedTuple {
+                span: parsed.terms.span(parse_id),
+            }
+            .located_in(parsed),
+        );
+        return None;
+    }
+    let components: Vec<ParseTermId> = named_args.iter().map(|&(_, id)| id).collect();
+    let mut goals: Vec<Rc<NodeOccurrence>> = components
+        .into_iter()
+        .map(|id| convert_query_term_expecting(kb, parsed, id, scope, var_map, None, ConstFold::Goal, errors))
+        .collect();
+    let Some(last) = goals.pop() else {
+        return Some(expr_node(Expr::Const(Literal::Bool(true))));
+    };
+    let and = resolve_query_name(kb, crate::parse::pratt::AND_FUNCTOR, scope);
+    Some(goals.into_iter().rev().fold(last, |rest, goal| {
+        expr_node(Expr::Apply {
+            recv_type: None,
+            functor: and,
+            pos_args: vec![goal, rest],
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        })
+    }))
 }
 
 /// The typed variables the goal `parse_id`, converted as `occ`, declares: those written in its
@@ -34311,6 +34383,61 @@ impl<'a> Loader<'a> {
         const_named(self.kb, &name, self.current_scope)
     }
 
+    /// A PARENTHESIZED GOAL LIST in a contract clause's goal slot — the clause's goal, a
+    /// branch, a negand, a quantifier's body — is the conjunction of its goals (§5.3), as a
+    /// clause body reads it ([`Self::goal_list_conjunction`]): `(g₁, …, gₙ)` is
+    /// `and(g₁, and(g₂, … gₙ))`, the term `g₁ & … & gₙ` is, each component converted as a goal;
+    /// `()` is `true`. `None` for anything else. A NAMED tuple is refused, as at a clause's
+    /// goal, and converted as written.
+    ///
+    /// MEASURED before (WI-20261127-VTKQ4): the list was the tuple, so the call-site check read
+    /// a precondition no call could establish or refute — `requires (x > 0, x < 10)` let `c(20)`
+    /// load and run, where `requires x > 0, x < 10` and `requires x > 0 & x < 10` refused it —
+    /// and `requires not(x > 0, x < 10)` let `c(5)` through; and a clause handed to a query
+    /// (`pattern_query`) carried the tuple, whose `=` no type reached.
+    fn contract_goal_list(
+        &mut self,
+        parse_id: ParseTermId,
+        functor: Symbol,
+        pos_args: &[ParseTermId],
+        named_args: &[(Symbol, ParseTermId)],
+    ) -> Option<TermId> {
+        if !dt::is(self.parsed.symbols.local_name(functor), dt::TUPLE_LITERAL) {
+            return None;
+        }
+        // Resolved quietly when it is no tuple literal: the term build re-resolves the same name
+        // through the same `remap_name_str` and reports it there ([`Self::resolve_owner_name`]
+        // carries the invariant), so a user's unresolved `TupleLiteral(…)` is reported once.
+        let errors_before = self.errors.len();
+        let functor = self.remap_functor(functor, parse_id);
+        if !self.is_tuple_literal(functor, pos_args) {
+            self.errors.truncate(errors_before);
+            return None;
+        }
+        if !self.is_positional_list(named_args) {
+            self.errors.push(LoadError::GoalIsANamedTuple {
+                span: self.parsed.terms.span(parse_id),
+            });
+            return None;
+        }
+        let mut goals: Vec<TermId> = Vec::with_capacity(named_args.len());
+        for &(_, component) in named_args {
+            self.set_contract_slot(ConstFold::Goal);
+            goals.push(self.convert_term_with_expected(component, None));
+        }
+        let Some(last) = goals.pop() else {
+            return Some(self.kb.alloc(Term::Const(Literal::Bool(true))));
+        };
+        let and = self.remap_name_str(crate::parse::pratt::AND_FUNCTOR, self.parsed.terms.span(parse_id));
+        Some(goals.into_iter().rev().fold(last, |rest, goal| {
+            self.kb.alloc(Term::Fn {
+                functor: and,
+                pos_args: SmallVec::from_slice(&[goal, rest]),
+                named_args: SmallVec::new(),
+            })
+        }))
+    }
+
     /// WI-20261126-78B4M — the slot reading of the contract clause being converted
     /// ([`ContractClauseReading::slot`]), [`ConstFold::Off`] outside one.
     fn contract_slot(&self) -> ConstFold {
@@ -35336,6 +35463,12 @@ impl<'a> Loader<'a> {
                 // WI-20261126-78B4M — read before the children change it; `Off` outside a
                 // contract clause, which every child keeps.
                 let node_slot = self.contract_slot();
+                if node_slot == ConstFold::Goal {
+                    if let Some(kb_id) = self.contract_goal_list(parse_id, functor, &pos_args, &named_args) {
+                        self.term_map.insert(parse_id, kb_id);
+                        return kb_id;
+                    }
+                }
                 if let Some(kb_id) = self.contract_clause_qualified_reference(parse_id) {
                     self.term_map.insert(parse_id, kb_id);
                     return kb_id;
