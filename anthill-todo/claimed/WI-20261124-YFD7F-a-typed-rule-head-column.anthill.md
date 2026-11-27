@@ -168,3 +168,19 @@ SPEC: kernel-language.md s5.3, 'A typed column is checked where its value enters
 
 GATE (scripts/test.sh, full) after the review fixes: 12981 passed, 0 failed, 26 ignored (36 binaries). Families: green. Scaland: no typer, nothing to port. DONE WHEN met for S1-S3 (typed mem linear in steps, within 1.1 of the old unchecked one; [[]] refused; WI-742's guard rows and WI-743's 27 unchanged). OPEN: S4, to be decided apart; operation-body citations as evidence; load time of S1/S2 not measured.
 
+### 2026-11-27T16:45:34Z — feedback — user
+
+S4 SETTLED (user, 2026-11-27): the concrete-inferred EXEMPTION IS KEPT. firstX(5, cons(head: 5, tail: "junk")) keeps answering 1, firstT and firstU 0. The decision of 12:22 (remove it) is withdrawn, on the measurements below.
+
+(1) Removing the exemption gives the column a bound, and a bound brings the FILL, which GENERATES an unbound value: 33 rows move, anthill-core ~260 s -> 1231 s (entry above).
+
+(2) CHECK-ONLY is not available with what the kernel has. anthill.kernel.domain(?x, T) - the live WI-742 conformance goal, not the superseded <Sort>.domain value face - reads only the value's carried type (kernel-language s5.3): domain(cons(head: 5, tail: "junk"), List[T = Int64]) and domain(cons(head: 5, tail: ["s"]), List[T = Int64]) answer true; cons(head: "s", tail: [7]) is refuted. The deep check of a bound value is the fill's ("The head decides the mode": a bound value selects its one clause and is checked; an unbound one matches every head and is generated). One mechanism; the value decides the mode.
+
+(3) PROTOTYPE, measured and reverted: a concrete inferred column given its bound with the waiting domain check and no fill (plus the read, so a caller can trust it; a check-only caller's evidence stood for a check-only callee only). memX stayed linear (1201 / 2401 / 4801 steps at n = 100 / 200 / 400), but firstX still accepted the junk list, the check being shallow. anthill-core (optimized, 193 s, no slowdown): 15 rows move, all in wi_tests - 5 panic in ground_domain_dictionary at a BARE inferred Box (S1's unreachability argument holds for written bounds and for today's inferred ones, which always mention a variable; a concrete inferred bound breaks it); definite -> conditional (s4d63 useParam, 9wvt7 viaOperationNeg); lost or raised (gmg6n x2 reflection rows, 4xxsd f1, 1zg70 late4, 9wvt7 viaPlainRule, 80259 go raises where it answered 7); 3 more (9wvt7 x2, s4d63 x1) not read.
+
+WHAT CHECK-ONLY WOULD NEED, if wanted later: a mode of the fill that checks a bound value as now and WAITS on an unbound part instead of matching every head, carried into the sub-fills (a list's tail is filled through the same dictionary); the bound's own moves above; ground_domain_dictionary taught a bare inferred bound. A language change (s5.3). Not filed.
+
+THE GAP KEPT: a value from outside the typed program (a query argument) at an unannotated concrete column is not checked; inside the program the typer refuses building one.
+
+SEEN ON THE WAY: an unqualified constructor in a query that does not import it - firstX(5, cons(head: 5, tail: "junk")) - answers "no solutions" for every spelling, with no warning (cons is not in the query's scope). Not filed.
+
