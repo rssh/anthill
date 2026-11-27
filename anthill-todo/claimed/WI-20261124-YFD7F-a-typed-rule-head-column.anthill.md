@@ -145,3 +145,26 @@ SPEC: kernel-language.md §5.3, a paragraph after 'A call written in a rule body
 
 GATE (scripts/test.sh, full): 12970 passed, 0 failed, 26 ignored. Families: green. Scaland: no typer, nothing to port. NEXT: S1 (every typed column gets a read; a ground bound's dictionary built at load).
 
+### 2026-11-27T15:14:21Z — feedback — user
+
+S1-S3 BUILT (claude, 2026-11-27, session with the user; not yet committed). S4 MEASURED AND SET APART (user's decision).
+
+S1 - every fillable typed column gets the SortDomain read a caller routes to: a GROUND bound too (frame var ?d, find_dictionary read, fill apply_domain(?d, ?x, D)), D its dictionary built at load (typing::ground_domain_dictionary, from sort_domain_route); no type is handed to the run time to fill. No answer moved (anthill-core green), steps identical to HEAD.
+
+S2 - the evidence rule (typing/trusted_columns.rs), at route_goal: a rule-body goal hands a typed column's read __trusted(d) (resolve::TRUSTED_READ) where the caller ESTABLISHED the argument at the column's bound: a typed column of the caller that has a fill; a part of one destructured by a <=> on the conjunction path to the goal (the branch of | it is in; never under not / a quantifier), at its field's type (instances::field_type_at); a literal. The type is the CHECK's (the stored bound and its fields), never the goal's typer stamp. Match: callee bound ground and established ground and compatible; a bound with a variable only in the clause's own recursion at the same variables. A clause holding a cut trusts nothing (the cut would commit past cells the callee's fill no longer fills first). Not covered, each keeps its check: a citation from an operation body (operation parameters), a construction with a variable, a column with no fill.
+S3 - the open (resolve::bind_citation_reads -> ReadRoute::Trusted) binds ?d to the unwrapped d and drops that column's guard and fill (typed_column_goal_positions, read off the stored body).
+
+MEASURED (release CLI, fewest --max-steps that answer, n = 100 / 200 / 400): memT 1704 / 3404 / 6804 (was 27147 at 100); memU 1700 / 3400 / 6800; memX 1200 / 2400 / 4800. memT at 400: 0.76 s / 139 MB (was 18.55 s / 7.67 GB). Linear; within 1.1 of the unchecked memX's 1596 at n = 100 before.
+
+ROWS: tests/include/wi_yfd7f_trusted_columns_test.rs, 11. BACK-OUTS, each RUN: [T] no trusted slot / [D] no drop -> the two linearity rows; [S] evidence from the typer stamp -> 3 rows (strs(["a"]) answers; the other-branch row; memU); [C] cut ignored -> the cut row (4 answers for 1); [P] every <=> of the body on the path -> the other-branch row. Controls by design: generation through a trusted call (outerPair 4), a query argument checked where it enters, [[]] refused, a branch binding a part to another type refuted by the root's waiting guard, a ground bound's dictionary in every spelling.
+
+S4 (the concrete-inferred exemption removed) MEASURED: such a column GENERATES too, not just checks - 33 rows in 19 files move (q(?a, ?b) :- eq(append(?a, [3]), append(?b, [4])) enumerates 2933 list skeletons where it suspended once; conditional answers turn definite; reflected rows lost) and anthill-core goes from ~260 s to 1231 s. It changes when an unbound column generates, which this ticket's WHAT IS NOT ASKED excludes. User, 2026-11-27: ship S1-S3, decide S4 (check-only vs. generating at an inferred concrete column) apart; reverted, firstX keeps answering the junk list.
+
+SPEC: kernel-language.md s5.3, 'A typed column is checked where its value enters the typed program, not again inside it', text agreed with the user.
+
+/code-review (high): 7 findings. 2 important, both no_change_needed after measurement: a branch-local fact binding a trusted part to Float is refuted by the root column's waiting guard before the trusted callee runs (row added); the ground-dictionary panic is unreachable - the loader writes every parameter of a head's bound and condition_arg reads a default (row added over five spellings). Fixed: stored/opened body alignment is an assert; a trusted slot carries the goal's bracket dictionary; pattern fields named first. Skipped: load time not measured; operation-body citations not covered (recorded here).
+
+### 2026-11-27T15:22:09Z — feedback — user
+
+GATE (scripts/test.sh, full) after the review fixes: 12981 passed, 0 failed, 26 ignored (36 binaries). Families: green. Scaland: no typer, nothing to port. DONE WHEN met for S1-S3 (typed mem linear in steps, within 1.1 of the old unchecked one; [[]] refused; WI-742's guard rows and WI-743's 27 unchanged). OPEN: S4, to be decided apart; operation-body citations as evidence; load time of S1/S2 not measured.
+
