@@ -414,7 +414,7 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
 
 §8.3, once §3 is implemented: the alternatives of a goal independent of what follows it are not retried on a dead end after its definite exit; proof counts are unchanged, and so are answers except one kind: a search that ended truncated or faulted only because of such an alternative now ends refuted ("truncated means undecided" is then said of the branches a search has to enter). Once §4 is implemented: with the commit option, a ground goal's proofs are counted once. Stage B: a goal that waits, waits behind the goals of the body it was written in, and is handed to the caller when that body has nothing else left; 068 §2.2 is reworded with it. Stage D: §5.3 keeps the order it states for a domain (members by size, and within a size in clause order) and loses its rounds. §8.3 says that inside a fair region branches are taken by level, and that a cut there commits to the first proof in that order. The proposed text is below. Each of these is a spec change to agree with the user first.
 
-**Stage D, the proposed text** (drafted with the user 2026-11-27, against the spec as of `e6dfd1d03`). It assumes Stage D lands after Stage A and Stage B, so the region is the body and a fill that waits stays in it. The bracket is open question 11.
+**Stage D, the proposed text** (drafted with the user 2026-11-27, against the spec as of `e6dfd1d03`). It assumes Stage D lands after Stage A and Stage B, so the region is the body and a fill that waits stays in it.
 
 §5.3, replacing the part of "Finiteness is not a condition" from "fairness comes from SIZE" on:
 
@@ -435,13 +435,11 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
 
 §8.3, a new paragraph:
 
-> **A fair region** is opened by a goal of a relation declared fair, asked outside any region. `SortDomain`'s `fill` is such a relation [form of the declaration: open question 11]. The region runs to the end of the body that goal is asked in. Outside a region the search is depth-first, as above. A fair goal asked inside a region is part of it and opens no region of its own.
+> **A fair region** is opened by a goal of a relation declared fair, asked outside any region. `SortDomain`'s `fill` is such a relation: the member it implements, `Fillable.fill`, is declared `@[fair]`, and every provision's `fill` inherits it. The region runs to the end of the body that goal is asked in. Outside a region the search is depth-first, as above. A fair goal asked inside a region is part of it and opens no region of its own.
 >
 > A branch set aside is not a failure. It is resumed at its level with everything it had: its goals, its bindings, its assumptions. So every proof in the region is found once, and a relation's proof count is what depth-first search would give. A cut inside the region commits to the first proof in the region's order, and drops the branches set aside from the scope it cuts. A cut that commits past the region ends it.
 >
 > Levels are not depth: a resumed branch keeps its goals' depths, and the depth limit and fuel apply to it as to any branch. The region ends after a level that set nothing aside. A branch stopped by the depth limit is not set aside, so a drain that reaches the limit ends truncated.
-
-If Stage D is built BEFORE Stage A (open question 10), two sentences change. The region is "the fill and the typed-column fills right behind it", and "two fills with a goal between them" drops out. Until Stage B lands, the waiting sentence keeps today's gap: "a fill that waits inside the region generates after it: complete, but not fair against it".
 
 ## 10. Open questions
 
@@ -520,5 +518,5 @@ If Stage D is built BEFORE Stage A (open question 10), two sentences change. The
    - The user asked for a separate mechanism with an API for it: the agenda, with size-fair `fill` as its first policy.
    - The name was first written "parking" and changed, because `Wait::Parked` is a goal's wait state.
    - §8 and §9 amended. Open questions 10 to 13 added.
-   - §9 gained Stage D's proposed text for kernel-language §5.3 and §8.3, at the user's word ("Put it in §9"). It assumes Stage D after Stage A and Stage B, and gives the two sentences that change if it comes before Stage A.
+   - §9 gained Stage D's proposed text for kernel-language §5.3 and §8.3, at the user's word ("Put it in §9"). It assumes Stage D after Stage A and Stage B. The paragraph it gave for Stage D built before Stage A was deleted (user, 2026-11-28): open question 10 is decided, after. Its bracket on the declaration's form is filled from open question 11's decision, the text keeping "`SortDomain`'s `fill`" (user, 2026-11-28: the wording only).
    - The name "Stage D" is reused: revision 2 had it for backjumping, withdrawn there (§5).
