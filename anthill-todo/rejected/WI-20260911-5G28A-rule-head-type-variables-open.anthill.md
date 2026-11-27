@@ -3,9 +3,9 @@
 - id: WI-20260911-5G28A-rule-head-type-variables-open
 - created: 2026-09-11T12:28:49Z
 
-- status: Open
-- status_agent: claude
-- status_at: 2026-09-12T05:44:34Z
+- status: Rejected
+- status_agent: user
+- status_at: 2026-11-27T18:23:53Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -104,6 +104,10 @@ reflect model following the typer), WI-20260911-RS2G4 (the operation half; plan 
 WI-20260911-WT8WG items 6–8 (the resolver measurements), WI-743 (the gate and the derived
 clauses), WI-714 (the applied citation), WI-582 (the introducer), proposal 060 (its §"domain"
 clause already writes a shared head variable `List[T = ?T]`).
+
+## Reason
+
+Superseded by WI-20261127-DAPCN (proposal 060.1 §9, drafted with the user 2026-11-27): a rule's types are known at load, as an operation's are, and nothing reads a type off a value — the run-time read and the fresh flexible variables for unwritten slots this ticket built (S1–S5, delivered) are what §9 replaces. Its remaining work moves there: S6 (demo2 end to end, wi_5g28a_rule_dictionary_test.rs §3) and the 0RRQP row of 2026-10-21 (a bound at the caller's own type parameter with no SortDomain refused at the citation). User, 2026-11-27, review of the 060 / 060.1 / SortDomain tickets.
 
 ## Changes
 

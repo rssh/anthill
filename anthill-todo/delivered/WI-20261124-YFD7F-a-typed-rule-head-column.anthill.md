@@ -3,9 +3,9 @@
 - id: WI-20261124-YFD7F-a-typed-rule-head-column
 - created: 2026-11-24T10:02:24Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-27T11:05:00Z
+- status_at: 2026-11-27T18:27:00Z
 
 - acceptance: cargo-test
 
@@ -183,4 +183,8 @@ WHAT CHECK-ONLY WOULD NEED, if wanted later: a mode of the fill that checks a bo
 THE GAP KEPT: a value from outside the typed program (a query argument) at an unannotated concrete column is not checked; inside the program the typer refuses building one.
 
 SEEN ON THE WAY: an unqualified constructor in a query that does not import it - firstX(5, cons(head: 5, tail: "junk")) - answers "no solutions" for every spelling, with no warning (cons is not in the query's scope). Not filed.
+
+### 2026-11-27T18:26:58Z — feedback — user
+
+LOAD TIME OF S1/S2 MEASURED (claude, 2026-11-27; the open item of the review): no change. Release CLI at 3f1c2d860 (before S1–S3) against main (c9d251abc's code), anthill load with ANTHILL_LOAD_TIMING=1, min of 7 runs each, wall ms then type_check_sorts ms (stdlib, program): stdlib alone 440.7 / 427.3 (188.9, 4.2 / 185.7, 4.0); examples/github-todo 484.8 / 483.7 (192.3, 31.8 / 186.6, 30.2); classic-mini tiny-sat 435.0 / 431.8 (183.2, 5.5 / 185.7, 5.5); map-colouring 442.6 / 441.0 (185.9, 7.9 / 192.4, 7.2); alphabet-words 440.1 / 440.3 (190.3, 6.7 / 189.9, 6.8); the mem probe 437.5 / 435.3 (186.2, 4.4 / 191.0, 4.3) — every difference within ±3% and of either sign. DELIVERED with the user's agreement (2026-11-27, review of the 060 / 060.1 / SortDomain tickets): DONE WHEN met for S1–S3 (c9d251abc), S4 settled (exemption kept, b5bc17601). The remaining open item, a citation from an OPERATION BODY counted as evidence (an operation parameter is established too), is carried by proposal 077 §9 and 060.1 §9 item 5 — WI-20261127-DAPCN — where a value the typer has at a rigid is trusted.
 

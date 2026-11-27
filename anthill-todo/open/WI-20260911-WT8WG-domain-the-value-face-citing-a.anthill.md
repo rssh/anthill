@@ -680,3 +680,7 @@ ORDER (user): 077 WAITS ON PROPOSAL 076. Domain-heavy programs are not written b
 
 WHAT IS LEFT HERE: item 1 (above) and item 2 (the citations of <Sort>.domain moved to typed rules: map-colouring, and the wt8wg, shed7, wi743, g8e02, 5tk6b, 5g28a rows), both independent and decided; items 3 and 4 wait on 077.
 
+### 2026-11-27T18:27:17Z — feedback — user
+
+REVIEW OF 2026-11-27 (user, the 060 / 060.1 / SortDomain tickets): the 2026-11-27 entry above is out of date in two places. (1) Proposal 077 is MERGED to main (86a76c6cf; docs/proposals/077-rule-members-and-domain-provisions.md) and its branch wt8wg-proposal-077 deleted. (2) Its §2 was corrected the same day: a provision is an ANONYMOUS SORT whose rules are its own — not rules of the providing sort — so the decision recorded above, 'an author's rule under the derived rule's name is refused at load', is WITHDRAWN (077 open question 7): S.fill is no name of S, and an author's rule fill in S collides with nothing. Also added to 077 that day: §9, anthill.kernel.domain moved into SortDomain as the member check; §5.2 (open conditions) marked superseded by proposal 060.1 §9 (draft; WI-20261127-DAPCN: a rule's types known at load). Items 1 (Colour.domain an ordinary name) and 2 (its citations moved to typed rules) are unaffected, decided and buildable now; items 3 and 4 wait on 077, which waits on 076.
+

@@ -130,3 +130,7 @@ REFINED THE SAME DAY (user, 2026-09-25), correcting the note above: proposal 060
 
 GATED ON WI-1126 (user, 2026-11-02, dependency review). A type projection over an expression (the Unknown[e] kind of the 2026-09-25 note) changes the base type model instead of building on it — the work WI-1126 is the anchor for ('work that would CHANGE the base model rather than build on it').
 
+### 2026-11-27T18:27:22Z — feedback — user
+
+BEARS ON THIS TICKET (user, 2026-11-27): proposal 060.1 §9 (draft; WI-20261127-DAPCN) makes a rule's types known at load, as an operation's are — a rule's type parameter rigid in its body and fixed at each citation, the type variable of an unfilled slot created as an operation's is (a projection off the column at the top level, a fresh rigid when nested), and NOTHING READS A TYPE OFF A VALUE. The value-dependent Unknown[e] discussed here, and 060 §2.3's [] as a List[?] whose element's SortDomain stays open until a value pins it, are what §9 removes on the rule side; read §9 before building anything here.
+
