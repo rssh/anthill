@@ -94,7 +94,7 @@ Mode-directed, three-valued, never NAF-decided (WI-067):
 | bound, refuted | fail this binding (the schema is true by construction) |
 | bound, under-determined | suspend |
 | unbound, T's `SortDomain` has cases (§2.2) | **enumerate** — a choice point over T's values |
-| unbound, T a primitive (its fill is the waiting type check, §2.3) | delay + rotate; re-asked when a later goal binds it |
+| unbound, T an infinite primitive (its fill is the waiting type check, §2.3) | delay + rotate; re-asked when a later goal binds it |
 | still unbound at the end | flounder **loudly** (WI-737 route), never a silent non-check |
 
 052's `relation_clause_columns` already reads the bound first — the typing half is
@@ -430,8 +430,9 @@ primitive's `SortDomain` is not DERIVED — it has no constructors — and its `
 check: it leaves the variable free with its check waiting, so `List[T = Int64]` fills to skeletons —
 `[]` definitely, then `[?a]`, conditional until something binds `?a`, which is what the type-keyed
 goal answered before. A primitive whose values are finitely many LITERALS — `Bool` — has a derived
-case per literal, `fill(true)` and `fill(false)`, not a hand-written domain (WI-20260911-5TK6B; not
-built). A hand-written `Fillable` (067 §4's builder) is a `Fillable` and not a
+case per literal, `fill(true)` and `fill(false)`, not a hand-written domain (WI-20260911-5TK6B,
+built 2026-11-27: `kb::fill_derive::FINITE_PRIMITIVES` names the finite ones, `Bool` alone). It has
+no `Bool.domain`: the value face is superseded (below), and the loader mints none for it. A hand-written `Fillable` (067 §4's builder) is a `Fillable` and not a
 `SortDomain`, so it is accepted where `Fillable` itself is required.
 
 **The loader applies `combine` when deriving:** a sort's `fill` is emitted as its entities' cases,

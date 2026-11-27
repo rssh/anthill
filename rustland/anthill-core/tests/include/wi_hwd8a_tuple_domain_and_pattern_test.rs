@@ -336,9 +336,11 @@ fn a_tuple_holding_an_arrow_is_still_refused() {
 
 /// A head typed at a tuple enumerates the tuples of its components' domains, in the type's
 /// order: positional, labelled, inside `Option` (`none` and six), nested (twelve), as a list's
-/// element. A component of a type with no cases (`Bool`) keeps its conformance check, so
-/// `(Colour, Bool)` answers as a sort with those two fields does — three answers, each
-/// conditional. `?x <=> (red, 3)` answers it; `?x = (red, 3)` tests and never binds, so its
+/// element. A component of a type with no cases (`Int64`) keeps its conformance check, so
+/// `(Colour, Int64)` answers as a sort with those two fields does — three answers, each
+/// conditional. `Bool` was this row's example of such a type until WI-20260911-5TK6B gave it a
+/// clause per literal: `(Colour, Bool)` and the sort with those fields now answer six, each
+/// definite. `?x <=> (red, 3)` answers it; `?x = (red, 3)` tests and never binds, so its
 /// `Int64` stays a residual, and the other colours are refuted.
 #[test]
 fn a_typed_head_at_a_tuple_enumerates_its_domain() {
@@ -346,6 +348,7 @@ fn a_typed_head_at_a_tuple_enumerates_its_domain() {
     let program = src(
         ns,
         "  sort P\n    entity p(c: Colour, b: Bool)\n  end\n  \
+         sort Q\n    entity q(c: Colour, n: Int64)\n  end\n  \
          rule two(?x: (Colour, Size)) :- true\n  \
          rule named(?x: (c: Colour, s: Size)) :- true\n  \
          rule opt(?x: Option[T = (Colour, Size)]) :- true\n  \
@@ -353,6 +356,8 @@ fn a_typed_head_at_a_tuple_enumerates_its_domain() {
          rule lst(?x: List[T = (Colour, Size)]) :- ?x <=> [?a]\n  \
          rule withBool(?x: (Colour, Bool)) :- true\n  \
          rule sortWithBool(?x: P) :- true\n  \
+         rule withInt(?x: (Colour, Int64)) :- true\n  \
+         rule sortWithInt(?x: Q) :- true\n  \
          rule unified(?x: (Colour, Int64)) :- ?x <=> (Colour.red, 3)\n  \
          rule tested(?x: (Colour, Int64)) :- ?x = (Colour.red, 3)\n  \
          rule unit(?x: ()) :- true\n  \
@@ -366,8 +371,10 @@ fn a_typed_head_at_a_tuple_enumerates_its_domain() {
         ("opt(?x)", (7, 7)),
         ("nest(?x)", (12, 12)),
         ("lst(?x)", (6, 6)),
-        ("withBool(?x)", (0, 3)),
-        ("sortWithBool(?x)", (0, 3)),
+        ("withBool(?x)", (6, 6)),
+        ("sortWithBool(?x)", (6, 6)),
+        ("withInt(?x)", (0, 3)),
+        ("sortWithInt(?x)", (0, 3)),
         ("unified(?x)", (1, 1)),
         ("unified((COLOUR.red, 3))", (1, 1)),
         ("tested(?x)", (0, 1)),

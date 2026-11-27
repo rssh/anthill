@@ -51,9 +51,14 @@
 //! ([`SortDomainEntry::fielded`]); a sort of nullary constructors only is generated whole without
 //! rounds.
 //!
-//! **A PRIMITIVE HAS NO CASES** (user, 2026-09-25: every type has a `SortDomain`): its `fill`
-//! is the waiting type check, `anthill.kernel.domain(?x, Int64)` — it leaves `?x` free and
-//! decides once something binds it, so `List[T = Int64]` fills to skeletons.
+//! **AN INFINITE PRIMITIVE HAS NO CASES** (user, 2026-09-25: every type has a `SortDomain`): its
+//! `fill` is the waiting type check, `anthill.kernel.domain(?x, Int64)` — it leaves `?x` free and
+//! decides once something binds it, so `List[T = Int64]` fills to skeletons. A FINITE one —
+//! `Bool` alone, [`FINITE_PRIMITIVES`] — gets the shape a sort's constructors get, ONE CLAUSE PER
+//! LITERAL, the literal in the head (WI-20260911-5TK6B): `Bool.__fill(true)`,
+//! `Bool.__fill(false)`, so a bound `Bool` selects its one clause and an unbound one enumerates
+//! `true`, then `false`. Not a hand-written domain: that is domain-defining, and a disjunction in
+//! its body would propose each literal to a bound value in turn (WI-20261115-YR3N7).
 //!
 //! **THE DICTIONARY IS HANDED IN, NEVER A HEAD ARGUMENT** (060 §5): `?self` is the clause's
 //! implicit parameter — a requirement READ, which `apply_domain` fills through the citation
@@ -87,13 +92,31 @@ pub(crate) const DOMAIN_SUB: &str = "anthill.kernel.__domain_sub";
 /// Where a sort's `SortDomain` comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SortDomainKind {
-    /// Derived from the sort's constructors, here.
+    /// Derived here, one clause per case: from the sort's constructors, or from a finite
+    /// primitive's literals ([`FINITE_PRIMITIVES`]).
     Derived,
     /// The sort's own written `domain(?x)` — it IS the generator, and replaces the
     /// derivation (060 §2.2).
     Written,
-    /// A literal sort: `fill` is the waiting type check.
+    /// An INFINITE literal sort: `fill` is the waiting type check.
     Primitive,
+}
+
+/// The primitives whose values are FINITELY MANY literals, each with its literals in generation
+/// order, and the name each literal's case is labeled by — `Bool` alone today. Its `fill` is
+/// derived one clause per literal ([`derive_literal_cases`]). Every other primitive
+/// ([`crate::kb::load::PRELUDE_SORTS`]: `Int64`, `BigInt`, `Float`, `String`) is INFINITE, the
+/// line `Bool` sits on the other side of, and keeps the waiting check.
+const FINITE_PRIMITIVES: &[(&str, &[(&str, Literal)])] = &[(
+    "Bool",
+    &[("true", Literal::Bool(true)), ("false", Literal::Bool(false))],
+)];
+
+/// Is `qn` the qualified name of a [`FINITE_PRIMITIVES`] entry? Such a sort gets no
+/// `<Sort>.domain` name at all (`load::DefinePass::exit_scope`): see [`derive_literal_cases`].
+pub(crate) fn is_finite_primitive_qn(qn: &str) -> bool {
+    qn.strip_prefix("anthill.prelude.")
+        .is_some_and(|name| FINITE_PRIMITIVES.iter().any(|(n, _)| *n == name))
 }
 
 /// One of a sort's `sort T = ?` type parameters, as its domain reads it — collected by the
@@ -390,15 +413,31 @@ fn internal_fill_symbol(kb: &mut KnowledgeBase, sort: Symbol) -> Symbol {
 }
 
 /// Every PRIMITIVE sort this KB declares — a sort whose values are LITERALS, not constructor
-/// applications ([`crate::kb::load::PRELUDE_SORTS`]) — gets its `fill`, the waiting type
-/// check: `Int64.domain(?x) :- anthill.kernel.domain(?x, Int64)`.
+/// applications ([`crate::kb::load::PRELUDE_SORTS`]) — gets its `fill`. An INFINITE one's is the
+/// waiting type check, `Int64.domain(?x) :- anthill.kernel.domain(?x, Int64)`; a FINITE one's
+/// ([`FINITE_PRIMITIVES`]) is a clause per literal ([`derive_literal_cases`]).
 fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
+    debug_assert!(
+        FINITE_PRIMITIVES
+            .iter()
+            .all(|(n, _)| crate::kb::load::PRELUDE_SORTS.contains(n)),
+        "a finite primitive is a prelude sort, or the loop below never reaches it",
+    );
     for name in crate::kb::load::PRELUDE_SORTS {
         let qn = crate::kb::load::prelude_sort_qn(name);
         let Some(sort) = kb.try_resolve_symbol(&qn) else {
             continue;
         };
         if !kb.has_kind(sort, SymbolKind::Sort) || kb.has_sort_domain(sort) {
+            continue;
+        }
+        let domain = kb
+            .symbols
+            .declaring_scope(sort)
+            .map(|s| s.owner())
+            .unwrap_or(sort);
+        if let Some(&(_, literals)) = FINITE_PRIMITIVES.iter().find(|(n, _)| n == name) {
+            derive_literal_cases(kb, sort, domain, literals);
             continue;
         }
         let Some(check) = kb.try_resolve_symbol(crate::kb::typing::TYPE_DOMAIN_GOAL) else {
@@ -418,11 +457,6 @@ fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
         let head = pos_fn(kb, fill, &[x]);
         let body = vec![pos_fn(kb, check, &[x, self_type])];
         let body_nodes = kb.term_body_to_nodes(&body);
-        let domain = kb
-            .symbols
-            .declaring_scope(sort)
-            .map(|s| s.owner())
-            .unwrap_or(sort);
         // WI-20261121-G8E02 — the primitive's one clause, labeled by the relation it is
         // the clause of (`Int64.domain`), which names it alone.
         let rid = kb.assert_rule_debruijn_with_nodes(
@@ -445,6 +479,58 @@ fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
                 reads: 0,
                 fielded: false,
             },
+        );
+    }
+}
+
+/// A FINITE primitive's `fill`, in the shape a sort's nullary constructors get
+/// (WI-20260911-5TK6B; 060 §2.3, "The head decides the mode"): ONE CLAUSE PER LITERAL, the
+/// literal in the head, in `literals`' order — `Bool.__fill(true)`, `Bool.__fill(false)`. A bound
+/// value selects the one clause its literal heads, a check with no case proposed and refuted; an
+/// unbound one matches both heads in turn. Each case is a fact: a literal has no field, so no
+/// clause reads a dictionary and none is a case a round of generation pays for.
+///
+/// NO VALUE FACE, AND NO NAME FOR ONE (user, 2026-11-27: "why we need Bool.domain?").
+/// `<Sort>.domain` is superseded by `SortDomain[T].fill` (060 §2.3): it names a sort, so it
+/// cannot take a domain from a type parameter's dictionary, and nothing reaches this `fill`
+/// through it — a typed head, a field and a dictionary all call `apply_domain`. The loader mints
+/// `<Sort>.domain` only for a face's citation to find, so it mints none here
+/// ([`is_finite_primitive_qn`]): a goal or a citation of `Bool.domain` names nothing, refused
+/// at load as any unknown name is, where a minted name with no clause would answer nothing.
+fn derive_literal_cases(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    domain: Symbol,
+    literals: &[(&str, Literal)],
+) {
+    let fill = internal_fill_symbol(kb, sort);
+    kb.record_sort_domain(
+        sort,
+        SortDomainEntry {
+            fill,
+            params: Vec::new(),
+            conditions: Vec::new(),
+            sub_offset: 0,
+            kind: SortDomainKind::Derived,
+            reads: 0,
+            fielded: false,
+        },
+    );
+    for (name, lit) in literals {
+        let value = kb.alloc(Term::Const(lit.clone()));
+        let head = pos_fn(kb, fill, &[value]);
+        let body_nodes = kb.term_body_to_nodes(&[]);
+        // WI-20261121-G8E02 — a case is labeled by the domain and its literal,
+        // `<Sort>.domain-<literal>`, as a constructor's case is by its constructor.
+        let case_label = format!("domain-{name}");
+        let case_label = kb.derived_label(sort, &case_label);
+        kb.assert_rule_debruijn_with_nodes(
+            head,
+            body_nodes,
+            ClauseKind::Rule,
+            domain,
+            None,
+            ClauseLabel::Derived(case_label),
         );
     }
 }

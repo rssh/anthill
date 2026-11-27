@@ -10,7 +10,8 @@
 //! they had then — and are kept as its record; SHED7's own axes are in
 //! `wi_shed7_fillable_test`. Three rows moved with the design, each saying so at its
 //! site: the explicit member goal is `Colour.domain(?x)`, `Bool` has a primitive domain
-//! (the waiting check), and a bare `?w: List` fills to skeletons — `[]` definitely.
+//! (the waiting check — since WI-20260911-5TK6B a clause per literal, so it enumerates), and
+//! a bare `?w: List` fills to skeletons — `[]` definitely.
 //!
 //! WI-742 gave `?x: T` a body goal that TESTS (`domain(?x, T)`, prepended) and DELAYS
 //! when `?x` is unbound. This ticket adds the generator at the other end of the body:
@@ -72,7 +73,8 @@
 //! and fails with the rounds removed.
 //!
 //!  * `a_constructorless_bound_keeps_wi742`, `an_introducer_bound_still_delays`,
-//!    `bool_has_a_primitive_domain_and_does_not_enumerate`,
+//!    `bool_has_a_derived_domain_and_enumerates` (as `bool_has_a_primitive_domain_and_does_
+//!    not_enumerate`, before WI-20260911-5TK6B flipped it),
 //!    `a_simp_equation_reads_no_member_and_still_fires`
 //!    and `a_declined_sort_records_why` pass under EVERY back-out above, BY DESIGN:
 //!    they are the gate's other side — what a sort with no derived domain still does.
@@ -86,8 +88,8 @@
 //!    TYPE-VARIABLE bound through a `SortDomain` dictionary (5G28A S3a, SHED7).
 //!  * The VALUE face, `Colour.domain` cited as a relation value — WT8WG's suite, and since
 //!    SHED7 the parameterised one too (`wi_shed7_fillable_test`).
-//!  * `Bool` ENUMERATING: its values are literals, so its `fill` is the waiting check —
-//!    pinned by `bool_has_a_primitive_domain_and_does_not_enumerate`; WI-20260910-5TK6B.
+//!  * `Bool` ENUMERATING: delivered by WI-20260911-5TK6B, a clause per literal —
+//!    `bool_has_a_derived_domain_and_enumerates` here, and `wi_5tk6b_bool_domain_test`.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
@@ -454,14 +456,15 @@ fn an_explicit_member_goal_answers_what_the_typed_head_does() {
 }
 
 #[test]
-fn bool_has_a_primitive_domain_and_does_not_enumerate() {
+fn bool_has_a_derived_domain_and_enumerates() {
     // `Bool` did not appear in the all-nullary census because its values are LITERALS,
     // not entity constructors — there is no constructor list to read existentially.
     // WI-20260925-SHED7: EVERY type has a `SortDomain` (user, 2026-09-25), and a
-    // primitive's `fill` is the WAITING TYPE CHECK — so `Bool` has a domain, derived from
-    // no constructor list, and `?x: Bool` over an unbound `?x` still does not enumerate:
-    // it waits, and the row is undecided. Enumerating `true` / `false` is
-    // WI-20260910-5TK6B's.
+    // primitive's `fill` was the WAITING TYPE CHECK, so `?x: Bool` over an unbound `?x`
+    // answered one undecided row. WI-20260911-5TK6B FLIPPED THIS ROW: `Bool`'s values are
+    // finitely many, and its `fill` is derived a clause per literal, the literal in the
+    // head (`kb::fill_derive::FINITE_PRIMITIVES`) — so it enumerates `true` and `false`,
+    // each definite. Its own suite is `wi_5tk6b_bool_domain_test`.
     let mut kb = crate::common::load_kb_with(
         "namespace test.wi743.bool\n\
          \x20 import anthill.prelude.{Bool}\n\
@@ -475,8 +478,8 @@ fn bool_has_a_primitive_domain_and_does_not_enumerate() {
         .try_resolve_symbol("anthill.prelude.Bool")
         .expect("Bool is in the prelude");
     assert!(kb.has_sort_domain(b));
-    assert_eq!(answers(&mut kb, "test.wi743.bool.anyBool(?x)"), 1);
-    assert_eq!(definite_answers(&mut kb, "test.wi743.bool.anyBool(?x)"), 0);
+    assert_eq!(answers(&mut kb, "test.wi743.bool.anyBool(?x)"), 2);
+    assert_eq!(definite_answers(&mut kb, "test.wi743.bool.anyBool(?x)"), 2);
     // The CONTROL, sharing nothing but the predicate: a sort with constructors has one too.
     let colour = kb.try_resolve_symbol("test.wi743.bool.Colour").unwrap();
     assert!(kb.has_sort_domain(colour));

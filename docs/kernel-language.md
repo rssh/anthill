@@ -3125,7 +3125,17 @@ Letter provides SortDomain[T = Letter]                            -- derived
 List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]    -- derived
   rule fill(nil)
   rule fill(cons(head: ?h, tail: ?t)) :- fill(?t), SortDomain[T].fill(?h)
+Bool provides SortDomain[T = Bool]                                -- derived
+  rule fill(true)
+  rule fill(false)
 ```
+
+A primitive whose values are finitely many LITERALS — `Bool` alone — is derived
+the same shape, a clause per literal, the literal in the head
+(WI-20260911-5TK6B): `rule b(?x: Bool) :- true` answers `true`, then `false`, and a
+`List[T = Bool]` spine with free cells fills them. Every other primitive
+(`Int64`, `BigInt`, `Float`, `String`) is infinite, and its `fill` is the
+conformance check, waiting while its value is unbound.
 
 **The head decides the mode** (WI-20261115-YR3N7). A bound value selects the one
 clause its constructor heads, so a typed column CHECKS it and proposes no other
@@ -3176,8 +3186,8 @@ fields before the others — orders the members of ONE size, so a free
 `List[T = Letter]` comes out `[]`, `[a]`, `[b]`, `[c]`, `[a, a]`, `[b, a]`, ….
 A cut that commits past a fill commits its later rounds away. A bound value is
 checked in round 0, and a ground check costs per element what the same domain
-written a clause per constructor does. Only a sort with NO constructors
-(`String`, a primitive, an abstract sort, a spec) keeps §2's ladder: delay,
+written a clause per constructor does. Only a sort with NO cases (an infinite
+primitive such as `String`, an abstract sort, a spec) keeps §2's ladder: delay,
 re-ask on binding, flounder loudly at the end.
 
 **The generated goal is APPENDED, where §2's conformance guard is prepended**,
@@ -3206,7 +3216,10 @@ infinite domain is a lazy stream like any other (`Nat.domain.takeN(4)` is `z`,
 2026-11-02). It still answers — `List[T = Letter].domain` through the dictionary its
 bracket builds; bare `List.domain` is refused — but a domain wanted as a value is a
 typed rule cited by name (`rule colours(?x: Colour) :- true`, then
-`colours.takeN(5)`), which also reaches the domain of a type variable.
+`colours.takeN(5)`), which also reaches the domain of a type variable. `Bool`,
+derived after the decision, has no `.domain` at all (user, 2026-11-27): every
+fill reaches its clauses through the dictionary, and `Bool.domain` names nothing,
+refused at load as a goal and as a citation.
 
 **Any sort may write its own `domain`**, as a relation `domain(?x)` in the sort's
 body, and it then REPLACES the derivation for that sort — today's wrapper pattern
@@ -3226,8 +3239,7 @@ today.
 bracket) does not enumerate — nothing is derived for a spec, so the bound keeps
 §2's delay. Reaching the caller's instantiation needs `domain` to be a member of a
 kernel finiteness spec and a dictionary channel that carries a RELATION
-(WI-20260909-NAR1X). `Bool` has no derived domain either: its values are
-literals, not entity constructors, so there is no constructor list to read.
+(WI-20260909-NAR1X).
 
 A bound that is a TYPE VARIABLE — `rule el(?x: T) :- true` inside `sort Wrap[T]`
 — names no sort, so its domain is an implicit parameter of the clause: a

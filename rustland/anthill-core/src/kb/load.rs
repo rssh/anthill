@@ -11474,8 +11474,16 @@ impl ScopePass for DefinePass<'_> {
             return;
         };
         // WI-20260925-SHED7 — a PRIMITIVE has a domain too (every type has a
-        // `SortDomain`), whose `fill` is the waiting type check (`kb::fill_derive`).
-        let primitive = is_prelude_sort_qn(self.kb.qualified_name_of(scope.owner()));
+        // `SortDomain`); an INFINITE one's `fill` is the waiting type check, cited under
+        // `<Sort>.domain` (`kb::fill_derive`).
+        let qn = self.kb.qualified_name_of(scope.owner());
+        // WI-20260911-5TK6B — a FINITE primitive (`Bool`) has its domain and no value face:
+        // `<Sort>.domain` is superseded by `SortDomain[T].fill` (proposal 060 §2.3), so it
+        // gets no name either, and a goal or a citation of `Bool.domain` names nothing.
+        if crate::kb::fill_derive::is_finite_primitive_qn(qn) {
+            return;
+        }
+        let primitive = is_prelude_sort_qn(qn);
         if !primitive
             && !s
                 .items

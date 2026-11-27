@@ -254,9 +254,10 @@ namespace anthill.reflect
      `rule p(?x: T) :- body` means `rule p(?x) :- body, SortDomain[T].fill(?x)`. EVERY
      type has one (user, 2026-09-25). The loader derives it for a sort with
      constructors, per entity and per field — conditional on the parameters a field
-     fills (`List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]`) — and a
-     primitive's `fill` is the waiting type check: it leaves the variable free and
-     decides once something binds it.
+     fills (`List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]`) — and an
+     infinite primitive's `fill` is the waiting type check: it leaves the variable free
+     and decides once something binds it. `Bool`, whose values are finitely many, is
+     derived a clause per literal, `fill(true)` and `fill(false)` (WI-20260911-5TK6B).
 
      The relation a provider's `fill` runs is derived beside the sort, a clause per
      constructor — the constructor in its head, so a bound value selects one clause and an

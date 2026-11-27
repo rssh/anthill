@@ -434,7 +434,7 @@ behind it, precisely so the citation can say whose ticket it is
 **Not delivered here:** the parameterised value face — delivered on the requirement channel
 by WI-20260925-SHED7 step 1 (§7.3), the citation's bracket building the dictionary (5G28A
 owned the general "receiver bracket on a rule citation" binding; RS2G4 did the OPERATION half);
-`Bool` (WI-20260910-5TK6B); fairness for two recursive positions (09E6M, since delivered:
+`Bool` (WI-20260911-5TK6B, since delivered: a clause per literal, and no `Bool.domain`); fairness for two recursive positions (09E6M, since delivered:
 generation by size, 060 §2.3); abstract `T` (NAR1X).
 
 ## 7.2 §8.1's rule half — rule-head type VARIABLES — WI-20260911-5G28A
@@ -856,7 +856,7 @@ answered by `BuiltinTag::TypeDomain`, and printed in floundered residuals.
    `[?1, ?2]`, definite. What raises `relation_floundered` (WI-737) is a CONDITIONAL row:
    `ints.takeN(1).length()` = `1` (the definite `[]`), and `ints.takeN(3).length()` raises,
    because `[?a]` carries the `Int64` check still waiting on `?a`. The same for `String` and `Float`; `Bool`, whose values are
-   literals, is WI-20260910-5TK6B's.
+   finitely many literals, enumerates since WI-20260911-5TK6B (a clause per literal).
 2. ~~A value whose type names no element~~ — **DECIDED (user, 2026-09-25), proposal 060 §2.3:**
    `[]` is a `List[?]`, and a condition is resolved when `fill` reads it, a read waiting while its
    type is unpinned — `[]` takes `List`'s `nil` case and never reads it. The original question: reached with no caller — `[]`, `none()`. Conform
@@ -1029,7 +1029,7 @@ in the same order.
    (`countAt[X]`, `wrapped()`, a bound `hasAt`), is 060 §2.3's "How `fill` is threaded".
 4. **The dictionary is read only in the clauses that read a condition** — `fill(nil)` is a fact.
 5. **A primitive keeps one clause**, the waiting type check; a primitive with finitely many literal
-   values (`Bool`) gets a derived clause per literal — WI-20260911-5TK6B.
+   values (`Bool`) gets a derived clause per literal — WI-20260911-5TK6B, delivered 2026-11-27.
 6. **What builds on the relation keeps the shape**: a hand-written domain's provision (item 2
    above, WI-20260911-WT8WG), fair interleaving (WI-20260911-09E6M — delivered as generation
    by size, in rounds the resolver runs over the clauses as they are), `Bool`'s clauses.
@@ -1181,7 +1181,7 @@ loads. Rows and the per-half back-out: `wi_gp8jc_defaulted_weave_test.rs`.
   the stream ENDS. `String`'s domain EXISTS and is infinite (user, 2026-09-24), but nothing
   derives it today — MEASURED, `domain_member(?x, String)` and `…Int64` each answer one
   conditional row with `domain_leaf(?_, String)` / `…Int64` in the residual, and there is no
-  `String.domain` — so until a primitive's domain is provided (as WI-20260910-5TK6B does for
+  `String.domain` — so until a primitive's domain is provided (as WI-20260911-5TK6B did for
   `Bool`), a `String` instantiation cannot meet the requirement. A `TypeValue[T = X]` shortcut
   was considered on 2026-09-24 and withdrawn: it promises only that `X` is known at run time,
   not that anything can list its values.
