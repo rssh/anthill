@@ -1083,7 +1083,13 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
                 implicit_domain_goals(kb, rid, db_index, bound_tid, &anchor, pass, owner)
                     .map(Vec::from)
             } else {
-                ground_fill_goals(kb, bound_tid, &var, &ty, &goal)
+                // WI-20261124-YFD7F S1 — A GROUND bound gets the read too, so a caller can
+                // route to every typed column, and its fill reads the dictionary built HERE,
+                // where no caller hands one: no type is handed to the run time to fill.
+                ground_domain_dictionary(kb, bound_tid).and_then(|dict| {
+                    implicit_domain_goals(kb, rid, db_index, dict, &anchor, pass, owner)
+                        .map(Vec::from)
+                })
             };
             // The fill APPENDED, and the guard in front of the body (see the doc above); a bound
             // with no fill keeps the waiting conformance check, which is all it has.
@@ -1101,23 +1107,64 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
 }
 
 /// The `fill` of a variable typed at the ground type `bound`, which has a domain: through the
-/// type (`apply_domain`), the one dispatch every fill takes (WI-20261115-YR3N7, which added at
-/// the call the case of a value of a refining sort; proposal 074 stage 5 removed it, no sort
-/// refining one with constructors). `None` where the kernel has no `apply_domain` to call.
+/// dictionary built at load ([`ground_domain_dictionary`]), by `apply_domain`, the one dispatch
+/// every fill takes (WI-20261115-YR3N7, which added at the call the case of a value of a
+/// refining sort; proposal 074 stage 5 removed it, no sort refining one with constructors).
+/// `None` where the kernel has no `apply_domain` to call or no dictionary to build.
 fn ground_fill_goals(
     kb: &mut KnowledgeBase,
     bound: TermId,
     var: &dyn Fn() -> Rc<NodeOccurrence>,
-    ty: &dyn Fn() -> Rc<NodeOccurrence>,
+    span: crate::span::SourceSpan,
     goal: &dyn Fn(Symbol, Vec<Rc<NodeOccurrence>>) -> Rc<NodeOccurrence>,
 ) -> Option<Vec<Rc<NodeOccurrence>>> {
+    let apply = kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)?;
+    let dict = ground_domain_dictionary(kb, bound)?;
+    let dict = NodeOccurrence::new_expr(Expr::Spliced(Value::term(dict)), span, None);
+    Some(vec![goal(apply, vec![dict, var()])])
+}
+
+/// WI-20261124-YFD7F S1 — the `SortDomain` dictionary of the ground type `bound`, which has a
+/// domain, built at load from the table as a citation's is (`sort_domain_route`): a sort has
+/// one domain, so nothing is chosen. `None` only in a KB that never loaded `SortDomain` or the
+/// dictionary constructor, where nothing could fill the bound anyway.
+///
+/// A fillable ground bound always HAS one: its head has a domain and so does every condition it
+/// writes ([`bound_is_fillable`]), and none is missing — [`bound_is_fillable`] admits a missing
+/// condition argument, but the loader writes every parameter of a head's bound
+/// (`load::expand_rule_head_bound_type_params`, a parameter left open is a variable, so the bound
+/// is no ground one), a query's typed variable is refused where the expansion leaves one open
+/// ([`typed_query_variable_goals`]), and an unwritten parameter with a default is read at its
+/// default (`fill_derive::condition_arg`). MEASURED 2026-11-27: `Duo[Colour, Colour]`,
+/// `Option[Hue]` through an alias, a list alias, a tuple and a query's `?x: Box` at a defaulted
+/// `Box[T = Colour]` each build (`wi_yfd7f_trusted_columns_test`). So a route that builds none
+/// is a fault of the table, and is reported as one rather than filled through the type instead.
+pub(super) fn ground_domain_dictionary(kb: &mut KnowledgeBase, bound: TermId) -> Option<TermId> {
     debug_assert!(
         schema_fields(kb, &Value::term(bound)).is_some()
             || type_term_head_sym(kb, bound).is_some_and(|h| kb.has_sort_domain(h)),
         "a fillable bound is a tuple or has a head with a domain",
     );
-    kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)
-        .map(|apply| vec![goal(apply, vec![ty(), var()])])
+    let spec = kb.try_resolve_symbol(SORT_DOMAIN_SPEC)?;
+    let syms = ProjectionSyms::resolve(kb)?;
+    let mut misfits = Vec::new();
+    let dict = sort_domain_route(
+        kb,
+        &DictChain::empty(),
+        &[],
+        &Substitution::new(),
+        spec,
+        &Value::term(bound),
+        &syms,
+        &mut misfits,
+    );
+    Some(dict.unwrap_or_else(|| {
+        panic!(
+            "a fillable ground bound `{}` has a `SortDomain` dictionary at load ({} misfit(s))",
+            crate::persistence::print::TermPrinter::new(kb).print_term(bound),
+            misfits.len(),
+        )
+    }))
 }
 
 /// The goals a query's typed variable `?x: T` adds (proposal 010.1 §3.1): the ones a typed rule
@@ -1172,7 +1219,7 @@ pub(crate) fn typed_query_variable_goals(
         )
     };
     let fill = if bound_is_fillable(kb, bound) {
-        ground_fill_goals(kb, bound, &var_occ, &ty, &goal)
+        ground_fill_goals(kb, bound, &var_occ, span, &goal)
     } else {
         None
     };
@@ -1306,22 +1353,25 @@ fn bound_is_fillable(kb: &KnowledgeBase, t: TermId) -> bool {
 
 /// Does the stored type term mention a variable — a rule-scoped one, or the enclosing sort's
 /// parameter opened per activation? Either way it is not known until the clause runs.
-fn term_mentions_var(kb: &KnowledgeBase, t: TermId) -> bool {
+pub(super) fn term_mentions_var(kb: &KnowledgeBase, t: TermId) -> bool {
     term_any_subterm(kb, t, &|_, term| matches!(term, Term::Var(_)))
 }
 
-/// WI-20260911-5G28A S3, WI-20260925-SHED7 — the two goals a bound MENTIONING A VARIABLE
-/// gets:
+/// WI-20260911-5G28A S3, WI-20260925-SHED7, WI-20261124-YFD7F S1 — the two goals every
+/// FILLABLE typed column gets:
 ///
 /// ```text
 /// apply_domain(?d, ?x, B),  find_dictionary(SortDomain, SortDomain, ?x, out: ?d)
 /// ```
 ///
-/// `apply_domain` conforms and fills — through `?d` when a citation routed one, through `B`
-/// otherwise. The read is the IMPLICIT PARAMETER a citation routes to: its shape is the
-/// anchor form on purpose, so `requirement_read_out` finds it, the typer routes the caller's
-/// `SortDomain` slot to it (§7.3 S2) and the resolver binds `?d` when it opens the clause.
-/// Unrouted, it builds its dictionary from `?x`'s type once `?x` is bound. `?d` is a new
+/// `apply_domain` conforms and fills — through `?d` when a caller routed one, through `B`
+/// otherwise. `B` is the bound where it mentions a variable, which the conform reads `?x`'s
+/// type into; where the bound is GROUND it is the bound's dictionary, built at load
+/// ([`ground_domain_dictionary`]) — the conform has nothing to read, and the fill is handed
+/// no type at run time (YFD7F S1). The read is the IMPLICIT PARAMETER a caller routes to: its
+/// shape is the anchor form on purpose, so `requirement_read_out` finds it, the typer routes
+/// the caller's `SortDomain` slot to it (§7.3 S2) and the resolver binds `?d` when it opens
+/// the clause; unrouted, it runs as no goal (`resolve::is_routing_only_read`). `?d` is a new
 /// clause variable, so the frame GROWS — by prepending, which leaves every existing De
 /// Bruijn index where it was ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
 ///
@@ -1332,6 +1382,7 @@ fn implicit_domain_goals(
     kb: &mut KnowledgeBase,
     rid: crate::kb::RuleId,
     db_index: u32,
+    // The bound where it mentions a variable; for a ground bound, its dictionary.
     bound_tid: TermId,
     anchor: &Rc<NodeOccurrence>,
     pass: crate::kb::occurrence::PassId,

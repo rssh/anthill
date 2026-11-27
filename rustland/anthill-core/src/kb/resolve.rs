@@ -1878,6 +1878,12 @@ pub struct SearchStream {
     /// a clause of a DERIVED `fill` ([`derived_fill_read_position`]), which the body open drops
     /// once a marker has bound it. Static per rule, as `routing_read_cache` is.
     fill_read_cache: HashMap<RuleId, Option<usize>>,
+    /// WI-20261124-YFD7F — per-query cache: rule → for each of its typed columns that has a
+    /// `SortDomain` read, the read's index among the clause's requirement reads and the body
+    /// positions of the column's own guard and fill ([`typed_column_goal_positions`]), which
+    /// the body open drops when a caller hands the read a TRUSTED slot. Static per rule, as
+    /// `fill_read_cache` is.
+    trusted_column_cache: HashMap<RuleId, Rc<[(usize, SmallVec<[usize; 2]>)]>>,
     /// WI-20260911-09E6M — per-query cache: rule → is it a case of a DERIVED `fill` whose
     /// constructor has fields, the case a round's budget pays for ([`SizeBudget`]). Static per
     /// rule, as `fill_read_cache` is.
@@ -6956,7 +6962,7 @@ impl SearchStream {
             // clause has its `out` bound to the dictionary the citation captured for it,
             // so the read CHECKS it (060 §4) instead of deriving its own.
             // Which of the clause's reads the marker bound, in body order.
-            let bound_reads: SmallVec<[bool; 2]> = if let Some((relation, dicts)) =
+            let bound_reads: SmallVec<[ReadRoute; 2]> = if let Some((relation, dicts)) =
                 within_requirements_args(kb, &original_goal)
             {
                 let layout =
@@ -7062,15 +7068,55 @@ impl SearchStream {
                     found
                 }
             }
-            .filter(|_| bound_reads.first() == Some(&true));
+            .filter(|_| bound_reads.first() == Some(&ReadRoute::Bound));
+            // WI-20261124-YFD7F S3 — a typed column whose caller handed its read a TRUSTED slot
+            // has its argument established upstream, and its generation owned there: its guard
+            // and its fill run as no goal (`typing::trusted_columns` says when a caller may).
+            // Dropped with the routing-only reads, after every reader of the opened body has
+            // seen it whole; neither goal is one the delay pre-check waits on (both reorderable).
+            let mut trusted_goals: SmallVec<[usize; 4]> = SmallVec::new();
+            if bound_reads.contains(&ReadRoute::Trusted) {
+                let columns = match self.trusted_column_cache.get(&rid) {
+                    Some(cached) => Rc::clone(cached),
+                    None => {
+                        // Once per rule (cached), so checked in every build: a misaligned
+                        // body would drop the wrong goals in silence.
+                        assert_eq!(
+                            kb.rule_body_nodes(rid).len(),
+                            fresh_nodes.len(),
+                            "an opened body keeps its stored body's positions",
+                        );
+                        let found: Rc<[(usize, SmallVec<[usize; 2]>)]> =
+                            typed_column_goal_positions(kb, rid).into();
+                        self.trusted_column_cache.insert(rid, Rc::clone(&found));
+                        found
+                    }
+                };
+                for (i, route) in bound_reads.iter().enumerate() {
+                    if *route != ReadRoute::Trusted {
+                        continue;
+                    }
+                    let Some((_, goals)) = columns.iter().find(|(read, _)| *read == i) else {
+                        unreachable!(
+                            "a trusted slot reached requirement read {i} of clause {rid:?}, which is \
+                             no typed column's read: the typer hands one only to a typed column",
+                        );
+                    };
+                    trusted_goals.extend(goals.iter().copied());
+                }
+            }
             let fresh_nodes: Vec<Rc<NodeOccurrence>> =
-                if routing_reads.is_empty() && fill_read.is_none() {
+                if routing_reads.is_empty() && fill_read.is_none() && trusted_goals.is_empty() {
                     fresh_nodes
                 } else {
                     fresh_nodes
                         .into_iter()
                         .enumerate()
-                        .filter(|(i, _)| !routing_reads.contains(i) && fill_read != Some(*i))
+                        .filter(|(i, _)| {
+                            !routing_reads.contains(i)
+                                && fill_read != Some(*i)
+                                && !trusted_goals.contains(i)
+                        })
                         .map(|(_, n)| n)
                         .collect()
                 };
@@ -7430,6 +7476,7 @@ impl KnowledgeBase {
             cut_cache: HashMap::new(),
             routing_read_cache: HashMap::new(),
             fill_read_cache: HashMap::new(),
+            trusted_column_cache: HashMap::new(),
             fielded_case_cache: HashMap::new(),
             read_layout_cache: HashMap::new(),
             truncated: false,
@@ -9039,10 +9086,11 @@ impl KnowledgeBase {
     /// `apply_domain(D, ?x)` fills `?x` through the evidence `D`; the TYPED-HEAD form
     /// `apply_domain(?d, ?x, B)` first CONFORMS — reads `?x`'s type into the bound `B`'s
     /// variables, which is what ties two columns of one head — and fills through `?d` when a
-    /// citation routed one, else through `B` itself. With no caller the evidence is the
-    /// TYPE: a domain involves no choice among providers, so a sort's `SortDomain` is read
-    /// off the type one level at a time, and a condition is resolved only when `fill` reads
-    /// it (060 §2.3, decided — `[]`'s `nil` case never reads its element's).
+    /// caller routed one, else through `B` itself. Where the bound is GROUND, `B` is its
+    /// dictionary, built at load, and the conform has nothing to read (WI-20261124-YFD7F S1).
+    /// Where `B` is a TYPE, a domain involves no choice among providers, so a sort's
+    /// `SortDomain` is read off the type one level at a time, and a condition is resolved only
+    /// when `fill` reads it (060 §2.3, decided — `[]`'s `nil` case never reads its element's).
     ///
     /// THE SYMBOL FINDS, THE TREE RUNS (060-typedomains §4.3): the dictionary's `impl`
     /// names the provider, its `fill` is found in the provider's `SortDomain` entry (which
@@ -17903,6 +17951,60 @@ pub(crate) fn unrouted_read(kb: &mut KnowledgeBase) -> Value {
     Value::SymbolRef(sym)
 }
 
+/// WI-20261124-YFD7F — the functor of a TRUSTED marker slot, `__trusted(d)`: the dictionary
+/// `d` a typed column's `SortDomain` read is handed, and one fact about the call — the caller
+/// has established that the argument at that column conforms, and owns its generation
+/// (`typing::trusted_columns`). A plain `d` keeps meaning CHECK, so every dictionary built
+/// before this stays valid. `d` may be a variable the caller's own clause was handed nothing
+/// for: nothing reads it under trust.
+///
+/// Consumed where the clause opens ([`bind_citation_reads`]): the read's `out` is bound to `d`
+/// and the read is reported [`ReadRoute::Trusted`], so a clause variable never holds the
+/// wrapper — and a recursion handing its own dictionary on never nests one.
+pub(crate) const TRUSTED_READ: &str = "__trusted";
+
+/// The [`TRUSTED_READ`] functor.
+pub(crate) fn trusted_read_symbol(kb: &mut KnowledgeBase) -> Symbol {
+    let sym = kb.intern(TRUSTED_READ);
+    kb.trusted_read_sym.set(Some(sym));
+    sym
+}
+
+/// The dictionary a [`TRUSTED_READ`] slot wraps, on whichever carrier the marker reached here
+/// on, or `None` for any other slot.
+fn trusted_read_inner(kb: &KnowledgeBase, v: &Value) -> Option<Value> {
+    let ViewHead::Functor {
+        functor,
+        pos_arity: 1,
+        named_arity: 0,
+    } = v.head(kb)
+    else {
+        return None;
+    };
+    let trusted = kb.trusted_read_sym.get().or_else(|| {
+        let sym = kb.symbols.lookup(TRUSTED_READ);
+        kb.trusted_read_sym.set(sym);
+        sym
+    });
+    if trusted != Some(functor) {
+        return None;
+    }
+    v.pos_arg(kb, 0).map(|d| d.to_value())
+}
+
+/// What a citation marker handed one requirement read of the clause it opened
+/// ([`bind_citation_reads`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ReadRoute {
+    /// Nothing: the read derives its own.
+    Unrouted,
+    /// A dictionary, bound to the read's `out`.
+    Bound,
+    /// WI-20261124-YFD7F — a [`TRUSTED_READ`] slot: its dictionary bound to the read's `out`
+    /// where it is one, and the caller's evidence that the column's argument conforms.
+    Trusted,
+}
+
 /// Does this opened body goal exist only to RECEIVE a citation's dictionary? Two reads do,
 /// and each is a no-op as a goal:
 ///  * a SLOT read (WI-20260925-P7VP4, `slot: k`) — the woven call it precedes reads its `out`
@@ -17956,6 +18058,69 @@ fn derived_fill_read_position(
     let fd = super::typing::find_dictionary_symbol(kb)?;
     let first = body.first()?;
     super::typing::requirement_read_out(kb, fd, first).map(|_| 0)
+}
+
+/// WI-20261124-YFD7F S3 — for each typed column of clause `rid` that has a `SortDomain` read
+/// ([`super::typing::install_typed_head_domain_goals`]): the read's index among the clause's
+/// requirement reads, in the order [`bind_citation_reads`] reports them, and the body positions
+/// of the column's own guard (`__domain_guard(?x, B)`, the column variable its first operand)
+/// and fill (`apply_domain(?d, ?x, B)`, the read's `out` its first). By PROVENANCE and by the
+/// variables the three goals share, never by position: a later pass may put goals between them.
+/// Read off the STORED body, whose positions the opened one keeps: opened, the column variable
+/// is the caller's value (`body_rename`). A column whose read finds no guard or no fill is a
+/// body the typed-head pass did not write, and is a fault.
+fn typed_column_goal_positions(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<(usize, SmallVec<[usize; 2]>)> {
+    let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    let Some(fd) = super::typing::find_dictionary_symbol(kb) else {
+        return Vec::new();
+    };
+    let (Some(guard), Some(apply)) = (
+        kb.try_resolve_symbol(super::typing::TYPE_DOMAIN_GUARD),
+        kb.try_resolve_symbol(super::typing::APPLY_DOMAIN_GOAL),
+    ) else {
+        return Vec::new();
+    };
+    let var_of = |n: Option<&Rc<NodeOccurrence>>| match n.and_then(|n| n.as_expr()) {
+        Some(Expr::Var(Var::DeBruijn(v))) => Some(*v),
+        _ => None,
+    };
+    // The typed-head pass's own goals at the top of the body: (position, functor, first two
+    // operands' variables).
+    let generated: Vec<(usize, Symbol, Option<u32>, Option<u32>)> = body
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| super::typing::is_typed_head_domain_goal(kb, n))
+        .filter_map(|(i, n)| match n.as_expr() {
+            Some(Expr::Apply { functor, pos_args, .. }) => {
+                Some((i, *functor, var_of(pos_args.first()), var_of(pos_args.get(1))))
+            }
+            _ => None,
+        })
+        .collect();
+    let reads = super::typing::clause_requirement_reads(kb, fd, &body);
+    let mut out = Vec::new();
+    for (i, read) in reads.iter().enumerate() {
+        if !super::typing::is_typed_head_domain_goal(kb, read) {
+            continue;
+        }
+        let Some(Expr::Apply { pos_args, .. }) = read.as_expr() else {
+            unreachable!("a requirement read is an application");
+        };
+        let column = var_of(pos_args.get(2)).expect("a typed column's read is of its column variable");
+        let d = var_of(super::typing::requirement_read_out(kb, fd, read))
+            .expect("a typed column's read has a variable `out`");
+        let guard_at = generated.iter().find(|(_, f, x, _)| *f == guard && *x == Some(column));
+        let fill_at = generated.iter().find(|(_, f, first, x)| *f == apply && *first == Some(d) && *x == Some(column));
+        let (Some(g), Some(f)) = (guard_at, fill_at) else {
+            unreachable!(
+                "a typed column's read with no guard or no fill beside it (guard {}, fill {})",
+                guard_at.is_some(),
+                fill_at.is_some(),
+            );
+        };
+        out.push((i, SmallVec::from_slice(&[g.0, f.0])));
+    }
+    out
 }
 
 /// WI-20260911-09E6M — is the clause `rid` a case of a DERIVED `fill` (`kb::fill_derive`) whose
@@ -18206,9 +18371,10 @@ fn within_requirements_carriers(kb: &KnowledgeBase, goal: &Value) -> Vec<(usize,
 /// it takes nothing. The reads are found in the OPENED body by the same predicate and in
 /// the same order the typer enumerated them in the stored one (`requirement_read_out`), so
 /// position is identity; each `out` is a fresh variable once opened, and a read whose slot
-/// is [`UNROUTED_READ`] is left to derive its own. Returns, per read in body order, whether it
-/// was bound here — a derived `fill`'s read so handed its dictionary runs as no goal
-/// (WI-20261115-YR3N7).
+/// is [`UNROUTED_READ`] is left to derive its own. Returns, per read in body order, what it was
+/// handed — a derived `fill`'s read so handed its dictionary runs as no goal
+/// (WI-20261115-YR3N7), and a typed column handed a [`TRUSTED_READ`] slot checks and fills
+/// nothing (WI-20261124-YFD7F).
 fn bind_citation_reads(
     kb: &mut KnowledgeBase,
     rid: RuleId,
@@ -18217,7 +18383,7 @@ fn bind_citation_reads(
     carriers: &[(usize, Value)],
     opened: &[Rc<NodeOccurrence>],
     merged: &mut Substitution,
-) -> SmallVec<[bool; 2]> {
+) -> SmallVec<[ReadRoute; 2]> {
     let Some(at) = counts.iter().position(|(r, _)| *r == rid) else {
         return SmallVec::new();
     };
@@ -18258,25 +18424,37 @@ fn bind_citation_reads(
         counts[at].1,
         "an opened clause holds the requirement reads its stored body held",
     );
-    let mut bound: SmallVec<[bool; 2]> = SmallVec::with_capacity(outs.len());
+    let mut routes: SmallVec<[ReadRoute; 2]> = SmallVec::with_capacity(outs.len());
     for (i, out) in outs.iter().enumerate() {
-        let Some(dict) = dicts.get(offset + i) else {
+        let Some(slot) = dicts.get(offset + i) else {
             unreachable!("a citation marker carries one slot per position of its relation's layout");
+        };
+        // A TRUSTED slot hands its dictionary on as a plain one, so the clause's variable never
+        // holds the wrapper: a recursion that hands its own read on wraps a dictionary, never a
+        // wrapper. The dictionary is walked here — one step, since a variable is bound only to a
+        // dictionary, never to another read's variable — and one the caller's clause was handed
+        // nothing for stays unbound, which nothing under trust reads.
+        let (dict, trusted) = match trusted_read_inner(kb, slot) {
+            Some(inner) => {
+                let walked = kb.walk_arg(Some(ViewItem::Owned(inner)), merged);
+                (walked.expect("an owned item walks to a value"), true)
+            }
+            None => (slot.clone(), false),
         };
         // Nothing routed to this read: it derives its own. Nor where a goal hands on its own
         // clause's read (WI-20261102-ATVC1) as a variable no one bound yet — its clause's
         // caller passed nothing for it, and the read below derives its own.
-        if is_unrouted_read(kb, dict) || kb.value_is_unbound_var(dict) {
-            bound.push(false);
+        if is_unrouted_read(kb, &dict) || kb.value_is_unbound_var(&dict) {
+            routes.push(if trusted { ReadRoute::Trusted } else { ReadRoute::Unrouted });
             continue;
         }
         let Some(Expr::Var(Var::Global(vid))) = out.as_expr() else {
             unreachable!("an opened parameter's variable is a fresh variable, got {:?}", out.as_expr());
         };
-        merged.bind_waking(kb, *vid, dict.clone());
-        bound.push(true);
+        merged.bind_waking(kb, *vid, dict);
+        routes.push(if trusted { ReadRoute::Trusted } else { ReadRoute::Bound });
     }
-    bound
+    routes
 }
 
 /// The kernel address of the scope-discharge marker a discharge appends after its

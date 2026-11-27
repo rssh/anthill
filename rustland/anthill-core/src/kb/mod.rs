@@ -2459,6 +2459,11 @@ pub struct KnowledgeBase {
     /// changes once minted, so the cache cannot go stale.
     pub(crate) unrouted_read_sym: std::cell::Cell<Option<Symbol>>,
 
+    /// WI-20261124-YFD7F — the interned `resolve::TRUSTED_READ` symbol, the functor of a
+    /// marker slot that hands a typed column the dictionary AND the caller's evidence that its
+    /// argument conforms. Cached as [`Self::unrouted_read_sym`] is, for the same reason.
+    pub(crate) trusted_read_sym: std::cell::Cell<Option<Symbol>>,
+
     /// The rigid a provider's type parameter is read as when two provisions are ranked
     /// (`typing::head_answers`), one per parameter, minted at the first comparison that
     /// asks and kept. A rigid only has to be a type no provision names, so one serves
@@ -3423,6 +3428,7 @@ impl KnowledgeBase {
             kernel_not_sym: None,
             tuple_literal_sym: None,
             unrouted_read_sym: std::cell::Cell::new(None),
+            trusted_read_sym: std::cell::Cell::new(None),
             ranking_rigids: HashMap::new(),
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),

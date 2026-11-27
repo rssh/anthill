@@ -3337,7 +3337,7 @@ fn op_slot_route(
 /// against its frame chain: the one way a rigid's domain reaches a clause (§7.3). `None`
 /// where there is none; the read then builds its own from the value at run time.
 #[allow(clippy::too_many_arguments)]
-fn sort_domain_route(
+pub(super) fn sort_domain_route(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
     param_rigids: &[(VarId, TermId)],

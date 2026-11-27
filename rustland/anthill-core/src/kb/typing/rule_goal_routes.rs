@@ -724,7 +724,7 @@ fn holds_node(root: &Rc<NodeOccurrence>, node: &Rc<NodeOccurrence>) -> bool {
 
 /// The goals `goal` holds together, through its conjunctions (`KnowledgeBase::is_goal_conjunction`),
 /// `goal` itself where it is no conjunction.
-fn conjuncts(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>, out: &mut Vec<Rc<NodeOccurrence>>) {
+pub(super) fn conjuncts(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>, out: &mut Vec<Rc<NodeOccurrence>>) {
     match goal.as_expr().and_then(expr_call_parts) {
         Some((functor, pos_args, _)) if kb.is_goal_conjunction(functor, pos_args.len()) => {
             for arg in pos_args {
@@ -1753,9 +1753,36 @@ fn route_goal(
         refused.push((refusal, Some(site.span.source)));
         return None;
     }
+    // WI-20261124-YFD7F S2 — a typed column whose argument the clause has established at the
+    // column's bound is handed the clause's evidence with its dictionary (`trusted_columns`),
+    // and checks and fills nothing (S3). Read only for a goal whose callee has such a column.
+    let reads_a_typed_column = positions.iter().any(|&(crid, k)| {
+        callee_reads
+            .get(&crid)
+            .and_then(|reads| reads.get(k))
+            .is_some_and(|read| is_typed_head_domain_goal(kb, read))
+    });
+    let evidence = match writer.clause() {
+        Some(rid) if reads_a_typed_column => Evidence::at_goal(kb, rid, site).map(|e| (rid, e)),
+        _ => None,
+    };
+    let trusted: Vec<Option<Value>> = positions
+        .iter()
+        .enumerate()
+        .map(|(j, &(crid, k))| {
+            let (rid, evidence) = evidence.as_ref()?;
+            let read = Rc::clone(callee_reads.get(&crid)?.get(k)?);
+            // The goal's bracket fixes the column's instance where it built one: that is the
+            // dictionary the slot carries, the evidence beside it.
+            let bracket = built.get(j).copied().flatten().map(Value::term);
+            trusted_slot(kb, evidence, *rid, site, crid, &read, bracket)
+        })
+        .collect();
     let slots: Vec<GoalSlot> = (0..total)
         .map(|j| {
-            if let Some(Some(t)) = built.get(j).or(carried_built.get(j)) {
+            if let Some(Some(t)) = trusted.get(j) {
+                GoalSlot::Built(t.clone())
+            } else if let Some(Some(t)) = built.get(j).or(carried_built.get(j)) {
                 GoalSlot::Built(Value::term(*t))
             } else if let Some(GuardRoute::Declared(var)) = declared.get(j) {
                 GoalSlot::Own(Rc::clone(var))

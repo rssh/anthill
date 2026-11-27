@@ -2721,3 +2721,5 @@ mod wi_8j8ng_rules_before_bodies_test;
 
 #[path = "include/wi_yfd7f_unify_side_types_test.rs"]
 mod wi_yfd7f_unify_side_types_test;
+#[path = "include/wi_yfd7f_trusted_columns_test.rs"]
+mod wi_yfd7f_trusted_columns_test;

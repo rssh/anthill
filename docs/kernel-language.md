@@ -3195,6 +3195,32 @@ and the two placements are not interchangeable: a generator ahead of the written
 body enumerates a recursive type forever before the body can prune it. The
 conformance guard stays, and is what a sort with no domain has.
 
+**A typed column is checked where its value enters the typed program,
+not again inside it** (WI-20261124-YFD7F). A goal of a rule body hands
+each typed column of its callee that has a domain either the column's
+dictionary — the callee checks and fills its argument as above — or that
+dictionary with the caller's evidence that the argument conforms, and the
+callee then runs neither the column's guard nor its fill. The caller has
+that evidence for an argument it has ESTABLISHED at the column's type: one
+of its own typed columns that has a fill; a part of one destructured by a
+`<=>` on the way to the goal — a conjunct of the clause, or of the branch
+of `|` the goal is in — at its field's type (`?t` of
+`?l <=> cons(head: ?, tail: ?t)`, `?l` a `List[T = Int64]`, is a
+`List[T = Int64]`); or a literal. The type is the one the caller's CHECK
+established, never the goal's own unification, and it must be the callee's
+column type: ground, or, in a goal of the clause's own relation reaching
+the clause itself, the column's own type at its own variables. So the
+caller's check covers the value — or its caller's, where it was trusted in
+turn — down to a goal handed none: a query's, a host's, a citation's. A
+value from outside is checked once, where it enters, and its holes are
+filled there: `rule outerPair(?l: List[T = Bool]) :- pair(?l)` answers
+`pair`'s four lists, filled by `outerPair`'s fill. `memT(?x: Int64,
+?l: List[T = Int64])`'s recursion on its own tail walks the list once —
+n steps where it took n². A goal under a negation or a quantifier, and
+every goal of a clause that holds a cut, is handed the plain dictionary:
+the cut would commit past the cells a trusted callee's fill no longer
+fills before it.
+
 **`<Sort>.domain` is the VALUE face of the same relation** — the sort's domain
 cited by name, as an ordinary `Relation` (proposal 052). It is DERIVED beside the
 clause above, in the sort's own scope, the way `<Sort>.induction` is; the author
