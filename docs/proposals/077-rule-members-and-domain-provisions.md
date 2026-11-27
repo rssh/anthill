@@ -424,7 +424,7 @@ generates — the 33 rows the fill moved stay as they are.
    answered there. So is "a general fair combinator in goal position, set aside as too large": on
    076's agenda it is a flag on a scope (076, open question 11).
 3. **Coherence by carrier (§5.1).** `SortDomain`'s alone, or a property a spec declares?
-   **TAKEN AS AGREED (2026-11-28; proposed with questions 5 and 10, the user took only 5 apart):
+   **DECIDED (user, 2026-11-28; first recorded as taken as agreed, then confirmed):
    `SortDomain`'s alone,** stated in the spec text. One spec needs it now; `TypeValue` has it by
    being derived-only. A declaration any spec may write is a language feature with a syntax of
    its own, for when a second spec needs it.

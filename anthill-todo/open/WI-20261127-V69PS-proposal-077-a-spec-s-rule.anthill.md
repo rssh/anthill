@@ -30,3 +30,9 @@ ORDER (077's status line): after 076 Stage A (WI-20261127-AGR9S); S1-S2 after DA
 
 DONE WHEN. S1 reported first and the plan revised with the user on it. Then, each stage's rows DRIVING the capability with back-outs measured at their site: a written provides SortDomain[...] where rule fill(...) ... end loads and answers (S2); the witness row answers one count on every path and declaredSD loads and answers (S3); Wrap[T = Bool].isT(true) answers 1, noDict[X]() without requires SortDomain[T = X] is refused at load, cons(head: 5, tail: "junk") is refused by a check-only column (S3b); Box written as a provision answers 4 / 2 / 3 at Colour / One / Box[T = One] (S4); kernel-language text agreed before S5 lands; full workspace via rustland/scripts/test.sh, families, scaland testFull.
 
+## Changes
+
+### 2026-11-27T22:48:58Z — feedback — claude
+
+Question 3 of proposal 077 is DECIDED (user, 2026-11-28), no longer 'taken as agreed, not confirmed' as the description says: coherence by carrier is SortDomain's alone, stated in the spec text; a declaration any spec may write waits for a second spec that needs it.
+
