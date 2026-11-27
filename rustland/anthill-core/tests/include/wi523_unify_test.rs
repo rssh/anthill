@@ -125,19 +125,34 @@ fn unify_recurses_and_binds_subvar() {
 
 #[test]
 fn unify_occurs_check_fails() {
-    // `go(?v) :- ?v <=> some(?v)` — `?v` occurs in `some(?v)`, so the bind is
-    // rejected (no infinite term). The goal fails: zero solutions.
-    let src = r#"
+    // `?v <=> some(?v)` — `?v` occurs in `some(?v)`, so the bind is rejected (no infinite
+    // term) and the goal fails: zero solutions. Asked as a QUERY: written in a rule body the
+    // same goal is refused at load since WI-20261124-YFD7F S0 — its two sides are of no one
+    // finite type — as `?v = some(?v)` always was. A query's goals are not compared.
+    let refused = crate::common::load_errors_of(
+        r#"
         namespace wi523.occurs
           import anthill.prelude.Option.{some}
           rule go(?v)
             :- ?v <=> some(?v)
         end
-    "#;
-    let mut kb = load_ok(src);
-    let v_term = fresh_var_term(&mut kb, "_q");
-    let sols = resolve(&mut kb, "wi523.occurs.go", &[v_term]);
-    assert_eq!(sols.len(), 0, "occurs-check rejects ?v <=> some(?v)");
+    "#,
+    );
+    crate::common::assert_refused_naming(
+        &refused,
+        &["unify", "Option[T = Option[T = "],
+        "a rule body's `?v <=> some(?v)` is of no finite type",
+    );
+    let mut kb = crate::common::load_stdlib_kb();
+    let goal = crate::common::query_pattern_term(
+        &mut kb,
+        "anthill.kernel.unify(?v, anthill.prelude.Option.some(?v))",
+    );
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    };
+    assert_eq!(kb.resolve(&[goal], &cfg).len(), 0, "occurs-check rejects ?v <=> some(?v)");
 }
 
 // ── 4. mismatch fails; the chase sees a binding made earlier in the unify ──

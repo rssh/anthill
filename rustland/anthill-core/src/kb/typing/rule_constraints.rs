@@ -61,6 +61,23 @@ pub(super) struct ClauseConstraints {
     /// Whether a construction's arguments are checked against its fields, and the reflect
     /// syntax a term stores is read as data: not in an equation's head ([`walk_clause`]).
     pub(super) checks_constructions: bool,
+    /// WI-20261124-YFD7F S0 — two PLACEHOLDERS of one variable that disagreed
+    /// ([`constrain_vid`]): neither is the variable's own statement, so the first stays and
+    /// the second is dropped, and the drop decides nothing by itself. Read where a `<=>` /
+    /// `===` side meets a literal ([`settle_equality_sides`]): `?t <=> "x"` typed `?t` a
+    /// `String` placeholder first, and the list field read after it (`?l <=> cons(head: ?,
+    /// tail: ?t)`) was the dropped one.
+    /// Recorded only from a position of a goal the clause commits to (`uncommitted` false):
+    /// a `|` branch types a variable for the branch alone.
+    pub(super) placeholder_clashes: Vec<(u32, Value, Value)>,
+    /// WI-20261124-YFD7F S0 — whether the walk is inside a goal the clause does not commit to
+    /// (a `|` branch, a negation, a quantifier's body), set by
+    /// [`collect_occurrence_type_constraints`] for what it walks; and the variables such a goal
+    /// typed. The walk records a branch's positions with the clause's own (`var_types` is one
+    /// map), so a side whose variable is among these says what some branch says, and is not
+    /// compared ([`settle_equality_sides`]).
+    pub(super) uncommitted: bool,
+    pub(super) uncommitted_vars: HashSet<u32>,
 }
 
 impl ClauseConstraints {
@@ -78,6 +95,9 @@ impl ClauseConstraints {
             some_args: Vec::new(),
             some_typed: HashMap::new(),
             at: None,
+            placeholder_clashes: Vec::new(),
+            uncommitted: false,
+            uncommitted_vars: HashSet::new(),
             checks_constructions: true,
         }
     }
@@ -101,6 +121,9 @@ impl ClauseConstraints {
             some_typed: self.some_typed.clone(),
             at: self.at,
             checks_constructions: self.checks_constructions,
+            placeholder_clashes: self.placeholder_clashes.clone(),
+            uncommitted: self.uncommitted,
+            uncommitted_vars: self.uncommitted_vars.clone(),
         }
     }
 
@@ -121,6 +144,8 @@ impl ClauseConstraints {
         self.demand_only = trial.demand_only;
         self.some_args = trial.some_args;
         self.some_typed = trial.some_typed;
+        self.placeholder_clashes = trial.placeholder_clashes;
+        self.uncommitted_vars = trial.uncommitted_vars;
     }
 }
 
@@ -148,6 +173,14 @@ enum LatePosition {
     RuleGoal {
         functor: Symbol,
         goal: Rc<NodeOccurrence>,
+    },
+    /// WI-20261124-YFD7F S0 — a committed `<=>`, `===` or `!==` goal of a rule: its two sides
+    /// are at one `T` (`operation unify[T](a: T, b: T)`, `struct_eq` and `struct_neq` alike),
+    /// compared once every other position of the clause is read ([`settle_equality_sides`]).
+    EqualitySides {
+        functor: Symbol,
+        a: Rc<NodeOccurrence>,
+        b: Rc<NodeOccurrence>,
     },
     /// A dot whose value fills a slot that declares a type (`?y <=> ?p.t`): its type, once
     /// the clause types its receiver.
@@ -797,6 +830,9 @@ fn constrain_vid(
     demand: Option<Demand>,
     st: &mut ClauseConstraints,
 ) {
+    if st.uncommitted {
+        st.uncommitted_vars.insert(vid);
+    }
     match demand {
         None => {
             st.demand_only.remove(&vid);
@@ -820,6 +856,9 @@ fn constrain_vid(
     let unified = unify_types(kb, &mut st.subst, &existing, expected_type);
     if !unified && !from_param && !existing_from_param {
         st.subst.contradiction = true;
+    }
+    if !unified && from_param && existing_from_param && !st.uncommitted {
+        st.placeholder_clashes.push((vid, existing.clone(), expected_type.clone()));
     }
     // A declared position takes over from a placeholder — including when the two just
     // disagreed, because the declared type is what the variable is and recording it is
@@ -903,6 +942,23 @@ pub(super) fn with_written_bindings(
 pub(super) fn collect_occurrence_type_constraints(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
+    position: Option<&Value>,
+    pos: BodyPos,
+    committed: bool,
+    st: &mut ClauseConstraints,
+) {
+    // WI-20261124-YFD7F S0 — what this occurrence's positions type is a committed goal's only
+    // where the occurrence is ([`ClauseConstraints::uncommitted`]).
+    let outer = st.uncommitted;
+    st.uncommitted = !committed;
+    walk_occurrence_type_constraints(kb, occ, position, pos, committed, st);
+    st.uncommitted = outer;
+}
+
+/// [`collect_occurrence_type_constraints`]' walk, with `st.uncommitted` set for it.
+fn walk_occurrence_type_constraints(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
     // The declared type of the position `occ` fills, where its parent is an application
     // that declares one ([`NestedPositions`]); `None` for a top-level goal.
     position: Option<&Value>,
@@ -954,6 +1010,29 @@ pub(super) fn collect_occurrence_type_constraints(
         Some((functor, pos_args, named_args)) => {
             if goal {
                 constrain_domain_test(kb, functor, pos_args, committed, st);
+            }
+            // WI-20261124-YFD7F S0 — `<=>` and `===` are resolver builtins, which the call check
+            // that types `=` and `!=` (a spec operation's call) skips
+            // (`rule_dispatch::call_dispatch_shape`); their sides meet at one placeholder `T`,
+            // so a disagreement there is "the call's fault" ([`constrain_vid`]) with no call
+            // check to report it. Their sides are compared here instead, once the clause is
+            // typed. A `|` branch types a variable for the branch alone (`committed` false) and
+            // is not compared.
+            if let ([a, b], true, true) = (pos_args, goal && committed, named_args.is_empty()) {
+                if matches!(
+                    kb.builtin_of(functor),
+                    Some(
+                        crate::kb::resolve::BuiltinTag::Unify
+                            | crate::kb::resolve::BuiltinTag::StructEq
+                            | crate::kb::resolve::BuiltinTag::StructNeq
+                    )
+                ) {
+                    st.late.push(LatePosition::EqualitySides {
+                        functor,
+                        a: Rc::clone(a),
+                        b: Rc::clone(b),
+                    });
+                }
             }
             if let [binder, collection, ..] = pos_args {
                 if matches!(
@@ -2013,6 +2092,8 @@ pub(super) fn settle_late_positions(
         })
         .collect();
     let mut call_results: Vec<(Rc<NodeOccurrence>, CallResult, crate::span::SourceSpan)> = Vec::new();
+    // A `<=>` / `===` goal's sides, compared after everything else ([`settle_equality_sides`]).
+    let mut equality_sides: Vec<LatePosition> = Vec::new();
     while !st.late.is_empty() {
         for late in std::mem::take(&mut st.late) {
             if let LatePosition::CallResult { result, at, call, .. } = &late {
@@ -2063,6 +2144,18 @@ pub(super) fn settle_late_positions(
                 }
                 continue;
             }
+            if let LatePosition::EqualitySides { .. } = &late {
+                // Compared in a RELATIONAL clause only: an equation or a guarded law
+                // (`isEmpty(?xs) = true :- ?xs === nil`, whose `?xs` is at a spec operation's
+                // parameter) is a premise a proof from Γ takes, with no column a call is checked
+                // at, and a query's goals are the boundary values cross at.
+                if let ClauseSite::Rule { rid, .. } = site {
+                    if !kb.has_equational_head(rid) {
+                        equality_sides.push(late);
+                    }
+                }
+                continue;
+            }
             let computed = match &late {
                 // A call holding a lambda is typed whole once the clause types what the
                 // lambda's body reads (`Error.reify(lambda () -> loadBad())`'s error type is the
@@ -2077,6 +2170,7 @@ pub(super) fn settle_late_positions(
                 | LatePosition::LambdaValue { .. }
                 | LatePosition::Element { .. } => true,
                 LatePosition::RuleGoal { .. } => false,
+                LatePosition::EqualitySides { .. } => unreachable!("set aside above"),
                 LatePosition::ConstructedValue { .. }
                 | LatePosition::CalledValue { .. }
                 | LatePosition::CalledPattern { .. } => {
@@ -2180,6 +2274,7 @@ pub(super) fn settle_late_positions(
         }
     }
     demands_on_some_type(kb, site, st);
+    settle_equality_sides(kb, st, equality_sides, disagreements);
     rigids
 }
 
@@ -2323,6 +2418,9 @@ fn settle_typed_position(
             (SlotOf::Arg(binder), ty, context, binder.span)
         }
         LatePosition::RuleGoal { .. } => unreachable!("a rule goal is read by its columns"),
+        LatePosition::EqualitySides { .. } => {
+            unreachable!("a `<=>` / `===` goal's sides are read after every other position")
+        }
         LatePosition::ConstructedValue { .. }
         | LatePosition::CalledValue { .. }
         | LatePosition::CalledPattern { .. } => {
@@ -2496,6 +2594,112 @@ fn argument_type(
     let mut trial = st.trial();
     constrain_occurrence_at(kb, &mut trial, arg, &fresh);
     walk_type_deep_value(kb, &trial.subst, &fresh)
+}
+
+/// WI-20261124-YFD7F S0 — each committed `<=>`, `===` or `!==` goal of a relational clause
+/// whose two sides the clause types so that they neither unify nor conform to each other is
+/// refused, at the second side, as the call check refuses `=`'s and `!=`'s: `type mismatch in
+/// unify.b (op-arg): expected List[T = Int64], got String` for `?l <=> cons(head: ?, tail:
+/// ?t), ?t <=> "x"` under `?l: List[T = Int64]`.
+///
+/// READ LAST, after every other position, because a side's type may come from a position
+/// written after the goal. A side the clause leaves untyped — a type variable — or types
+/// `Term`, which every value converts to, says nothing and is not compared. The comparison
+/// UNIFIES on a copy (`List[T = ?a]` and `List[T = ?b]` are one list type) or CONFORMS in
+/// either direction (a side at a type its other side's sort refines).
+///
+/// WRITTEN FIRST, `?t <=> "x", ?l <=> cons(head: ?, tail: ?t)`: the literal's sort reached `?t`
+/// as the goal's `T`, a placeholder, before the list field did, and the field — a placeholder
+/// too, at the construction's own instantiation — disagreed and was dropped
+/// ([`ClauseConstraints::placeholder_clashes`]). So a variable side that agrees with the other
+/// side is also held to what was dropped for it: a dropped type the other side's does not fit,
+/// beside one it does, is the mismatch. The same through a variable, `?t <=> ?s, ?s <=> "x"`.
+///
+/// NOT COMPARED: a side whose variable a `|` branch, a negation or a quantifier's body also
+/// types ([`ClauseConstraints::uncommitted_vars`]). The walk records such a goal's positions in
+/// the clause's one map, so `((?l <=> cons(head: ?, tail: ?m)) | (?m <=> 3)), ?m <=> 3` read
+/// `?m` as the first branch's list and refused a clause that answers.
+///
+/// WHY IT IS OWED: approach (a) of YFD7F passes `__trusted` for an argument the typer has
+/// established, and the callee then skips its check. That is sound only where a variable the
+/// clause has at `T` holds nothing else, which a mistyped `<=>` broke.
+fn settle_equality_sides(
+    kb: &mut KnowledgeBase,
+    st: &ClauseConstraints,
+    sides: Vec<LatePosition>,
+    disagreements: &mut Vec<ClauseDisagreement>,
+) {
+    let fits = |kb: &mut KnowledgeBase, st: &ClauseConstraints, x: &Value, y: &Value| {
+        ({
+            let mut trial = st.subst.clone();
+            unify_types(kb, &mut trial, x, y)
+        }) || ({
+            let mut trial = st.subst.clone();
+            types_compatible(kb, &mut trial, y, x)
+        }) || ({
+            let mut trial = st.subst.clone();
+            types_compatible(kb, &mut trial, x, y)
+        })
+    };
+    let says_nothing = |kb: &KnowledgeBase, ty: &Value| {
+        matches!(ty.head(kb), ViewHead::Var(_)) || says_nothing_of_a_value(kb, ty)
+    };
+    for late in sides {
+        let LatePosition::EqualitySides { functor, a, b } = late else {
+            unreachable!("only a `<=>` / `===` / `!==` goal's sides are set aside for the end")
+        };
+        // A side whose variable a goal the clause does not commit to also typed says what some
+        // branch says ([`ClauseConstraints::uncommitted_vars`]).
+        if [&a, &b]
+            .iter()
+            .any(|side| side.var_key(kb).is_some_and(|d| st.uncommitted_vars.contains(&d)))
+        {
+            continue;
+        }
+        let ta = argument_type(kb, st, &a);
+        let tb = argument_type(kb, st, &b);
+        if says_nothing(kb, &ta) || says_nothing(kb, &tb) {
+            continue;
+        }
+        // The two sides, or — where they agree — what the walk dropped for a variable side,
+        // against the other side's type.
+        let mismatch = if !fits(kb, st, &ta, &tb) {
+            Some((ta, tb))
+        } else {
+            let var_sides: Vec<(u32, Value)> = [(a.var_key(kb), &tb), (b.var_key(kb), &ta)]
+                .into_iter()
+                .filter_map(|(d, other)| d.map(|d| (d, other.clone())))
+                .collect();
+            var_sides.into_iter().find_map(|(d, other)| {
+                st.placeholder_clashes
+                    .iter()
+                    .filter(|(v, _, _)| *v == d)
+                    .find_map(|(_, x, y)| {
+                        let (x, y) = (
+                            walk_type_deep_value(kb, &st.subst, x),
+                            walk_type_deep_value(kb, &st.subst, y),
+                        );
+                        match (fits(kb, st, &x, &other), fits(kb, st, &y, &other)) {
+                            (true, false) if !says_nothing(kb, &y) => Some(y),
+                            (false, true) if !says_nothing(kb, &x) => Some(x),
+                            _ => None,
+                        }
+                    })
+                    .map(|dropped| (dropped, other))
+            })
+        };
+        if let Some((expected, actual)) = mismatch {
+            let param = kb.intern("b");
+            disagreements.push(ClauseDisagreement {
+                span: Some(b.span),
+                context: TypeErrorContext::OperationArgument {
+                    op_name: functor,
+                    param,
+                },
+                misfit: Misfit::types(kb, &st.subst, &expected, &actual),
+            });
+        }
+    }
 }
 
 /// The source name of a clause's variable `d`, a De Bruijn index into its frame.

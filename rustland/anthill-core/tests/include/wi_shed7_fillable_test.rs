@@ -352,7 +352,7 @@ end
 /// type-variable bound. What such a type answers is the CONFORMANCE question, as the retired
 /// `domain_leaf` did: `[(1, 2)]` is a `List` whose element conforms, and `(1, 2)` a `T` — and
 /// the CONTROL, `tieBad`: an element bound AFTER its tuple type was pinned by the other column
-/// is checked when it arrives, and `("x", "y")` is refused.
+/// is checked when it arrives, and `("x", "y")`, handed in by the query, is refused.
 /// FAILS with the 2-ary `apply_domain` refusing a no-domain type again (`tupleList` becomes an
 /// error and a conditional row); with the typed head's read FAILING on one (`elTuple` answers
 /// nothing); and with the 2-ary conformance arm answering `Holds` unchecked (`tieBad` answers).
@@ -372,7 +372,7 @@ namespace shed7nd
 
   rule tupleList(1) :- anyList([(1, 2)])
   rule elTuple(1)   :- Wrap.el((1, 2))
-  rule tieBad(?h)   :- tie([(1, 2)], [?h]), ?h <=> ("x", "y")
+  rule tieBad(?h, ?v) :- tie([(1, 2)], [?h]), ?h <=> ?v
 end
 "#;
     let mut kb = crate::common::load_kb_with(NO_DOMAIN);
@@ -380,8 +380,12 @@ end
         let answers = crate::common::shown_rows(&mut kb, rel);
         assert!(answers.len() == 1 && answers[0].1, "{rel}: one definite row, got {answers:?}");
     }
-    let refused = crate::common::shown_rows(&mut kb, "shed7nd.tieBad");
-    assert!(refused.is_empty(), "`(\"x\", \"y\")` is no `(Int64, Int64)`: {refused:?}");
+    // The bad element comes from the QUERY, through `?v`, and still reaches `?h` AFTER `tie`
+    // pinned its type: written in the clause, `?h <=> ("x", "y")` is refused at load since
+    // WI-20261124-YFD7F S0 — its sides cannot be one type.
+    let goal = crate::common::query_pattern_term(&mut kb, "shed7nd.tieBad(?h, (\"x\", \"y\"))");
+    let refused = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    assert!(refused.is_empty(), "`(\"x\", \"y\")` is no `(Int64, Int64)`: {} answer(s)", refused.len());
 }
 
 /// A typed head over a body with a CUT. A cut commits before a test AFTER it runs:

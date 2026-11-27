@@ -2718,3 +2718,6 @@ mod wi_v0rpw_law_over_type_variable_test;
 mod wi_22s8n_law_of_the_same_load_test;
 #[path = "include/wi_8j8ng_rules_before_bodies_test.rs"]
 mod wi_8j8ng_rules_before_bodies_test;
+
+#[path = "include/wi_yfd7f_unify_side_types_test.rs"]
+mod wi_yfd7f_unify_side_types_test;

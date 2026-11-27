@@ -357,7 +357,7 @@ namespace test.wt8wg.kernel
 
   rule members(?x) :- Colour.domain(?x)
   rule redConforms() :- ?x <=> red(), domain(?x, Colour)
-  rule redIsNotAnInt(?y) :- ?y <=> red(), domain(?y, Int64)
+  rule isAnInt(?y) :- domain(?y, Int64)
 end
 "#;
 
@@ -389,9 +389,11 @@ fn a_written_conformance_goal_reads_its_type_through_the_view() {
         "`red()` conforms to `Colour`"
     );
     // THE CONTROL: the same goal at a type the value does not conform to must REFUTE,
-    // not succeed — so the row above is a verdict and not a vacuous pass.
+    // not succeed — so the row above is a verdict and not a vacuous pass. The value comes from
+    // the QUERY: a clause that writes `?y <=> red(), domain(?y, Int64)` is refused at load
+    // since WI-20261124-YFD7F S0 — its two sides cannot be one type — as `?y = red()` was.
     assert_eq!(
-        answers(&mut kb, "test.wt8wg.kernel.redIsNotAnInt(?y)"),
+        answers(&mut kb, "test.wt8wg.kernel.isAnInt(test.wt8wg.kernel.Colour.red())"),
         0,
         "`red()` does not conform to `Int64`"
     );
@@ -636,7 +638,7 @@ namespace test.wt8wg.openbound
   -- `?x` is BOUND first, so the unbound-value delay cannot stand in for the verdict.
   rule varBound(?x)    :- ?x <=> [a()], domain(?x, List[T = ?e])
   rule groundBound(?x) :- ?x <=> [a()], domain(?x, List[T = Letter])
-  rule wrongBound(?x)  :- ?x <=> [a()], domain(?x, Int64)
+  rule intBound(?x)    :- domain(?x, Int64)
 end
 "#;
     let mut kb = try_load_kb_with(SRC).expect("loads");
@@ -655,8 +657,10 @@ end
         1,
         "CONTROL: the same shape with a closed bound reaches a verdict and HOLDS"
     );
+    // The value comes from the QUERY: written in the clause, `?x <=> [a()], domain(?x, Int64)`
+    // is refused at load since WI-20261124-YFD7F S0, as `?x = [a()]` was.
     assert_eq!(
-        answers(&mut kb, "test.wt8wg.openbound.wrongBound(?x)"),
+        answers(&mut kb, "test.wt8wg.openbound.intBound([test.wt8wg.openbound.Letter.a()])"),
         0,
         "CONTROL: and a closed bound the value does not satisfy REFUTES — so the row \
          above is a withheld verdict, not a guard that never decides anything"
