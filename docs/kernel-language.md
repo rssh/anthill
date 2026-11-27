@@ -3157,12 +3157,27 @@ component of a type with no cases keeps the conformance guard, as a field of tha
 **Finiteness is not a condition.** It decides only whether the stream ENDS. A
 closed sort with a recursive constructor has a fair, lazy, INFINITE domain
 (`takeN` reads the rows within the search's limits; a drain past them raises
-`search_truncated`, §5.2, §8.3), and fairness comes from ORDER
-alone — base constructors before recursive ones, and inside a branch the
-recursive field positions before the others — so a free `List[T = Letter]` comes
-out by length. Only a sort with NO constructors (`String`, a primitive, an
-abstract sort, a spec) keeps §2's ladder: delay, re-ask on binding, flounder
-loudly at the end.
+`search_truncated`, §5.2, §8.3), and fairness comes from SIZE
+(WI-20260911-09E6M): a `fill` not asked inside another's round generates in
+ROUNDS, the k-th yielding every member built of k constructors with fields — a nullary
+constructor, a primitive's value, a tuple and a part already bound cost nothing
+— so each member comes out once, in the round of its size, and a round that cut
+nothing short ends the stream (a finite domain ends; `Colour` is one round). One
+round spans the whole value: the two infinite fields of `node(l: Tree, r: Tree)`,
+the components of a tuple and the holes of a bound value (`[?, ?]` at
+`List[T = Tree]`) share it, and so do a clause's typed columns written one
+after another (`rule pair(a: Tree, b: Tree)`), so a free `Tree` reaches
+`node(node(leaf, leaf), leaf)` in the round of size 2, which clause order alone
+never did. A fill that WAITS inside a round — its condition's type not pinned
+yet — generates after the round ends: complete, but not fair against it. The fill's clause
+order — base constructors before recursive ones, and inside a case the recursive
+fields before the others — orders the members of ONE size, so a free
+`List[T = Letter]` comes out `[]`, `[a]`, `[b]`, `[c]`, `[a, a]`, `[b, a]`, ….
+A cut that commits past a fill commits its later rounds away. A bound value is
+checked in round 0, and a ground check costs per element what the same domain
+written a clause per constructor does. Only a sort with NO constructors
+(`String`, a primitive, an abstract sort, a spec) keeps §2's ladder: delay,
+re-ask on binding, flounder loudly at the end.
 
 **The generated goal is APPENDED, where §2's conformance guard is prepended**,
 and the two placements are not interchangeable: a generator ahead of the written
@@ -6635,7 +6650,7 @@ The kernel's reasoning engine supports:
 
 **Backward chaining (top-down):** Given a query `?- goal`, the engine searches for rules whose head unifies with the goal, then recursively proves the body terms.
 
-**The clauses are tried in CLAUSE ORDER, facts first** (WI-20260911-SXZ3G): the clauses whose heads match a goal are tried in the order they were asserted, those with no body before those with one, so a relation's answers come in an order the program fixes — three facts declared `red`, `green`, `blue` answer in that order on every run, at a variable position as at a bound one. A sort's derived domain (§5.3) is tried in clause order alone: its order is the derivation's, base constructors first. (The index the candidates are looked up in kept no order before, and the answers came in one that changed from run to run.)
+**The clauses are tried in CLAUSE ORDER, facts first** (WI-20260911-SXZ3G): the clauses whose heads match a goal are tried in the order they were asserted, those with no body before those with one, so a relation's answers come in an order the program fixes — three facts declared `red`, `green`, `blue` answer in that order on every run, at a variable position as at a bound one. A sort's derived domain (§5.3) is tried in clause order alone inside each round of its generation: its order within one size is the derivation's, base constructors first. (The index the candidates are looked up in kept no order before, and the answers came in one that changed from run to run.)
 
 **A search has two limits, its depth and its fuel** (WI-20261115-0WT09). A goal's *depth* is its NESTING: the query's goals are at depth 0, and a goal of the body of the clause that answers a goal at depth `d` is at `d + 1` — as is a goal a quantifier opens for one of its instances. Every other goal keeps its own depth: the two operands of a conjunction or a choice stand where the goal stood, as do the goals a builtin puts in its place and a goal lowered to a call of the relation it names, and a goal moved behind the others to wait is no deeper for it. So a conjunct's proof is never charged to the goals beside it: two walks of one list need the depth of one. A goal deeper than the search's depth limit (`--max-depth`, default 100) is not asked, and since a derivation that never ends opens clauses without end, the depth limit stops every such descent. A search's *fuel* is the number of steps it may take, counting every branch and the sub-search of each negation it decides (`--max-steps`); out of it, the search stops. A typed column's `apply_domain` dispatch to the `fill` its dictionary names (§5.3) is asked in the step that lowered it, so the dispatch costs no fuel as it costs no depth (WI-20261115-YR3N7); other lowerings — a predicate variable applied — take a step. The depth bounds how deep a proof goes, the fuel how much work a search does, which a shallow search can still make exponential: a rule that calls itself twice per level is as deep as its argument and takes twice as long at every level. A search cut by either limit is *incomplete*. Its answers are answers, but its end is not the claim that they were all: a negation over it is undecided, never a refutation, and a stream or relation over it raises `search_truncated(limit)` where it would have ended (§5.2), its `limit` naming the limit that cut it — `depth(max_depth)`, or `steps(max_steps)` where its fuel ran out. A carrier's `eq` decided in a closed sub-proof (below), and a search an operation's body runs, have budgets of their own and are not charged to the search that asked; one of them cut ends that search as cut at its depth limit, whichever of its own limits cut it.
 

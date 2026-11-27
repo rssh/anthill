@@ -329,6 +329,11 @@ pub enum BuiltinTag {
     /// assumptions a discharge pushed, once its consequent is proved. Minted by the
     /// resolver only. A scoping marker; see [`Self::ForallImpl`].
     PopAssumption,
+    /// `anthill.kernel.__size_round_end(k)` ([`SIZE_ROUND_END`]) — WI-20260911-09E6M: the
+    /// end of the fill a round of size `k` generates, which admits the branch only where the
+    /// round's budget is spent ([`FrameState::SizeRounds`]). Minted by the resolver only. A
+    /// scoping marker; see [`Self::ForallImpl`].
+    SizeRoundEnd,
     /// `anthill.kernel.__within_requirements(goal, relation, d₀ …)` ([`WITHIN_REQUIREMENTS`])
     /// — the marker a citation's root goal rides in. Minted by the resolver only and
     /// unwrapped by `step_init` before any dispatch, so one reaching `execute_builtin` is
@@ -1396,6 +1401,54 @@ enum FrameState {
         /// points that opened no cut-bearing body (the overwhelming majority).
         cut_barrier: Option<i64>,
     },
+
+    /// WI-20260911-09E6M — GENERATING A VALUE BY SIZE (kernel-language §5.3): the choice point
+    /// an `apply_domain` outside any round becomes, when its fill can generate a case with fields
+    /// ([`ApplyDomainLowering::Goal`]'s `rounds`), whose alternatives are ROUNDS. Round `k` asks
+    /// `fill` with a budget of `k` cases with fields ([`SizeBudget`]), ended by
+    /// `__size_round_end(k)`, which admits a branch only where the budget is spent — so round `k`
+    /// answers exactly the members of size `k`, each once. A
+    /// depth-first search over clauses cannot be fair to a case with two recursive fields
+    /// (`node(l: Tree, r: Tree)` descends in `r` for ever, and `l` never leaves `leaf`);
+    /// rounds bound every descent by the size, and every member has one.
+    ///
+    /// The stream ENDS after a round that cut no branch short for want of budget: no member is
+    /// bigger than those already answered. So a finite domain still ends, and a branch the
+    /// depth limit abandoned, which is no budget's doing, does not keep it going.
+    SizeRounds {
+        delay_mode: DelayMode,
+        /// The `fill` goal each round asks, in the place of the `apply_domain` it lowered.
+        fill: FrameGoal,
+        /// The size the next round generates.
+        next: u32,
+        /// Whether the round asked last cut a branch short — shared with every branch of it
+        /// ([`SizeBudget::pruned`]). `None` before the first round.
+        last: Option<Rc<std::cell::Cell<bool>>>,
+        /// Set by a cut that prunes this choice point ([`SearchStream::apply_cut`]): no
+        /// further round.
+        closed: bool,
+    },
+}
+
+/// WI-20260911-09E6M — what is left of a round's size in this branch ([`FrameState::SizeRounds`]).
+///
+/// THE SIZE OF A MEMBER is how many cases with fields its fill GENERATES: a case of a derived
+/// `fill` whose constructor has fields, opened over an unbound value, costs one. A nullary
+/// constructor costs nothing, so an enumeration is one round; so do a primitive's waiting check,
+/// a tuple, and any part of the value already bound when its fill ran. Every infinite value
+/// still has infinitely many cases with fields, so every round is finite.
+///
+/// BRANCH STATE, carried by each frame as its σ is and copied into every frame pushed from it,
+/// so backtracking restores it. Only one round is open in a branch at a time: a fill inside it
+/// — a field's, a component's — spends this budget rather than opening rounds of its own, which
+/// is what makes two infinite fields fair to each other.
+#[derive(Clone)]
+struct SizeBudget {
+    /// How many more cases with fields the round's fill may generate in this branch.
+    remaining: u32,
+    /// Set when a case was refused for want of budget: the round cut a member short, so a
+    /// bigger round can answer something new. Shared by every branch of one round.
+    pruned: Rc<std::cell::Cell<bool>>,
 }
 
 /// A choice point on the explicit stack.
@@ -1434,6 +1487,9 @@ struct ResolverFrame {
     /// newest first ([`super::sld_proof::PathCell`]); `None` outside proof mode. Shared with
     /// the frame it was copied from, so a branch's part of it goes with the branch.
     path: Option<Rc<PathCell>>,
+    /// WI-20260911-09E6M — the budget of the round of generation this branch is in, `None`
+    /// outside one ([`SizeBudget`]).
+    size: Option<SizeBudget>,
 }
 
 /// WI-20260926-CYNPE — one goal of a frame's resolvent, with its WAIT STATE (proposal 068
@@ -1822,6 +1878,10 @@ pub struct SearchStream {
     /// a clause of a DERIVED `fill` ([`derived_fill_read_position`]), which the body open drops
     /// once a marker has bound it. Static per rule, as `routing_read_cache` is.
     fill_read_cache: HashMap<RuleId, Option<usize>>,
+    /// WI-20260911-09E6M — per-query cache: rule → is it a case of a DERIVED `fill` whose
+    /// constructor has fields, the case a round's budget pays for ([`SizeBudget`]). Static per
+    /// rule, as `fill_read_cache` is.
+    fielded_case_cache: HashMap<RuleId, bool>,
     /// Per-query cache: a cited relation → its requirement-read layout
     /// (`typing::requirement_read_counts`), which [`bind_citation_reads`] reads at every
     /// clause opening a citation marker reaches — a `fill` step opens its relation once per
@@ -2589,6 +2649,7 @@ impl SearchStream {
             | FrameState::BuiltinInit { .. }
             | FrameState::ClauseInit { .. } => self.step_init(kb),
             FrameState::ChoicePoint { .. } => self.step_choice_point(kb),
+            FrameState::SizeRounds { .. } => self.step_size_rounds(kb),
         }
     }
 
@@ -3156,6 +3217,40 @@ impl SearchStream {
                 };
                 return Some(StepResult::Continue);
             }
+            // 3.45 WI-20260911-09E6M — __size_round_end(k): the round's fill is done. The
+            // branch is an answer of round `k` only where it spent all `k`; one that spent
+            // less generated a smaller member, which the round of its size answered. Past
+            // the end the branch is out of the round, and a fill after it opens rounds of
+            // its own. THAT IS A LIMIT, stated (kernel-language §5.3): a fill of the round
+            // that WAITED — an `apply_domain` whose condition's type is not pinned yet — was
+            // rotated behind this end, and generates after it, complete but not fair against
+            // what the round generated.
+            if let Some(k) = size_round_end_arg(kb, &goal_val) {
+                let f = self.stack.last_mut().unwrap();
+                match f.size.take() {
+                    Some(budget) if budget.remaining == 0 => {
+                        f.goals.remove(0);
+                        f.state = FrameState::Init {
+                            delay_mode: delay_mode.reset(),
+                        };
+                    }
+                    Some(_) => {
+                        self.stack.pop();
+                    }
+                    // Only `step_size_rounds` mints the marker, in a branch it gives a budget,
+                    // and only this arm takes the budget away again.
+                    None => {
+                        self.record_error(
+                            ResolveError::new(format!(
+                                "`__size_round_end({k})` reached in a branch with no round open"
+                            ))
+                            .located_at(&goal_val),
+                        );
+                        self.stack.pop();
+                    }
+                }
+                return Some(StepResult::Continue);
+            }
             // forall_impl / forall_in / some_in classify carrier-neutrally off
             // the goal's `TermView`, and their step_ handlers now read binders /
             // antecedents / consequents through `TermView` too and skolemise via
@@ -3380,9 +3475,11 @@ impl SearchStream {
                 let subst = frame.subst.clone();
                 // `Some((goal, pin))` when decided: the `fill` goal to run next (none when
                 // the bound held with nothing left to run), and the conform pin.
-                let decided: Option<(Option<Value>, Option<Substitution>)> =
+                let decided: Option<(Option<(Value, bool)>, Option<Substitution>)> =
                     match kb.lower_apply_domain(&goal_val, &subst) {
-                        ApplyDomainLowering::Goal { goal, pin } => Some((Some(goal), pin)),
+                        ApplyDomainLowering::Goal { goal, pin, rounds } => {
+                            Some((Some((goal, rounds)), pin))
+                        }
                         ApplyDomainLowering::Holds { pin } => Some((None, pin)),
                         ApplyDomainLowering::Fail => {
                             self.stack.pop();
@@ -3412,7 +3509,37 @@ impl SearchStream {
                     let f = self.stack.last_mut().unwrap();
                     f.subst = new_subst;
                     match replacement {
-                        Some(goal) => {
+                        // WI-20260911-09E6M — A FILL THAT CAN GENERATE, outside any round, is
+                        // asked ROUND BY ROUND: this goal becomes the rounds' choice point, and
+                        // the first round is pushed and its fill asked in this same step, as the
+                        // dispatch below is (`step_size_rounds`). WHATEVER THE VALUE: a bound part spends nothing,
+                        // so a ground value is checked in round 0 and the stream ends there, and
+                        // a value bound with holes — `[?, ?]` at `List[T = Tree]` — has its holes
+                        // generated in ONE round, fair to each other. Asking first whether the
+                        // value is ground would walk it at every level of the check. A fill
+                        // inside a round spends that round's budget instead.
+                        Some((goal, true)) if f.size.is_none() => {
+                            let g0 = &f.goals[0];
+                            let fill = FrameGoal {
+                                goal,
+                                wait: Wait::Ready,
+                                clause: None,
+                                depth: g0.depth,
+                                proof: g0.proof,
+                            };
+                            f.state = FrameState::SizeRounds {
+                                delay_mode,
+                                fill,
+                                next: 0,
+                                last: None,
+                                closed: false,
+                            };
+                            // Round 0 is pushed, and its fill asked, in this step: the
+                            // dispatch costs no fuel (kernel-language §8.3).
+                            self.step_size_rounds(kb);
+                            return self.step_init(kb);
+                        }
+                        Some((goal, _)) => {
                             f.goals[0].goal = goal;
                             f.state = FrameState::Init { delay_mode };
                             // A DISPATCH COSTS NOTHING (060-implementation §7.3 item 7): no depth
@@ -4466,6 +4593,7 @@ impl SearchStream {
         new_assumed.extend(skolemized_antecedents);
         let new_subst = frame.subst.clone();
         let proof_path = frame.path.clone();
+        let size = frame.size.clone();
         let new_delay = delay_mode.reset();
 
         self.stack.pop();
@@ -4477,6 +4605,7 @@ impl SearchStream {
             },
             assumed_facts: new_assumed,
             path: proof_path,
+            size,
         });
         if let Some(kind) = proof_kind {
             self.proof_took(proof_tag, kind, n_consequents);
@@ -4714,6 +4843,7 @@ impl SearchStream {
             let new_assumed = frame.assumed_facts.clone();
             let proof_tag = frame.goals[0].proof;
             let proof_path = frame.path.clone();
+            let size = frame.size.clone();
             self.stack.pop();
             self.stack.push(ResolverFrame {
                 goals: new_goals,
@@ -4723,6 +4853,7 @@ impl SearchStream {
                 },
                 assumed_facts: new_assumed,
                 path: proof_path,
+                size,
             });
             // WI-20261121-G8E02 — proof mode: the `forall` is proved by its instances, the
             // parts it split into (`clause: none`).
@@ -5149,15 +5280,20 @@ impl SearchStream {
             }
         };
         for frame in self.stack[floor_idx..top].iter_mut() {
-            if let FrameState::ChoicePoint {
-                next,
-                candidates,
-                waiting,
-                ..
-            } = &mut frame.state
-            {
-                *next = candidates.len();
-                waiting.clear();
+            match &mut frame.state {
+                FrameState::ChoicePoint {
+                    next,
+                    candidates,
+                    waiting,
+                    ..
+                } => {
+                    *next = candidates.len();
+                    waiting.clear();
+                }
+                // WI-20260911-09E6M — a round choice point is one too: its later rounds are
+                // alternatives the cut commits away.
+                FrameState::SizeRounds { closed, .. } => *closed = true,
+                _ => {}
             }
         }
     }
@@ -6209,6 +6345,69 @@ impl SearchStream {
         }
     }
 
+    /// [`is_fielded_fill_case_uncached`], through [`Self::fielded_case_cache`].
+    fn is_fielded_fill_case(&mut self, kb: &KnowledgeBase, rid: RuleId) -> bool {
+        *self
+            .fielded_case_cache
+            .entry(rid)
+            .or_insert_with(|| is_fielded_fill_case_uncached(kb, rid))
+    }
+
+    /// WI-20260911-09E6M — a visit to a [`FrameState::SizeRounds`] choice point: the next round,
+    /// or, when the last round cut no member short (or a cut closed it), the end of the stream.
+    ///
+    /// Round `k` is a branch of its own: the `fill` goal, the `apply_domain` goals right behind
+    /// it, then `__size_round_end(k)`, then the rest of the tail, under a budget of `k`. No round is asked twice and no member answered twice: round
+    /// `k`'s end admits only a branch that spent all `k`, and a member generated with less was
+    /// answered by the round of its size.
+    fn step_size_rounds(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
+        let frame = self.stack.last_mut().unwrap();
+        let FrameState::SizeRounds {
+            delay_mode,
+            fill,
+            next,
+            last,
+            closed,
+        } = &mut frame.state
+        else {
+            unreachable!("step_size_rounds on a frame that is no SizeRounds");
+        };
+        if *closed || last.as_ref().is_some_and(|pruned| !pruned.get()) {
+            self.stack.pop();
+            return Some(StepResult::Continue);
+        }
+        let k = *next;
+        *next += 1;
+        let pruned = Rc::new(std::cell::Cell::new(false));
+        *last = Some(Rc::clone(&pruned));
+        let fill = fill.clone();
+        let delay_mode = delay_mode.reset();
+        let end = size_round_end_marker(kb, k);
+        let frame = self.stack.last().unwrap();
+        // THE ROUND SPANS THE FILLS THAT FOLLOW AT ONCE: the `apply_domain` goals right behind
+        // this one — a clause's other typed columns — are asked inside it and spend its budget,
+        // so `pair(a: Tree, b: Tree)` is fair to both columns as `node(l, r)` is to both fields.
+        // A round of its own after this one's end would keep `a` at `leaf` while `b` runs.
+        let tail = &frame.goals[1..];
+        let shared = tail.iter().take_while(|g| is_apply_domain_goal(kb, &g.goal)).count();
+        let mut goals: Vec<FrameGoal> = Vec::with_capacity(frame.goals.len() + 1);
+        let depth = fill.depth;
+        goals.push(fill);
+        goals.extend(tail[..shared].iter().cloned());
+        // The end stands where the `apply_domain` stood, at its depth: it is no call.
+        goals.push(FrameGoal::ready(end, depth));
+        goals.extend(tail[shared..].iter().cloned());
+        self.stack.push(ResolverFrame {
+            goals,
+            subst: frame.subst.clone(),
+            state: FrameState::Init { delay_mode },
+            assumed_facts: frame.assumed_facts.clone(),
+            path: frame.path.clone(),
+            size: Some(SizeBudget { remaining: k, pruned }),
+        });
+        Some(StepResult::Continue)
+    }
+
     /// The next candidate for the current `ChoicePoint` frame on the ONE path
     /// (WI-797): the resident discrim `candidates` first (in `query_view` order),
     /// then the mounted extent's rows, each matched against the goal lazily on
@@ -6443,6 +6642,7 @@ impl SearchStream {
                 },
                 assumed_facts: frame.assumed_facts.clone(),
                 path: frame.path.clone(),
+                size: frame.size.clone(),
             });
             let goal = FrameGoal {
                 goal: original_goal,
@@ -6467,6 +6667,7 @@ impl SearchStream {
                 },
                 assumed_facts: frame.assumed_facts.clone(),
                 path: frame.path.clone(),
+                size: frame.size.clone(),
             });
             return Some(StepResult::Continue);
         }
@@ -6480,6 +6681,7 @@ impl SearchStream {
                 },
                 assumed_facts: frame.assumed_facts.clone(),
                 path: frame.path.clone(),
+                size: frame.size.clone(),
             });
             return Some(StepResult::Continue);
         }
@@ -6505,6 +6707,7 @@ impl SearchStream {
                 },
                 assumed_facts: frame.assumed_facts.clone(),
                 path: frame.path.clone(),
+                size: frame.size.clone(),
             });
             // WI-20261121-G8E02 — proof mode: a side of `|`, a `some`'s element, an unfolded
             // arm: the parts the goal split into (`clause: none`).
@@ -6562,6 +6765,16 @@ impl SearchStream {
         let is_fact = opt_rid.map_or(true, |rid| {
             kb.is_fact(rid) && kb.rule_arity(rid) == 0 && !kb.rule_head_has_vars(rid)
         });
+
+        // WI-20260911-09E6M — inside a round of generation, is this candidate a case with
+        // fields of a derived `fill` ([`SizeBudget`])? Asked only inside a round, so a check —
+        // and every search that generates nothing — pays one `Option` test.
+        let fielded_case = match opt_rid {
+            Some(rid) if !is_fact && self.stack.last().unwrap().size.is_some() => {
+                self.is_fielded_fill_case(kb, rid)
+            }
+            _ => false,
+        };
 
         let frame = self.stack.last().unwrap();
 
@@ -6639,6 +6852,7 @@ impl SearchStream {
             let inherited = frame.assumed_facts.clone();
             // A fact opens no goal: the tail keeps its own depths.
             let path = frame.path.clone();
+            let size = frame.size.clone();
             self.stack.push(ResolverFrame {
                 goals: remaining,
                 subst: merged,
@@ -6647,12 +6861,32 @@ impl SearchStream {
                 },
                 assumed_facts: inherited,
                 path,
+                size,
             });
             // WI-20261121-G8E02 — proof mode: a fact, an assumption or a row, with no body.
             self.proof_took(proof_tag, proof_kind, 0);
         } else {
             // Rule with body
             let rid = opt_rid.unwrap();
+            // WI-20260911-09E6M — A CASE WITH FIELDS GENERATING A VALUE SPENDS ONE OF ITS ROUND'S
+            // BUDGET; with none left it is refused, and the round is marked as having cut a
+            // member short, so a bigger round follows. A case CHECKING a bound value spends
+            // nothing: its head selected it, and the value's size was not generated here.
+            let size = match &frame.size {
+                Some(budget)
+                    if fielded_case && fill_goal_value_is_unbound(kb, &original_goal, &frame.subst) =>
+                {
+                    if budget.remaining == 0 {
+                        budget.pruned.set(true);
+                        return Some(StepResult::Continue);
+                    }
+                    Some(SizeBudget {
+                        remaining: budget.remaining - 1,
+                        pruned: Rc::clone(&budget.pruned),
+                    })
+                }
+                other => other.clone(),
+            };
             // WI-20261117-V0RPW: a guarded `=` law used as a lemma is instantiated at the
             // expression it is used for — its type variable at the type of what its bounded
             // variable matched — so its bound and its sort's requirement are asked at that type.
@@ -6887,6 +7121,7 @@ impl SearchStream {
                 },
                 assumed_facts: inherited,
                 path,
+                size,
             });
             // WI-20261121-G8E02 — proof mode: the clause, its body the goals just pushed.
             self.proof_took(proof_tag, proof_kind, body_len);
@@ -7165,6 +7400,7 @@ impl KnowledgeBase {
             },
             assumed_facts: Vec::new(),
             path: None,
+            size: None,
         };
         SearchStream {
             stack: vec![initial_frame],
@@ -7194,6 +7430,7 @@ impl KnowledgeBase {
             cut_cache: HashMap::new(),
             routing_read_cache: HashMap::new(),
             fill_read_cache: HashMap::new(),
+            fielded_case_cache: HashMap::new(),
             read_layout_cache: HashMap::new(),
             truncated: false,
             out_of_fuel: false,
@@ -7839,10 +8076,11 @@ impl KnowledgeBase {
             | BuiltinTag::ForallIn
             | BuiltinTag::SomeIn
             | BuiltinTag::PopAssumption
+            | BuiltinTag::SizeRoundEnd
             | BuiltinTag::WithinRequirements => BuiltinResult::Error(ResolveError::new(format!(
                 "`{}` is a resolver marker, read in place only in the shape the resolver \
                  mints it (arity 3 for `forall_impl` / `forall_in` / `some_in`, one integer \
-                 for `__pop_assumption`, a goal and a relation for \
+                 for `__pop_assumption` and `__size_round_end`, a goal and a relation for \
                  `__within_requirements`); this goal is not in that shape",
                 goal.head(self)
                     .functor_sym()
@@ -8914,7 +9152,12 @@ impl KnowledgeBase {
                     );
                 };
                 match self.tuple_fill_goal(x_now, value, scratch) {
-                    TupleFill::Goal(goal) => ApplyDomainLowering::Goal { goal, pin },
+                    // A component's fill may generate: the components share the round. Asked of
+                    // every tuple, a tuple of primitives too, which pays the round's constant
+                    // (a frame, the end, the pop) for nothing: which components can generate is
+                    // a question of their dictionaries, and a condition's dictionary is built
+                    // only when `fill` reads it (060 §2.3), not here.
+                    TupleFill::Goal(goal) => ApplyDomainLowering::Goal { goal, pin, rounds: true },
                     TupleFill::Holds => ApplyDomainLowering::Holds { pin },
                     TupleFill::Fail => ApplyDomainLowering::Fail,
                     TupleFill::Error(why) => ApplyDomainLowering::Error(format!("apply_domain: {why}")),
@@ -8922,9 +9165,9 @@ impl KnowledgeBase {
             }
             DomainEvidence::Dict { impl_sort, value } => {
                 // The provider's `fill`, from its `SortDomain` entry.
-                let Some((fill, kind, reads)) = self
+                let Some((fill, kind, reads, rounds)) = self
                     .sort_domain(impl_sort)
-                    .map(|e| (e.fill, e.kind, e.reads))
+                    .map(|e| (e.fill, e.kind, e.reads, e.generates_by_size()))
                 else {
                     return ApplyDomainLowering::Error(format!(
                         "apply_domain: `{}` provides no `fill`",
@@ -8940,6 +9183,7 @@ impl KnowledgeBase {
                 ApplyDomainLowering::Goal {
                     goal: self.fill_goal(fill, kind, reads, x, value),
                     pin,
+                    rounds,
                 }
             }
             DomainEvidence::NotYet(_) => ApplyDomainLowering::NotYet,
@@ -17714,6 +17958,43 @@ fn derived_fill_read_position(
     super::typing::requirement_read_out(kb, fd, first).map(|_| 0)
 }
 
+/// WI-20260911-09E6M — is the clause `rid` a case of a DERIVED `fill` (`kb::fill_derive`) whose
+/// constructor has fields — the case a round's budget pays for ([`SizeBudget`])? A nullary
+/// constructor's case is a fact, and no other relation's clause is a case.
+fn is_fielded_fill_case_uncached(kb: &KnowledgeBase, rid: RuleId) -> bool {
+    let head = kb.rule_head_value(rid);
+    let Some(functor) = head.head(kb).functor_sym() else {
+        return false;
+    };
+    if !kb.is_derived_fill_relation(functor) {
+        return false;
+    }
+    head.pos_arg(kb, 0).is_some_and(|ctor| {
+        matches!(
+            ctor.head(kb),
+            ViewHead::Functor { pos_arity, named_arity, .. } if pos_arity + named_arity > 0
+        )
+    })
+}
+
+/// WI-20260911-09E6M — is `goal` an `apply_domain` goal, which a round opened just before it
+/// takes inside ([`SearchStream::step_size_rounds`])?
+fn is_apply_domain_goal(kb: &KnowledgeBase, goal: &Value) -> bool {
+    goal.head(kb)
+        .functor_sym()
+        .is_some_and(|f| kb.builtin_of(f) == Some(BuiltinTag::ApplyDomain))
+}
+
+/// WI-20260911-09E6M — is the value a `fill` goal is asked of a FLEX variable under `subst` —
+/// is the fill GENERATING it? `goal` may ride a citation marker ([`WITHIN_REQUIREMENTS`]), as a
+/// choice point's `original_goal` does.
+fn fill_goal_value_is_unbound(kb: &KnowledgeBase, goal: &Value, subst: &Substitution) -> bool {
+    let inner = within_requirements_inner(kb, goal);
+    let goal = inner.as_ref().unwrap_or(goal);
+    kb.walk_arg(goal.pos_arg(kb, 0), subst)
+        .is_some_and(|x| kb.value_global_var(&x).is_some())
+}
+
 /// A functional-relation goal's call and result column —
 /// [`KnowledgeBase::functional_relation_call`].
 pub(crate) struct FunctionalRelationCall {
@@ -17802,6 +18083,12 @@ pub(crate) enum ApplyDomainLowering {
     Goal {
         goal: Value,
         pin: Option<Substitution>,
+        /// WI-20260911-09E6M — can the fill GENERATE a case with fields, so that it is asked
+        /// round by round where no round is open, WHATEVER THE VALUE — a bound part costs
+        /// nothing, and a value bound with holes has them generated in one round
+        /// ([`FrameState::SizeRounds`])? Not where it cannot: a primitive's waiting check, a
+        /// derived domain of nullary constructors only.
+        rounds: bool,
     },
     /// The bound's type has no domain and the value conforms: nothing is left to run.
     Holds { pin: Option<Substitution> },
@@ -18044,8 +18331,43 @@ pub(crate) fn is_scoping_marker(kb: &KnowledgeBase, functor: Symbol, pos_arity: 
         Some(BuiltinTag::ForallImpl | BuiltinTag::ForallIn | BuiltinTag::SomeIn) => {
             pos_arity == 3
         }
-        Some(BuiltinTag::PopAssumption) => pos_arity == 1,
+        Some(BuiltinTag::PopAssumption | BuiltinTag::SizeRoundEnd) => pos_arity == 1,
         _ => false,
+    }
+}
+
+/// WI-20260911-09E6M — the kernel address of the marker that ends a round's fill
+/// ([`BuiltinTag::SizeRoundEnd`]). Minted by the resolver only ([`size_round_end_marker`]),
+/// registered at bootstrap as [`POP_ASSUMPTION`] is.
+pub(crate) const SIZE_ROUND_END: &str = "anthill.kernel.__size_round_end";
+
+/// `__size_round_end(k)` — the goal that ends the fill a round of size `k` asks.
+fn size_round_end_marker(kb: &mut KnowledgeBase, k: u32) -> Value {
+    let functor = kb
+        .try_resolve_symbol(SIZE_ROUND_END)
+        .expect("bootstrap registers the `__size_round_end` marker");
+    let size = kb.alloc(Term::Const(Literal::Int(i64::from(k))));
+    Value::term(kb.alloc(Term::Fn {
+        functor,
+        pos_args: SmallVec::from_slice(&[size]),
+        named_args: SmallVec::new(),
+    }))
+}
+
+/// The size `k` of a `__size_round_end(k)` marker — read through [`TermView`], as
+/// [`SearchStream::pop_assumption_arg`] reads its count — or `None` for any other goal.
+fn size_round_end_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<u32> {
+    match goal.head(kb) {
+        ViewHead::Functor {
+            functor: f,
+            pos_arity: 1,
+            named_arity: 0,
+        } if kb.builtin_of(f) == Some(BuiltinTag::SizeRoundEnd) => {}
+        _ => return None,
+    }
+    match goal.pos_arg(kb, 0)?.head(kb) {
+        ViewHead::Const(Literal::Int(k)) => u32::try_from(k).ok(),
+        _ => None,
     }
 }
 

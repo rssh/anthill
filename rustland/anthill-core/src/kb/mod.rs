@@ -14437,6 +14437,7 @@ impl KnowledgeBase {
             BuiltinTag::SomeIn,
         );
         self.register_builtin_tag(crate::kb::resolve::POP_ASSUMPTION, BuiltinTag::PopAssumption);
+        self.register_builtin_tag(crate::kb::resolve::SIZE_ROUND_END, BuiltinTag::SizeRoundEnd);
         self.register_builtin_tag(
             crate::kb::resolve::WITHIN_REQUIREMENTS,
             BuiltinTag::WithinRequirements,

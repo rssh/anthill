@@ -40,10 +40,16 @@
 //! entity can be filled. So the conditions are PER FIELD, not per parameter: `SortedSet`'s
 //! `O`, which no field fills, is no condition.
 //!
-//! **THE ORDER IS SEMANTIC, two rules, both WI-743's measurements**: the cases with no
-//! recursive field first (`nil` before `cons` — `combine` is ordered concatenation, 067 §2,
-//! and an infinite first operand starves the second), and inside a case the recursive fields
-//! first (`tail` before `head` — head first, a free list descends one spine forever).
+//! **THE ORDER IS THE ORDER INSIDE ONE SIZE, two rules, both WI-743's measurements**: the
+//! cases with no recursive field first (`nil` before `cons`), and inside a case the recursive
+//! fields first (`tail` before `head`). They were what made a free list fair — head first, it
+//! descended one spine for ever; `nil` last, an infinite first operand starved the second — and
+//! could not make two recursive fields fair. Since WI-20260911-09E6M the RESOLVER generates a value
+//! by size, in rounds (`resolve::FrameState::SizeRounds`; kernel-language §5.3), over these clauses
+//! as they are, and the two rules order the members of one size: `List[T = Letter]` still comes
+//! out `[]`, `[a]`, `[b]`, `[c]`, `[a, a]`, `[b, a]`, …. A round pays for a case WITH FIELDS
+//! ([`SortDomainEntry::fielded`]); a sort of nullary constructors only is generated whole without
+//! rounds.
 //!
 //! **A PRIMITIVE HAS NO CASES** (user, 2026-09-25: every type has a `SortDomain`): its `fill`
 //! is the waiting type check, `anthill.kernel.domain(?x, Int64)` — it leaves `?x` free and
@@ -130,6 +136,25 @@ pub(crate) struct SortDomainEntry {
     /// the relation's layout (`resolve::bind_citation_reads`). 0 for a primitive's; a written
     /// domain's reads are scanned where it is called.
     pub(crate) reads: usize,
+    /// WI-20260911-09E6M — does a DERIVED `fill` have a case whose constructor has fields, a
+    /// case a round of generation pays for? `false` for a written or primitive domain.
+    pub(crate) fielded: bool,
+}
+
+impl SortDomainEntry {
+    /// WI-20260911-09E6M — does generating through this `fill` go ROUND BY ROUND, by size
+    /// (`resolve::FrameState::SizeRounds`)? A derived `fill` with a case with fields does — the
+    /// only kind of case a round pays for; one of nullary constructors only is answered whole in
+    /// a round of size 0, so it opens none. A written domain does: its own relation may reach
+    /// fills that pay, and they then share one round. A primitive's waiting check generates
+    /// nothing.
+    pub(crate) fn generates_by_size(&self) -> bool {
+        match self.kind {
+            SortDomainKind::Derived => self.fielded,
+            SortDomainKind::Written => true,
+            SortDomainKind::Primitive => false,
+        }
+    }
 }
 
 /// A derivation candidate: a sort with constructors and no written domain.
@@ -167,6 +192,7 @@ pub(crate) fn run(
                     sub_offset: 0,
                     kind: SortDomainKind::Written,
                     reads: 0,
+                    fielded: false,
                 },
             );
             continue;
@@ -282,6 +308,7 @@ pub(crate) fn run(
                 kind: SortDomainKind::Derived,
                 // Counted as the clauses are emitted, below.
                 reads: 0,
+                fielded: c.fields.iter().any(|fs| !fs.is_empty()),
             },
         );
     }
@@ -416,6 +443,7 @@ fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
                 sub_offset: 0,
                 kind: SortDomainKind::Primitive,
                 reads: 0,
+                fielded: false,
             },
         );
     }
