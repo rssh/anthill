@@ -1,6 +1,6 @@
 # 077: A spec's rule member is implemented by a provision — a sort's domain is an ordinary `SortDomain` provision
 
-## Status: Draft (2026-11-27), WAITING ON [076](076-goal-scope-in-the-search.md). Written with the user while working WI-20260911-WT8WG: the user's call, "fix the general machinery", over making the per-sort table the one source. Nothing is built. ORDER, decided with the user the same day: 076 first. Programs that lean on domains are not written today because the first attempts were too slow — a typed column generating where it should check (WI-20261115-YR3N7), then checking its whole value again at every call (WI-20261124-YFD7F: 20 s and 7.6 GB at n = 400), then the search itself (076: `2^k` after `k` ground goals, the copied resolvent) — so the machine comes before the reorganisation. 077 is designed after 076's Stage A, together with YFD7F's dictionary channel and the fairness question (open question 2), which 076's branch representation decides. §5's three changes to the requirement machinery are the open part and are measured before anything else (§8, S1). §9 (the type test `anthill.kernel.domain` moved into `SortDomain` as the member `check`, threaded as `fill` is) added with the user the same day; §2 corrected the same day (a provision is an anonymous sort, its rules that sort's — not the providing sort's), with §1's unconditional case and open question 7.
+## Status: Draft (2026-11-27), WAITING ON [076](076-goal-scope-in-the-search.md). Written with the user while working WI-20260911-WT8WG: the user's call, "fix the general machinery", over making the per-sort table the one source. Nothing is built. ORDER, decided with the user the same day: 076 first. Programs that lean on domains are not written today because the first attempts were too slow — a typed column generating where it should check (WI-20261115-YR3N7), then checking its whole value again at every call (WI-20261124-YFD7F: 20 s and 7.6 GB at n = 400), then the search itself (076: `2^k` after `k` ground goals, the copied resolvent) — so the machine comes before the reorganisation. 077 is designed after 076's Stage A, together with YFD7F's dictionary channel and the fairness question, now 076's Stage D (moved there from open question 2 the same day). §5's three changes to the requirement machinery are the open part and are measured before anything else (§8, S1). §9 (the type test `anthill.kernel.domain` moved into `SortDomain` as the member `check`, threaded as `fill` is) added with the user the same day; §2 corrected the same day (a provision is an anonymous sort, its rules that sort's — not the providing sort's), with §1's unconditional case and open question 7.
 
 ## Amends: [052](052-rules-as-stream-valued-operations.md) (a `Relation` applied in goal position runs its rule in place — open question 6), [060](060-clause-level-requirements-and-typed-heads.md) §2.3 (how `fill` is threaded), [066](066-provision-member-blocks.md) §3 (a `where` block holds operations only), [067](067-fillable.md) §3 (`fill` found "through a map of the rule member's own"); `docs/kernel-language.md` §5.3 (*A closed sort defines its domain*; WI-742's `domain(?x, T)`, and C666A's admission through that guard — §9) and §8.7.
 
@@ -400,30 +400,16 @@ generates — the 33 rows the fill moved stay as they are.
    declaration, as in a sort, and a case is written `:- true`. (Measured: a probe's body-less
    `rule boxCase(?t, nobox())` answered nothing. 060 §2.3 and 060-implementation print the derived
    cases body-less, and are corrected with S5.)
-2. **Rounds.** Generation by size is asked of a `SortDomain` fill. For any spec's rule member, or
-   only for `Fillable.fill`? The user's objection (2026-11-27): rounds make the fill a rule with a
-   generation of its own, against §2's "same semantics as a rule in a sort". Today the budget is
-   spent only by a case of a DERIVED fill (`is_derived_fill_relation`); with the table gone it is
-   found through the provision instead. A general fair combinator in goal position (the goal form of
-   `LogicalStream.interleave`, and a fair conjunction) would remove the special case, and was set
-   aside as too large a change (user, the same day).
-   COST, MEASURED 2026-11-27 (the fewest `--max-steps` giving n answers, debug CLI):
-
-   | n answers | `rule nats(?x: Nat) :- true` (rounds) | the same relation written depth-first |
-   |---|---|---|
-   | 5 | 90 | 28 |
-   | 10 | 305 | 58 |
-   | 20 | 1 110 | 118 |
-   | 40 | 4 220 | 238 |
-
-   Rounds are QUADRATIC where a type has one member per size (`Nat`): round k re-walks every smaller
-   member and discards it at the round's end. Plain depth-first is linear. Where members grow
-   geometrically with size (`Tree`, `List[T = Letter]`) the last round dominates and the overhead is
-   a constant factor (reasoned, not measured). A sort of nullary constructors only opens no round,
-   and a bound value is checked in round 0. WI-743's two ordering rules already made ONE recursive
-   field per case fair, so rounds buy reachability only where two infinite parts share a value (two
-   recursive fields, a tuple of two, adjacent infinite typed columns, two holes at an infinite
-   element): opening a round only there would keep `Nat` and a free `List` linear.
+2. ~~**Rounds.**~~ **MOVED to [076](076-goal-scope-in-the-search.md) §6 Stage D** (draft, with
+   the user, 2026-11-27). Which branch the search restores next is a question for the search
+   machine, not for a spec member. A branch over budget is DEFERRED to the next level instead of
+   dropped, so nothing is built twice: `Nat` becomes linear (the measured table of rounds against
+   depth-first moved there), each proof is found once, and the order is today's. The agenda that
+   keeps deferred branches is a mechanism of its own. Generation by size is its first policy,
+   declared on the spec member `SortDomain.fill`, so `fill` is an ordinary rule (§2) and no sort is
+   special. The user's objection (rounds make the fill a rule with a generation of its own) is
+   answered there. So is "a general fair combinator in goal position, set aside as too large": on
+   076's agenda it is a flag on a scope (076, open question 11).
 3. **Coherence by carrier (§5.1).** `SortDomain`'s alone, or a property a spec declares?
 4. **Tuples.** A tuple has no sort to carry a provision (065 §2 step 2 is open), and its domain is
    built from its components' today, with written `SortDomain` at a tuple refused (HWD8A). Which

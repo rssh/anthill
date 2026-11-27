@@ -1,10 +1,10 @@
 # Proposal 076: A goal's scope in the search — its call, its exit, and the alternatives it leaves
 
-## Status: Draft, written with the user 2026-11-24, revised the same day after reviews (History 2 to 6). Not approved. Nothing here is implemented, and the spec is not changed by it (§9 says what it would change).
+## Status: Draft, written with the user 2026-11-24, revised the same day after reviews (History 2 to 6), and on 2026-11-27 with Stage D, a fair region, moved here from 077's open question 2 (History 7). Not approved. Nothing here is implemented, and the spec is not changed by it (§9 says what it would change).
 
 ## Tracked by: WI-20261122-P6G1P (commit to the first definite proof of a ground goal), WI-20261122-VT9S7 (dependency-directed backtracking). No ticket of its own.
 
-## Relates to: `docs/kernel-language.md` §8.3 (a query yields answers, a relation yields proofs; depth and fuel; negation); proposal 033 (`push_choice`, `Candidate::Continuation`), 033.1 (cut and the barrier), 068 §2.2 (wait states), 052 (relations count proofs), 075 (`SLDProof`, proof mode); WI-569 (σ is persistent); WI-20261124-YFD7F (a typed column checks its whole value at every call).
+## Relates to: `docs/kernel-language.md` §8.3 (a query yields answers, a relation yields proofs; depth and fuel; negation); proposal 033 (`push_choice`, `Candidate::Continuation`), 033.1 (cut and the barrier), 068 §2.2 (wait states), 052 (relations count proofs), 075 (`SLDProof`, proof mode); WI-569 (σ is persistent); WI-20261124-YFD7F (a typed column checks its whole value at every call); WI-20260911-09E6M (generation by size, the rounds Stage D replaces); proposal 077, open question 2 (moved here as Stage D).
 
 ## References: Warren's abstract machine (Aït-Kaci's tutorial reconstruction); X. Qi, *An Implementation of the Language λProlog Organized around Higher-Order Pattern Unification* (Teyjus 2; `docs/local/references/lambda-prolog/implementation-ho-0911.5203v1-QI.pdf`), §4.2 and ch. 6; ELPI's `src/runtime/runtime.ml` (`type frame`, `alternative`, `pop_andl`, `cut`).
 
@@ -261,6 +261,120 @@ Each stage is measured on its own and lands on both implementations. The first d
 - **The commit (§4)** cuts to the call height at the same exit.
 - **Cost.** One independence test per selected goal: a flag of the clause's goal, and `value_is_ground` on its other arguments.
 
+**Stage D — a fair region: a branch deferred to the next level.** Added with the user 2026-11-27 and moved here from 077's open question 2 (History 7). Generating a value fairly means deciding which branch the search restores next, and that is this proposal's subject.
+
+- **What is there today** (WI-20260911-09E6M, `1437ea4a6`). An `apply_domain` whose fill can generate a case with fields becomes a `FrameState::SizeRounds` choice point. Round `k` asks the fill afresh, with a budget of `k` cases with fields (`SizeBudget`). A case refused for want of budget is DROPPED, and the round is marked as having cut a member short. `__size_round_end(k)` admits only a branch that spent all `k`. So each member comes out once, in the round of its size, and the stream ends after a round that cut nothing short. It has three costs:
+  - **It re-walks.** Round `k` builds every smaller member again and discards it. MEASURED 2026-11-27 (077's open question 2: the fewest `--max-steps` giving n answers, debug CLI):
+
+    | n answers | `rule nats(?x: Nat) :- true` (rounds) | the same relation written depth-first |
+    |---|---|---|
+    | 5 | 90 | 28 |
+    | 10 | 305 | 58 |
+    | 20 | 1 110 | 118 |
+    | 40 | 4 220 | 238 |
+
+    That is quadratic where a type has one member per size. Where members grow geometrically with size (`Tree`), the last round dominates and the overhead is a constant factor (reasoned, not measured).
+  - **It belongs to one relation.**
+    - Whether a fill opens rounds is read off the per-sort table (`SortDomainEntry::generates_by_size`).
+    - Only a case of a derived fill spends the budget (`is_fielded_fill_case`).
+    - 077 removes that table. The user's objection stands: rounds make `fill` a rule with a generation of its own, against 077 §2 (a provision's rule has the semantics of a rule in a sort).
+  - **A marker, and a gap.**
+    - `__size_round_end` is one more marker in the resolvent (§6's preamble: the trouble is markers).
+    - A fill that waits inside a round is rotated past the marker and generates after it. It is complete, but not fair against the round (kernel-language §5.3).
+- **Deferring a branch is suspending it and restoring it later.** A choice point already is a suspended branch, restored on backtracking. A deferred branch is restored at another moment: when its LEVEL comes.
+  - **What is saved** is the branch's own state, together with the clause it was about to open. After Stage A that state is its continuation, σ and the store. On today's machine it is a `ResolverFrame`'s goals (each with its depth, wait state and proof tag), σ, assumptions, proof path and budget. Restoring it is exact.
+  - **Three things differ** from a plain suspend and restore:
+    - suspending counts as a FAILURE in the current level: the search backtracks and goes on;
+    - the branch is restored with its budget one unit higher, so the unit it was refused is now paid;
+    - only that one branch is saved. Its siblings stay on the stack and are explored in the current level.
+  - **It is not a waiting goal:**
+
+    | | a waiting goal (`Wait::Suspended`, `Wait::Parked`) | a deferred branch |
+    |---|---|---|
+    | side of the search | AND: one goal inside a branch | OR: a whole branch among branches |
+    | the branch meanwhile | runs its other goals | stops |
+    | restored when | a variable it waits on is bound | its level comes |
+
+- **The agenda.** A fair region is a choice point of its own kind, standing at the region's call. Inside it the search runs in LEVELS:
+  - level `k` is plain depth-first search with a budget of `k` units;
+  - a branch that wants unit `k + 1` is deferred to level `k + 1`;
+  - when backtracking reaches the agenda, it restores the deferred branches of level `k + 1` as its alternatives, in the order they were deferred;
+  - the region is exhausted when a level deferred nothing.
+
+  The agenda has four operations, and none of them knows about domains:
+  - `open`: the first goal of a region, selected outside any region, pushes the agenda at level 0;
+  - `defer`: save the current branch for the next level, then fail;
+  - `next`: at the agenda, restore the next level's branches, or pop when there are none;
+  - `close`: a cut that commits past the region drops the agenda.
+
+  `Nat` (`zero | succ(n: Nat)`), asked `fill(?x)`:
+
+  ```
+  level 0:  zero → answer zero
+            succ wants unit 1 → defer B1 = {?x = succ(?n); goals: fill(?n), …}, fail
+  level 1:  restore B1:  zero → answer succ(zero)
+                         succ → defer B2
+  level 2:  restore B2:  zero → answer succ(succ(zero))
+                         succ → defer B3
+  ```
+
+  Rounds instead start level 2 again from `fill(?x)`: they build `zero` and `succ(zero)` again and drop them. `Tree` (`leaf | node(l: Tree, r: Tree)`), the recursive fields in order:
+  - at level 1, `node` is paid for. `l = leaf, r = leaf` answers `node(leaf, leaf)`. Then `r = node` is deferred as D1, and `l = node` as D2;
+  - level 2 restores D1, which answers `node(leaf, node(leaf, leaf))`, then D2, which answers `node(node(leaf, leaf), leaf)`.
+
+  These are the third and fourth rows 09E6M pins. What follows from the agenda:
+  - **Each step runs once.** A branch finishes, fails, or is deferred and restored once. So `Nat` is linear where rounds are quadratic, and every proof is found once, so relation counts (052) are unchanged. No "spent exactly `k`" filter is needed, because nothing runs twice.
+  - **The order is the rounds' order** (reasoned, not measured; 09E6M's pinned order rows are the measurement).
+    - Every derivation that spends `k + 1` units crosses from `k` to `k + 1` at exactly one step.
+    - No crossing step lies on the path to another, because a path through one crosses there.
+    - Level `k` defers at the crossings in the order depth-first search reaches them, and level `k + 1` runs depth-first from each crossing in that order.
+    - So level `k + 1` answers its members in the order round `k + 1` does. Within a size the order is clause order with the recursive fields first (WI-743's two rules), as today.
+  - **Memory is the next level's deferred branches.**
+    - For `Nat` that is one per level. For `Tree` it grows with the next size class (1, 2, 5, 14, …), about what the consumer receives at that level.
+    - A bound value selects one clause per level and defers nothing, so a check costs what it does depth-first.
+    - On today's frames each deferred branch copies its goal list, as every choice point does. After Stage A it shares it.
+  - **One region at a time in a branch.** A fair goal selected inside a region spends the region's units and opens no region of its own, as a fill inside a round does today. That is what makes two infinite fields fair to each other.
+  - **Alternatives considered.**
+    - Plain breadth-first (first in, first out within a level) changes the order within a size.
+    - Interleaving (miniKanren's `mplus`, LogicT's `interleave`) is complete but does not come out by size.
+    - Rounds (today) keep little in memory and re-walk.
+- **The policy: who opens a region, and what spends a unit.** The agenda is the mechanism. Generation by size is its first policy.
+  - **Who opens one.** A goal of a relation DECLARED fair, selected outside any region.
+    - Declared on the spec member `SortDomain.fill`. Every provision's fill, derived or written, then inherits it, and no sort is special.
+    - The declaration changes the search and not the meaning, as XSB's `:- table p/1` does.
+    - A goal form, `fair(g)`, can come later on the same agenda. 077 set it aside as too large; on the agenda it is a flag on a scope.
+  - **What spends a unit.** Today it is a case of a derived fill whose constructor has fields, opened over an unbound value; a nullary constructor, a primitive's check, a tuple and a bound part spend nothing. That rule is still to be stated in general terms (open question 12).
+  - **The region's extent.** Fairness around one goal is not enough. In `pair(a: Tree, b: Tree)` the fill of `a` exits with `leaf`, and the fill of `b` then runs for ever.
+    - Today a round spans the fill and the typed-column fills right behind it.
+    - Proposed: **from the fair goal to the end of the body it was written in**, which is its scope, the unit Stage B uses for waiting. It covers two fills written in one body with a goal between them, which today's rounds do not.
+    - It needs Stage A's structural exit. On today's flat resolvent the end of a body is not known (§ The problem), and the region ends at a marker, as now.
+    - Not covered, and stated: a caller's generator after a callee whose answers are infinite.
+- **Restoring a branch: two rules for what surrounds it.** The branch's own state is restored exactly. What was below it on the stack when it was deferred is gone: the earlier level explored it and popped it. Two things read what surrounds a branch:
+  - **Cut.**
+    - A cut in scope `S` drops the stack above `S`'s barrier, as today, and also every deferred branch that came from inside `S`: those are alternatives the cut prunes.
+    - In a branch restored at a later level, `S`'s barrier is the height at which the branch was restored.
+    - A cut that commits past the region closes it (`close`), as a cut past a fill closes its later rounds today.
+    - So inside a region a cut commits to the first proof in the region's order, the smallest member, as it does under rounds.
+    - A deferred branch's scope is known on today's frames from the pending `cut(B)` among its goals, which names the scope; after Stage A it is the scope itself.
+  - **The guard (§3).** It reads the choice points above a goal's call height, and a goal whose proof deferred a branch has alternatives that are not on the stack. Proposed, conservatively: such a goal gets no guard at its exit, and the region as a whole is guarded as any goal is, seen from outside (open question 13).
+- **Not yet a client, and stated.** The agenda suspends branches by a key, which is more general than size:
+  - tabling (§1.3) suspends a consumer until its table has more answers;
+  - a bounded `forall_in` over a domain (09E6M's note) would range over the region's levels;
+  - iterative deepening by depth could be a query option.
+
+  None of these is proposed here.
+- **What it retires.**
+  - `FrameState::SizeRounds` becomes the agenda.
+  - `SizeBudget.remaining` stays as the level's budget, and its `pruned` flag becomes "the next level is not empty".
+  - `__size_round_end`'s admission filter goes. The marker itself goes once Stage A gives the region a structural end.
+  - `is_derived_fill_relation` and `SortDomainEntry::generates_by_size` give way to the declaration as what opens a region.
+  - With Stage B, 09E6M's waiting gap closes: a fill that waits stays in its scope, and so in the region.
+- **Measured by:**
+  - 09E6M's rows with their answers AND their order unchanged: `an_infinite_domain_is_fair` (the seven lists); a free `Tree` at 1, 1, 2, 5, 14 by size, each once with answer dedup off; `alphabet-words` at 27 / 12 and `tiny-sat` at 2; the cut rows;
+  - the `Nat` table above with deferral in place of rounds, which is linear; and its control, deferral replaced by dropping (today's rounds), which is quadratic again;
+  - peak deferred branches per level on `Tree`;
+  - after Stage A, two fills with a goal between them in one body, fair against each other. They are not today.
+
 ## 7. Related, not in scope: a typed column checks its whole value at every call
 
 Raised by the user during the first draft ("maybe the related problem is that sort-domain generates instead of checks"). MEASURED 2026-11-24 (debug binary): membership of the LAST element of a ground list,
@@ -293,12 +407,12 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
 ## 8. What is deliberately kept
 
 - **σ stays persistent.** A trail over destructive bindings is faster per binding, but a lazy consumer holds an answer's σ while the search continues, a sub-search starts from its parent's σ, and Scala has the same structure. To look at when σ is next touched: `Substitution::bind_compressed` scans every binding of σ for each new one (22 call sites in `resolve.rs`). It did not show on the probes above, which are linear in time to n = 32000.
-- **The search order.** Depth-first, clauses in order. Nothing here reorders goals except Stage B's wake, which is today's.
+- **The search order.** Depth-first, clauses in order. Nothing here reorders goals except Stage B's wake, which is today's. The one exception for branches is Stage D's fair region: inside one, branches are taken level by level, and depth-first within a level. Outside a region the order is as before.
 - **Goals are interpreted as written.** No compilation to instructions.
 
 ## 9. What the spec would say
 
-§8.3, once §3 is implemented: the alternatives of a goal independent of what follows it are not retried on a dead end after its definite exit; proof counts are unchanged, and so are answers except one kind: a search that ended truncated or faulted only because of such an alternative now ends refuted ("truncated means undecided" is then said of the branches a search has to enter). Once §4 is implemented: with the commit option, a ground goal's proofs are counted once. Stage B: a goal that waits, waits behind the goals of the body it was written in, and is handed to the caller when that body has nothing else left; 068 §2.2 is reworded with it. Each of these is a spec change to agree with the user first.
+§8.3, once §3 is implemented: the alternatives of a goal independent of what follows it are not retried on a dead end after its definite exit; proof counts are unchanged, and so are answers except one kind: a search that ended truncated or faulted only because of such an alternative now ends refuted ("truncated means undecided" is then said of the branches a search has to enter). Once §4 is implemented: with the commit option, a ground goal's proofs are counted once. Stage B: a goal that waits, waits behind the goals of the body it was written in, and is handed to the caller when that body has nothing else left; 068 §2.2 is reworded with it. Stage D: §5.3 keeps the order it states for a domain (members by size, and within a size in clause order) and loses its rounds. §8.3 says that inside a fair region branches are taken by level, and that a cut there commits to the first proof in that order. Each of these is a spec change to agree with the user first.
 
 ## 10. Open questions
 
@@ -311,6 +425,14 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
 7. **A goal woken from an outer scope.** It is asked next, in the middle of an inner scope's proof, and may fail it: today's behaviour, kept (068 §2.2). For an independent goal it cannot arise: nothing outside its proof can name its variables.
 8. **Local variables under a bounded quantifier or a `forall_impl`.** "Occurs in one goal only" is read off a clause body. What it is for the instance of a `some_in` or the consequent of a discharge is to be written down with Stage C.
 9. **A goal's pending equations (§3).** Proposed: they belong to the goal's scope, so its exit comes after them. The alternative: they stay spliced among the caller's goals, as today, and a variable they mention is not local. To choose with the user. Either way, the `q(?y, ?y + 1)` query of §3 answering `?y = 2` is an acceptance case of the guard, with its control (the guard reading `?y` as local answers "no solutions").
+10. **Stage D before or after Stage A.** The agenda's operations do not depend on how a branch is represented.
+    - Built first, on today's frames: a deferred branch is a cloned `ResolverFrame` whose goal list is copied, as every choice point copies it, and the region is today's (the fill and the typed-column fills behind it, ended by a marker). It removes the re-walk now, and Stage A makes it cheap later.
+    - Built after Stage A: it is built once, on the final representation, with the body as its region from the start.
+
+    To choose with the user.
+11. **The declaration's form.** How a spec member is declared fair: an attribute on `rule fill` in `SortDomain`, and under which name. And whether `fair(g)` comes with it or later.
+12. **What spends a unit, in general terms.** Today's rule names a derived fill's case with fields. A written fill and a provision's fill need a rule that does not name the derivation. One candidate is opening a bodied clause of a fair relation whose head match binds a variable of the goal. It spends where a tuple does not today, so it is checked against 09E6M's tuple and holes rows (a tuple's components; `[?, ?]` at `List[T = Tree]`) before it is chosen.
+13. **The guard inside a region.** There are two options. The first is no guard for a goal whose proof deferred a branch (proposed). The second is a guard that also drops that goal's deferred branches with its segment, which is sound by §3's argument and covers more.
 
 ## History
 
@@ -338,3 +460,10 @@ It compounds the `2^k` (each skipped or replayed branch re-runs its checks), but
    - **§3: locality is read off the goal as asked.** A pending equation from argument evaluation is spliced after the goal and reads its "local" variable: `q(?y, ?y + 1)` answers `?y = 2` today and would answer "no solutions" under a guard that read `?y` as local. Proposed: the equations belong to the goal's scope (question 9). Locality is also read after the typer's added goals.
    - **Stage C: a scope's exit duties ride with its last call.** Kept only for a scope with no duty, the elision would keep every ground call's scope for its guard, and `cnt` would not be bounded with the guard on. The guard and the commit are carried as the outermost elided scope's (call height, store), assumptions as a count; only a proof record pins a scope.
    - **§ MEASURED's per-level cost** is 4.3 to 5.5 KB from n = 8000 to 32000, not a flat 4.4 KB: a log factor is not excluded.
+7. 2026-11-27 — Stage D added with the user, moved from 077's open question 2.
+   - The user: `SortDomain.fill` needs fair generation, "wide instead of deep". 09E6M's rounds (delivered the same day) re-walk every smaller member, quadratic on `Nat`, and they belong to one relation.
+   - The approach moves from 077 to the search machine. A branch over budget is DEFERRED to the next level instead of dropped. The user asked whether that is "suspend execution of branch and then restore": yes, restored by level instead of on backtracking, with three differences and two rules for what surrounds a restored branch (cut, the guard).
+   - The user asked for a separate mechanism with an API for it: the agenda, with size-fair `fill` as its first policy.
+   - The name was first written "parking" and changed, because `Wait::Parked` is a goal's wait state.
+   - §8 and §9 amended. Open questions 10 to 13 added.
+   - The name "Stage D" is reused: revision 2 had it for backjumping, withdrawn there (§5).
