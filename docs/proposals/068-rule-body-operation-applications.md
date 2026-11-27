@@ -288,6 +288,16 @@ or derived by that goal (P7VP4's INFER decision). So:
 
 ### 2.2 What each state does
 
+**CORRECTION OF INTENT (user, 2026-11-28; first said 2026-11-24, "when I think about delay, I think
+about delay in the current goal, not global").** "Behind its siblings" below was meant as: a goal
+that waits is delayed until the END OF THE CURRENT GOAL — behind the other goals of the body it
+was written in, and no further (the user: "looks like I miss 068 — I mean delay until the end of
+the current goal"). As implemented, the resolvent is flat, so the callers' goals stand behind the
+siblings and a waiting goal leaves its body. [076](076-goal-scope-in-the-search.md) §6 Stage B
+(draft, not built) is that correction: it waits in its own scope, is handed to the caller when the
+scope has nothing else left, and is the residual at the query's scope. The text below is kept as
+written and is reworded when Stage B is delivered.
+
 **SUSPENDED** rotates behind its siblings. When one of its blockers is bound it is **woken**: it is
 asked next, before any goal that is ready — those added since it suspended included — and the
 binding counts as progress toward the residualization gate. While none of its blockers is bound it

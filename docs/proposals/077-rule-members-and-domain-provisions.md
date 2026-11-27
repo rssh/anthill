@@ -1,6 +1,8 @@
 # 077: A spec's rule member is implemented by a provision — a sort's domain is an ordinary `SortDomain` provision
 
-## Status: Draft (2026-11-27), WAITING ON [076](076-goal-scope-in-the-search.md). Written with the user while working WI-20260911-WT8WG: the user's call, "fix the general machinery", over making the per-sort table the one source. Nothing is built. ORDER, decided with the user the same day: 076 first. Programs that lean on domains are not written today because the first attempts were too slow — a typed column generating where it should check (WI-20261115-YR3N7), then checking its whole value again at every call (WI-20261124-YFD7F: 20 s and 7.6 GB at n = 400), then the search itself (076: `2^k` after `k` ground goals, the copied resolvent) — so the machine comes before the reorganisation. 077 is designed after 076's Stage A, together with YFD7F's dictionary channel and the fairness question, now 076's Stage D (moved there from open question 2 the same day). §5's three changes to the requirement machinery are the open part and are measured before anything else (§8, S1). §9 (the type test `anthill.kernel.domain` moved into `SortDomain` as the member `check`, threaded as `fill` is) added with the user the same day; §2 corrected the same day (a provision is an anonymous sort, its rules that sort's — not the providing sort's), with §1's unconditional case and open question 7.
+## Status: Draft (2026-11-27), WAITING ON [076](076-goal-scope-in-the-search.md). Written with the user while working WI-20260911-WT8WG: the user's call, "fix the general machinery", over making the per-sort table the one source. Nothing is built. ORDER, decided with the user the same day: 076 first. Programs that lean on domains are not written today because the first attempts were too slow — a typed column generating where it should check (WI-20261115-YR3N7), then checking its whole value again at every call (WI-20261124-YFD7F: 20 s and 7.6 GB at n = 400), then the search itself (076: `2^k` after `k` ground goals, the copied resolvent) — so the machine comes before the reorganisation. 077 is designed after 076's Stage A, together with YFD7F's dictionary channel and the fairness question, now 076's Stage D (moved there from open question 2 the same day). §5's three changes to the requirement machinery are the open part and are measured before anything else (§8, S1). §9 (the type test `anthill.kernel.domain` moved into `SortDomain` as the member `check`, threaded as `fill` is) added with the user the same day; §2 corrected the same day (a provision is an anonymous sort, its rules that sort's — not the providing sort's), with §1's unconditional case and open question 7. ORDER ACROSS 060.1 §9, 076 AND 077 (from a review of the three together, 2026-11-27, written here at the user's word; each stage's own acceptance unchanged): (1) 076 Stage A; (2) 060.1 §9 S1–S2; (3) 077 S1–S2; (4) 060.1 §9 S3–S4 together with 077 S3, so §5.2 is never built; (5) 077 S3b with YFD7F's trusted slot; (6) 076 Stages B and C; (7) 076 Stage D, after A, B and C (076 open question 10, decided 2026-11-28), its declaration on `Fillable.fill` needing (3); (8) 077 S4–S5. The marks "if 060.1 §9 is approved" in §4, §5.2, §6, §7, §8 and §9 were completed in the same review.
+
+## Tracked by: WI-20261127-V69PS, tagged `proposal-077` (stages S1–S5, S1 first); it depends on WI-20261127-AGR9S (076 Stage A) and WI-20261127-DAPCN (060.1 §9). WI-20260911-WT8WG depends on it.
 
 ## Amends: [052](052-rules-as-stream-valued-operations.md) (a `Relation` applied in goal position runs its rule in place — open question 6), [060](060-clause-level-requirements-and-typed-heads.md) §2.3 (how `fill` is threaded), [066](066-provision-member-blocks.md) §3 (a `where` block holds operations only), [067](067-fillable.md) §3 (`fill` found "through a map of the rule member's own"); `docs/kernel-language.md` §5.3 (*A closed sort defines its domain*; WI-742's `domain(?x, T)`, and C666A's admission through that guard — §9) and §8.7.
 
@@ -200,9 +202,10 @@ The three reasons the table was built, answered in the machinery instead of besi
 **5.1 No search for a domain.** `SortDomain` is COHERENT BY CARRIER: at most one provision per
 carrier, a written one replacing the derived one, a second refused at load. So `SortDomain[T = B]`
 is resolved by `B`'s head — a lookup — and never by `sort_goal_with_wildcards`. A witness
-(`W provides SortDomain[T = Colour]`) is then an ordinary provision, and the one source for
-`Colour` on every path. (Open: a property of `SortDomain` alone, or one a spec declares — `TypeValue`
-has it already, being derived-only.)
+(`W provides SortDomain[T = Colour]`) is refused at load: a domain is written on its carrier (open
+question 5, decided 2026-11-28; an earlier wording here made the witness "an ordinary provision,
+and the one source for `Colour` on every path"). The property is `SortDomain`'s alone (open
+question 3) — `TypeValue` has it already, being derived-only.
 
 **5.2 Open conditions.** *SUPERSEDED, if [060.1](060.1-written-rule-requirements.md) §9 (draft,
 2026-11-27) is approved: a rule's types are known at load, so no dictionary holds an open condition
@@ -228,7 +231,8 @@ possible because §5.1 makes the lookup a function of the head.
 - `__domain_sub` (a call through the condition) and `fill_goal`'s `Written` arm with its
   `__unrouted` reads;
 - `typing::sort_domain_route`'s table arm and `domain_evidence_of_type`'s dictionary built from a
-  type (§4; the open-condition read of §5.2 stays a run-time read, by decision);
+  type (§4; the open-condition read of §5.2 stays a run-time read, by decision — superseded with
+  §5.2 if 060.1 §9 is approved: then no run-time read stays);
 - the written-domain special cases: a 1-ary `domain(?x)` in a sort body, its arity ladder, the
   parameterised refusal, the typer's self-call exclusion (`own_fill_kind`) — a written domain is a
   provision, and its own clauses carry no typed column over its carrier;
@@ -240,15 +244,17 @@ possible because §5.1 makes the lookup a function of the head.
 
 The derived cases and their order (YR3N7, WI-743's two rules), generation by size (09E6M), the type
 guard in front of the body (its form: open question 8) and the fill after it, `Fillable` as the interface (`SortDomain provides
-Fillable`), and every answer every row gives today.
+Fillable`), and every answer every row gives today — except, if 060.1 §9 is approved, the rows it
+moves on purpose (its *What it costs*: a citation that leaves a type for a value to decide is
+refused at load).
 
 ## 8. Stages
 
 | stage | what | flips |
 |---|---|---|
-| **S1** | MEASURE, nothing built: (a) the cost of `SortDomain` rows for every sort, on the optimized build; (b) which of `dictionary.rs`' and WI-860's checks refuse a dictionary with an open condition; (c) a census of short-name collisions in `SortOpsTable` between an operation and a would-be rule member | nothing — decides §5.2's form and §5.3's lazy filing |
+| **S1** | MEASURE, nothing built: (a) the cost of `SortDomain` rows for every sort, on the optimized build; (b) which of `dictionary.rs`' and WI-860's checks refuse a dictionary with an open condition (not needed if 060.1 §9 is approved); (c) a census of short-name collisions in `SortOpsTable` between an operation and a would-be rule member; (d) how `TypeValue` reaches a tuple and a function type today (open question 4); (e) the rows the deep `check` in front of a body moves (open question 8) | nothing — decides §5.2's form and §5.3's lazy filing |
 | **S2** | rule members in a provision's `where` block, conditional or not (tree-sitter and fastparse), each a rule of the block's own sort (§2); the member table keyed by spec member; dispatch in the resolver (`apply_domain` generalised); the derivation EMITS provisions with members, read into the old table so no answer moves | a written `provides SortDomain[…] where rule fill(…) … end` loads and answers |
-| **S3** | §5.1 lookup by head, §5.2 open conditions, §5.3 rows; typed columns resolve through the requirement machinery (§4) | row 1's witness answers one count on every path; row 2's rule loads and answers |
+| **S3** | §5.1 lookup by head, §5.2 open conditions (dropped if 060.1 §9 is approved: its S3–S4 land with this stage instead, so §5.2 is never built), §5.3 rows; typed columns resolve through the requirement machinery (§4) | row 1's witness answers one count on every path; row 2's rule loads and answers |
 | **S3b** | §9: `check` derived beside `fill` from one walk of the constructors, its waiting clause (`nonvar`, §9); the outer-type test's provisions for the types with no constructors; a written `anthill.kernel.domain` becomes `SortDomain[T = T].check`; a citation at a caller's rigid without `requires SortDomain[T = X]` refused at load; a citation from an operation body trusted where the typer has the argument | §9's row 2 (`isT(true)`) answers 1; row 4's `noDict` is refused at load; row 1's junk list refused by a `check`-only column |
 | **S4** | delete the table (§6); primitives in stdlib source; hand-written domains as provisions, parameterised included | row 4's `Box` written as a provision answers 4 / 2 / 3 |
 | **S5** | kernel-language §5.3 and §8.7 (with §9's `domain` paragraphs and C666A's admission), 060 §2.3, 066 §3, 067 §3 — the text agreed with the user first | — |
@@ -352,7 +358,10 @@ end
   instance at a sort's parameter (row 2's `T`); the caller's `requires` slot at a rigid; an open
   condition (§5.2) at a type not pinned at load, read off the value once a part pins it (row 6). A
   value pins only a FLEXIBLE variable — a rule's own. A rigid is never read off a value (row 3's
-  mistake).
+  mistake). *Superseded with §5.2, if 060.1 §9 is approved: no value pins a type variable. Row 6's
+  `?t` is then fixed at the citation — by the argument's type where the typer has one
+  (`ll([[?a], [red()]])`) — and `ll([[], []])`, which fixes it by nothing, is refused at load
+  (reasoned from 060.1 §9 item 2, not run).*
 - **`Fillable` is unchanged.** It is the interface a solver asks for (`fill`); `check` is
   `SortDomain`'s.
 
@@ -361,10 +370,10 @@ end
 | today | under §9 |
 |---|---|
 | a written `anthill.kernel.domain(?x, T)` | `SortDomain[T = T].check(?x)`, `T` threaded: row 2's `isT(true)` answers 1 |
-| the whole check of a typed column with no fill | that type's `check`: a function type, a spec, an abstract sort and a tuple each get a `SortDomain` provision whose `check` is the outer-type test and whose `fill` waits (open questions 4 and 9) |
+| the whole check of a typed column with no fill | that type's `check`: a function type, a spec, an abstract sort and a tuple each get a `SortDomain` provision whose `check` is the outer-type test and whose `fill` waits (open questions 4 and 9, decided) |
 | a typed query variable `?x: T` | as a typed column |
 | an infinite primitive's `fill` | the same clause, through the provision written in stdlib source (§1); `check` is the same clause |
-| the guard `__domain_guard` in front of a body | open question 8 |
+| the guard `__domain_guard` in front of a body | the deep `check` at a call that is not trusted, nothing at a trusted one (open question 8, decided) |
 | the residual `domain(?_, Int64)` | the waiting clause's body (`nonvar(?_), checkCase(?_)`, as measured above), or a primitive's outer-type test |
 
 **A goal at a rigid is a requirement.** A rigid `X` has no value at run time; what knows its domain
@@ -381,6 +390,10 @@ column's own requirement (§4); today that requirement is not held to it. Two co
   So `has[X](v)` keeps loading without the requirement, and runs no check. Only a column the call
   leaves OPEN (generation) or hands a value the typer does not have at `X` (a downcast from a wider
   type) needs the dictionary.
+  *WITHDRAWN in part (user, 2026-11-27; 060.1 §8.18): trusted always WRAPS the dictionary, as
+  YFD7F delivered it, so `has[X](v)` runs no check but does need `requires SortDomain[T = X]` —
+  the dictionary is also what names `X` to a goal over a parametrized relation (060.1 §8.16).
+  "Needs no check" stands; "keeps loading without the requirement" does not.*
 - **A generic operation that fills or checks at `X` is callable only at a type with a `SortDomain`.**
   The requirement on its signature says so where it is called.
 
@@ -406,16 +419,36 @@ generates — the 33 rows the fill moved stay as they are.
    dropped, so nothing is built twice: `Nat` becomes linear (the measured table of rounds against
    depth-first moved there), each proof is found once, and the order is today's. The agenda that
    keeps deferred branches is a mechanism of its own. Generation by size is its first policy,
-   declared on the spec member `SortDomain.fill`, so `fill` is an ordinary rule (§2) and no sort is
+   declared on the spec member `Fillable.fill` (076 open question 11), so `fill` is an ordinary rule (§2) and no sort is
    special. The user's objection (rounds make the fill a rule with a generation of its own) is
    answered there. So is "a general fair combinator in goal position, set aside as too large": on
    076's agenda it is a flag on a scope (076, open question 11).
 3. **Coherence by carrier (§5.1).** `SortDomain`'s alone, or a property a spec declares?
+   **DECIDED (user, 2026-11-28; first recorded as taken as agreed, then confirmed):
+   `SortDomain`'s alone,** stated in the spec text. One spec needs it now; `TypeValue` has it by
+   being derived-only. A declaration any spec may write is a language feature with a syntax of
+   its own, for when a second spec needs it.
 4. **Tuples.** A tuple has no sort to carry a provision (065 §2 step 2 is open), and its domain is
    built from its components' today, with written `SortDomain` at a tuple refused (HWD8A). Which
    provider answers `SortDomain[T = (Colour, Size)]` — a builtin one, or `NamedTuple`'s?
+   **DECIDED with question 9 (user, 2026-11-27): one derived provision per tuple SHAPE that
+   occurs**, as the loader derives one per sort; it is built from the components' dictionaries,
+   as a tuple's domain is today, and found by head (§5.1), the head being the shape. A written
+   `SortDomain` at a tuple stays refused (HWD8A): coherence by carrier allows one provision, and
+   the derived one holds the place. S1 measures (d): how `TypeValue` reaches a tuple and a
+   function type today — if it already derives per shape, `SortDomain` reuses that derivation.
 5. **Where a written domain may stand.** On its carrier only, or a witness sort too (`W provides
    SortDomain[T = Colour]`, the je2mt / cxr5b rows)?
+   **DECIDED (user, 2026-11-28): on its carrier only.** The carrier is the type a provision is
+   about (the `Colour` of `SortDomain[T = Colour]`); a witness sort is another sort the
+   provision is written in (`W`), as `sort Descending provides Ord[T = Int64]` is for an order.
+   An order has witnesses because a type has several orders and a caller picks one by name; a
+   type has ONE domain, and its dictionary is also what names the type (060.1 §8.16), so `W`'s
+   provision could not stand beside `Colour`'s own — it would replace it for every user of
+   `Colour`, from a sort `Colour` never mentions. So `sort W … provides SortDomain[T = Colour]`
+   is refused at load (the user: "second program will be discarded"), and a program that wants
+   only `red` declares a sort of its own with that value, a different type. The je2mt / cxr5b
+   witness rows are rewritten onto the carrier, or become rows of the refusal.
 6. **The spec's side: a declared rule, or an operation returning a `Relation`?** **DECIDED IN
    PRINCIPLE (user, 2026-11-27): "in theory it should not be difference between rule and operation
    which return relation."** A rule IS an operation returning a `Relation` — 052's title ("rules as
@@ -457,10 +490,65 @@ generates — the 33 rows the fill moved stay as they are.
    stood there (WI-742). Under §9 it is either the deep `check` — a walk at entry, which YFD7F's
    trusted slot drops inside the typed program, so a call inside pays nothing — or the outer-type test,
    shallow as today, the deep check left to `fill` after the body. Which?
+   A note of the review of 2026-11-27 said here that a `fill` after the body is every typed
+   rule's last goal, so 076 Stage C's last-call elision never applies to a typed recursion.
+   WITHDRAWN the same day, on reading WI-20261124-YFD7F: a trusted call drops the column's guard
+   and its fill from the opened body (that ticket's S3), so the recursive call inside a typed
+   program is its last goal; only the ENTRY call, handed the plain dictionary, keeps a fill
+   behind its body — one scope, not one a level. So this question concerns the entry call
+   alone. And 060.1 §8.18, decided: a trusted column still passes its dictionary.
+   **DECIDED (user, 2026-11-27): a trusted call runs nothing; a call that is not trusted runs the
+   deep `check` in front of its body and the `fill` after it.**
+
+   | the call | what runs for the typed column |
+   |---|---|
+   | trusted (the caller passes `__trusted(d)`, YFD7F) | nothing: no check, no fill |
+   | not trusted (the caller passes the plain `d`) | `check` in front of the body, `fill` after it |
+
+   The compiled form of a call that is not trusted, the typed rule still an untyped one with
+   goals added: `f(?x, ?y) :- check(?x), check(?y), <body>, fill(?x), fill(?y)`.
+   - **`check` in front never generates** (§9): its one clause asks `nonvar` first, so a bound
+     part is walked and an unbound part waits; nothing is offered to an unbound variable.
+   - **`fill` stays AFTER the body**, and that is why it is there (the user's example): in
+     `rule f(?x: Int64, ?y: Int64) :- (?x <=> 1) | p(?y)`, a fill in front would generate
+     integers for `?x` and test each against `<=> 1`; after the body `?x` is already 1.
+   - **Why the check is deep and in front:** everything inside the body is passed on as trusted,
+     so this is the one place a mistyped inner part is stopped — `cons(head: 5, tail: "junk")`
+     passes a shallow guard, and `"junk"` would reach trusted callees unchecked until the
+     `fill` refutes it after the body (reasoned from the two designs, not run).
+   - **Its cost, and where it falls.** A bound value is walked twice at a call that is not
+     trusted (the check, then the fill), once today. That is no cost to a trusted call, which
+     is nearly every call inside a typed program. The calls YFD7F's evidence rule leaves on
+     the plain dictionary though they are inside the program — a citation from an operation
+     body, a clause holding a cut, a goal under `not` or a quantifier, a construction with a
+     variable — are made trusted by EXTENDING THE EVIDENCE RULE, not by weakening what a call
+     that is not trusted does; the double walk is then left at a true entry, once per value
+     coming in.
+   - **Rows move:** a mistyped value is refused before the body, so a row that faults or
+     answers today may refuse (YFD7F's S4 prototype moved 15 anthill-core rows on the bound
+     alone). The count is S1's.
+
+   On the way, and set aside: the same decision was first agreed, then reopened on the
+   user's objection that a deep check at each rule slows everything down — an objection to a
+   check at EVERY call, which this is not; and a form with one walk (the bound parts in front,
+   the unbound after) was withdrawn, since after the body `fill` cannot know what `check`
+   walked, so it is not a compilation to untyped goals but new machinery in the search.
 9. **A type with no constructors (§9).** A function type, a spec, an abstract sort: a `SortDomain`
    provision each, whose `check` is the outer-type test and whose `fill` waits ("EVERY type has one",
    `reflect.anthill`, user 2026-09-25) — or the outer-type test called directly where such a column
    stands, with no dictionary?
+   **DECIDED (user, 2026-11-27): a provision each; the outer-type test called directly with no
+   dictionary is dropped.** Two decisions of the same day need a dictionary at every typed
+   column: trusted always wraps one (060.1 §8.18 — "trusted with no dictionary is not
+   representable"), and it is what names the type to a goal over a parametrized relation (060.1
+   §8.16). An abstract sort and a spec type have a sort, so the provision is derived as any
+   sort's; with no constructor to walk, `check` and `fill` are both the outer-type test, which
+   waits on an unbound value and generates nothing. A function type has no sort and gets one
+   derived provision per shape that occurs, as a tuple does (question 4), its members the
+   outer-type test. A generic operation holding `requires SortDomain[T = X]` is then callable
+   at every `X`.
 10. **The member's name (§9).** `check`, or another (`conforms`, `member`)? `fill` already checks a
     bound value; the new member is the one that never generates. The name collides with no sort's
     own rule (§2): it names a member of `SortDomain`, and `checkCase` a rule of each block.
+    **DECIDED (user, 2026-11-28: "check - agree"): `check`.** It pairs with `fill` and is the
+    word §9 and the decisions of 2026-11-27 already use.
