@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket, WI-20261115-YR3N7-a-typed-column-s-domain-check
+- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket, WI-20261115-YR3N7-a-typed-column-s-domain-check, WI-20261127-V69PS-proposal-077-a-spec-s-rule
 
 ## Description
 

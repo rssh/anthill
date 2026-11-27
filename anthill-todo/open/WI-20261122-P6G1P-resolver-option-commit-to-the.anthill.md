@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20261127-AGR9S-resolver-the-continuation-is
+
 ## Description
 
 Resolver option: commit to the first definite proof of a goal that is ground when selected
@@ -45,4 +47,8 @@ ALSO OPEN FOR THE COMMIT, as for the guard (proposal 076 section 10, question 3)
 ### 2026-11-24T10:56:22Z — feedback — user
 
 DECIDED with the user 2026-11-24 (proposal 076 section 3, question 3): an alternative the commit, or 076's guard, never runs sets neither the truncated flag nor a fault. A skip is a refutation of the conjunction, since the continuation has no solution whichever proof of the goal precedes it. So a search that today ends undecided only because it walked into such an alternative and met the depth limit there ends decided: !(dead(0)) over fact g(0); rule g(?n) :- g(?n + 1); rule dead(?n) :- g(?n), 1 = 2 moves from conditional to true at --max-depth 8. This closes the 'ALSO OPEN' note above; kernel-language 8.3's wording is still to be changed with the user when it lands.
+
+### 2026-11-27T22:46:09Z — feedback — claude
+
+WHERE THIS LANDS (proposal 076 section 4; with the user, 2026-11-28): the commit is built at 076 Stage C, at the same exit as the guard (WI-20261122-VT9S7), opt-in on ExecuteOptions; this ticket depends on WI-20261127-AGR9S (Stage A) until Stage C has a ticket of its own. The guard, on by default, already makes the failing k = 16 chain linear with proof counts intact, so the chain does not tell the commit from the guard; what does is a ground goal with two proofs that SUCCEEDS, answer dedup off (two proofs with the guard, one with the commit). 076 corrects two of this ticket's controls: the 2^k baseline needs the guard off too, and the binding branches are written <=>, not =. The INTERIM of 076 section 4 (a ground goal handed to a nested search, the mechanism !(!(g)) uses) is NOT built ahead of the machine: the user, 2026-11-28, anthill-traces is not blocked, it has a workaround.
 
