@@ -534,6 +534,8 @@ mod wi_jb6rs_type_face_test;
 mod wi_wc18y_value_codec_test;
 #[path = "include/wi_cmqj4_declared_type_shape_test.rs"]
 mod wi_cmqj4_declared_type_shape_test;
+#[path = "include/wi_sry02_declared_closed_type_test.rs"]
+mod wi_sry02_declared_closed_type_test;
 #[path = "include/wi_scpw9_set_map_spec_values_test.rs"]
 mod wi_scpw9_set_map_spec_values_test;
 #[path = "include/wi_9wvt7_clock_handler_test.rs"]
