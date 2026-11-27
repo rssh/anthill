@@ -31,3 +31,7 @@ NOT IN THIS CHANGE, MEASURED: a RULE-BODY goal is order-independent already, but
 
 /code-review (high): two fixed (the invariant bind despite disagreement; §4.4 cited for §5.4's rule), two no change (a covariant fill takes the first said subtype, as a spec parameter's first said argument already decides; the rule-body route probed, above). Gate 12920 / 0; families green; scaland testFull 811 + 51 (2 skipped) + 1.
 
+### 2026-11-27T05:09:20Z — feedback — user
+
+The rule-body defect noted above (a rule-body spec goal not held to the provider's T) is filed, after discussion with the user, as WI-20261127-S4XD6.
+
