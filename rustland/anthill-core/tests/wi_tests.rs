@@ -2385,6 +2385,8 @@ mod wi_dhb0c_witness_own_equality_test;
 mod wi_8f38f_witness_at_a_mentioned_type_var_test;
 #[path = "include/wi_qg6zr_witness_at_the_application_test.rs"]
 mod wi_qg6zr_witness_at_the_application_test;
+#[path = "include/wi_s4xd6_rule_body_carrier_application_test.rs"]
+mod wi_s4xd6_rule_body_carrier_application_test;
 
 #[path = "include/wi_rah0z_one_recipe_test.rs"]
 mod wi_rah0z_one_recipe_test;

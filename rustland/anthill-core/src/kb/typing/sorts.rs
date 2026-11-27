@@ -523,7 +523,11 @@ fn elaborate_rules(
     // inference below, which weaves a call it reads unwoven: a call left to its clause with
     // a carrier no provision binds among its known ones is refused, not woven past.
     let (requirement_errors, refused_calls) = check_rule_body_requirements(kb);
-    errors.extend(requirement_errors);
+    sources.resize(errors.len(), None);
+    for (err, src) in requirement_errors {
+        errors.push(err);
+        sources.push(src);
+    }
     // WI-20260925-P7VP4: every rule-body call whose requirement is not known at load gets
     // the condition its author could have written — a read before the goal holding it, the
     // call woven through it. AFTER the requirement sweep, which grounds each WRITTEN

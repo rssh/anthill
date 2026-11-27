@@ -1991,7 +1991,11 @@ fn inferred_demand(
 /// The WI-292 distinction is load-bearing, and this reads [`simp_guard_holds_core`], as the
 /// `@[simp]` guard does, so the two cannot disagree on which argument carries the spec or
 /// on the outcome:
-///   * **`Fire`** — the carrier provides the spec → satisfiable, no error.
+///   * **`Fire`** — the carrier provides the spec → satisfiable, no error, where the carrier
+///     is a sort. Where the call fixes it at an APPLICATION of one (`Buf[T = Int64, N =
+///     Bool]`), the sort providing the spec says nothing of the application, and the goal at
+///     the call's types is resolved after the walk: no row answering it is the refusal an
+///     operation body's call gets (WI-20261127-S4XD6, [`CarrierApplication`]).
 ///   * **`Suspend`** — the carrier is under-determined (an abstract type-param: a
 ///     polymorphic rule that legitimately propagates its requirement to whoever
 ///     queries it under a concrete type) → NOT an error; it suspends as a residual
@@ -2013,9 +2017,10 @@ fn inferred_demand(
 /// Element = Int64].both()` beside none), a rule body's call being typed as an operation
 /// body is (068 §3).
 ///
-/// Read-only: the arg carrier sorts come from the `inferred_type` the preceding
+/// The walk is read-only: the arg carrier sorts come from the `inferred_type` the preceding
 /// `type_rule_bodies` stamped onto each body `Var` (WI-603), exactly as the typer's
-/// `@[simp]` guard [`simp_fire_guard_holds`] reads them.
+/// `@[simp]` guard [`simp_fire_guard_holds`] reads them. The provider search the
+/// applications are asked of runs once it is done.
 ///
 /// CONSERVATIVE BOUNDARY (deliberate — the "static face of WI-300"): satisfiability
 /// is decided by [`simp_guard_holds_core`], the SAME core the runtime `find_dictionary`
@@ -2029,8 +2034,14 @@ fn inferred_demand(
 /// spurious accept.
 /// Answers the refusals, and each call it refused by its clause and span — one call, a clause's
 /// body being written in one file — so a later pass does not refuse it again.
-pub(super) fn check_rule_body_requirements(kb: &KnowledgeBase) -> (Vec<TypeError>, Vec<(RuleId, Span)>) {
-    let mut errors: Vec<TypeError> = Vec::new();
+///
+/// Each refusal comes with the file of the goal it was found in, so it renders at its line:
+/// untagged, the sentence ended "at 256..275", which names no file (WI-745's gap, closed for
+/// this pass with WI-20261127-S4XD6).
+pub(super) fn check_rule_body_requirements(
+    kb: &mut KnowledgeBase,
+) -> (Vec<(TypeError, Option<crate::span::SourceId>)>, Vec<(RuleId, Span)>) {
+    let mut errors: Vec<(TypeError, Option<crate::span::SourceId>)> = Vec::new();
     let mut refused_calls: Vec<(RuleId, Span)> = Vec::new();
     // Absent when the builtin is unregistered (a minimal KB); then no rule can
     // carry a declared `requires`, so `declared` simply stays empty.
@@ -2041,7 +2052,7 @@ pub(super) fn check_rule_body_requirements(kb: &KnowledgeBase) -> (Vec<TypeError
         if kb.is_fact(rid) {
             continue; // facts have no body
         }
-        // Read-only pass — no `set_rule_body_nodes`, so hold the stored slice
+        // The walk is read-only — no `set_rule_body_nodes`, so it holds the stored slice
         // directly (both walkers take `&Rc<NodeOccurrence>`) rather than cloning.
         let body_nodes = kb.rule_body_nodes(rid);
         // The spec bases the rule declares an explicit in-body `requires(Spec[…])`
@@ -2062,11 +2073,30 @@ pub(super) fn check_rule_body_requirements(kb: &KnowledgeBase) -> (Vec<TypeError
                 collect_find_dictionary_bases(kb, node, fd, &mut declared);
             }
         }
-        let before = errors.len();
+        // The calls whose goal at their carriers' types is asked once the walk is done: the
+        // walk holds the stored body, and the provider search needs the KB
+        // ([`CarrierApplication`]). Asked before the next clause is walked, so the refusals
+        // come in the order of the clauses.
+        let mut applications: Vec<CarrierApplication> = Vec::new();
         for node in body_nodes {
-            check_occ_spec_op_requirements(kb, node, fd_sym, &declared, &mut errors);
+            let mut at_goal = Vec::new();
+            check_occ_spec_op_requirements(kb, node, fd_sym, &declared, &mut at_goal, &mut applications);
+            refused_calls.extend(at_goal.iter().filter_map(|e| e.span(kb)).map(|span| (rid, span)));
+            errors.extend(at_goal.into_iter().map(|e| (e, Some(node.span.source))));
         }
-        refused_calls.extend(errors[before..].iter().filter_map(|e| e.span(kb)).map(|span| (rid, span)));
+        // A sealed load's clause was asked at that load, and a later load only adds rows a
+        // search can find — it may not take one of the library's away, nor change who answers
+        // at the library's types (kernel-language §8.3) — so a goal one answered still is.
+        // Asked again, every later load ran the search for every such call of the library.
+        if rule_body_is_typed_once(kb, rid) {
+            continue;
+        }
+        for application in applications {
+            if let Some(refusal) = application.refusal(kb) {
+                refused_calls.push((rid, application.span));
+                errors.push((refusal, Some(application.source)));
+            }
+        }
     }
     (errors, refused_calls)
 }
@@ -2826,6 +2856,9 @@ pub(super) fn check_occ_spec_op_requirements(
     fd_sym: Option<Symbol>,
     declared: &[Symbol],
     errors: &mut Vec<TypeError>,
+    // The calls admitted on their carriers' sorts at carriers that are applications, whose
+    // goal at those types is resolved once the walk is done ([`CarrierApplication`]).
+    applications: &mut Vec<CarrierApplication>,
 ) {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
@@ -2846,7 +2879,7 @@ pub(super) fn check_occ_spec_op_requirements(
                 if let Some((spec_sort, defaulted)) = spec_sort {
                     check_one_spec_op_requirement(
                         kb, &o, functor, pos_args, named_args, spec_sort, defaulted, declared,
-                        errors,
+                        errors, applications,
                     );
                 }
             }
@@ -2869,6 +2902,7 @@ pub(super) fn check_one_spec_op_requirement(
     defaulted: bool,
     declared: &[Symbol],
     errors: &mut Vec<TypeError>,
+    applications: &mut Vec<CarrierApplication>,
 ) {
     // A spec op the HOST answers for every carrier never fails for a *missing spec
     // instance*, so it is not this pass's concern — skip it ([`host_implements`]):
@@ -2931,10 +2965,29 @@ pub(super) fn check_one_spec_op_requirement(
     if declared.contains(&kb.canonical_sort_sym(spec_sort)) {
         return;
     }
-    let (outcome, refusal) =
-        spec_op_call_carrier_outcome(kb, functor, pos_args, named_args, spec_sort);
-    // `Fire` (satisfiable) and `Suspend` (under-determined) are never errors —
-    // only a ground carrier that provides no instance is statically missing.
+    let aligned = aligned_call_args(kb, functor, pos_args, named_args);
+    let (outcome, refusal) = aligned_carrier_outcome(kb, functor, aligned.as_deref(), spec_sort);
+    // `Suspend` (under-determined) is never an error — only a known carrier that provides
+    // no instance is statically missing.
+    //
+    // WI-20261127-S4XD6 — and `Fire` is a verdict on the carriers' SORTS: `CB provides
+    // Store2[State = Buf[T = String, N = Bool]]` makes `Buf` a carrier of `Store2`, so a call
+    // at `Buf[T = Int64, N = Bool]` fired, loaded, and ran `CB`'s member on an `Int64`
+    // buffer (MEASURED, 21), where the same call in an operation body is refused: no row
+    // answers at those bindings. Where the call fixes its carriers at applications of a sort,
+    // which provision answers is asked of the goal at those types, as an operation body's
+    // call is ([`CarrierApplication`]).
+    if matches!(outcome, FindDictOutcome::Fire) {
+        if let Some(application) = aligned
+            .as_deref()
+            .and_then(|args| CarrierApplication::of_call(kb, occ, functor, args, spec_sort))
+        {
+            if !defaulted || defaulted_call_owes_an_instance(kb, functor, spec_sort) {
+                applications.push(application);
+            }
+        }
+        return;
+    }
     if !matches!(outcome, FindDictOutcome::DontFire) {
         return;
     }
@@ -3048,17 +3101,159 @@ fn spec_op_call_carrier_outcome(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     spec_sort: Symbol,
 ) -> (FindDictOutcome, Option<GuardRefusal>) {
-    // Fold the call's positional + named arguments into the op's declared PARAMETER
-    // order, so the carrier reader indexes them the way `simp_guard_holds_core`
-    // iterates parameters, so the static and runtime carrier decisions cannot disagree. A
-    // partial call (some parameter unprovided) aligns to `None`; every arg then reads
-    // headless → `Suspend` (declined, never a spurious error). Without this, a carrier
-    // supplied BY NAME (or a positional arg displaced by an earlier named one) would
-    // be read at the wrong index — missing a real requirement, or flagging the wrong
-    // argument's sort.
-    let aligned = crate::kb::op_info::lookup_operation_info(kb, functor)
-        .and_then(|rec| align_call_args_to_params(kb, &rec.params, pos_args, named_args));
+    let aligned = aligned_call_args(kb, functor, pos_args, named_args);
     aligned_carrier_outcome(kb, functor, aligned.as_deref(), spec_sort)
+}
+
+/// A call's positional and named arguments folded into `functor`'s declared PARAMETER order,
+/// so the carrier reader indexes them the way `simp_guard_holds_core` iterates parameters and
+/// the static and runtime carrier decisions cannot disagree. A partial call (some parameter
+/// unprovided) aligns to `None`; every arg then reads headless → `Suspend` (declined, never a
+/// spurious error). Without this, a carrier supplied BY NAME (or a positional arg displaced by
+/// an earlier named one) would be read at the wrong index — missing a real requirement, or
+/// flagging the wrong argument's sort.
+fn aligned_call_args(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<Vec<Rc<NodeOccurrence>>> {
+    crate::kb::op_info::lookup_operation_info(kb, functor)
+        .and_then(|rec| align_call_args_to_params(kb, &rec.params, pos_args, named_args))
+}
+
+/// WI-20261127-S4XD6 — a rule-body call of a spec operation whose carriers the carrier
+/// decision admitted on their SORTS ([`aligned_carrier_outcome`]'s `Fire`), at carriers the
+/// call fixes at APPLICATIONS of a sort (`Buf[T = Int64, N = Bool]`): the goal of the spec at
+/// those types, for the provision search to answer once the read-only walk is done
+/// ([`Self::refusal`]).
+///
+/// The sort is not the type. A provision at one application of `Buf` makes `Buf` a carrier of
+/// the spec, and the value a rule-body goal is handed carries no type arguments when the call
+/// runs (`buf(v: 1)`; `T` and `N` are no field's), so the dispatch there reads its sort alone
+/// and takes the one row at `Buf` — `CB`'s, at `T = String`, run on an `Int64` buffer. Asked
+/// at the call's types, as an operation body's call is (the open-goal resolution of
+/// `check_apply_iter`), the search finds no row, and the call is refused where it is written.
+///
+/// Only where every parameter of the spec is fixed by an argument at a carrier parameter, and
+/// one of them at an application: a bare sort's head is its whole type, and the carrier
+/// decision already asked it. A self-representing spec's carrier is the receiver, no type
+/// parameter, and is not asked here.
+pub(super) struct CarrierApplication {
+    span: Span,
+    /// The file the call is written in, which its refusal renders at.
+    source: crate::span::SourceId,
+    functor: Symbol,
+    /// The sort the refusal names, the head of the binding at the spec's carrier parameter
+    /// where that is a sort, else of the first application.
+    carrier: Symbol,
+    goal: SortGoal,
+    /// The fixed types of later arguments at a parameter an earlier one bound, each with the
+    /// key it is at: where one fits neither way with the binding, the call's arguments
+    /// disagree, which is the typer's mismatch, refused already ([`Self::refusal`]).
+    also_at: SmallVec<[(Symbol, Value); 1]>,
+}
+
+impl CarrierApplication {
+    /// The application a call of `functor` with arguments `aligned` (in parameter order) fixes,
+    /// or `None` where it fixes no application or leaves a parameter of `spec_sort` unfixed.
+    fn of_call(
+        kb: &KnowledgeBase,
+        occ: &NodeOccurrence,
+        functor: Symbol,
+        aligned: &[Rc<NodeOccurrence>],
+        spec_sort: Symbol,
+    ) -> Option<Self> {
+        let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
+        if spec_self_represented_by(kb, &rec.params, spec_sort) {
+            return None;
+        }
+        let type_params = kb.type_params_of_sort(spec_sort);
+        let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+        let mut bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+        let mut applied: Option<Symbol> = None;
+        let mut also_at: SmallVec<[(Symbol, Value); 1]> = SmallVec::new();
+        for (i, (_, pty)) in rec.params.iter().enumerate() {
+            let Some(param) = spec_carrier_param_of(kb, spec_sort, &type_params, false, pty) else {
+                continue;
+            };
+            let key = spec_param_key(kb, &spec_qn, kb.local_name_of(param), param);
+            // An argument whose type leaves a slot open (`mkb([])`'s element) takes what
+            // another argument at the parameter says (kernel-language §5.4): the first fixed
+            // one binds it.
+            let Some(ty) = aligned
+                .get(i)
+                .and_then(|a| a.inferred_type())
+                .filter(|t| type_is_fixed(kb, t))
+            else {
+                continue;
+            };
+            if bindings.iter().any(|(k, _)| *k == key) {
+                also_at.push((key, ty));
+                continue;
+            }
+            if let TypeHead::Parameterized { base } = type_head(kb, &ty) {
+                applied.get_or_insert(base);
+            }
+            bindings.push((key, ty));
+        }
+        if bindings.len() != type_params.len() {
+            return None;
+        }
+        let applied = applied?;
+        let goal = SortGoal {
+            spec_sort,
+            bindings,
+            carrier: None,
+            left_open: SmallVec::new(),
+        };
+        let carrier = goal_carrier_binding(kb, &goal)
+            .and_then(|v| sort_functor_of_view(kb, v))
+            .unwrap_or(applied);
+        Some(CarrierApplication {
+            span: occ.span.span,
+            source: occ.span.source,
+            functor,
+            carrier,
+            goal,
+            also_at,
+        })
+    }
+
+    /// The refusal of the call where no provision answers its goal — the provider search's
+    /// verdict, in an empty scope: a rule body holds no `requires`, and a requirement the
+    /// clause declares of the spec was asked before this was built. The sentence is the one an
+    /// operation body's call is refused with ([`unprovided_spec_at`]), naming the rows at the
+    /// carrier's sort that answer at other bindings.
+    ///
+    /// Not where two of the call's arguments at one parameter disagree: that call is refused
+    /// as a mismatch where it is typed, and asked here too it got a second diagnosis, at the
+    /// type of whichever argument came first — `[r] = 7` (`List[T = Relation[…]]` beside
+    /// `Int64` at `PartialEq.T`) was refused twice (MEASURED, `wi_2nxac`, `wi_4nekz`).
+    ///
+    /// Only a search with no row is refused. A tie at the call's types never reaches here:
+    /// the typer's dispatch at those types refuses it where the call is typed, naming both
+    /// providers (MEASURED: `W1` and `W2` both at `Buf[T = Int64, N = Bool]`).
+    pub(super) fn refusal(&self, kb: &mut KnowledgeBase) -> Option<TypeError> {
+        for (key, other) in &self.also_at {
+            let Some((_, bound)) = self.goal.bindings.iter().find(|(k, _)| k == key) else {
+                continue;
+            };
+            let agree = types_compatible(kb, &mut Substitution::new(), other, bound)
+                || types_compatible(kb, &mut Substitution::new(), bound, other);
+            if !agree {
+                return None;
+            }
+        }
+        let scope = ResolutionScope {
+            available_requires: &[],
+            sigma: None,
+            pin: None,
+            sub_goal_requires: &[],
+        };
+        matches!(resolve(kb, &self.goal, &scope), ResolutionResult::NoMatch { .. })
+            .then(|| unprovided_spec_at(kb, &self.goal, self.carrier, self.functor, Some(self.span)))
+    }
 }
 
 /// [`spec_op_call_carrier_outcome`] over arguments already in PARAMETER order — `None` for

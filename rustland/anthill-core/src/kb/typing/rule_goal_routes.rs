@@ -342,7 +342,9 @@ fn typed_spec_op_calls(
         // What a query's call may perform is not this pass's question: the run time declines
         // an effectful goal, as it did before a query was typed.
         errors.retain(|e| !matches!(e, TypeError::RuleBodyEffect { .. }));
-        check_occ_spec_op_requirements(kb, &typed, fd, &[], &mut errors);
+        let mut applications = Vec::new();
+        check_occ_spec_op_requirements(kb, &typed, fd, &[], &mut errors, &mut applications);
+        errors.extend(applications.iter().filter_map(|a| a.refusal(kb)));
         if errors.is_empty() {
             errors.extend(calls_left_to_a_clause(kb, &typed));
         }
