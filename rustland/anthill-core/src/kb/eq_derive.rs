@@ -1319,10 +1319,16 @@ pub(crate) struct EqualitySignature {
 /// One provision in an [`EqualitySignature`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct EqualityProvision {
-    /// The provision row. Its identity: a source presented again lands on the same row,
-    /// a provision of another instantiation (`List[T = String]` beside `List[T = Int64]`)
-    /// is another.
-    row: RuleId,
+    /// The provision row's head, read through the carrier-neutral view
+    /// ([`super::term_view::goal_fingerprint`]). Its identity: a source presented again is
+    /// the same provision, a provision of another instantiation (`List[T = String]` beside
+    /// `List[T = Int64]`) is another.
+    ///
+    /// NOT THE ROW. A fact head that is a term and one that is an occurrence are deduped in
+    /// two spaces (`KnowledgeBase::value_fact_dedup`, WI-815), so `provides PartialEq[T =
+    /// P]` written through an alias in a later load is a second row of the provision an
+    /// earlier load derived as a term, and keyed by row it read as new (WI-20261128-X3HW2).
+    head: super::term_view::GoalKey,
     provider: Symbol,
     spec: Symbol,
     /// Whether `provider`'s provision of `spec` is conditional, and how many written
@@ -1528,8 +1534,16 @@ fn equality_signatures(
                     kb.provides_clause_count(provision.provider, spec),
                 )
             });
+            // A stored row's head holds no `Opaque` token (the index refuses one), so its
+            // fingerprint is faithful: two heads share it only if they are one provision.
+            let head = super::term_view::goal_fingerprint(
+                kb,
+                kb.rule_head_value(provision.row),
+                &super::subst::Substitution::new(),
+            );
+            assert!(head.is_opaque_free(), "a stored provision row's head keys faithfully");
             signature.provisions.insert(EqualityProvision {
-                row: provision.row,
+                head,
                 provider,
                 spec: spec_canon,
                 conditional,
@@ -1705,19 +1719,19 @@ fn describe_equality_change(
             format!("`{}`'s", kb.qualified_name_of(provider))
         }
     };
-    let same_row = |sig: &EqualitySignature, row: RuleId| {
-        sig.provisions.iter().any(|p| p.row == row)
+    let same_head = |sig: &EqualitySignature, head: &super::term_view::GoalKey| {
+        sig.provisions.iter().any(|p| &p.head == head)
     };
     for p in is.provisions.difference(&was.provisions) {
         let spec_name = kb.local_name_of(p.spec);
-        out.push(if same_row(was, p.row) {
+        out.push(if same_head(was, &p.head) {
             format!("{} provision of `{spec_name}` for it has changed", by(p.provider))
         } else {
             format!("{} provision of `{spec_name}` for it is new", by(p.provider))
         });
     }
     for p in was.provisions.difference(&is.provisions) {
-        if !same_row(is, p.row) {
+        if !same_head(is, &p.head) {
             let spec_name = kb.local_name_of(p.spec);
             out.push(format!("{} provision of `{spec_name}` for it is gone", by(p.provider)));
         }

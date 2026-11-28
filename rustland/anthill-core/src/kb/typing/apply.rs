@@ -4749,7 +4749,10 @@ fn check_apply_call(
                     // `Ones.T`); one the call left open stays open. Typed bare, the result of
                     // `Src.make[Src = Ones, T = Int64]()` was `Ones[T = o.T]`, and a use at
                     // `Ones[T = Int64]` was refused (found by /code-review).
-                    let mut own: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                    // Each fixed type on whichever carrier it rides: read off a term alone, a
+                    // `T = Int64` written through an alias occurrence was left out, and the
+                    // result typed bare again (WI-20261128-X3HW2).
+                    let mut own: Vec<(Symbol, Value)> = Vec::new();
                     for (spec_tv, bound) in provider_spec_view_bindings(kb, named, spec_sort).unwrap_or_default() {
                         let Some(p) = view_ref_symbol(kb, &bound).filter(|p| is_sort_param_symbol(kb, *p)) else {
                             continue;
@@ -4757,14 +4760,16 @@ fn check_apply_call(
                         let Some(vid) = type_param_vid_in_sort(kb, spec_sort, spec_tv) else {
                             continue;
                         };
-                        if let Some(Value::Term { id, .. }) =
-                            spec_param_binding(kb, &subst, vid).filter(|b| type_is_ground(kb, b))
-                        {
-                            own.push((p, id));
+                        if let Some(fixed) = spec_param_binding(kb, &subst, vid).filter(|b| type_is_ground(kb, b)) {
+                            own.push((p, fixed));
                         }
                     }
                     let base = kb.make_sort_ref(named);
-                    let at = Value::term(if own.is_empty() { base } else { kb.make_parameterized_type(base, &own) });
+                    let at = if own.is_empty() {
+                        Value::term(base)
+                    } else {
+                        parameterized_value(kb, base, &own, occ.span, occ.owner)
+                    };
                     if carrier_sort_of_value(kb, &op.return_type)
                         .is_some_and(|r| same_sort_canonical(kb, r, spec_sort))
                     {

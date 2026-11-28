@@ -1482,10 +1482,12 @@ pub(crate) fn dictionary_application_view(kb: &mut KnowledgeBase, tree: &Resolve
         // what it carries: a binding naming a clause variable or a caller's type parameter would
         // ride the `at` child unopened. Such a dictionary carries none, and a dispatch needing
         // the application refuses as it did.
-        let Value::Term { id, .. } = value else {
-            return None;
-        };
-        let id = *id;
+        //
+        // The binding on whichever carrier it rides: read off a term alone, one written through
+        // an alias (an occurrence, `TypeNode::Aliased`) left the dictionary with no `at`, and a
+        // provider at two applications was refused at run (WI-20261128-X3HW2).
+        let id = crate::kb::node_occurrence::value_to_term(kb, value)
+            .expect("a dictionary's binding at a type-var is a type, which has a term");
         if !type_value_is_ground(kb, id) {
             return None;
         }
