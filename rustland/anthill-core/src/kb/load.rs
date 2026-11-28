@@ -9027,7 +9027,8 @@ fn parse_equation_rhs(
 /// `fact`'s `:- true` into the desugaring, which makes the explicit `:- true` the way to
 /// write an assertion that keeps the `rule` keyword — and its LABEL, which `fact` has no
 /// grammar for (`fact_declaration` carries no `label` field, while
-/// `prelude/lattice.anthill`'s `less_bottom:` law is exactly that shape). MEASURED
+/// `prelude/lattice.anthill`'s `less_bottom:` law had exactly that shape until
+/// WI-20260929-QA700 made it an equation). MEASURED
 /// before this existed: `rule p(1) :- true` LOADED CLEAN AND ANSWERED NOTHING — `true`
 /// is a `boolean_literal`, so the body carried a constant goal that no clause and no
 /// builtin can resolve, and WI-1034's "names nothing" refusal does not reach it because

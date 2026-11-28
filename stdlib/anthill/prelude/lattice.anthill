@@ -41,7 +41,11 @@ sort anthill.prelude.BoundedLattice
     bottom_lub:  lub(?a, bottom) <=> ?a
     top_glb:     glb(?a, top) <=> ?a
     bottom_glb:  glb(?a, bottom) <=> bottom
-    less_bottom: less(bottom, ?a) :- true
-    less_top:    less(?a, top) :- true
+    -- LAWS, not clauses (WI-20260929-QA700): `less(bottom, ?a) :- true` was a clause
+    -- of `Lattice.less` itself, so a `less` goal resolved through it and never
+    -- reached a carrier's own `less` — and it matched only the unevaluated term
+    -- `bottom`. An equation resolves no goal; the verifier reads it as a law.
+    less_bottom: less(bottom, ?a) <=> true
+    less_top:    less(?a, top) <=> true
   }
 end

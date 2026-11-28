@@ -31,10 +31,11 @@ import anthill.term.{Literal, Term}
   *     shipped source since 061 — were asserted here as universally-true facts whose
   *     variable heads match any proposition; and every `:- true` clause (the stdlib
   *     writes them in `reflect/typing.anthill`, `realization/realization.anthill`,
-  *     `prelude/set.anthill` and `prelude/lattice.anthill`) loaded as a BODIED rule whose
-  *     `true` goal no clause and no builtin resolves, so those predicates answered
-  *     NOTHING. The stdlib parses AND loads clean in scaland, which is what kept sbt
-  *     green; no row DROVE any of those predicates. The top-level strip closes that; the
+  *     `prelude/set.anthill` and, until WI-20260929-QA700, `prelude/lattice.anthill`)
+  *     loaded as a BODIED rule whose `true` goal no clause and no builtin resolves, so
+  *     those predicates answered NOTHING. The stdlib parses AND loads clean in scaland,
+  *     which is what kept sbt green; no row DROVE any of those predicates. The
+  *     top-level strip closes that; the
   *     GENERAL reading of a boolean goal is WI-20260822-J38JE's resolver arm, ported
   *     by NARC7 and driven by the retained `J38JE GAP CLOSED` row.
   *

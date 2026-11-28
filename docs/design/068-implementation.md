@@ -17,7 +17,7 @@ Tag `proposal-068`; every edge is technical.
 | C1 | WI-20260926-7D48J | one rule-clause typing for 060's inference and 068's fragments | WI-20260925-P7VP4 |
 | D1 | WI-20260926-DSEXA | dictionary blockers; the per-consumer reductions retired; the unfold threads dictionaries | K4JGC, 7D48J |
 | — | WI-20260926-QCJ0B | `Set`'s library route (implementation or quoted algebra) | — |
-| — | WI-20260929-QA700 | `Lattice`'s `less_bottom` / `less_top` clauses shadow a carrier's `less` (a defect today; §1.3) | — |
+| — | WI-20260929-QA700 | `Lattice`'s `less_bottom` / `less_top` clauses shadowed a carrier's `less` (§1.3); delivered 2026-11-28, the two are laws (`<=>`) | — |
 
 Waiting on the sequence: WI-20260924-35E14 → CYNPE, WI-20260827-XBHX3 → DSEXA,
 WI-20260926-Y6ZCD → 7D48J (one dispatch decision for operation and rule bodies).
@@ -111,7 +111,11 @@ whose callee has no implementation:
   two-point lattice (`bottom() = lo()`): `Lattice.less(BoundedLattice.bottom(), hi())` holds
   through the clause, `Lattice.less(lo(), hi())` answers nothing — the clauses shadow the
   carrier's own `less` — and `not(...)` over it proves a falsehood. Once goal arguments are
-  evaluated (D3) even the `bottom()` spelling stops matching. WI-20260929-QA700.
+  evaluated (D3) even the `bottom()` spelling stops matching. WI-20260929-QA700, DELIVERED
+  2026-11-28 (decision (a), the user): the two are LAWS, `less(bottom, ?a) <=> true`, which
+  resolve no goal — a `Lattice.less` goal reaches the carrier's `less` — and which the
+  verifier lowers (16 of `BoundedLattice`'s 16 laws). A carrier that supplies no `less` is
+  refused at load, so no default body was wanted.
 - **`Filesystem`** — `platform.anthill:152–155`: `needs_rebuild` calls `exists` / `status` as
   goals, and nothing in the corpus provides `Filesystem`. Today the goal falls to candidate
   selection and fails silently; under 068 it is UNREDUCED — undecided, parked (§2).

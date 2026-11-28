@@ -2326,6 +2326,8 @@ mod wi_nekr0_repeated_type_param_join_test;
 mod wi_acg10_census_test;
 #[path = "include/wi_k4jgc_evaluation_strategy_test.rs"]
 mod wi_k4jgc_evaluation_strategy_test;
+#[path = "include/wi_qa700_lattice_less_reaches_the_carrier_test.rs"]
+mod wi_qa700_lattice_less_reaches_the_carrier_test;
 #[path = "include/wi_cynpe_waiting_goals_test.rs"]
 mod wi_cynpe_waiting_goals_test;
 #[path = "include/wi_vm9q7_string_escape_test.rs"]

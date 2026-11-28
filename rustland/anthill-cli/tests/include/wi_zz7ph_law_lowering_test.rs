@@ -943,12 +943,14 @@ end
 }
 
 /// A NULLARY OPERATION NAMED BARE IS A CONSTANT OF THE SORT, in a law (`lub(?a, top)
-/// <=> top`) and in a body, which stores `top` as an application of no arguments. And a
-/// law headed by a RELATION of its spec — `less(bottom, ?a) :- true` is neither an
-/// equation nor a comparison — is not read: the two are left out and named, of the
-/// sixteen `BoundedLattice` gives (its six, `Lattice`'s nine, `Eq`'s).
+/// <=> top`) and in a body, which stores `top` as an application of no arguments. And
+/// every one of the sixteen laws `BoundedLattice` gives (its six, `Lattice`'s nine,
+/// `Eq`'s) is lowered: `less_bottom` / `less_top` are equations, `less(bottom, ?a) <=>
+/// true` (WI-20260929-QA700). Written `:- true` they were clauses of `Lattice.less`,
+/// headed by a relation of the spec, and the two were left out and named — the next row
+/// keeps that refusal, over a spec of its own.
 #[test]
-fn a_nullary_operation_is_a_constant_and_a_relation_headed_law_is_left_out() {
+fn a_nullary_operation_is_a_constant_and_every_bounded_lattice_law_is_lowered() {
     let out = prove_dry_run(
         "bl",
         r#"
@@ -988,22 +990,70 @@ end
             format!(
                 "(assert (not (anthill.prelude.PartialOrd.gte@{t} ({lub} var_1 {top}) {top})))"
             ),
+            // `less_bottom` and `less_top`, as equations of `less`'s value.
+            format!(
+                "(assert (forall ((var_0 {t})) (= (anthill.prelude.Lattice.less@{t} \
+                 anthill.prelude.BoundedLattice.bottom@{t} var_0) true)))"
+            ),
+            format!(
+                "(assert (forall ((var_0 {t})) (= (anthill.prelude.Lattice.less@{t} var_0 \
+                 {top}) true)))"
+            ),
         ],
     );
+    assert_eq!(laws_of(&out).len(), 16, "sixteen:\n{}", out.stdout);
     assert_eq!(
-        laws_of(&out).len(),
-        14,
-        "sixteen, less two:\n{}",
-        out.stdout
+        laws_not_lowered(&out),
+        Vec::<&str>::new(),
+        "stderr:\n{}",
+        out.stderr
     );
+}
+
+/// A LAW HEADED BY A RELATION OF ITS SPEC is not read: `related(base, ?a) :- true` is
+/// neither an equation nor a comparison, and a head with an argument that is not a
+/// variable is no rule's parameter list. It is left out and named, of the two laws `Rel`
+/// gives (its one, `Eq`'s). The shape `BoundedLattice`'s `less_bottom` had until
+/// WI-20260929-QA700 made it an equation. It passes with QA700 backed out too, by design:
+/// it pins the refusal QA700 took its only stdlib instance away from.
+#[test]
+fn a_relation_headed_law_is_left_out() {
+    let out = prove_dry_run(
+        "rel",
+        r#"
+namespace test.zz7ph.rel
+  import anthill.prelude.PartialEq.{eq, neq}
+
+  sort Rel
+    sort T = ?
+    requires anthill.prelude.Eq[T]
+    operation {
+      base() -> T
+      related(a: T, b: T) -> Bool
+    }
+    rule {
+      related_base: related(base, ?a) :- true
+    }
+  end
+
+  sort Scope
+    sort T = ?
+    requires test.zz7ph.rel.Rel[T = T]
+
+    rule p(?a: T) :- neq(?a, ?a)
+    proof p by z3 end
+  end
+end
+"#,
+    );
+    assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
+    assert_eq!(laws_of(&out).len(), 1, "two, less one:\n{}", out.stdout);
     let said = laws_not_lowered(&out);
     assert_eq!(said.len(), 1, "stderr:\n{}", out.stderr);
     assert!(
         said[0].contains(
-            ", and 2 of the 16 laws it gives a proof are not lowered to SMT — a `by z3` proof \
-             under it runs without: anthill.prelude.BoundedLattice.less_bottom at \
-             anthill/prelude/lattice.anthill:44:18, anthill.prelude.BoundedLattice.less_top at \
-             anthill/prelude/lattice.anthill:45:18 ("
+            ", and 1 of the 2 laws it gives a proof is not lowered to SMT — a `by z3` proof \
+             under it runs without: test.zz7ph.rel.Rel.related_base at "
         ) && said[0].contains("rule head shape not supported"),
         "{}",
         said[0]

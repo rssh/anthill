@@ -205,6 +205,8 @@
 #     Z14  a_law_that_is_not_lowered_is_left_out_and_said
 #     Z15  a_cited_lemma_about_the_carrier_quantifies_over_its_sort
 #     Z16  a_nullary_operation_is_a_constant_and_a_relation_headed_law_is_left_out
+#          (2026-11-28, WI-20260929-QA700: renamed ..._and_every_bounded_lattice_law_is_lowered — the two
+#          laws are equations now — and its relation-headed half moved to a_relation_headed_law_is_left_out)
 #     Z17  a_step_of_a_structured_proof_has_the_sorts_of_its_parents_bounds
 #     Z18  the_verdicts_are_of_the_carrier
 #   B: `wi_bvg8m_requirement_cite_test` (11)

@@ -405,7 +405,7 @@ A requirement whose chain has **no law lowers to nothing**. In the standard libr
 
 A **step** of a structured proof borrows its parent's frame and is its own query: its variables have the sorts the parent's bounds say, slot for slot.
 
-*Not built, and said where it is met:* a law whose head is a relation of the spec's own (`less(bottom, ?a) :- true` of `BoundedLattice` — the head is neither an equation nor a comparison: 2 of the 17 laws that requirement gives are left out and named); a sort an inlined callee's body determines, for the caller's variable (`helper(?a, ?b)` with `?b` given a sort only inside `helper` — refused for want of one). *Not built, and nothing reaches either today:* lowering a **specialization** record (`<X-qn>.provides.<PE>.<SE>` — the same laws at the provision's bindings; no proof is handed one), and an explicit cite of a requirement (below).
+*Not built, and said where it is met:* a law whose head is a relation of the spec's own (`related(base, ?a) :- true` — the head is neither an equation nor a comparison: it is left out and named; `BoundedLattice`'s `less_bottom` / `less_top` had that shape until WI-20260929-QA700 made them equations, `less(bottom, ?a) <=> true`, which are lowered); a sort an inlined callee's body determines, for the caller's variable (`helper(?a, ?b)` with `?b` given a sort only inside `helper` — refused for want of one). *Not built, and nothing reaches either today:* lowering a **specialization** record (`<X-qn>.provides.<PE>.<SE>` — the same laws at the provision's bindings; no proof is handed one), and an explicit cite of a requirement (below).
 
 #### Translation-time bundling
 
