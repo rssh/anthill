@@ -779,13 +779,27 @@ pub(super) fn one_arg_hint(
     let seq_pt = pt_eliminated
         .as_ref()
         .filter(|t| !value_contains_projection(kb, t));
+    // WI-20261103-95S43 — A NESTED CALL IS NOT HINTED WITH A PROJECTION. The call reads a
+    // parameter's projections (its elimination, after the args are typed) and checks the argument
+    // against that reading, so a hint carrying one UNREAD pins the nested call's variable to a type
+    // the check then refuses — an expression-carried one in the CALLEE's names, which the argument
+    // does not have. MEASURED: `k(leaf(e: 1), nothing())` over `v: Option[T = s.E]` was refused
+    // "expected Option[T = Int64], got Option[T = s.E]", `k(nothing())` over `v: Option[T =
+    // MemStore.Key]` "… got Option[T = MemStore.Key]", and inside a spec `has(c, first(c))` over
+    // `e: c.Elem` placed `first` at `Elem = c.Elem`, "another instance". [`nested_call_arg_hint`]
+    // said its ground gate skipped a projection, and a projection rides a term and is ground. A
+    // constructor's field type is checked as written, and a rigid projection there still hints
+    // (`holder(v: nothing())` over `v: Option[T = MemStore.Key]` loads). Asked in the hint's
+    // own closure: only a call argument the hints before it declined reaches it.
     // NO `Type` HINT (WI-20260824-JM6ZW). A sort written as an argument is a type value
     // because the LOADER recorded it so (`Expr::TypeValue`, proposal 055 §1), in an
     // operation body and in a rule body alike; the declared `Type` of the slot VALIDATES
     // that value in the argument check and decides nothing about what it is.
     let base = hof_arg_hint(kb, arg, pt_hof)
         .or_else(|| spec_instance_arg_hint(kb, arg, pt.as_ref()))
-        .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
+        .or_else(|| {
+            nested_call_arg_hint(kb, arg, pt.as_ref().filter(|t| !value_contains_projection(kb, t)))
+        })
         .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| seq_slot_arg_hint(kb, arg, seq_pt, SlotOwner::Call(functor)));
     if base.is_some() {
@@ -1253,9 +1267,8 @@ pub(super) fn type_mentions_type_var<V: TermView>(kb: &KnowledgeBase, v: &V) -> 
 /// SOUNDNESS (the WI-379 variance sidestep, expansion-during-unification.md):
 /// the hint is pushed only where it pins by EQUALITY — a fully-GROUND
 /// declared param type (no logic var, no sort-param ref, no TypeVar
-/// anywhere). A projection param type (`k: s.cell.T`) rides a non-`Term`
-/// carrier and is skipped by the same gate (its elimination is the
-/// call-site's job, after the args are typed). Inside the argument's own
+/// anywhere). A call's PARAMETER type holding a projection is not handed here
+/// ([`one_arg_hint`]); a constructor's FIELD type is, as written. Inside the argument's own
 /// `check_apply_iter` the hint is consulted only AFTER its arguments pinned
 /// the params (the WI-270/379 fill-only-still-free order) and a
 /// contradicting hint binds nothing — so a wrong hint cannot mask the

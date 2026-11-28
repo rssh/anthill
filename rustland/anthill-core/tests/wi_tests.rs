@@ -534,6 +534,8 @@ mod wi_jb6rs_type_face_test;
 mod wi_wc18y_value_codec_test;
 #[path = "include/wi_cmqj4_declared_type_shape_test.rs"]
 mod wi_cmqj4_declared_type_shape_test;
+#[path = "include/wi_sry02_declared_closed_type_test.rs"]
+mod wi_sry02_declared_closed_type_test;
 #[path = "include/wi_scpw9_set_map_spec_values_test.rs"]
 mod wi_scpw9_set_map_spec_values_test;
 #[path = "include/wi_9wvt7_clock_handler_test.rs"]
@@ -1806,6 +1808,8 @@ mod wi_7ab56_projection_key_test;
 mod wi_swphb_partly_abstract_key_test;
 #[path = "include/wi_sg16k_lambda_binder_projection_test.rs"]
 mod wi_sg16k_lambda_binder_projection_test;
+#[path = "include/wi_95s43_own_carrier_projection_test.rs"]
+mod wi_95s43_own_carrier_projection_test;
 
 #[path = "include/x13yv_map_map_chain_test.rs"]
 mod x13yv_map_map_chain_test;

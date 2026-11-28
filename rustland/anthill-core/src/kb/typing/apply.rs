@@ -1376,7 +1376,13 @@ fn check_apply_call(
         let this_instance =
             |kb: &mut KnowledgeBase, receiver: &Value, recv_ty: &Value, member: Symbol| {
                 own_spec
-                    .and_then(|spec| this_instance_member(kb, env, spec, recv_ty, member))
+                    .and_then(|spec| {
+                        // The callee's parameter the receiver is, at the type it is declared:
+                        // the argument stands at this instance in that slot alone.
+                        let param = extract_sort_ref_sym(kb, receiver)?;
+                        let (_, declared) = written_params.iter().find(|(p, _)| *p == param)?;
+                        this_instance_member(kb, env, spec, Some(fn_sym), recv_ty, member, Some(declared))
+                    })
                     .or_else(|| {
                         required_instance_member(
                             kb,

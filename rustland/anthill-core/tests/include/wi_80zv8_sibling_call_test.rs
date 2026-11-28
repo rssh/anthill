@@ -77,6 +77,9 @@
 //! 9. ONLY A SPEC WITH A CARRIER PARAMETER (`this_instance_member`'s
 //!    `spec_is_self_representing` gate, removed). 1 FAILS:
 //!    [`an_element_typed_receiver_has_no_instance_to_read`] — `x.T` off an element loads.
+//!    That gate is now `own_carrier_member`'s class gate (WI-20261103-95S43), which a sort
+//!    receiving on itself does not pass either; its own back-outs are in
+//!    `wi_95s43_own_carrier_projection_test`.
 //! 10. A RIGID IS NAMED IN A REQUIREMENT REFUSAL (typing/synth.rs `format_term_for_goal`).
 //!    1 FAILS: [`a_sibling_call_at_another_instance_owes_that_instances_requirement`] —
 //!    the caller's own clause reads `requires Tag[T = ?]`.

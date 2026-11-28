@@ -820,7 +820,12 @@ impl DeclaredType {
                     let name = crate::intern::positional_label_index(label)
                         .and_then(|i| params.get(i))
                         .map_or(label, |p| kb.local_name_of(*p));
-                    closed_type(kb, &ty.within(v.clone())).ok().map(|t| (name.to_owned(), t))
+                    // A binding that does not close (it names an open parameter, or a form
+                    // the substitution does not go through) is left out, and so admits every
+                    // provider, as a binding that is not ground does (`provider_admitted_at`).
+                    // A value READ at the place is refused where its dictionary is built
+                    // (`Decoder::paired`), by the same `closed_type`.
+                    ty.within(v.clone()).closed_type(kb).ok().map(|t| (name.to_owned(), t))
                 })
                 .collect();
             let mut ctors = Vec::new();
@@ -847,8 +852,34 @@ impl DeclaredType {
         Err(ValueProblem::NoDataSpelling)
     }
 
+    /// The type the declared type stands for, as a type the KB holds: every parameter its
+    /// place binds substituted, at any depth (`Cell[T = Bool]` for `Holder`'s `c: Cell[T =
+    /// A]` at `Holder[A = Bool]`, `(a: Bool, n: Int64)` for its `t: (a: A, n: Int64)`).
+    ///
+    /// THE COMPARISON (WI-20261126-SRY02). A caller that must compare a field's type at an
+    /// application with a type it holds compares this with it by
+    /// [`crate::kb::term_view::views_structurally_equal`], as the KB compares types
+    /// everywhere else — not the [`TypeShape`]s, which would be a second definition of type
+    /// equality, nor the [`DeclaredType::display_name`]s. It is also the place a value read
+    /// at a sort with abstract values is used at, which its dictionary is built for.
+    ///
+    /// A type, or a part of one, that names no parameter comes back as it is, on its
+    /// carrier. The substitution goes through the data forms [`DeclaredType::shape`] reads,
+    /// a type application and a tuple; any other form that names a parameter — a function
+    /// type, an effect row, a projection off a parameter (`P.Key`) — is refused as `shape`
+    /// refuses it (`NoDataSpelling`): substituted in, it would be a type the loader does not
+    /// write for the same type (`P.Key` at `P = MemStore` is not the term `MemStore.Key`
+    /// is). A parameter nothing binds is refused by its name (`UnboundParameter`), as `shape`
+    /// refuses it — here wherever it stands, where `shape` refuses it only when a walk
+    /// reaches it; so is any other free variable, by its own name. A de Bruijn variable,
+    /// which no type holds, is `Variable`.
+    pub fn closed_type(&self, kb: &KnowledgeBase) -> Result<Value, ValueProblem> {
+        Ok(closing(kb, self)?.unwrap_or_else(|| self.view.clone()))
+    }
+
     /// The type as the KB prints one, with the parameters its place binds substituted
-    /// (`Cell[T = Bool]` for `Holder`'s `c: Cell[T = A]` at `Holder[A = Bool]`). Display only.
+    /// (`Cell[T = Bool]` for `Holder`'s `c: Cell[T = A]` at `Holder[A = Bool]`). Display only:
+    /// to compare it with a type, [`DeclaredType::closed_type`].
     pub fn display_name(&self, kb: &KnowledgeBase) -> String {
         expected_text(kb, self)
     }
@@ -1099,33 +1130,77 @@ fn shown_type(kb: &KnowledgeBase, ty: &DeclaredType) -> Value {
     }
 }
 
-/// The type `ty` stands for as a type the typer reads, every parameter its place binds
-/// substituted (`Sp[T = Int64]` for a field `x: Sp[T = A]` within `Holder[A = Int64]`): the
-/// place a value read at a sort with abstract values is used at, which its dictionary is
-/// built for. A parameter nothing binds is refused by its name, as [`DeclaredType::shape`]
-/// refuses it.
-fn closed_type(kb: &KnowledgeBase, ty: &DeclaredType) -> Result<Value, ValueProblem> {
+/// [`DeclaredType::closed_type`] of `ty`, or `None` where `ty`'s own view is that type
+/// already (it names no parameter), so it comes back unrebuilt, on its carrier.
+fn closing(kb: &KnowledgeBase, ty: &DeclaredType) -> Result<Option<Value>, ValueProblem> {
+    let bound = matches!(extract_type(kb, &ty.view), TypeExtractor::FlexVar { .. });
     let (ty, extracted) = resolve(kb, ty)?;
-    if ty.env.is_empty() {
-        return Ok(ty.view);
-    }
-    match (ty.view.head(kb), extracted) {
-        (ViewHead::Functor { functor, .. }, TypeExtractor::Parameterized { bindings, .. }) if !bindings.is_empty() => {
-            let named = bindings
-                .into_iter()
-                .map(|(k, v)| Ok((k, closed_type(kb, &ty.within(v))?)))
-                .collect::<Result<Vec<(Symbol, Value)>, ValueProblem>>()?;
-            Ok(Value::Entity {
-                functor,
-                pos: Rc::from(Vec::new()),
-                named: named.into(),
-            })
+    let rebuilt = match extracted {
+        TypeExtractor::Parameterized { .. } | TypeExtractor::NamedTuple(_) => rebuilt_children(kb, &ty)?,
+        // `resolve` reads every flexible and rigid variable; a variable left is a rule's binder.
+        _ if matches!(ty.view.head(kb), ViewHead::Var(_)) => return Err(ValueProblem::Variable),
+        _ if names_parameter(kb, &ty.view) => return Err(ValueProblem::NoDataSpelling),
+        _ => None,
+    };
+    Ok(match rebuilt {
+        Some(v) => Some(v),
+        // A parameter's binding that names none of its own place's.
+        None if bound => Some(ty.view),
+        None => None,
+    })
+}
+
+/// A type application's or a tuple's children, each closed in `ty`'s bindings; `None` where
+/// every child is closed as it stands, and so the form is.
+fn rebuilt_children(kb: &KnowledgeBase, ty: &DeclaredType) -> Result<Option<Value>, ValueProblem> {
+    let ViewHead::Functor { functor, pos_arity, .. } = ty.view.head(kb) else {
+        unreachable!("a type application or a tuple is headed by its functor")
+    };
+    let mut changed = false;
+    let mut close = |item: crate::kb::term_view::ViewItem| -> Result<Value, ValueProblem> {
+        let child = ty.within(item.to_value());
+        Ok(match closing(kb, &child)? {
+            Some(v) => {
+                changed = true;
+                v
+            }
+            None => child.view,
+        })
+    };
+    let pos = (0..pos_arity)
+        .map(|i| close(ty.view.pos_arg(kb, i).expect("a view answers for a position its head counts")))
+        .collect::<Result<Vec<Value>, ValueProblem>>()?;
+    let named = ty
+        .view
+        .named_keys(kb)
+        .into_iter()
+        .map(|k| Ok((k, close(ty.view.named_arg(kb, k).expect("a view answers for a named key it lists"))?)))
+        .collect::<Result<Vec<(Symbol, Value)>, ValueProblem>>()?;
+    Ok(changed.then(|| Value::Entity {
+        functor,
+        pos: pos.into(),
+        named: named.into(),
+    }))
+}
+
+/// Does `v` name a parameter: a variable anywhere, or a projection off a parameter (`P.Key`,
+/// whose subject is the parameter's own name, not its variable)?
+fn names_parameter(kb: &KnowledgeBase, v: &impl TermView) -> bool {
+    match v.head(kb) {
+        ViewHead::Var(_) => true,
+        ViewHead::Functor { pos_arity, .. } => {
+            if let TypeExtractor::RigidTypeProjection { subject, .. } = extract_type(kb, v) {
+                return match extract_type(kb, &subject) {
+                    TypeExtractor::SortRef(s) => kb.canonical_type_param_var(s).is_some(),
+                    _ => names_parameter(kb, &subject),
+                };
+            }
+            (0..pos_arity).any(|i| v.pos_arg(kb, i).is_some_and(|a| names_parameter(kb, &a)))
+                || v.named_keys(kb)
+                    .into_iter()
+                    .any(|k| v.named_arg(kb, k).is_some_and(|a| names_parameter(kb, &a)))
         }
-        // A tuple or a function type naming a parameter: no data place reads one so.
-        _ if holds_variable(kb, &ty.view) => Err(ValueProblem::UnboundParameter {
-            name: describe_value(kb, &ty.view),
-        }),
-        _ => Ok(ty.view),
+        ViewHead::Const(_) | ViewHead::Ident(_) | ViewHead::Bottom | ViewHead::Opaque => false,
     }
 }
 
@@ -1586,7 +1661,7 @@ impl<'k> Decoder<'k> {
     /// call at one takes. Refused where no provision answers at the place's type
     /// (`NoInstance`).
     fn paired(&mut self, value: TermId, ty: &DeclaredType) -> Result<TermId, ValueError> {
-        let place = closed_type(self.kb, ty).map_err(|p| self.err(ty, p))?;
+        let place = ty.closed_type(self.kb).map_err(|p| self.err(ty, p))?;
         let value = Value::term(value);
         let dict = crate::kb::typing::instance_dictionary_of_read_value(self.kb, &value, &place)
             .map_err(|reason| self.err(ty, ValueProblem::NoInstance { reason }))?;

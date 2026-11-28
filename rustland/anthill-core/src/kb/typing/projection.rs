@@ -1377,8 +1377,9 @@ pub(super) fn read_denoted_projections(
 /// binder's go through it, so the type a lambda threads into its parameter's pattern is the type
 /// the binder check reads off the same annotation. WI-20261103-SG16K: the lambda's read the
 /// denoted names alone, and under `x: Leaf[E = Int64]` compared its `List[T = x.E]` with the
-/// binder's `List[T = Int64]` and refused. A sibling call reads its callee's signature further
-/// (`this_instance_member`); an annotation does not (WI-20261103-95S43).
+/// binder's `List[T = Int64]` and refused. A projection off a value typed by a type-var of the spec
+/// the body is written in reads as this instance's member here as at a sibling call
+/// (`this_instance_member`, in [`project_off_receiver`]; WI-20261103-95S43).
 pub(super) fn read_written_annotation(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -2397,8 +2398,8 @@ pub(super) fn resolve_field_type(
     Ok((resolved, decl_sort))
 }
 
-/// WI-20261001-80ZV8 — `c.Element` WHERE `c` IS TYPED BY THE CARRIER PARAMETER OF THE SPEC THE
-/// BODY IS WRITTEN IN: this instance's `Element`.
+/// WI-20261001-80ZV8 — `c.Element` WHERE `c` IS TYPED BY A TYPE-VAR OF THE SPEC THE BODY IS
+/// WRITTEN IN: this instance's `Element`.
 ///
 /// `sort Iterable { sort C = ?  sort Element = ?  effects E = ?  operation iterator(c: C) ->
 /// Stream[c.Element, c.E] … }` writes its result in the carrier's own terms (user,
@@ -2411,36 +2412,142 @@ pub(super) fn resolve_field_type(
 /// 'Element' off an abstract receiver with no concrete sort" (MEASURED at each of
 /// `Iterable`'s six sibling calls).
 ///
-/// THE RECEIVER'S TYPE MUST BE THIS INSTANCE'S CARRIER RIGID, and `spec` the sort the body
-/// is written in: the caller asks only for a callee declared by that same sort, so `member`
-/// is read in the vocabulary it was written in. A receiver typed by another parameter, or by
-/// a carrier bounded through a `requires` clause, is not answered here — the bound decides
-/// what its `Element` is, and it need not be the enclosing sort's parameter of that name.
+/// THE RECEIVER'S TYPE MUST BE THIS INSTANCE'S RIGID FOR ONE OF `spec`'S TYPE-VARS, and `spec`
+/// the sort the body is written in. At a sibling call the caller asks only for a callee declared
+/// by that same sort, so `member` is read in the vocabulary it was written in; in a body
+/// ([`project_off_receiver`], WI-20261103-95S43) it is the body's own text. Which projections
+/// the reading answers is [`own_carrier_member`]'s to say, for both. `op` is the operation
+/// whose `requires` clauses that asks besides the spec's: the callee at a call, the body's
+/// own operation in a body.
 ///
-/// A SPEC WITH A CARRIER PARAMETER ONLY. [`spec_carrier_param`] answers "a parameter some
-/// operation takes", which for a sort that receives on ITSELF is its element (`push(s:
-/// Stack, x: T)` — its own doc asks a second gate of every new reader), and an element is no
-/// carrier: `x.T` off `x: T` there names nothing and stays the refusal it was.
+/// AT A CALL, THE RECEIVER IS THE CALLEE'S PARAMETER, and `declared` the type it is declared at:
+/// it must be the type-var the argument's type is this instance's rigid for. `pick(c: C) -> c.Elem`
+/// called as `pick(k)` over `k: K` is at `Coll[C = K]`, another instance, whose `Elem` is its own;
+/// while one carrier was read, the argument at this instance's `C` said both at once. In a body
+/// (`None`) the receiver's type IS where it is declared.
 pub(super) fn this_instance_member(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     env: &TypingEnv,
     spec: Symbol,
+    op: Option<Symbol>,
+    recv_ty: &Value,
+    member: Symbol,
+    declared: Option<&Value>,
+) -> Option<Value> {
+    let Value::Term { id: recv, .. } = recv_ty else {
+        return None;
+    };
+    let rigids = env.enclosing_instance_param_rigids();
+    // Which of this instance's type-vars the receiver is typed by — the cheap question first: a
+    // body reads every projection through here, and nearly all of them are off something else.
+    // By name in `spec` as the body names it, which [`own_carrier_member`]'s canonical answer
+    // need not be: the rigids are the body's own sort's.
+    let (vid, _) = *rigids.iter().find(|(_, r)| r == recv)?;
+    let params = sort_type_params_as_pairs(kb, spec);
+    let receiver = params
+        .iter()
+        .map(|(p, _)| *p)
+        .find(|p| type_param_vid_in_sort(kb, spec, *p) == Some(vid))?;
+    if let Some(declared) = declared {
+        let slot = sym_subject_key(kb, receiver);
+        if !subject_key_of(kb, declared).is_some_and(|key| subject_keys_equal(kb, key, slot)) {
+            return None;
+        }
+    }
+    let own = own_carrier_member(kb, spec, op, receiver, member)?;
+    let own = type_param_vid_in_sort(kb, spec, own)?;
+    rigids
+        .iter()
+        .find(|(v, _)| *v == own)
+        .map(|(_, r)| Value::term(*r))
+}
+
+/// WI-20261103-95S43 — [`this_instance_member`] for a reader with no body: off a receiver whose
+/// DECLARED type is one of `spec`'s type-vars, the spec's parameter `member` names, as declared —
+/// an abstract part of whatever it stands in, as the receiver's type is. The `Eq` key check reads
+/// a key written in a body so ([`read_projection_key`]): off the operation's declared signature,
+/// where `c: C` is `C` and not the body's rigid for it.
+pub(super) fn declared_own_carrier_member(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    op: Option<Symbol>,
     recv_ty: &Value,
     member: Symbol,
 ) -> Option<Value> {
-    if spec_is_self_representing(kb, spec) {
+    let key = subject_key_of(kb, recv_ty)?;
+    let params = sort_type_params_as_pairs(kb, spec);
+    let receiver = params
+        .iter()
+        .map(|(p, _)| *p)
+        .find(|p| subject_keys_equal(kb, key, sym_subject_key(kb, *p)))?;
+    let own = own_carrier_member(kb, spec, op, receiver, member)?;
+    kb.canonical_type_param_var(own).map(Value::term)
+}
+
+/// WI-20261103-95S43 — DOES `member` OFF A VALUE OF `spec`'S TYPE-VAR `receiver` NAME THE SPEC'S
+/// OWN PARAMETER: `Some(own)`, the parameter `member` names, where every reading of the projection
+/// inside `spec` takes it as this instance's member ([`this_instance_member`],
+/// [`declared_own_carrier_member`]); `None` where the projection is not this reading's, and is
+/// read as it was — refused, where nothing else reads it.
+///
+/// `sort Coll { sort C = ?  sort Elem = ?  operation first(c: C) -> Elem }` writes `c.Elem` for
+/// the element of the collection `c` is, and inside `Coll` that is `Elem`: a body runs at one
+/// instance, `Coll` at its rigids for `C` and `Elem`, and a value typed by one of them is that
+/// instance's, whose `Elem` is its `Elem`. ANY TYPE-VAR OF THE SPEC types such a receiver — the
+/// spec's sort carrier is all of them (decision 4 of `docs/design/spec-carrier-set.md`) — so
+/// `e.C` off `e: Elem` reads as `c.Elem` off `c: C` does. Read off the ONE parameter
+/// [`spec_carrier_param`] answers, the first declared that an operation takes, the verdict
+/// turned on the order: beside `wrap(e: Elem) -> C`, `let e: c.Elem = first(c)` loaded with `C`
+/// declared first and was refused with `Elem` first, and `let c: e.C = wrap(e)` the other way
+/// round (MEASURED; the user chose every type-var, 2026-11-28).
+///
+/// SG16K read a body's annotations so with no gate, and backed it out: it loaded `let y: x.T =
+/// x` in a data sort. Three gates, each with a row that loads without it
+/// (`wi_95s43_own_carrier_projection_test`):
+///
+///  * `spec` IS A SORT WITH A DICTIONARY ([`SortClass::Dictionary`]). In a sort with values of its
+///    own, the carrier is the sort itself and a type-var is the type of a PART: in `Mk`, whose
+///    `make(a: A, b: B) -> Self` returns one, `a.B` off `a: A` read as `Mk`'s `B` at a sibling
+///    call. A data sort is one too (`put(x: T)` beside `entity box(v: T)` takes the element `T`);
+///    it receives on itself as well, so [`spec_is_self_representing`], the gate this replaces,
+///    kept the data sorts out, and not `Mk`.
+///  * `member` IS NOT THE RECEIVER'S OWN TYPE-VAR. `x.T` off `x: T` asks the `T` OF `x`'s type,
+///    and a call reads the receiver's own binding of it first (a `List[T = Int64]` answers
+///    `Int64`) — not the instance's `T`, which is the list.
+///  * NO `requires` CLAUSE ABOUT THE RECEIVER'S TYPE-VAR BINDS `member` TO ANOTHER TYPE. Under
+///    `requires Storage[C = S, Key = Int64]` beside the sort's own `sort Key = ?`, `s.Key` names
+///    two types, and read as the sort's own `let j: s.Key = k` over `k: Key` loaded. Which one it
+///    is is WI-20261103-G5FK3's to say. A clause that binds the member TO the spec's own
+///    parameter (`FiniteCollection requires Iterable[C = C, Element = Element, …]`) names one
+///    type, and leaves the reading as it is. A clause is about the type-var as
+///    [`requires_entry_lends_member`] reads it; the spec's chain and `op`'s own clauses are asked.
+pub(super) fn own_carrier_member(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    op: Option<Symbol>,
+    receiver: Symbol,
+    member: Symbol,
+) -> Option<Symbol> {
+    let spec = kb.canonical_sort_sym(spec);
+    if sort_class(kb, spec) != SortClass::Dictionary {
         return None;
     }
-    let rigids = env.enclosing_instance_param_rigids();
-    let rigid_of = |param: Symbol| {
-        let vid = type_param_vid_in_sort(kb, spec, param)?;
-        rigids.iter().find(|(v, _)| *v == vid).map(|(_, r)| *r)
-    };
-    let carrier = rigid_of(spec_carrier_param(kb, spec)?)?;
-    if !matches!(recv_ty, Value::Term { id, .. } if *id == carrier) {
+    let name = kb.local_name_of(member).to_owned();
+    let own = kb.type_param_sym_of(spec, &name)?;
+    if kb.local_name_of(receiver) == name {
         return None;
     }
-    rigid_of(member).map(Value::term)
+    let receiver_key = sym_subject_key(kb, receiver);
+    let own_key = sym_subject_key(kb, own);
+    let mut bounds = requires_chain(kb, spec);
+    bounds.extend(op.map(|op| op_requires_entries(kb, op)).unwrap_or_default());
+    let rebound = bounds.iter().any(|entry| {
+        requires_entry_lends_member(kb, entry, receiver_key, &name)
+            && !spec_binding_value(kb, &entry.spec, &name)
+                .and_then(|bound| subject_key_of(kb, &bound))
+                .is_some_and(|key| subject_keys_equal(kb, key, own_key))
+    });
+    (!rebound).then_some(own)
 }
 
 /// `s.K` WHERE `s` IS DECLARED AT THE CALLEE'S SPEC WITH `K` WRITTEN — `s: Self`, which is
@@ -2594,6 +2701,17 @@ fn project_off_receiver(
         .and_then(|read| read(kb, value, &recv_ty, member))
     {
         return Ok(Some(v));
+    }
+    // WI-20261103-95S43 — in a body, a projection off a value typed by a type-var of the spec the
+    // body is written in is this instance's member, as its sibling calls read it: every body
+    // reader comes through here — a `let`'s, a lambda's and a pattern's annotation
+    // ([`read_written_annotation`]) and the body's own signature (`check_operation_bodies`).
+    if let Receivers::Own(Some(env)) = cx.receivers {
+        if let Some(v) = env.enclosing_sort().and_then(|spec| {
+            this_instance_member(kb, env, spec, env.enclosing_op(), &recv_ty, member, None)
+        }) {
+            return Ok(Some(v));
+        }
     }
     let member_str = kb.local_name_of(member).to_owned();
     let owner = projection_owner_spec(kb, value, &member_str)
