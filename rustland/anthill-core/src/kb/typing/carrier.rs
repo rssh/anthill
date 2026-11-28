@@ -1731,59 +1731,11 @@ pub(super) fn bind_spec_params_from_provision(
 
     for (spec_param_sym, carrier_value) in view_bindings {
         let spec_vid = type_param_vid_in_sort(kb, spec_sort, spec_param_sym);
-        // WI-600: a type-param REF SHAPE (bare `Ref`/`Ident`/nullary `Fn`/`Var`) —
-        // distinct from a written row / compound. The distinction (not "does it
-        // resolve to a carrier param") drives the branch: a ref shape that names a
-        // NON-carrier-param (a concrete leaf `Int64`) resolves to no VarId and finds
-        // no receiver arg: it is a type of the provision's own, bound as the ground
-        // row below is.
-        let ref_shape = typaram_occurrence_sym(kb, &carrier_value).is_some();
-        // The carrier-side CONCRETE value for this spec parameter, on the carrier it
-        // rides:
-        //  - a type-param ref (`Stream.T` ↦ `List.T`): the receiver's binding for
-        //    that carrier param (`List[T = Int]` ⇒ `Int`), looked up by the carrier
-        //    sort's canonical param VarId. Threaded even if itself a var (an unbound
-        //    receiver element legitimately aliases the op param).
-        //  - a GROUND provider row (`Stream.E` ↦ `{}`, the WRITTEN pure row of
-        //    `List provides Stream[E = {}]`): the value itself. The pre-WI-393
-        //    code `continue`-skipped this (only a ref mapped), dropping the `{}`
-        //    so a cross-sort `collect`'s `Eff` never grounded.
-        // S7YF5: a compound provision is relative to the carrier, just like a
-        // bare parameter. Substitute the receiver's arguments before binding it;
-        // `{BE}` at `Box[BE = {Modify[k]}]` denotes `{Modify[k]}`, not an empty
-        // effect row. Share the carrier-param path's structural substitution.
-        // Only bind a determined result here, so an unresolved carrier-relative
-        // parameter cannot escape into the consuming operation's types.
-        //  - a PLAIN type of the provision's own (`Sp.T` ↦ `Rec` at `Cg provides Sp[T
-        //    = Rec]`): that type. It was skipped here and read nowhere: a callback
-        //    parameter typed `T` was hinted with the spec's own `T` (`Sp.each(b, lambda q
-        //    -> q.n)` found no `n`), and a result typed `T` took the caller's expected
-        //    type — `operation go() -> String = Feed.next(gf)` over `GF provides Feed[T =
-        //    Int64]` loaded, and answered 5.
-        let carrier_param = if ref_shape {
-            typaram_ref_vid(kb, &carrier_value, carrier_sym)
-        } else {
-            None
+        let Some(concrete) =
+            provision_binding_at_receiver(kb, &carrier_value, carrier_sym, &recv_bindings)
+        else {
+            continue;
         };
-        let concrete: Option<Value> = if let Some(vid) = carrier_param {
-            recv_bindings
-                .iter()
-                .find(|e| e.0 == vid)
-                .map(|e| e.1.clone())
-        } else if type_is_ground(kb, &carrier_value) {
-            // A partial sort application leaves its missing slots for the
-            // arguments to infer. Open them once, shared by alias and op param,
-            // rather than pinning the alias to an unexpanded declaration.
-            Some(once_per_call(kb, &carrier_value))
-        } else if ref_shape {
-            // A leaf that is neither: another sort's parameter, a variable.
-            None
-        } else {
-            let at_receiver =
-                substitute_carrier_params(kb, &carrier_value, carrier_sym, &recv_bindings);
-            type_is_determined(kb, &at_receiver).then(|| once_per_call(kb, &at_receiver))
-        };
-        let Some(concrete) = concrete else { continue };
 
         // (a) The spec sort's own alias, used by dispatch and by an operation
         // whose row is the enclosing sort's E. Compound rows must bind this
@@ -1817,6 +1769,73 @@ pub(super) fn bind_spec_params_from_provision(
         }
     }
     any
+}
+
+/// What a provision's binding `carrier_value` of a spec parameter is at a receiver of
+/// `carrier_sym` whose type arguments are `recv_bindings` ([`parameterized_vid_bindings`]): the
+/// receiver's argument where the binding is one of the carrier's parameters, the binding
+/// where it is a type of the provision's own, and the binding at the receiver's arguments
+/// where it is a compound over them — `None` where none of these determines it. The one
+/// reading of a provision's binding at a receiver: a call's ([`bind_spec_params_from_provision`])
+/// and a host's question before the call ([`dictionary_at_selection`]).
+pub(super) fn provision_binding_at_receiver(
+    kb: &mut KnowledgeBase,
+    carrier_value: &Value,
+    carrier_sym: Symbol,
+    recv_bindings: &[(VarId, Value)],
+) -> Option<Value> {
+    // WI-600: a type-param REF SHAPE (bare `Ref`/`Ident`/nullary `Fn`/`Var`) —
+    // distinct from a written row / compound. The distinction (not "does it
+    // resolve to a carrier param") drives the branch: a ref shape that names a
+    // NON-carrier-param (a concrete leaf `Int64`) resolves to no VarId and finds
+    // no receiver arg: it is a type of the provision's own, bound as the ground
+    // row below is.
+    let ref_shape = typaram_occurrence_sym(kb, carrier_value).is_some();
+    // The carrier-side CONCRETE value for this spec parameter, on the carrier it
+    // rides:
+    //  - a type-param ref (`Stream.T` ↦ `List.T`): the receiver's binding for
+    //    that carrier param (`List[T = Int]` ⇒ `Int`), looked up by the carrier
+    //    sort's canonical param VarId. Threaded even if itself a var (an unbound
+    //    receiver element legitimately aliases the op param).
+    //  - a GROUND provider row (`Stream.E` ↦ `{}`, the WRITTEN pure row of
+    //    `List provides Stream[E = {}]`): the value itself. The pre-WI-393
+    //    code `continue`-skipped this (only a ref mapped), dropping the `{}`
+    //    so a cross-sort `collect`'s `Eff` never grounded.
+    // S7YF5: a compound provision is relative to the carrier, just like a
+    // bare parameter. Substitute the receiver's arguments before binding it;
+    // `{BE}` at `Box[BE = {Modify[k]}]` denotes `{Modify[k]}`, not an empty
+    // effect row. Share the carrier-param path's structural substitution.
+    // Only bind a determined result here, so an unresolved carrier-relative
+    // parameter cannot escape into the consuming operation's types.
+    //  - a PLAIN type of the provision's own (`Sp.T` ↦ `Rec` at `Cg provides Sp[T
+    //    = Rec]`): that type. It was skipped here and read nowhere: a callback
+    //    parameter typed `T` was hinted with the spec's own `T` (`Sp.each(b, lambda q
+    //    -> q.n)` found no `n`), and a result typed `T` took the caller's expected
+    //    type — `operation go() -> String = Feed.next(gf)` over `GF provides Feed[T =
+    //    Int64]` loaded, and answered 5.
+    let carrier_param = if ref_shape {
+        typaram_ref_vid(kb, carrier_value, carrier_sym)
+    } else {
+        None
+    };
+    if let Some(vid) = carrier_param {
+        recv_bindings
+            .iter()
+            .find(|e| e.0 == vid)
+            .map(|e| e.1.clone())
+    } else if type_is_ground(kb, carrier_value) {
+        // A partial sort application leaves its missing slots for the
+        // arguments to infer. Open them once, shared by alias and op param,
+        // rather than pinning the alias to an unexpanded declaration.
+        Some(once_per_call(kb, carrier_value))
+    } else if ref_shape {
+        // A leaf that is neither: another sort's parameter, a variable.
+        None
+    } else {
+        let at_receiver =
+            substitute_carrier_params(kb, carrier_value, carrier_sym, recv_bindings);
+        type_is_determined(kb, &at_receiver).then(|| once_per_call(kb, &at_receiver))
+    }
 }
 
 /// WI-20260828-N2FHM — the parameters of `fn_sym` that could be its CARRIER-PARAM
@@ -5518,12 +5537,21 @@ pub struct DispatchFailure {
 /// WI-869 — render a [`TypeError::DispatchNoMatch`]'s failure as a trailing clause, or
 /// nothing. One owner because two renderers use it — the `TypeError` message and the
 /// `LoadError` lowering — and a check whose two texts disagree is worse than one that
-/// says less (WI-886).
+/// says less (WI-886). A host's question before the call ([`dictionary_at_selection`])
+/// renders its failure through the same clause ([`unmet_clause`]).
 pub(super) fn render_unmet(unmet: &Option<Box<DispatchFailure>>) -> String {
     match unmet {
-        Some(f) if f.hint.is_empty() => format!(" \u{2014} unresolved: {}", f.goal_text),
-        Some(f) => format!(" \u{2014} unresolved: {} ({})", f.goal_text, f.hint),
+        Some(f) => format!(" \u{2014} {}", unmet_clause(f)),
         None => String::new(),
+    }
+}
+
+/// [`render_unmet`]'s clause: the goal the search failed at, and its hint where it has one.
+pub(super) fn unmet_clause(f: &DispatchFailure) -> String {
+    if f.hint.is_empty() {
+        format!("unresolved: {}", f.goal_text)
+    } else {
+        format!("unresolved: {} ({})", f.goal_text, f.hint)
     }
 }
 
@@ -5716,32 +5744,8 @@ pub(super) fn resolve_at_goal(
         return (DispatchOutcome::NoCandidates, None);
     }
 
-    let mut stack: Vec<SortGoal> = Vec::new();
-    let mut top: Option<TopFailure> = None;
-    // Two `None`s: this IS the goal the call made, so there is no enclosing provider
-    // whose locality could narrow it (WI-857) and no slot of one to pin (WI-870) —
-    // `scope.selected` is the only pin that reaches this level.
-    // WI-861: and [`DefaultRung::Consult`], because this IS the unselected DISPATCH 058
-    // §3.2's ladder is about — no named slot, so silence here is silence.
-    let result = resolve_inner(
-        kb,
-        &goal,
-        &scope,
-        &mut stack,
-        None,
-        None,
-        DefaultRung::Consult,
-        &mut top,
-    );
-    let through = match top {
-        Some(TopFailure {
-            provider,
-            at: FailedAt::AtCarrier,
-        }) => Some(provider),
-        _ => None,
-    };
-    match result {
-        ResolutionResult::Resolved(tree) => match &tree {
+    match dispatch_dictionary(kb, goal, &scope) {
+        Ok(tree) => match &tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => {
                 // WI-20261025-7K84M — WHAT THE PROVIDER SUPPLIES FOR THE OPERATION, by the
@@ -5783,41 +5787,92 @@ pub(super) fn resolve_at_goal(
             }
             ResolvedRequiresNode::FromScope { .. } => (DispatchOutcome::Deferred, None),
         },
+        Err(DictionaryRefusal::Unresolved(failure)) => (
+            DispatchOutcome::NoMatch {
+                unmet: Some(Box::new(failure)),
+            },
+            None,
+        ),
+        Err(DictionaryRefusal::Ambiguous(tie)) => (DispatchOutcome::Ambiguous(tie), None),
+    }
+}
+
+/// WI-20261127-3R78F — why the dictionary a dispatch's goal is answered with cannot be built:
+/// [`dispatch_dictionary`]'s refusal, before any operation is read out of a provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictionaryRefusal {
+    /// A goal of the dictionary resolves to no provider: the goal the search failed at, as
+    /// the typer writes it — the call's own goal, a CONDITION of the provision chosen for
+    /// it, or a requirement of that provider's frame — with the search's hint.
+    Unresolved(DispatchFailure),
+    /// Two providers answer a goal of the dictionary and nothing says which — 058 §4.1 tier
+    /// 3, forwarded from the level that observed it.
+    Ambiguous(InstanceTie),
+}
+
+/// The dictionary a dispatch's `goal` is answered with in `scope` — the search a call's
+/// dispatch runs ([`resolve_at_goal`]) before it reads the operation out of the provider —
+/// or why none is. A tree that answers from `scope` (`FromScope`) is a dictionary too: the
+/// dispatch defers to it.
+///
+/// Its own function because a host asks it with no call ([`dictionary_at_selection`]): one
+/// search, so the question cannot come to answer otherwise than the call does.
+pub(super) fn dispatch_dictionary(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope,
+) -> Result<ResolvedRequiresNode, DictionaryRefusal> {
+    let mut stack: Vec<SortGoal> = Vec::new();
+    let mut top: Option<TopFailure> = None;
+    // Two `None`s: this IS the goal the call made, so there is no enclosing provider
+    // whose locality could narrow it (WI-857) and no slot of one to pin (WI-870) —
+    // `scope.selected` is the only pin that reaches this level.
+    // WI-861: and [`DefaultRung::Consult`], because this IS the unselected DISPATCH 058
+    // §3.2's ladder is about — no named slot, so silence here is silence.
+    let result = resolve_inner(
+        kb,
+        goal,
+        scope,
+        &mut stack,
+        None,
+        None,
+        DefaultRung::Consult,
+        &mut top,
+    );
+    let through = match top {
+        Some(TopFailure {
+            provider,
+            at: FailedAt::AtCarrier,
+        }) => Some(provider),
+        _ => None,
+    };
+    match result {
+        ResolutionResult::Resolved(tree) => Ok(tree),
         // WI-869: the failure rides out with the verdict — for a conditional provision
         // the goal it names is the unmet CONDITION, which is the only thing that
         // explains the refusal. WHOLE, hint included: the hint is the repair.
         ResolutionResult::NoMatch {
             goal_text, hint, ..
-        } => (
-            DispatchOutcome::NoMatch {
-                unmet: Some(Box::new(DispatchFailure {
-                    goal_text,
-                    hint,
-                    through,
-                })),
-            },
-            None,
-        ),
+        } => Err(DictionaryRefusal::Unresolved(DispatchFailure {
+            goal_text,
+            hint,
+            through,
+        })),
         // WI-843: the tie is FORWARDED, not restamped. Tier 3's diagnostic is the
         // only one the author now gets, and only `resolve_inner` knows which level
         // tied — substituting `goal.spec_sort` here is exactly the bug that made a
         // conditional witness's subgoal tie report the outer spec.
-        ResolutionResult::Ambiguous { tie, .. } => (DispatchOutcome::Ambiguous(tie), None),
+        ResolutionResult::Ambiguous { tie, .. } => Err(DictionaryRefusal::Ambiguous(tie)),
         // A CYCLE has its own account, and `describe_resolution_failure` is its owner —
         // "construction is cyclic: a -> b -> c" instead of a bare "no impl matches".
         cyclic @ ResolutionResult::Cyclic { .. } => {
             let goal_text = format_goal(kb, goal);
             let hint = describe_resolution_failure(kb, &cyclic);
-            (
-                DispatchOutcome::NoMatch {
-                    unmet: Some(Box::new(DispatchFailure {
-                        goal_text,
-                        hint,
-                        through,
-                    })),
-                },
-                None,
-            )
+            Err(DictionaryRefusal::Unresolved(DispatchFailure {
+                goal_text,
+                hint,
+                through,
+            }))
         }
     }
 }

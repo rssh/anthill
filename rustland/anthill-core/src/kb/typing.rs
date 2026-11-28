@@ -20,7 +20,8 @@
 //!    `args`, `param_defaults` (a call's defaulted arguments), `constructor`, `callable`, `relation`, `eta`, `dot_rule`, `type_receiver`
 //!    (a dot on a receiver that denotes a sort), `pattern`, `projection`.
 //!  * Dispatch and dictionaries — `call_class`, `dispatch`, `slots`, `dict`,
-//!    `dep_projection`, `bridge`, `requires`.
+//!    `dep_projection`, `bridge`, `requires`, `selection_dictionary` (a host's question,
+//!    before any call, of what a call selecting a provider would be handed).
 //!  * Instance synthesis and provisions — `synth`, `candidates`, `provides_index`,
 //!    `provision`, `carrier`, `coherence`.
 //!  * Type relations — `unify`, `subtype`, `type_pattern` (what a type pattern admits),
@@ -131,6 +132,7 @@ mod rule_goal_routes;
 mod rule_requirements;
 mod rules;
 mod sealed;
+mod selection_dictionary;
 mod signature;
 mod slots;
 mod sort_alias;
@@ -208,6 +210,7 @@ pub use rules::is_typed_head_domain_goal;
 pub use rule_requirements::is_inferred_requirement_read;
 pub(crate) use rules::*;
 pub use sealed::*;
+pub use selection_dictionary::*;
 pub use signature::*;
 pub use slots::*;
 pub(crate) use sort_alias::*;

@@ -49,7 +49,7 @@ pub fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol>
 /// Nothing provides a sort with constructors (kernel-language.md §5.1), with a type
 /// parameter or without: its parameters are its content, its operations are its own, and
 /// the loader refuses a provision of it. Every other sort may be provided.
-fn sort_may_be_provided(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
+pub(super) fn sort_may_be_provided(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
     !sort_is_data(kb, kb.canonical_sort_sym(sort_sym))
 }
 

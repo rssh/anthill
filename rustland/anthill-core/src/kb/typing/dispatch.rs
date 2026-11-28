@@ -496,15 +496,23 @@ pub(crate) fn unselected_instance_message(
     candidates: &[String],
     repair: &TieRepair,
 ) -> String {
-    // WI-1032: `candidates` is per PROVIDER (deduped at `render_instance_tie`), so the
-    // count says how many distinct providers — never one provider named twice.
     let head = format!(
-        "ambiguous dispatch of `{op}`: {} instances provide `{spec}` ({}) and the call \
-         selects none",
-        candidates.len(),
-        candidates.join(", "),
+        "ambiguous dispatch of `{op}`: {} and the call selects none",
+        instances_provide(spec, candidates),
     );
     format!("{head}{}", tie_repair_advice(spec, repair))
+}
+
+/// The providers of a tie, as [`unselected_instance_message`] and a host's question before the
+/// call ([`dictionary_at_selection`]) name them.
+pub(super) fn instances_provide(spec: &str, candidates: &[String]) -> String {
+    // WI-1032: `candidates` is per PROVIDER (deduped at `render_instance_tie`), so the
+    // count says how many distinct providers — never one provider named twice.
+    format!(
+        "{} instances provide `{spec}` ({})",
+        candidates.len(),
+        candidates.join(", "),
+    )
 }
 
 /// WI-456 — the REPAIR half of a tie's message, with one owner.
