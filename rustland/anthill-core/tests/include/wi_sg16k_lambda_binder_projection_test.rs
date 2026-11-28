@@ -14,11 +14,13 @@
 //! binder among several of a lambda's parameters kept it raw in silence.
 //!
 //! STILL REFUSED, as the `let` and the signature refuse them, though the lambda loaded them
-//! unread: a projection off an un-annotated binder (`lambda x -> lambda (s: List[T = x.E])`), off
-//! a type parameter whose only bound is a `requires` (`x.Key`, `x: P`, `requires Storage[C = P]`;
-//! WI-20261103-G5FK3), and off a spec's own carrier in its default body (`c.Elem`, `c: C`;
-//! WI-20261103-95S43 — reading it through `this_instance_member` was tried here and backed out:
-//! with no gate for a projection an author writes, it loaded `let y: x.T = x` in a data sort).
+//! unread: a projection off an un-annotated binder (`lambda x -> lambda (s: List[T = x.E])`) and
+//! off a type parameter whose only bound is a `requires` (`x.Key`, `x: P`, `requires Storage[C =
+//! P]`; WI-20261103-G5FK3). Off a spec's own carrier in its default body (`c.Elem`, `c: C`) it was
+//! refused here too, and reading it through `this_instance_member` was tried and backed out: with
+//! no gate for a projection an author writes, it loaded `let y: x.T = x` in a data sort. It reads
+//! now, through a gate, at every body reader (WI-20261103-95S43,
+//! `wi_95s43_own_carrier_projection_test`).
 //!
 //! BACK-OUTS, MEASURED — each ONE part put back, over this file's 10 rows:
 //!
@@ -400,17 +402,13 @@ fn a_member_the_receiver_does_not_declare_is_refused_at_the_binder() {
 
 /// A projection the `let` and the signature refuse is refused at a lambda's binder too, where it
 /// loaded unread: off an un-annotated binder, off a type parameter whose only bound is a
-/// `requires` (WI-20261103-G5FK3), and off a spec's own carrier in its default body — `c.Elem`,
-/// `c: C`, refused as `-> c.Elem` is (WI-20261103-95S43). Each beside its `let`
-/// spelling, refused for the same reason.
+/// `requires` (WI-20261103-G5FK3). Each beside its `let` spelling, refused for the same reason.
+/// Off a spec's own carrier it reads now (WI-20261103-95S43).
 #[test]
 fn projections_the_let_and_the_signature_refuse_are_refused_at_the_binder() {
     let unannotated = |inner: &str| format!("operation k() -> Bool =\n    let f = lambda x -> {inner}\n    true");
     let required = |inner: &str| {
         format!("operation k[P](x: P) -> Bool requires Storage[C = P] =\n    {inner}\n    true")
-    };
-    let own_carrier = |inner: &str| {
-        format!("sort Coll\n    sort C = ?\n    sort Elem = ?\n    operation first(c: C) -> Elem\n    operation pick(c: C) -> Bool =\n      {inner}\n      true\n  end")
     };
     let rows = [
         (
@@ -432,16 +430,6 @@ fn projections_the_let_and_the_signature_refuse_are_refused_at_the_binder() {
             "required.let",
             required("let z: Option[T = x.Key] = none"),
             "(let-binding): expected a well-formed type projection, got cannot project 'Key' off an abstract receiver",
-        ),
-        (
-            "own_carrier.lambda",
-            own_carrier("let h = lambda (e: c.Elem) -> true"),
-            "(binder-annotation): expected a well-formed type projection, got cannot project 'Elem' off an abstract receiver",
-        ),
-        (
-            "own_carrier.let",
-            own_carrier("let e: c.Elem = first(c)"),
-            "(let-binding): expected a well-formed type projection, got cannot project 'Elem' off an abstract receiver",
         ),
     ];
     for (tag, decl, refusal) in rows {

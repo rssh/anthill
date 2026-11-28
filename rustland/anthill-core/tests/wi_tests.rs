@@ -1808,6 +1808,8 @@ mod wi_7ab56_projection_key_test;
 mod wi_swphb_partly_abstract_key_test;
 #[path = "include/wi_sg16k_lambda_binder_projection_test.rs"]
 mod wi_sg16k_lambda_binder_projection_test;
+#[path = "include/wi_95s43_own_carrier_projection_test.rs"]
+mod wi_95s43_own_carrier_projection_test;
 
 #[path = "include/x13yv_map_map_chain_test.rs"]
 mod x13yv_map_map_chain_test;

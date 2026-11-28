@@ -1448,7 +1448,16 @@ fn read_projection_key(
         None => &no_params,
     };
     let ctx = TypeErrorContext::SortParameter { sort, param };
-    let discharge = Discharge::new(params, Receivers::Own(None), &ctx, None);
+    // WI-20261103-95S43 — off a parameter typed by a type-var of the spec the operation is
+    // declared in, the spec's own member, as the body reads it ([`own_carrier_member`]).
+    let spec = operation.and_then(|op| impl_parent_sort_of_op(kb, op));
+    let own_carrier = |kb: &mut KnowledgeBase, _: &Value, recv_ty: &Value, member: Symbol| {
+        declared_own_carrier_member(kb, spec?, operation, recv_ty, member)
+    };
+    let discharge = Discharge {
+        reading: Some(&own_carrier),
+        ..Discharge::new(params, Receivers::Own(None), &ctx, None)
+    };
     let mut read = key.clone();
     for _ in 0..params.len() + KEY_READINGS {
         let mut receivers = Vec::new();
