@@ -195,3 +195,47 @@ THE PLAN, REVISED (with the user, 2026-11-28): 060.1 §9's stage table, on the f
 (§8.19–§8.23). S2 is load only; `tag[T = Int64]` answering `wrap(1)` alone moved to S3; what
 S3 and S4 owe is sized by the counts above. Open with it: §8.24, a goal no load typed (34 of the
 70 rows; `kb.resolve` typing its goals, the lean, or a typed-query helper).
+
+
+4. RESUME — where the ticket stands, for the session that takes it up after WI-20261127-AGR9S
+-------------------------------------------------------------------------------------------
+
+STATE (2026-11-28, main at e24335bc7). S1 done and recorded; its five questions decided with
+the user (060.1 §8.19–§8.23) and §9's stage table revised on them; §8.24 open. Nothing of S2–S5
+built. The ticket is back to Open, behind its edge on WI-20261127-AGR9S (076 Stage A, the order
+the user chose): `anthill-todo list --unblocked` shows it once AGR9S is delivered.
+
+READ FIRST, in this order:
+  1. docs/proposals/060.1-written-rule-requirements.md §9 — the amendment and its REVISED stage
+     table (S2 load only; S3 with 077 S3; S4; S5), and §8.12–§8.24, the decisions it rests on.
+  2. This record, §§1–3: what the probe measures, the rows, the findings (a)–(f).
+  3. The ticket's feedback (anthill-todo show WI-20261127-DAPCN): the decisions in order.
+
+FILES HERE:
+  s1-probe.patch     the probe (anthill-core/src/dapcn_s1.rs and its hooks). Applies on
+                     e24335bc7. AGR9S rewrites kb/resolve.rs (the continuation), so after it the
+                     RUN-TIME hooks there (dapcn_probe_open at the clause opener, the builtin
+                     hooks) may need placing again by hand; the LOAD hooks (typing/relation.rs,
+                     typing/rule_constraints.rs, typing/rule_goal_routes.rs, typing/sorts.rs,
+                     load.rs, mod.rs) are outside it. S2 is load only, so it needs the load half.
+  s1-runs.sh         the three full-workspace runs (`s1-runs.sh OUT [log load run]`), then
+  s1-analyze.py      the counts (`python3 -I s1-analyze.py OUT`)
+  s1-rows-load.tsv   the 70 load rows: test, probe tags, class, what S2–S4 does with it
+  s1-rows-run.tsv    the 93 run rows: test, probe tags, class, also refused at load
+  s1-load-sites.tsv  every load site (prog), with the open columns' types where printed
+
+FIRST STEPS of S2, once AGR9S is delivered:
+  1. Re-measure on the new tree: apply the probe (re-place the resolve.rs hooks if they no
+     longer apply), `s1-runs.sh OUT log load`; the gate in log mode must equal the tree's, and
+     the load rows should be s1-rows-load.tsv's 70 (AGR9S changes no behaviour). Back it out.
+  2. Read wi_kf2sd's 2 CLI rows (law goals on `gain`: is `gain`'s joined column open at all).
+  3. Build S2 as the table says. Its rows: of the 40 L1–L3 rows, 24 load unchanged (they need
+     the brackets read — receiver, type as data — §8.19's row gap closed, §8.20's inference,
+     §8.22's facts left alone) and 12 are refused and rewritten (§9's own 5, wi_9wvt7 5, the
+     named slot 2) — s1-rows-load.tsv's last column. The 30 L4 rows are S4's, not S2's.
+  4. The kernel-language text is S5's, agreed with the user first (CLAUDE.md: a spec change is
+     discussed first).
+
+OPEN, to decide before S4 (not S2): §8.24 — typed rules reached by goals no load typed
+(tests' hand-built `kb.resolve` terms, 34 rows): (i) `kb.resolve` types its goals as a query
+(the lean), or (ii) those rows move to a typed-query helper.

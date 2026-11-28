@@ -1,0 +1,153 @@
+# S1's load sites (every mode's log), one per site; columns: tag, detail (relation, columns left open with their types where printed, file:offset)
+L1-opbody-free	`atvc1.free.Wrap.again2` free[z: Wrap[T = ?T]] bound[] @ <unknown>:780
+L1-opbody-free	`atvc1.free.Wrap.again2` free[z: Wrap[T = ?T]] bound[] @ <unknown>:784
+L1-opbody-free	`atvc1.free.Wrap.again` free[y: Wrap[T = ?T]] bound[] @ <unknown>:778
+L1-opbody-free	`atvc1.free.Wrap.again` free[y: Wrap[T = ?T]] bound[] @ <unknown>:782
+L1-opbody-free	`atvc1.free.Wrap.again` free[y: Wrap[T = ?T]] bound[] @ <unknown>:812
+L1-opbody-free	`atvc1.free.Wrap.twice` free[y: Wrap[T = ?T]] bound[] @ <unknown>:778
+L1-opbody-free	`atvc1.free.anyDom` free[y: Wrap[T = ?T]] bound[] @ <unknown>:780
+L1-opbody-free	`wi0rrqp.join.fieldTwice` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1300
+L1-opbody-free	`wi0rrqp.l1.untyped` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1076
+L1-opbody-free	`wi0rrqp.u1.tag` free[x: Wrap[T = ?t]] bound[] @ <unknown>:1071
+L1-opbody-free	`wi0rrqp.u1ok.tag` free[x: Wrap[T = ?t]] bound[] @ <unknown>:1067
+L1-opbody-free	`wi0rrqp.u2.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1063
+L1-opbody-free	`wi0rrqp.u2ok.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1059
+L1-opbody-free	`wi0rrqp.u3.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1070
+L1-opbody-free	`wi0rrqp.u3ok.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1066
+L1-opbody-free	`wi0rrqp.u4.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1057
+L1-opbody-free	`wi0rrqp.u4ok.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1053
+L1-opbody-free	`wi0rrqp.u6.tag` free[x: Option[T = ?T]] bound[] @ <unknown>:1057
+L1-opbody-free	`wi0rrqp.u6ok.tag` free[x: Option[T = ?T]] bound[] @ <unknown>:1053
+L1-opbody-free	`wi0rrqp.w1.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1053
+L1-opbody-free	`wi0rrqp.w2.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1152
+L1-opbody-free	`wi0rrqp.w3.tag` free[x: Wrap[T = ?T]] bound[] @ <unknown>:1140
+L2-rulegoal-facts	atvc1.free.Wrap.counted -> `atvc1.free.Wrap.dom` cols[_1: Wrap[T = ?_]] @ <unknown>:464
+L2-rulegoal-facts	test.cbrd2.bracket.srcShown -> `test.cbrd2.bracket.src` cols[_1: List[T = ?column]] @ <unknown>:812
+L2-rulegoal-facts	test.fdj0e.head.seenBox -> `test.fdj0e.head.holds` cols[_1: Box[V = ?_]] @ <unknown>:214
+L2-rulegoal-facts	test.jb6rs.brackets.namedFindsPositional -> `test.jb6rs.brackets.pairTy` cols[_1: Pair[L = ?_, R = ?_]] @ <unknown>:267
+L2-rulegoal-facts	wi1096.empty_is_nil -> `wi1096.empty_fact` cols[_1: List[T = ?_]] @ <unknown>:454
+L2-rulegoal-facts	wi1096.empty_not_cons -> `wi1096.empty_fact` cols[_1: List[T = ?_]] @ <unknown>:511
+L2-rulegoal-facts	wi1096.namedargs.is_nil -> `wi1096.namedargs.named` cols[_1: List[T = ?_]] @ <unknown>:404
+L2-rulegoal-inferred	 -> `test.c76kzn.applies` cols[_1: () -> String @ ?Rho] @ <unknown>:557
+L2-rulegoal-inferred	 -> `test.c76kzn.applies` cols[_1: () -> String @ ?Rho] @ <unknown>:561
+L2-rulegoal-inferred	anthill.prelude.PartialOrd.gte -> `test.kf2sd.ctor.gain` cols[_1: Option[T = ?column]] @ /tmp/anthill-test-1495000-kf2sd_ctor.anthill/kf2sd_ctor.anthill:486
+L2-rulegoal-inferred	anthill.prelude.PartialOrd.lte -> `test.kf2sd.ctor.gain` cols[_1: Option[T = ?_]] @ /tmp/anthill-test-1495000-kf2sd_ctor.anthill/kf2sd_ctor.anthill:315
+L2-rulegoal-inferred	test.kf2sd.frames.bound -> `test.kf2sd.frames.gain` cols[_1: Option[T = ?column]] @ /tmp/anthill-test-1495000-kf2sd_frames.anthill/kf2sd_frames.anthill:252
+L2-rulegoal-inferred	test.r1w5a.eff.handsLambda -> `test.r1w5a.eff.applies` cols[_1: () -> String @ ?Rho] @ <unknown>:2575
+L2-rulegoal-inferred	test.r1w5a.eff.handsPure -> `test.r1w5a.eff.applies` cols[_1: () -> String @ ?Rho] @ <unknown>:2573
+L2-rulegoal-inferred	test.r1w5a.eff.handsValue -> `test.r1w5a.eff.applies` cols[_1: () -> String @ ?Rho] @ <unknown>:2574
+L2-rulegoal-inferred	test.w2jp7.viaLambda -> `test.w2jp7.cc` cols[_1: () -> String @ ?Rho] @ <unknown>:443
+L2-rulegoal-inferred	wi0rrqp.b1.viaDict -> `wi0rrqp.b1.dict2` cols[_1: Bag[E = ?_]] @ <unknown>:318
+L2-rulegoal-typed	anthill.prelude.PartialOrd.gte -> `test.kf2sd.frames.wrap` cols[_1: Option[T = Option[T = ?column]]] @ /tmp/anthill-test-1495000-kf2sd_frames.anthill/kf2sd_frames.anthill:527
+L2-rulegoal-typed	atvc1.free.Wrap.counted -> `atvc1.free.Wrap.dom` cols[_1: Wrap[T = ?_]] @ <unknown>:464
+L2-rulegoal-typed	c.answer -> `c.keep` cols[_1: List[T = ?column]] @ <unknown>:460
+L2-rulegoal-typed	rrqp.slotat.viaT -> `rrqp.slotat.cmpT` cols[_1: Pair2[O = ?_, T = Int64, U = String]] @ <unknown>:300
+L2-rulegoal-typed	test.bkb.afterLoad -> `test.bkb.loads` cols[_1: Result[T = ?X, E = ?T1]] @ <unknown>:486
+L2-rulegoal-typed	test.bkb.beforeLoad -> `test.bkb.loads` cols[_1: Result[T = ?X, E = ?T1]] @ <unknown>:547
+L2-rulegoal-typed	test.bkb.branch -> `test.bkb.loads` cols[_1: Result[T = ?X, E = ?T1]] @ <unknown>:940
+L2-rulegoal-typed	test.cbrd2.sortreq.empties -> `test.cbrd2.sortreq.Box.twin` cols[_1: Box[T = List[T = ?_]],_2: Box[T = List[T = ?_]]] @ <unknown>:507
+L2-rulegoal-typed	test.cbrd2.sortreq.empties -> `test.cbrd2.sortreq.Box.twin` cols[_1: Box[T = List[T = ?_]],_2: Box[T = List[T = ?_]]] @ <unknown>:547
+L2-rulegoal-typed	test.s8cbv.rule.unbound.answer -> `test.s8cbv.rule.unbound.anchored` cols[_1: Box[E = ?E]] @ <unknown>:534
+L2-rulegoal-typed	wi0rrqp.a1.q -> `wi0rrqp.a1.tag3` cols[_1: List[T = Wrap[T = ?t]],_2: Wrap[T = ?t]] @ <unknown>:1042
+L2-rulegoal-typed	wi0rrqp.b1.viaWritten -> `wi0rrqp.b1.written` cols[_1: Bag[E = ?e]] @ <unknown>:424
+L2-rulegoal-typed	wi0rrqp.g1.elemOfSum -> `wi0rrqp.g1.gen` cols[_1: Wrap[E = ?E]] @ <unknown>:271
+L2-rulegoal-typed	wi0rrqp.slotw.viaGoal -> `wi0rrqp.slotw.Ranked.ordered` cols[_1: Ranked[O = ?_, T = Int64]] @ <unknown>:729
+L2-rulegoal-typed	wi0rrqp.unc.uncited -> `wi0rrqp.unc.Box.order` cols[_1: Box[T = Int64, O = ?_]] @ <unknown>:1650
+L2-rulegoal-typed	wi0rrqp.unc.uncited -> `wi0rrqp.unc.Ranked.ordered` cols[_1: Ranked[O = ?_, T = Int64]] @ <unknown>:727
+L3-query-facts	<query> -> `test.jb6rs.brackets.pairTy` cols[_1: Pair[L = ?_, R = ?_]] @ <unknown>:0
+L3-query-facts	<query> -> `wi1099.rt.empty_stored` cols[_1: List[T = ?element]] @ <unknown>:0
+L3-query-facts	<query> -> `wi1099.rt2.empty_stored` cols[_1: List[T = ?element]] @ <unknown>:0
+L3-query-typed	<query> -> `test.bkb.loads` cols[_1: Result[T = ?X, E = ?T1]] @ <unknown>:0
+L3-query-typed	<query> -> `test.hwd8a.p5.caught` cols[_1: Result[T = ?_, E = (a: Int64, b: String)]] @ <unknown>:0
+L3-query-typed	<query> -> `test.hwd8a.p5.clash` cols[_2: Result[T = ?_, E = (a: Int64, b: String)]] @ <unknown>:0
+L3-query-typed	<query> -> `test.hwd8a.p5.clash` cols[_2: Result[T = ?_, E = (a: String)]] @ <unknown>:0
+L3-query-typed	<query> -> `test.hwd8a.p5.disjoint` cols[_2: Result[T = ?_, E = (a: Int64, b: String)]] @ <unknown>:0
+L3-query-typed	<query> -> `test.hwd8a.p5.disjoint` cols[_2: Result[T = ?_, E = (z: Bool)]] @ <unknown>:0
+L3-query-typed	<query> -> `test.hwd8a.p5.shared` cols[_2: Result[T = ?_, E = (a: Int64, b: String)]] @ <unknown>:0
+L3-query-typed	<query> -> `test.hwd8a.p5.shared` cols[_2: Result[T = ?_, E = (b: String, a: Int64, c: Bool)]] @ <unknown>:0
+L3-query-typed	<query> -> `test.hwd8a.t6.caught` cols[_1: Result[T = ?_, E = (Int64, Int64)]] @ <unknown>:0
+L3-query-typed	<query> -> `test.pw9a0.arrow_tvar.g` cols[_1: (?column) -> Int64] @ <unknown>:0
+L3-query-typed	<query> -> `test.pw9a0.nested.g` cols[_1: List[T = List[T = ?column]]] @ <unknown>:0
+L3-query-typed	<query> -> `test.pw9a0.tuple_tvar.g` cols[_1: (x: ?column)] @ <unknown>:0
+L3-query-typed	<query> -> `test.s8cbv.rule.unboundq.anchored` cols[_1: Box[E = ?column]] @ <unknown>:0
+L3-query-typed	<query> -> `wiwf14z.dom.n2` cols[_1: Result[T = Int64, E = ?_]] @ <unknown>:0
+L3-runtime-typed	<query> -> `wi0rrqp.join.fieldTwice` cols[_1: Wrap[T = ?column]] @ <unknown>:0
+L3-runtime-typed	<query> -> `wi0rrqp.l2.tag3` cols[_1: List[T = Wrap[T = ?t]],_2: Wrap[T = ?t]] @ <unknown>:0
+L3-runtime-typed	<query> -> `wi0rrqp.u1ok.tag` cols[_1: Wrap[T = ?t]] @ <unknown>:0
+L3-runtime-typed	<query> -> `wi0rrqp.u2ok.tag` cols[_1: Wrap[T = ?T]] @ <unknown>:0
+L3-runtime-typed	<query> -> `wi0rrqp.u3ok.tag` cols[_1: Wrap[T = ?T]] @ <unknown>:0
+L3-runtime-typed	<query> -> `wi0rrqp.u4ok.tag` cols[_1: Wrap[T = ?T]] @ <unknown>:0
+L3-runtime-typed	<query> -> `wi0rrqp.u6ok.tag` cols[_1: Option[T = ?T]] @ <unknown>:0
+L3-runtime-typed	<query> -> `wi0rrqp.w3.tag` cols[_1: Wrap[T = ?T]] @ <unknown>:0
+L4-opbody-rigid-no-sortdomain	`atvc1.kinds.outO` at[p: Pr[T = !A]] @ <unknown>:1939
+L4-opbody-rigid-no-sortdomain	`atvc1.pat.either` at[r: Result[T = Int64, E = !P]] @ <unknown>:1062
+L4-opbody-rigid-no-sortdomain	`atvc1.pat.outer` at[r: Result[T = Int64, E = !P]] @ <unknown>:1212
+L4-opbody-rigid-no-sortdomain	`atvc1.rec.evenS` at[l: List[T = !A]] @ <unknown>:1482
+L4-opbody-rigid-no-sortdomain	`atvc1.rec.sorted` at[l: List[T = !A]] @ <unknown>:1361
+L4-opbody-rigid-no-sortdomain	`j9ssg.rec.evenS` at[l: List[T = !A]] @ <unknown>:1140
+L4-opbody-rigid-no-sortdomain	`j9ssg.rec.skipN` at[l: List[T = !A]] @ <unknown>:1594
+L4-opbody-rigid-no-sortdomain	`j9ssg.rec.triA` at[l: List[T = !A]] @ <unknown>:2093
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.bnd.Box.bound` at[p: Box[T = !T, O = !O]] @ <unknown>:733
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.both.ordBoth` at[p: Pr[T = !A]] @ <unknown>:878
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.bx.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:875
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.bx.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:778
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.ctl.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:876
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.ctl.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:779
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.depth.ordLeft` at[p: Pr[T = !A]] @ <unknown>:1380
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.depth.ordNested` at[o: Outer[U = !A]] @ <unknown>:1519
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.depth.ordPr` at[p: Pr[T = !A]] @ <unknown>:1248
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.depth.ordPr` at[p: Pr[T = !A]] @ <unknown>:1825
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.depth.ordTwoStep` at[o: Outer[U = !A]] @ <unknown>:1661
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.dot.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:876
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.dot.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:779
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.early.ordLeft` at[p: Pr[T = !A]] @ <unknown>:509
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.early.ordNested` at[o: Outer[U = !A]] @ <unknown>:648
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.early.ordPr` at[p: Pr[T = !A]] @ <unknown>:377
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.early.ordPr` at[p: Pr[T = !A]] @ <unknown>:954
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.early.ordTwoStep` at[o: Outer[U = !A]] @ <unknown>:790
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.goal.ordLeft` at[p: Pr[T = !A]] @ <unknown>:1377
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.goal.ordNested` at[o: Outer[U = !A]] @ <unknown>:1516
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.goal.ordPr` at[p: Pr[T = !A]] @ <unknown>:1245
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.goal.ordPr` at[p: Pr[T = !A]] @ <unknown>:1822
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.goal.ordTwoStep` at[o: Outer[U = !A]] @ <unknown>:1658
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.hb.Box.orderAtT` at[p: Box[O = !O, T = !T]] @ <unknown>:901
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.hb.Box.orderSelf` at[p: Box[O = !O, T = !T]] @ <unknown>:805
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.holderslot.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:883
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.holderslot.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:786
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.l2.tag3` at[w: List[T = Wrap[T = !A]], x: Wrap[T = !A]] @ <unknown>:1097
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.misfitcite.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:883
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.misfitcite.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:786
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.mixearly.mixed` at[p: Pr[T = !A]] @ <unknown>:282
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.out.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:876
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.out.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:779
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.out.Box.order` at[p: Box[T = !A, O = b.O]] @ <unknown>:1191
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.own.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:876
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.own.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:779
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.own.Box.order` at[p: Box[T = !A, O = b.O]] @ <unknown>:1191
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pair.da.Pair2.keyOrder` at[p: Pair2[K = !K, V = !V, OK = !OK, OV = !OV]] @ <unknown>:1006
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pair.da.Pair2.valOrder` at[p: Pair2[K = !K, V = !V, OK = !OK, OV = !OV]] @ <unknown>:1101
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pcall.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:878
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pcall.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:781
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pcite.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:878
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pcite.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:781
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pcite.Box.order` at[p: Box[T = !A, O = !P]] @ <unknown>:1210
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pr.ordLeft` at[p: Pr[T = !A]] @ <unknown>:1371
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pr.ordNested` at[o: Outer[U = !A]] @ <unknown>:1510
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pr.ordPr` at[p: Pr[T = !A]] @ <unknown>:1239
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pr.ordPr` at[p: Pr[T = !A]] @ <unknown>:1816
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.pr.ordTwoStep` at[o: Outer[U = !A]] @ <unknown>:1652
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.slot.signPr` at[p: Pr[T = !A]] @ <unknown>:1459
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.slotw.Ranked.ordered` at[r: Ranked[O = !up, T = !A]] @ <unknown>:868
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.two.ordLeft` at[p: Pr[T = !A]] @ <unknown>:1374
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.two.ordNested` at[o: Outer[U = !A]] @ <unknown>:1513
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.two.ordPr` at[p: Pr[T = !A]] @ <unknown>:1242
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.two.ordPr` at[p: Pr[T = !A]] @ <unknown>:1819
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.two.ordTwoStep` at[o: Outer[U = !A]] @ <unknown>:1655
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.twomixed.CBox.two` at[q: CBox[T = Int64, O = !P]] @ <unknown>:1243
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.twoone.CBox.order` at[p: CBox[T = !A, O = b1.O]] @ <unknown>:1345
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.unc.Box.orderPos` at[p: Box[T = !T, O = !O]] @ <unknown>:876
+L4-opbody-rigid-no-sortdomain	`wi0rrqp.unc.Box.order` at[p: Box[T = !T, O = !O]] @ <unknown>:779
+L4-opbody-rigid-no-sortdomain	`wi5g28a.demo2.Wrap.top` at[x: Wrap[T = !X]] @ <unknown>:1274
+L4-opbody-rigid-no-sortdomain	`wi5g28a.demo2.Wrap.top` at[x: Wrap[T = !X]] @ <unknown>:952
+L4-opbody-rigid-no-sortdomain	`zz5g28as1.Wrap.dom` at[x: Wrap[T = !T]] @ <unknown>:276
+L4-opbody-rigid-no-sortdomain	`zz5g28as1.Wrap.dom` at[x: Wrap[T = !X]] @ <unknown>:308

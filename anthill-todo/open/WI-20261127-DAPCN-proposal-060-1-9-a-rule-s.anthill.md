@@ -3,9 +3,9 @@
 - id: WI-20261127-DAPCN-proposal-060-1-9-a-rule-s
 - created: 2026-11-27T18:23:40Z
 
-- status: Claimed
-- status_agent: claude
-- status_at: 2026-11-28T09:01:01Z
+- status: Open
+- status_agent: user
+- status_at: 2026-11-28T10:58:54Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -60,4 +60,8 @@ S1 Q5 DECIDED (user, 2026-11-28; 060.1 section 8.23): (a). An operation of a sor
 ### 2026-11-28T10:44:14Z — feedback — user
 
 PLAN REVISED with the user (2026-11-28), written into 060.1 section 9's stage table on the S1 answers (8.19-8.23). S2 (after 076 Stage A) is LOAD ONLY: an introducer with no guard; a rule's parameter rigid in the body and fixed at each citation by the operation's inference - brackets (the goal's own, its receiver's, a type written as data), arguments (one at every instance of a slot fixes it), the expected type; an untyped column's inferred type the rule's signature; the clause typing's two gaps closed (an unwritten effect row is the empty row, a lambda in a goal typed by its body); refused at load, a citation leaving a rule's parameter unfixed (rule-body goal, operation-body citation, written query, constraint goal; not a goal over facts, not the run-time typing of an operation's relation citation). Of S1's 40 load rows: 24 load unchanged, 12 refused and rewritten, 2 refused either way, wi_kf2sd's 2 CLI rows read first. S3 (with 077 S3): relations of facts parametrized and selected by type through the tree, question 13 decided there; every citation of a typed column passes its SortDomain (70 rows run without today); tag[T = Int64] answering wrap(1) alone moved here from S2 (the selection keeps the other fact out, item 4's correction). S4: nothing read off a value (~280 rows' domain(?r, A) pins, guard/conform pins, simp guard 6, condition 2, unrouted domain 3); refused at load, a typed column fixed at a caller's parameter with no SortDomain held (32 rows, written requires SortDomain[T = ...] on the citing operation, 8.23 for a sort's). S5 unchanged. OPEN: 060.1 section 8.24 - 34 of the 70 rows reach a typed rule through a goal no load typed (tests' hand-built kb.resolve terms): (i) kb.resolve types its goals as a query (the lean) or (ii) those rows move to a typed-query helper.
+
+### 2026-11-28T10:58:52Z — feedback — user
+
+RESUME (2026-11-28): S1 is saved for a later session in docs/measurements/060.1-section9/ - the record s1-2026-11-28.txt (section 4 RESUME: state, what to read first, files, the first steps of S2), the probe s1-probe.patch (applies on e24335bc7; after AGR9S its kb/resolve.rs hooks may need placing again, its load hooks are outside resolve.rs), the runner s1-runs.sh and s1-analyze.py, the rows s1-rows-load.tsv (70, with what S2-S4 does with each) and s1-rows-run.tsv (93), the sites s1-load-sites.tsv. Gate on the merged main (e24335bc7, QA700 + 3R78F): 13020 / 0 / 26. Unclaimed back to Open: it waits on WI-20261127-AGR9S, and shows in list --unblocked once AGR9S is delivered. Next: re-measure the load half on the new tree, then S2 (load only) per 060.1 section 9's revised table; section 8.24 open before S4.
 
