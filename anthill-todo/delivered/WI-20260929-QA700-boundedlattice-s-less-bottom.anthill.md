@@ -3,9 +3,9 @@
 - id: WI-20260929-QA700-boundedlattice-s-less-bottom
 - created: 2026-09-29T07:21:14Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-29T07:21:14Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-28T08:59:21Z
 
 - acceptance: cargo-test
 
@@ -31,4 +31,14 @@ DECIDE WITH THE USER what the two rules are:
  (c) both.
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven): the rows above answer their truth — `Lattice.less(lo(), hi())` 1, `not(Lattice.less(lo(), hi()))` 0, `Lattice.less(hi(), hi())` 1, and `Lattice.less(hi(), lo())` 0 — and keep answering it once goal arguments are evaluated (K4JGC); the laws' readers (simp, the verifier) still see them in the form the decision gives. CONTROL, stated at its site: `Lv.less(lo(), hi())` answers 1 either way.
+
+## Changes
+
+### 2026-11-28T08:53:20Z — feedback — user
+
+DECIDED (user, 2026-11-28): (a), the two are LAWS. Re-measured on HEAD 9dc7f6164 first: Lattice.less(lo(), hi()) (0, 0), not(...) (1, 1), Lattice.less(hi(), hi()) (0, 0), Lattice.less(Lv.bottom(), hi()) (0, 0) (K4JGC evaluates the argument, so the clause no longer matched even that spelling), Lattice.less(lo(), ?x) answered ?x = top (the unevaluated term, definite); the control Lv.less(lo(), hi()) (1, 1). (b) has no audience: a carrier that provides Lattice and supplies no less is refused at load ('backs no operation ... no default on Lattice'). Deleting the two was the alternative weighed: they follow from less_lub, lub_comm, bottom_lub / top_lub and eq_refl; kept as equations, which give z3 the fact directly.
+
+### 2026-11-28T08:59:19Z — feedback — user
+
+DELIVERED in d966f9e2a (2026-11-28). stdlib/anthill/prelude/lattice.anthill: less_bottom: less(bottom, ?a) <=> true, less_top: less(?a, top) <=> true — laws, which resolve no goal, so a Lattice.less goal reaches the carrier's less (body_less_dispatchable admits an operation with no clause of its own); the verifier lowers both (16 of BoundedLattice's 16 laws; 2 were left out and named). Every acceptance row answers its truth: Lattice.less(lo(), hi()) 1, not(...) 0, Lattice.less(hi(), hi()) 1, Lattice.less(hi(), lo()) 0 and not(...) over it 1; with evaluated arguments (K4JGC) Lattice.less(BoundedLattice[T = Lv].bottom(), hi()) 1 and Lattice.less(hi(), BoundedLattice[T = Lv].top()) 1; Lattice.less(lo(), ?x) no longer binds ?x to the term top. CONTROL Lv.less(lo(), hi()) 1 either way. Tests: wi_qa700_lattice_less_reaches_the_carrier_test (wi_tests), 7 rows, 5 fail with the two written :- true again, 2 pass either way by design. wi_zz7ph_law_lowering_test: the BoundedLattice row asserts 16 of 16 and the two laws' lines; the relation-headed refusal moved to a_relation_headed_law_is_left_out over a spec of its own. Simp: untagged, inert, as every other law of the sort. /code-review high: 5 nits, all fixed. Gate 13016 / 0 / 26; scaland testFull 863 rows green.
 
