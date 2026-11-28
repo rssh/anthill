@@ -79,15 +79,25 @@ LOAD, L1–L3, by what is left open (40 rows):
 
   11  an EFFECT ROW of an inferred function column, `() -> String @ ?Rho`: `rule cc(?f, ?r) :-
       applyThunk(?f, ?r)` cited `cc(lambda () -> "x", ?r)` (w2jp7, one site moves 10; r1w5a 1)
-   8  an OPEN FACT — `[]`, a field nothing fixes (`List[T = ?]`, `Box[V = ?]`, `Pair[L = ?,
-      R = ?]`) — at a goal with a local variable (wi1096 2, wi1099 2, cbrd2 2, fdj0e 1, jb6rs 1):
-      §8.17's parametrized fact, at the goal §8.13 defers to the tree
+   6  an OPEN FACT — `fact src([])`, `fact empty_fact([])`, `fact empty_stored(ListLiteral())` —
+      at a goal with a local variable or a partly open argument (`empty_fact(nil())`): wi1096 2,
+      wi1099 2, cbrd2 bracket 2 — §8.17's parametrized fact, at the goal §8.13 defers to the tree
+      (read again 2026-11-28, with Q2: cbrd2's `srcShown(?t) :- src(?x), shown(?x, ?t)` is fixed
+      through `shown`'s `Show[T = List[T = Int64]].show(?x, ?t)`, a receiver bracket the clause
+      typing does not read — the class below, 2 rows; wi1096's `named(nil())` and
+      `empty_fact(nil())` are fixed by Q2's answer. Open: wi1099's query `empty_stored(?x)` (2)
+      and wi1096's `empty_fact(cons(head: ?, tail: ?))`, a variable at the slot (1))
    8  an open slot of a `Result` — inferred from `Error.reify(lambda () -> …, ?r)`
       (`Result[T = ?X, E = ?T1]`, 9wvt7 5), or a PARTLY OPEN ARGUMENT: the query
       `caught(err(error: (a: 1, b: "x")))` leaves `T` (hwd8a 2), `n2(ok(value: "s"))` `E` (wf14z 1)
    5  §9'S OWN CASE: a typed head's variable cited by a local variable or uncited in an operation
       (`tag`, `tag3`, `gen`, `fieldTwice` — 0RRQP), one with an inferred `Bag[E = ?]` too
-   2  a partly open argument `[]` at a typed head (`twin([], [])`, cbrd2 sortreq)
+   4  NOT OPEN — fixed by a bracket the probe or the clause typing does not read (corrected
+      2026-11-28, after the count): a RECEIVER bracket, `Box[T = List[T = Int64]].twin(box(v:
+      []), box(v: []))` (cbrd2 sortreq 2), which the probe's L2 did not read; a type written AS
+      DATA in the argument, `pairTy(Pair.both[L = Int64, R = String])` (jb6rs 1) and
+      `holds(Box[V = Int64])` (fdj0e 1), which the clause typing types at `Pair[L = ?, R = ?]` /
+      `Box[V = ?]`. S2's refusal reads both, or these rows move for nothing
    2  a NAMED REQUIREMENT SLOT left open, `Ranked[T = Int64, O = ?]` at a rule-body goal (0RRQP)
    2  CLI (kf2sd, two spawned queries)
    2  refused either way: the row asserts a refusal and gains the probe's beside it
@@ -126,10 +136,11 @@ pairing and bridge derivation (E1–E3) are reached by 0, 1 and 8 rows.
 
 (a) No library code moves. S2–S4 rewrite test rows only, and the implementation.
 
-(b) S2's refusal (L1–L3) moves 40 rows, but only 5 are §9's own case. The rest are four
-    kinds of open slot §9 does not yet name: an effect row (11), an open fact (8), a slot left
-    open by inference or by a partly open argument (10), a named requirement slot (2). Each is
-    a question before S2 is built (below).
+(b) S2's refusal (L1–L3) moves 40 rows, but only 5 are §9's own case. 4 are fixed by a
+    bracket the reading must take in (above). The rest are four kinds of open slot §9 does not
+    yet name: an effect row (11), an open fact (6), a slot left open by inference or by a partly
+    open argument (8), a named requirement slot (2). Each is a question before S2 is built
+    (below).
 
 (c) S2 changes nothing at run time by itself. A rule's parameter rigid in the body and fixed at
     the citation is a LOAD fact; at run time the clause reads `A` off the value in ~280 rows,
@@ -152,13 +163,35 @@ pairing and bridge derivation (E1–E3) are reached by 0, 1 and 8 rows.
 QUESTIONS (for the plan's revision with the user):
   Q1  An effect row left open by an inferred function column (`@ ?Rho`): a type variable §9
       refuses to leave open, or a typer gap (the lambda argument's row is known)?
+      DECIDED (user, 2026-11-28; 060.1 §8.19): both — the row is a type variable of the rule,
+      fixed at each citation, and a function type that writes no effects is at the empty row,
+      so `() -> String` and `lambda () -> "x"` fix it to `{}`. The clause typing that leaves it
+      open is a gap, closed with S2: the 11 rows load unchanged.
   Q2  An argument whose own type leaves a slot open (`[]`, `err(…)`, `ok(…)`): does it fix the
       parameter (it conforms at every instance — §8.17's reading of a fact, at an argument), or
       leave it open and be refused?
+      DECIDED (user, 2026-11-28; 060.1 §8.20): it fixes it — "same inference process as with
+      operation" (`lenOf([])`, `isOk(ok(value: "s"))` load and answer 1 on HEAD); the slot's
+      condition in the column's `SortDomain` is passed as an absence, never read.
   Q3  A slot inference leaves open (`Error.reify`'s `Result[T = ?, E = ?]`): inferred = written
       makes the relation parametric there, and a goal with a local variable is refused — so, or
       a default?
-  Q4  An open fact's goal (8 rows): refused until the tree work decides §8.13, as the draft's
+      DECIDED (user, 2026-11-28; 060.1 §8.21): (b) — the inferred column is the rule's signature,
+      its free slot a type parameter fixed at each citation; `loads(?r)` with a local `?r` is
+      refused at that goal, the repair a type on `loads`'s column. `?X` (the lambda's result) is
+      §8.19's gap, closed with S2.
+  Q4  An open fact's goal (6 rows): refused until the tree work decides §8.13, as the draft's
       item 2 says?
+      DECIDED (user, 2026-11-28; 060.1 §8.22): no — S2 leaves a goal over a relation of facts
+      alone (facts get their type parameter in S3); S3 decides §8.13 with the tree. 3 rows wait.
   Q5  A sort's own parameters in its own operations (L4, 26 sites): `requires SortDomain[T = T]`
       on the sort, or the instance's domain passed with it?
+      DECIDED (user, 2026-11-28; 060.1 §8.23): (a) — on each operation that cites such a rule,
+      `operation orderOf(p: Self) -> Int64 requires SortDomain[T = T] = order(p).head.c`, as an
+      operation at its own parameter (measurement 3); a Box of a type with no domain stays
+      writable.
+
+THE PLAN, REVISED (with the user, 2026-11-28): 060.1 §9's stage table, on the five answers
+(§8.19–§8.23). S2 is load only; `tag[T = Int64]` answering `wrap(1)` alone moved to S3; what
+S3 and S4 owe is sized by the counts above. Open with it: §8.24, a goal no load typed (34 of the
+70 rows; `kb.resolve` typing its goals, the lean, or a typed-query helper).
