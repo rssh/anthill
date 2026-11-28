@@ -37,8 +37,10 @@
 //!   `…_restatement_of_a_…_provision_is_accepted` rows,
 //!   `an_earlier_sort_witnessing_a_later_ones_equality_is_accepted` and
 //!   `…_provision_binding_an_eq_…`.
-//! * a provision's ROW left out of its entry: `…_provision_for_another_instantiation_…`
-//!   and `…_witness_writing_eq_alone_…`.
+//! * a provision's identity left out of its entry — its row's HEAD, read through the
+//!   carrier-neutral view (its ROW until WI-20261128-X3HW2): `…_provision_for_another_
+//!   instantiation_…`, `…_witness_writing_eq_alone_…` and `…_provision_binding_an_eq_…`
+//!   (MEASURED 2026-11-28, the head replaced by one constant).
 //! * `Eq` / `NonEq` provisions read by the carrier parameter a DISPATCH reads (the one an
 //!   operation receives on, which they do not have): `a_later_witness_writing_eq_alone_
 //!   is_refused`, and it alone — the witness's `Eq` is then filed under the witness.

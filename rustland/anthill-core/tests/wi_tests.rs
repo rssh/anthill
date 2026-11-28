@@ -2444,6 +2444,8 @@ mod wi_cxr5b_x_readers_test;
 mod wi_d0sd4_deep_clone_test;
 #[path = "include/value_holding_type_readers_test.rs"]
 mod value_holding_type_readers_test;
+#[path = "include/wi_x3hw2_type_on_an_occurrence_test.rs"]
+mod wi_x3hw2_type_on_an_occurrence_test;
 #[path = "include/alias_written_name_test.rs"]
 mod alias_written_name_test;
 #[path = "include/declared_field_type_readers_test.rs"]
