@@ -406,6 +406,38 @@ pub(super) fn seed_constructor_type_args(
     Ok(())
 }
 
+/// WI-20261127-3R78F — what the bracket `type_args` on a call of a body-less operation of
+/// `spec` binds and selects, read with no operation ([`dictionary_at_selection`]), and each
+/// selection held to the goals it is for ([`check_selections_at_slots`]): the bracket's own
+/// reading ([`seed_bracket_bindings`]) in the scope such a call's bracket has at the spec —
+/// the spec's own type parameters, which a key or a positional binds; the spec's `requires`,
+/// which a key of a required spec's short name selects; and the spec itself as the
+/// requirement its dispatch fills ([`CalleeSlotSource::Dispatch`]). What an operation adds
+/// to that scope — its own parameters and `requires` — is not there: a key naming one is
+/// refused, as at a callee that declares none.
+pub(super) fn spec_dispatch_bracket(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    spec: Symbol,
+    type_args: &[(Option<Symbol>, Value)],
+) -> Result<(Substitution, Vec<InstanceSelection>), TypeError> {
+    let declared = sort_bracket_params(kb, spec);
+    // The frame a body-less spec operation's call has, written outside any provision block
+    // ([`op_dict_entries`]): the spec's own chain.
+    let frame = CalleeFrame::of_sort(kb, spec, None);
+    let mut slots: Vec<CalleeSlot> = Vec::new();
+    push_sort_slots(kb, spec, &frame, true, &mut slots);
+    let scope = BracketScope {
+        declared: &declared,
+        slots: &slots,
+    };
+    let mut subst = Substitution::new();
+    let selections = seed_bracket_bindings(kb, &mut subst, env, type_args, &scope, spec, None)?;
+    // The selection's binding-precise half, held to the goals the selections are for.
+    check_selections_at_slots(kb, &subst, spec, &slots, &selections, None)?;
+    Ok((subst, selections))
+}
+
 /// The type parameters `sort` declares, by bare name, with the variable each is
 /// published under — what a bracket's key names and its positional counts.
 fn sort_bracket_params(kb: &mut KnowledgeBase, sort: Symbol) -> Vec<(Symbol, Var)> {
@@ -3812,35 +3844,50 @@ pub(super) fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -
     // about what that symbol is, is how a later index turns into a silent wrong list.
     // WI-956: it is now literally the same gate, `impl_parent_sort_of_op`.
     if let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) {
-        // WI-869: the DECLARED `requires` chain, deliberately NOT the dictionary chain
-        // (`provider_dict_chain`) the layout readers use. This list is the set of slots
-        // a CALL-SITE BRACKET can name (058 §4.5/§4.7), and a provision's `:- goals`
-        // condition has no binder syntax and so no name — the tail is a bare list of
-        // spec instantiations. Nothing positional rides on this list either: it feeds
-        // selection validation, never a dictionary index, so the two chains disagreeing
-        // here cannot shift a slot. Pinning a provider for a provision's condition from
-        // a call site is a further increment, not a silent omission.
-        let sort_entries = direct_requires_chain(kb, parent);
-        push_slots(
-            kb,
-            parent,
-            sort_entries,
-            |kb, j| slot_key_at(kb, &frame, j),
-            CalleeSlotSource::SortRequires,
-            &mut out,
-        );
         // The spec-op's own dispatch target. Only for a BODY-LESS spec op: a member
         // with a body is called directly and dispatches nothing.
-        if lookup_spec_op_dispatch(kb, fn_sym).is_some() {
-            out.push(CalleeSlot {
-                spec: parent,
-                named: false,
-                key: SelectedSlot::Unnamed,
-                source: CalleeSlotSource::Dispatch,
-            });
-        }
+        let dispatches = lookup_spec_op_dispatch(kb, fn_sym).is_some();
+        push_sort_slots(kb, parent, &frame, dispatches, &mut out);
     }
     out
+}
+
+/// The slots of [`callee_requirement_slots`] that the callee's sort `parent` declares, in
+/// `frame`: its `requires`, and — for a call that `dispatches`, a body-less spec operation's —
+/// the spec itself, the requirement its dispatch fills. Its own function because a host asks
+/// what a bracket at a spec's dispatch selects with no operation ([`spec_dispatch_bracket`]).
+fn push_sort_slots(
+    kb: &mut KnowledgeBase,
+    parent: Symbol,
+    frame: &CalleeFrame,
+    dispatches: bool,
+    out: &mut Vec<CalleeSlot>,
+) {
+    // WI-869: the DECLARED `requires` chain, deliberately NOT the dictionary chain
+    // (`provider_dict_chain`) the layout readers use. This list is the set of slots
+    // a CALL-SITE BRACKET can name (058 §4.5/§4.7), and a provision's `:- goals`
+    // condition has no binder syntax and so no name — the tail is a bare list of
+    // spec instantiations. Nothing positional rides on this list either: it feeds
+    // selection validation, never a dictionary index, so the two chains disagreeing
+    // here cannot shift a slot. Pinning a provider for a provision's condition from
+    // a call site is a further increment, not a silent omission.
+    let sort_entries = direct_requires_chain(kb, parent);
+    push_slots(
+        kb,
+        parent,
+        sort_entries,
+        |kb, j| slot_key_at(kb, frame, j),
+        CalleeSlotSource::SortRequires,
+        out,
+    );
+    if dispatches {
+        out.push(CalleeSlot {
+            spec: parent,
+            named: false,
+            key: SelectedSlot::Unnamed,
+            source: CalleeSlotSource::Dispatch,
+        });
+    }
 }
 
 /// WI-841 — tag `entries` (all of ONE owner's own chain, in its order) with whether
@@ -4400,13 +4447,29 @@ pub(super) fn check_selection_bindings(
     if selections.is_empty() {
         return Ok(());
     }
+    let slots = callee_requirement_slots(kb, fn_sym);
+    check_selections_at_slots(kb, subst, fn_sym, &slots, selections, span)
+}
+
+/// [`check_selection_bindings`] at the requirement slots `slots` of the call's callee. Its own
+/// function because a host asks it with no call ([`dictionary_at_selection`],
+/// WI-20261127-3R78F), at the slots a bracket at a spec's dispatch has
+/// ([`spec_dispatch_bracket`]).
+pub(super) fn check_selections_at_slots(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    fn_sym: Symbol,
+    slots: &[CalleeSlot],
+    selections: &[InstanceSelection],
+    span: Option<Span>,
+) -> Result<(), TypeError> {
     for sel in selections {
         // A requirement of the enclosing declaration is held to the goal where it is
         // handed on ([`enclosing_requirement_index`]): no provision is searched for it.
         let Some(witness) = sel.witness() else {
             continue;
         };
-        for goal in selection_goals(kb, subst, fn_sym, sel) {
+        for goal in selection_goals(kb, subst, slots, sel) {
             let candidates = collect_provides_candidates(kb, &goal, None);
             if candidates.is_empty() {
                 continue;
@@ -4446,24 +4509,24 @@ pub(super) fn check_selection_bindings(
     Ok(())
 }
 
-/// WI-841 — the goals the selection `sel` at a call to `fn_sym` will be applied to, at
-/// the call's own bindings: the goal of the requirement it is for
+/// WI-841 — the goals the selection `sel` at a call will be applied to, at the call's own
+/// bindings: the goal of the requirement it is for among the callee's `slots`
 /// (WI-20261013-0K8WD — a witness selected for `OK: WeakOrd[T = K]` is not held to
 /// `OV: WeakOrd[T = V]`'s).
 ///
-/// Reads [`callee_requirement_slots`] — the SAME enumeration rung (2)'s candidate set
-/// reads — rather than re-walking the three sources. It was a second walk, and the two
+/// Reads the slots [`callee_requirement_slots`] gives — the SAME enumeration rung (2)'s
+/// candidate set reads — rather than re-walking the three sources. It was a second walk, and the two
 /// had already drifted (only one filtered value preconditions) while a doc comment
 /// asserted they could not disagree. One walk is the enforcement; a comment was not.
 fn selection_goals(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
-    fn_sym: Symbol,
+    slots: &[CalleeSlot],
     sel: &InstanceSelection,
 ) -> Vec<SortGoal> {
     let spec_sort = sel.spec_sort;
-    let slots: Vec<CalleeSlot> = callee_requirement_slots(kb, fn_sym)
-        .into_iter()
+    let slots: Vec<&CalleeSlot> = slots
+        .iter()
         .filter(|s| s.key == sel.slot && same_sort_canonical(kb, s.spec, spec_sort))
         .collect();
     let mut goals: Vec<SortGoal> = Vec::new();
@@ -4485,7 +4548,7 @@ fn selection_goals(
         // left as a condition that can no longer hold — `wi841_call_site_selection_test::
         // an_op_scoped_selection_decides_and_the_value_shows_it` drives the 5/5/99 that
         // replaced it.
-        let goal = match slot.source {
+        let goal = match &slot.source {
             // Formed as `dispatch_spec_op_cached` forms it. No carrier: the
             // receiver-carrier classification runs further down, and this check only
             // asks whether the witness is AMONG the candidates — a carrier can only
@@ -4494,11 +4557,11 @@ fn selection_goals(
             // The two levels are decoded by DIFFERENT readers because they are stored
             // in different SHAPES — see [`goal_from_op_requires_entry`].
             CalleeSlotSource::SortRequires(entry) => {
-                let concrete = substituted_entry(kb, &entry, subst);
+                let concrete = substituted_entry(kb, entry, subst);
                 goal_from_requires_entry(kb, &concrete)
             }
             CalleeSlotSource::OpRequires(entry) => {
-                let concrete = substituted_entry(kb, &entry, subst);
+                let concrete = substituted_entry(kb, entry, subst);
                 goal_from_op_requires_entry(kb, &concrete)
             }
             CalleeSlotSource::RuleGuard => {

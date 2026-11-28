@@ -1933,6 +1933,8 @@ mod wi_byj0x_simp_rhs_dotted_member_test;
 mod wi_jr3ad_contract_clause_renaming_test;
 #[path = "include/wi_7bjgq_host_call_assuming_requires_test.rs"]
 mod wi_7bjgq_host_call_assuming_requires_test;
+#[path = "include/wi_3r78f_selection_dictionary_test.rs"]
+mod wi_3r78f_selection_dictionary_test;
 #[path = "include/wi_78b4m_contract_clause_names_test.rs"]
 mod wi_78b4m_contract_clause_names_test;
 #[path = "include/wi_ezqgx_contract_clause_path_names_nothing_test.rs"]

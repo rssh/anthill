@@ -1059,6 +1059,10 @@ impl Interpreter {
     /// `zeroOf[X = Int64]()`. A key is a label, matched as a body's is. A host has no scope, so
     /// a key is not read through a type alias as a body's is: it is the spec's or the
     /// parameter's own name.
+    ///
+    /// Whether a call that selects `W` for a spec (`Spec.op[Spec = W](…)`) can be built is asked
+    /// before any call by [`crate::kb::typing::dictionary_at_selection`] (WI-20261127-3R78F),
+    /// which answers as this call's selection and dispatch do, with no operation and no argument.
     pub fn call_bracketed(
         &mut self,
         qualified_name: &str,
