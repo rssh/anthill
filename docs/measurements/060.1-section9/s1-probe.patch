@@ -1,0 +1,906 @@
+diff --git a/rustland/anthill-core/src/kb/load.rs b/rustland/anthill-core/src/kb/load.rs
+index 3615d6aa6..92f8bce44 100644
+--- a/rustland/anthill-core/src/kb/load.rs
++++ b/rustland/anthill-core/src/kb/load.rs
+@@ -26992,6 +26992,7 @@ pub fn convert_query_terms(
+     // A query is typed where it is read: a goal of a relation whose clauses take a dictionary
+     // is passed the one its own types build here, and one it leaves open is refused, as a rule
+     // body's goal is. Nothing reads a value for it when the goal runs.
++    let _dapcn_origin = crate::dapcn_s1::query_origin("query");
+     super::typing::route_query_goals(kb, &goals).map_err(|refused| {
+         refused
+             .iter()
+diff --git a/rustland/anthill-core/src/kb/mod.rs b/rustland/anthill-core/src/kb/mod.rs
+index 4696e78ba..a582d9c41 100644
+--- a/rustland/anthill-core/src/kb/mod.rs
++++ b/rustland/anthill-core/src/kb/mod.rs
+@@ -6360,7 +6360,10 @@ impl KnowledgeBase {
+             // No goals means trivially satisfied; count depends on context
+             return Ok(GuardStatus::from_holds(min == 0));
+         }
+-        let goals = self.type_query_goals(&goals)?;
++        let goals = {
++            let _dapcn_origin = crate::dapcn_s1::query_origin("constraint");
++            self.type_query_goals(&goals)?
++        };
+ 
+         let config = resolve::ResolveConfig {
+             // One extra to detect overflow. `saturating_add` guards `some_q`,
+@@ -6442,7 +6445,10 @@ impl KnowledgeBase {
+         if goals.is_empty() {
+             return Ok(GuardStatus::Holds);
+         }
+-        let goals = self.type_query_goals(&goals)?;
++        let goals = {
++            let _dapcn_origin = crate::dapcn_s1::query_origin("constraint");
++            self.type_query_goals(&goals)?
++        };
+ 
+         // If any DEFINITE solution exists, the forall is violated. WI-519: a
+         // floundered residual must NOT count — counting it would report the
+@@ -6482,7 +6488,10 @@ impl KnowledgeBase {
+                 // negation of empty_query (always true) = false
+                 return Ok(GuardStatus::Violated);
+             }
+-            let goals = self.type_query_goals(&goals)?;
++            let goals = {
++                let _dapcn_origin = crate::dapcn_s1::query_origin("constraint");
++                self.type_query_goals(&goals)?
++            };
+             let config = resolve::ResolveConfig {
+                 max_solutions: 1,
+                 // WI-519: only a DEFINITE inner solution refutes the negation; a
+diff --git a/rustland/anthill-core/src/kb/resolve.rs b/rustland/anthill-core/src/kb/resolve.rs
+index 96a4af171..761ef9e25 100644
+--- a/rustland/anthill-core/src/kb/resolve.rs
++++ b/rustland/anthill-core/src/kb/resolve.rs
+@@ -151,6 +151,7 @@ pub fn bridge_derivations_by_this_thread() -> usize {
+ 
+ /// Count one derivation from argument values ([`bridge_derivations_by_this_thread`]).
+ pub(crate) fn note_bridge_derivation() {
++    crate::dapcn_s1::hit("E3-bridge-derivation", "?", "");
+     BRIDGE_DERIVATIONS.with(|c| c.set(c.get() + 1));
+ }
+ 
+@@ -172,6 +173,7 @@ pub fn value_pairings_by_this_thread() -> usize {
+ 
+ /// Count one pairing from a value's own sort ([`value_pairings_by_this_thread`]).
+ pub(crate) fn note_value_pairing() {
++    crate::dapcn_s1::hit("E2-value-pairing", "?", "");
+     VALUE_PAIRINGS.with(|c| c.set(c.get() + 1));
+ }
+ 
+@@ -186,6 +188,7 @@ pub fn value_dispatches_by_this_thread() -> usize {
+ 
+ /// Count one dispatch to a member found from a value ([`value_dispatches_by_this_thread`]).
+ pub(crate) fn note_value_dispatch() {
++    crate::dapcn_s1::hit("E1-value-dispatch", "?", "");
+     VALUE_DISPATCHES.with(|c| c.set(c.get() + 1));
+ }
+ 
+@@ -6974,6 +6977,14 @@ impl SearchStream {
+             } else {
+                 SmallVec::new()
+             };
++            if crate::dapcn_s1::on() {
++                if let Some(message) =
++                    dapcn_probe_open(kb, rid, &original_goal, &fresh_nodes, &merged, !bound_reads.is_empty())
++                {
++                    self.record_error(ResolveError::new(message).located_at(&original_goal));
++                    return Some(StepResult::Continue);
++                }
++            }
+ 
+             // Pre-check: delay propagation on caller vars (over the occurrence body)
+             if !caller_fresh_vars.is_empty()
+@@ -8058,6 +8069,13 @@ impl KnowledgeBase {
+         answer_subst: &Substitution,
+         faults: &mut ReduceFaults,
+     ) -> BuiltinResult {
++        if crate::dapcn_s1::on() {
++            let span = match goal {
++                Value::Node(occ) if occ.span.end() > occ.span.start() => Some(occ.span),
++                _ => None,
++            };
++            DAPCN_SPAN.with(|c| c.set(span));
++        }
+         // Every builtin reads its goal carrier-agnostically through `TermView`
+         // (WI-482): a rule-body `Value::Node` occurrence resolves without
+         // lowering the whole goal to a hash-consed `TermId`.
+@@ -8984,6 +9002,18 @@ impl KnowledgeBase {
+         match super::typing::pin_bound_from_value(self, subst, &value, bound.carried()) {
+             super::typing::TypeBoundPin::NotApplicable => {}
+             super::typing::TypeBoundPin::Pinned { pin, .. } => {
++                if crate::dapcn_s1::on() && !pin.bindings.is_empty() {
++                    // The typed-head guard's pin is logged only: whether the type was the
++                    // citation's is decided where the clause is opened (`R0`).
++                    // Logged only: the decision is the clause opener's (`R0`, `R0d`).
++                    dapcn_run_hit(self, if guard { "R1-domain-guard-pin" } else { "R1-domain-pin" }, "");
++                    let refuse = false;
++                    if refuse {
++                        return BuiltinResult::Error(ResolveError::new(
++                            "DAPCN-S1 R1: a `domain` goal read a type variable off its value".to_string(),
++                        ));
++                    }
++                }
+                 return BuiltinResult::SuccessWithBindings(pin)
+             }
+             super::typing::TypeBoundPin::Refuted => return BuiltinResult::Failure,
+@@ -9131,6 +9161,13 @@ impl KnowledgeBase {
+                 match super::typing::pin_bound_from_value_open(self, subst, &x_now, &bound) {
+                     super::typing::TypeBoundPin::NotApplicable => {}
+                     super::typing::TypeBoundPin::Pinned { pin: p, bound: b } => {
++                        if crate::dapcn_s1::on() && !p.bindings.is_empty() {
++                            let place = dapcn_place(self, goal);
++                            let d0 = self.walk_arg(goal.pos_arg(self, 0), subst);
++                            let routed = d0.as_ref().is_some_and(|d| !self.value_is_unbound_var(d));
++                            let tag = if routed { "R2-conform-pin-routed" } else { "R2-conform-pin-unrouted" };
++                            crate::dapcn_s1::hit(tag, place.0, &place.1);
++                        }
+                         // An EMPTY pin — the bound was pinned already — says nothing σ does
+                         // not, and σ is not copied for it.
+                         if !p.bindings.is_empty() {
+@@ -9184,6 +9221,15 @@ impl KnowledgeBase {
+                 .walk_arg(goal.pos_arg(self, 1), scratch)
+                 .filter(|x| !self.value_is_unbound_var(x));
+             if let Some(ty) = bound_x.and_then(|x| super::typing::value_type_open(self, scratch, &x)) {
++                if crate::dapcn_s1::on() {
++                    let place = dapcn_place(self, goal);
++                    crate::dapcn_s1::hit("R3-condition-read", place.0, &place.1);
++                    if crate::dapcn_s1::refuse_run(place.0) {
++                        return ApplyDomainLowering::Error(
++                            "DAPCN-S1 R3: a domain condition's type was read off its value".to_string(),
++                        );
++                    }
++                }
+                 let mut p = Substitution::new();
+                 p.bind_value(self, var, ty.clone());
+                 read = self.domain_evidence(ty, scratch);
+@@ -11689,6 +11735,11 @@ impl KnowledgeBase {
+                 None => return BuiltinResult::Failure,
+             }
+         }
++        if crate::dapcn_s1::on() && dapcn_run_hit(self, "R6-slot-derived-from-values", "") {
++            return BuiltinResult::Error(ResolveError::new(
++                "DAPCN-S1 R6: a call's dictionary slot was derived from its argument values".to_string(),
++            ));
++        }
+         use super::typing::{BridgeRequirements, BridgeSlot};
+         let dict = match super::typing::resolve_bridge_requirements(
+             self,
+@@ -11830,6 +11881,11 @@ impl KnowledgeBase {
+             let Some(ty) = super::typing::value_type_open(self, subst, witness) else {
+                 return BuiltinResult::delay();
+             };
++            if crate::dapcn_s1::on() && dapcn_run_hit(self, "R5a-sortdomain-read-unsupplied", "") {
++                return BuiltinResult::Error(ResolveError::new(
++                    "DAPCN-S1 R5a: a `SortDomain` dictionary was built from a value's type".to_string(),
++                ));
++            }
+             return match self.domain_evidence(ty, subst) {
+                 DomainEvidence::Dict { value, .. } => self.bind_read_out(out, value, subst),
+                 DomainEvidence::NotYet(_) => BuiltinResult::delay(),
+@@ -11954,6 +12010,15 @@ impl KnowledgeBase {
+         } else {
+             if !supplied {
+                 VALUE_READS.with(|c| c.set(c.get() + 1));
++                if crate::dapcn_s1::on()
++                    && dapcn_run_hit(self, "R5c-op-read-unsupplied", &self.qualified_name_of(spec_sort).to_string())
++                {
++                    return BuiltinResult::Error(ResolveError::new(
++                        "DAPCN-S1 R5c: a requirement's dictionary was found from a value's type".to_string(),
++                    ));
++                }
++            } else if crate::dapcn_s1::on() {
++                dapcn_run_hit(self, "R5d-supplied-checked-at-value", &self.qualified_name_of(spec_sort).to_string());
+             }
+             super::typing::fetch_dictionary(
+                 self, subst, spec_sort, op_functor, arg_vals, bracket, rung,
+@@ -23891,3 +23956,132 @@ end
+     }
+ }
+ 
++
++
++// ── TEMPORARY — WI-20261127-DAPCN S1 probe (`crate::dapcn_s1`) ──────────────────────────────
++
++thread_local! {
++    /// Where the builtin goal being run was written, for the probe's run-time hooks.
++    static DAPCN_SPAN: std::cell::Cell<Option<crate::span::SourceSpan>> =
++        const { std::cell::Cell::new(None) };
++}
++
++/// The scope and place of a run-time goal: where its occurrence was written, if it has one.
++fn dapcn_place(kb: &KnowledgeBase, goal: &Value) -> (&'static str, String) {
++    match goal {
++        Value::Node(occ) if occ.span.end() > occ.span.start() => {
++            let src = kb.source_name(occ.span.source);
++            (crate::dapcn_s1::scope_of_name(src), format!("{}:{}", src, occ.span.span.start))
++        }
++        _ => ("?", String::new()),
++    }
++}
++
++/// Record a run-time hit at the current builtin's place; `true` when mode `run` refuses it
++/// (mode `run` refuses a goal the standard library did not write; `runall` refuses every one).
++fn dapcn_run_hit(kb: &KnowledgeBase, tag: &str, extra: &str) -> bool {
++    let (scope, place) = match DAPCN_SPAN.with(|c| c.get()) {
++        Some(sp) => {
++            let src = kb.source_name(sp.source);
++            (crate::dapcn_s1::scope_of_name(src), format!("{}:{}", src, sp.span.start))
++        }
++        None => ("?", String::new()),
++    };
++    crate::dapcn_s1::hit(tag, scope, &format!("{place} {extra}"));
++    crate::dapcn_s1::refuse_run(scope)
++}
++
++/// The probe's decision point for a TYPED COLUMN: a clause opened with a typed column whose
++/// bound mentions a variable (its `apply_domain(?d, ?x, B)` reads `?x`'s type into `B`) and
++/// whose `SortDomain` read (`?d`) no citation bound — the activation will read the type off the
++/// value. A refusal message where the mode refuses it.
++fn dapcn_probe_open(
++    kb: &mut KnowledgeBase,
++    rid: RuleId,
++    original_goal: &Value,
++    fresh_nodes: &[Rc<NodeOccurrence>],
++    merged: &Substitution,
++    // Whether the citation bound any of the clause's requirement reads: a guard's dictionary
++    // names the instance its type parameter is at.
++    any_read_routed: bool,
++) -> Option<String> {
++    let mut unrouted = 0usize;
++    let mut routed = 0usize;
++    // A `domain(?x, B)` conformance goal whose bound mentions a variable — a column at a
++    // declared parameter (`?r: A` under `[A]`), or a bound with no domain: it pins the variable
++    // off the value. Classed by whether the citation routed anything at all.
++    let mut domain_goals = 0usize;
++    for n in fresh_nodes {
++        let Some(Expr::Apply { functor, pos_args, .. }) = n.as_expr() else { continue };
++        if kb.builtin_of(*functor) == Some(BuiltinTag::TypeDomain) && pos_args.len() == 2 {
++            let b = Value::Node(Rc::clone(&pos_args[1]));
++            let b = match pos_args[1].as_expr() {
++                Some(Expr::Spliced(v)) => kb.reify_value(v, merged),
++                _ => kb.reify_value(&b, merged),
++            };
++            if kb.mentions_var(&b, &|v| matches!(v, Var::Global(_))) {
++                domain_goals += 1;
++            }
++            continue;
++        }
++        if kb.builtin_of(*functor) != Some(BuiltinTag::ApplyDomain) || pos_args.len() != 3 {
++            continue;
++        }
++        let Some(Expr::Spliced(b)) = pos_args[2].as_expr() else { continue };
++        let b = kb.reify_value(b, merged);
++        if !kb.mentions_var(&b, &|v| matches!(v, Var::Global(_))) {
++            continue;
++        }
++        let d = Value::Node(Rc::clone(&pos_args[0]));
++        let d = kb.reify_value(&d, merged);
++        if kb.value_is_unbound_var(&d) {
++            unrouted += 1;
++        } else {
++            routed += 1;
++        }
++    }
++    if unrouted == 0 && routed == 0 && domain_goals == 0 {
++        return None;
++    }
++    let head_span = kb.rule_head_span(rid);
++    let (clause_scope, clause_place) = match head_span {
++        Some(sp) => {
++            let src = kb.source_name(sp.source);
++            (crate::dapcn_s1::scope_of_name(src), format!("{}:{}", src, sp.span.start))
++        }
++        None => ("?", String::new()),
++    };
++    let (cite_scope, cite_place) = dapcn_place(kb, original_goal);
++    let name = crate::kb::head_functor_and_arity(kb, kb.rule_head_value(rid))
++        .map(|(f, _)| kb.qualified_name_of(f).to_string())
++        .unwrap_or_default();
++    // Did the goal come in a citation's marker — typed at load as a citation, its routes
++    // computed there — or bare, a goal no load typed as a citation (a hand-built query term)?
++    let marked = if within_requirements_args(kb, original_goal).is_some() { "marked" } else { "bare" };
++    let detail = format!("`{name}` @ {clause_place} cited@ {cite_scope}:{cite_place} {marked}");
++    if routed > 0 {
++        crate::dapcn_s1::hit("R0-typed-column-routed", clause_scope, &detail);
++    }
++    let scope = if clause_scope == "stdlib" && cite_scope == "stdlib" { "stdlib" } else { "prog" };
++    if domain_goals > 0 {
++        let tag = if any_read_routed { "R0d-domain-goal-routed" } else { "R0d-domain-goal-unrouted" };
++        crate::dapcn_s1::hit(tag, clause_scope, &detail);
++        if !any_read_routed && unrouted == 0 && crate::dapcn_s1::refuse_run(scope) {
++            return Some(format!(
++                "DAPCN-S1 R0d: clause of `{name}` opened with {domain_goals} conformance goal(s) \
++                 whose type variable no citation fixed — the type would be read off the value"
++            ));
++        }
++    }
++    if unrouted == 0 {
++        return None;
++    }
++    crate::dapcn_s1::hit("R0-typed-column-unrouted", clause_scope, &detail);
++    crate::dapcn_s1::hit(&format!("R0-typed-column-unrouted-{marked}"), clause_scope, &detail);
++    crate::dapcn_s1::refuse_run(scope).then(|| {
++        format!(
++            "DAPCN-S1 R0: clause of `{name}` opened with {unrouted} typed column(s) whose type \
++             variable no citation fixed — the type would be read off the value"
++        )
++    })
++}
+diff --git a/rustland/anthill-core/src/kb/typing/relation.rs b/rustland/anthill-core/src/kb/typing/relation.rs
+index 973ccf660..c2c8476cf 100644
+--- a/rustland/anthill-core/src/kb/typing/relation.rs
++++ b/rustland/anthill-core/src/kb/typing/relation.rs
+@@ -45,6 +45,7 @@ pub(super) fn relation_reference_type(
+         site.expected,
+         ty,
+     )?;
++    dapcn_probe_citation(kb, site.env, sym, occ, &column_types, &[], &[], &subst);
+     let ty = close_unfixed_clause_vars(kb, &column_types, &[], &subst, ty);
+     // S2 — the bare citation's implicit arguments: no column is bound, so each read is
+     // routed over the columns' own types at this citation — see [`PendingCitationRoutes`].
+@@ -1107,6 +1108,14 @@ pub(super) fn relation_reference_type_applied(
+         site.expected,
+         ty,
+     )?;
++    {
++        let arg_types: Vec<Value> = pos_results
++            .iter()
++            .chain(named_results.iter())
++            .filter_map(|r| r.as_ref().ok().map(|a| a.ty.clone()))
++            .collect();
++        dapcn_probe_citation(kb, site.env, sym, occ, &column_types, &bound, &arg_types, &subst);
++    }
+     let ty = close_unfixed_clause_vars(kb, &column_types, &bound, &subst, ty);
+     citation_routes(
+         kb,
+@@ -1123,6 +1132,124 @@ pub(super) fn relation_reference_type_applied(
+     Ok(ty)
+ }
+ 
++/// TEMPORARY — WI-20261127-DAPCN S1 probe (`crate::dapcn_s1`): a citation in functional code
++/// that leaves a variable of the cited clauses' column types unfixed — neither its arguments,
++/// its bracket nor its expected type fix it, and it is tied to no argument's type.
++#[allow(clippy::too_many_arguments)]
++fn dapcn_probe_citation(
++    kb: &mut KnowledgeBase,
++    env: &TypingEnv,
++    sym: Symbol,
++    occ: &Rc<NodeOccurrence>,
++    column_types: &[(Symbol, Value)],
++    bound: &[Symbol],
++    arg_types: &[Value],
++    subst: &Substitution,
++) {
++    if !crate::dapcn_s1::on() {
++        return;
++    }
++    let mut clause_vars: Vec<VarId> = Vec::new();
++    let mut seen = HashSet::new();
++    for (_, t) in column_types {
++        if resolved_var(kb, t).is_some() {
++            continue;
++        }
++        crate::kb::node_occurrence::collect_value_type(kb, t, &mut clause_vars, &mut seen);
++    }
++    if clause_vars.is_empty() {
++        return;
++    }
++    // L4 — a column the citation fixes at the operation's own type parameter (a rigid), where
++    // the operation requires no `SortDomain`: the typed column's check needs the domain at a
++    // type only the caller knows (060.1 §9 items 5–6, measurement 3).
++    {
++        let holds_sort_domain = env
++            .enclosing_frame_chain()
++            .entries
++            .iter()
++            .any(|e| is_sort_domain_spec(kb, e.required_sort));
++        let mut at_rigid: Vec<String> = Vec::new();
++        for (name, t) in column_types {
++            if resolved_var(kb, t).is_some() {
++                continue;
++            }
++            let w = walk_type_deep_value(kb, subst, t);
++            if kb.mentions_var(&w, &|v| matches!(v, Var::Rigid(_))) {
++                at_rigid.push(format!(
++                    "{}: {}",
++                    kb.local_name_of(*name),
++                    crate::persistence::print::TermPrinter::new(kb).print_value(&w)
++                ));
++            }
++        }
++        if !at_rigid.is_empty() && !holds_sort_domain {
++            let src = kb.source_name(occ.span.source).to_string();
++            let scope = crate::dapcn_s1::scope_of_name(&src);
++            let what = format!("`{}` at[{}]", kb.qualified_name_of(sym), at_rigid.join(", "));
++            crate::dapcn_s1::hit("L4-opbody-rigid-no-sortdomain", scope, &format!("{what} @ {src}:{}", occ.span.span.start));
++            if crate::dapcn_s1::refuse_load() && scope == "prog" {
++                crate::dapcn_s1::push_refusal(
++                    occ.span,
++                    format!("DAPCN-S1 L4: citation {what} fixes a typed column at the operation's type parameter, which requires no `SortDomain` there"),
++                );
++            }
++        }
++    }
++    let mut tied: Vec<VarId> = Vec::new();
++    let mut seen_tied = HashSet::new();
++    for a in arg_types {
++        let a = walk_type_deep_value(kb, subst, a);
++        crate::kb::node_occurrence::collect_value_type(kb, &a, &mut tied, &mut seen_tied);
++    }
++    let mut free_cols: Vec<String> = Vec::new();
++    let mut bound_cols: Vec<String> = Vec::new();
++    for (name, t) in column_types {
++        if resolved_var(kb, t).is_some() {
++            continue;
++        }
++        let w = walk_type_deep_value(kb, subst, t);
++        let mut vs: Vec<VarId> = Vec::new();
++        let mut seen_w = HashSet::new();
++        crate::kb::node_occurrence::collect_value_type(kb, &w, &mut vs, &mut seen_w);
++        let left = vs.iter().any(|v| {
++            clause_vars.iter().any(|c| c.raw() == v.raw()) && !tied.iter().any(|c| c.raw() == v.raw())
++        });
++        if !left {
++            continue;
++        }
++        let label = format!(
++            "{}: {}",
++            kb.local_name_of(*name),
++            crate::persistence::print::TermPrinter::new(kb).print_value(&w)
++        );
++        if bound.contains(name) {
++            bound_cols.push(label);
++        } else {
++            free_cols.push(label);
++        }
++    }
++    if free_cols.is_empty() && bound_cols.is_empty() {
++        return;
++    }
++    let src = kb.source_name(occ.span.source).to_string();
++    let scope = crate::dapcn_s1::scope_of_name(&src);
++    let tag = if bound_cols.is_empty() { "L1-opbody-free" } else { "L1-opbody-bound" };
++    let what = format!(
++        "`{}` free[{}] bound[{}]",
++        kb.qualified_name_of(sym),
++        free_cols.join(","),
++        bound_cols.join(",")
++    );
++    crate::dapcn_s1::hit(tag, scope, &format!("{what} @ {src}:{}", occ.span.span.start));
++    if crate::dapcn_s1::refuse_load() && scope == "prog" {
++        crate::dapcn_s1::push_refusal(
++            occ.span,
++            format!("DAPCN-S1 {tag}: citation {what} leaves a type variable of its clauses for a value to decide"),
++        );
++    }
++}
++
+ /// A VARIABLE OF THE CLAUSE THAT A CITATION LEAVES UNFIXED IS AN UNKNOWN, opened to one rigid
+ /// for this citation (user decision 2026-10-21, on WI-20260925-0RRQP). A relation's solutions
+ /// may stand at different instances of a column's sort: over `fact holder(h: wrap(1))` and
+diff --git a/rustland/anthill-core/src/kb/typing/rule_constraints.rs b/rustland/anthill-core/src/kb/typing/rule_constraints.rs
+index ca0ff96a5..919021e0f 100644
+--- a/rustland/anthill-core/src/kb/typing/rule_constraints.rs
++++ b/rustland/anthill-core/src/kb/typing/rule_constraints.rs
+@@ -2094,6 +2094,8 @@ pub(super) fn settle_late_positions(
+     let mut call_results: Vec<(Rc<NodeOccurrence>, CallResult, crate::span::SourceSpan)> = Vec::new();
+     // A `<=>` / `===` goal's sides, compared after everything else ([`settle_equality_sides`]).
+     let mut equality_sides: Vec<LatePosition> = Vec::new();
++    // TEMPORARY — WI-20261127-DAPCN S1 probe: the clause's goals on relations.
++    let mut dapcn_rule_goals: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+     while !st.late.is_empty() {
+         for late in std::mem::take(&mut st.late) {
+             if let LatePosition::CallResult { result, at, call, .. } = &late {
+@@ -2102,6 +2104,9 @@ pub(super) fn settle_late_positions(
+                 }
+             }
+             if let LatePosition::RuleGoal { functor, goal } = &late {
++                if crate::dapcn_s1::on() {
++                    dapcn_rule_goals.push((*functor, Rc::clone(goal)));
++                }
+                 // A query reads a relation's columns as the load stamped them
+                 // (`stamped_column_type`, rule_goal_routes), and that reader is the one its
+                 // typed variables are held to; this one would be a second reader of the same
+@@ -2275,9 +2280,129 @@ pub(super) fn settle_late_positions(
+     }
+     demands_on_some_type(kb, site, st);
+     settle_equality_sides(kb, st, equality_sides, disagreements);
++    if crate::dapcn_s1::on() {
++        dapcn_probe_rule_goals(kb, site, own, st, &dapcn_rule_goals);
++    }
+     rigids
+ }
+ 
++/// TEMPORARY — WI-20261127-DAPCN S1 probe (`crate::dapcn_s1`): a goal of a rule body (L2) or
++/// of a query (L3) on a relation whose column types hold a variable that nothing in the clause
++/// fixes — no argument's type, and no type the clause's head reaches (which the clause's own
++/// citation fixes). The relation's columns are read again, fresh, on a trial of the settled
++/// clause, so nothing of the clause's typing changes.
++fn dapcn_probe_rule_goals(
++    kb: &mut KnowledgeBase,
++    site: ClauseSite<'_>,
++    own: Option<Symbol>,
++    st: &ClauseConstraints,
++    goals: &[(Symbol, Rc<NodeOccurrence>)],
++) {
++    if goals.is_empty() {
++        return;
++    }
++    fn head_debruijn(kb: &KnowledgeBase, t: TermId, out: &mut Vec<u32>) {
++        match kb.get_term(t) {
++            Term::Var(Var::DeBruijn(d)) => out.push(*d),
++            Term::Fn { pos_args, named_args, .. } => {
++                let (p, n) = (pos_args.clone(), named_args.clone());
++                for a in p {
++                    head_debruijn(kb, a, out);
++                }
++                for (_, a) in n {
++                    head_debruijn(kb, a, out);
++                }
++            }
++            _ => {}
++        }
++    }
++    let (is_query, caller, head_dbs) = match site {
++        ClauseSite::Rule { head, .. } => {
++            let mut dbs = Vec::new();
++            head_debruijn(kb, head, &mut dbs);
++            (false, own.map(|o| kb.qualified_name_of(o).to_string()).unwrap_or_default(), dbs)
++        }
++        ClauseSite::Query { .. } => (true, "<query>".to_string(), Vec::new()),
++    };
++    for (functor, goal) in goals {
++        let Some(columns) = rule_goal_columns_at(kb, own, *functor) else {
++            continue;
++        };
++        let mut trial = st.trial();
++        if constrain_goal_at_columns(kb, &mut trial, *functor, goal, &columns).is_err() {
++            continue;
++        }
++        // What the clause's head reaches, read on the trial: a unification may have bound
++        // either side's variable to the other's.
++        let mut head_vars: Vec<VarId> = Vec::new();
++        let mut seen = HashSet::new();
++        for d in &head_dbs {
++            if let Some(ty) = trial.var_types.get(d).cloned() {
++                let ty = walk_type_deep_value(kb, &trial.subst, &ty);
++                crate::kb::node_occurrence::collect_value_type(kb, &ty, &mut head_vars, &mut seen);
++            }
++        }
++        let mut left: Vec<String> = Vec::new();
++        for (slot, col) in &columns {
++            let ColumnType::Of(ty) = col else { continue };
++            if resolved_var(kb, ty).is_some() {
++                continue;
++            }
++            let w = walk_type_deep_value(kb, &trial.subst, ty);
++            let mut vs: Vec<VarId> = Vec::new();
++            let mut s2 = HashSet::new();
++            crate::kb::node_occurrence::collect_value_type(kb, &w, &mut vs, &mut s2);
++            if vs.iter().any(|v| !head_vars.iter().any(|h| h.raw() == v.raw())) {
++                let printed = crate::persistence::print::TermPrinter::new(kb).print_value(&w);
++                left.push(format!(
++                    "{}: {printed}",
++                    match slot {
++                        SlotKey::Pos(i) => crate::intern::positional_label(*i),
++                        SlotKey::Named(k) => kb.local_name_of(*k).to_string(),
++                    }
++                ));
++            }
++        }
++        if left.is_empty() {
++            continue;
++        }
++        let bracketed = call_type_args_of(goal).is_some();
++        let rids: Vec<RuleId> = kb.rules_by_functor_iter(*functor).collect();
++        let facts_only = rids.iter().all(|&rid| kb.rule_body_nodes(rid).is_empty());
++        let typed = rids
++            .iter()
++            .any(|&rid| !kb.rule_type_bounds(rid).is_empty() || !kb.rule_type_params(rid).is_empty());
++        let kind = if facts_only {
++            "facts"
++        } else if typed {
++            "typed"
++        } else {
++            "inferred"
++        };
++        let origin = crate::dapcn_s1::current_query_origin();
++        let tag = format!(
++            "{}-{kind}{}",
++            if is_query { format!("L3-{origin}") } else { "L2-rulegoal".to_string() },
++            if bracketed { "-bracketed" } else { "" }
++        );
++        let src = kb.source_name(goal.span.source).to_string();
++        // A query's goal is the user's, whatever source its span names.
++        let scope = if is_query { "prog" } else { crate::dapcn_s1::scope_of_name(&src) };
++        let what = format!("{caller} -> `{}` cols[{}]", kb.qualified_name_of(*functor), left.join(","));
++        crate::dapcn_s1::hit(&tag, scope, &format!("{what} @ {src}:{}", goal.span.span.start));
++        if crate::dapcn_s1::refuse_load()
++            && scope == "prog"
++            && !bracketed
++            && !(is_query && origin == "runtime")
++        {
++            crate::dapcn_s1::push_refusal(
++                goal.span,
++                format!("DAPCN-S1 {tag}: goal {what} leaves a type variable of its callee for a value to decide"),
++            );
++        }
++    }
++}
++
+ /// [`LatePosition::ConstructedValue`]: `var` is of `construction`'s type where its other
+ /// positions are at a type that one conforms to and does not unify with — a spec its sort
+ /// provides. Where the two unify, or neither fits the other, the walk has said all there is,
+diff --git a/rustland/anthill-core/src/kb/typing/rule_goal_routes.rs b/rustland/anthill-core/src/kb/typing/rule_goal_routes.rs
+index a0b0668ba..6f6bde210 100644
+--- a/rustland/anthill-core/src/kb/typing/rule_goal_routes.rs
++++ b/rustland/anthill-core/src/kb/typing/rule_goal_routes.rs
+@@ -216,6 +216,10 @@ pub(crate) fn route_query_goals(
+             wraps.push((site, marker));
+         }
+     }
++    // TEMPORARY — WI-20261127-DAPCN S1 probe: the query goals the probe refused (mode `load`).
++    for (at, message) in crate::dapcn_s1::take_refusals() {
++        refused.push((super::sorts::dapcn_s1_refusal(kb, at, message), Some(at.source)));
++    }
+     if !refused.is_empty() {
+         return Err(refused.into_iter().map(|(e, _)| e).collect());
+     }
+diff --git a/rustland/anthill-core/src/kb/typing/sorts.rs b/rustland/anthill-core/src/kb/typing/sorts.rs
+index 5763cb8e9..40fc484af 100644
+--- a/rustland/anthill-core/src/kb/typing/sorts.rs
++++ b/rustland/anthill-core/src/kb/typing/sorts.rs
+@@ -437,6 +437,11 @@ pub(super) fn type_check_sorts_collect(
+     provisions_that_change_a_sealed_dispatch(kb, &mut errors, &mut sources);
+     sorts_a_later_load_moves(kb, &mut errors, &mut sources);
+     clauses_that_change_a_sealed_relation(kb, &mut errors, &mut sources);
++    // TEMPORARY — WI-20261127-DAPCN S1 probe: the citations the probe refused (mode `load`).
++    for (at, message) in crate::dapcn_s1::take_refusals() {
++        errors.push(dapcn_s1_refusal(kb, at, message));
++        sources.push(Some(at.source));
++    }
+     if oracle {
+         oracle_verdict(
+             errors
+@@ -447,6 +452,24 @@ pub(super) fn type_check_sorts_collect(
+     (errors, sources)
+ }
+ 
++/// TEMPORARY — WI-20261127-DAPCN S1 probe: one refusal as the load error it is reported as.
++pub(super) fn dapcn_s1_refusal(
++    kb: &mut KnowledgeBase,
++    at: crate::span::SourceSpan,
++    message: String,
++) -> TypeError {
++    TypeError::Other {
++        site: TypeError::here(),
++        span: Some(at.span),
++        context: TypeErrorContext::Rule {
++            name: kb.intern("dapcn_s1"),
++            field: RuleField::Whole,
++        },
++        expected: "a citation that fixes every type variable of the rule it cites".to_string(),
++        actual: message,
++    }
++}
++
+ /// WI-20261117-8J8NG — THE CONTRACTS OF `ops`, TYPED AHEAD OF THE RULE SWEEP. A rule body's
+ /// call of an operation is refuted at the operation's precondition as typed — the typed
+ /// conjunct of each comparison and of its negation ([`type_contract_comparisons`]), which
+diff --git a/rustland/anthill-core/src/kb/typing/value_type.rs b/rustland/anthill-core/src/kb/typing/value_type.rs
+index 14906abaf..43d33b34f 100644
+--- a/rustland/anthill-core/src/kb/typing/value_type.rs
++++ b/rustland/anthill-core/src/kb/typing/value_type.rs
+@@ -2666,6 +2666,13 @@ pub(crate) fn typed_pattern_bounds_hold(
+         let bound = walk_type_deep_value(kb, &check, &opened);
+         match pin_bound_from_value(kb, &check, &matched, &bound) {
+             TypeBoundPin::Pinned { pin, .. } => {
++                if crate::dapcn_s1::on() && !pin.bindings.is_empty() {
++                    let (scope, place) = dapcn_rule_place(kb, rid);
++                    crate::dapcn_s1::hit("R4-simp-guard-pin", scope, &place);
++                    if crate::dapcn_s1::refuse_run(scope) {
++                        return None;
++                    }
++                }
+                 for (&v, value) in pin.iter() {
+                     check.bind_value(kb, v, value.clone());
+                 }
+@@ -2686,6 +2693,13 @@ pub(crate) fn typed_pattern_bounds_hold(
+         let carrier = check.resolve_as_value(fresh[r.carrier as usize])?.clone();
+         let instance = kb.term_from_debruijn(r.instance, fresh);
+         let instance = walk_type_deep_value(kb, &check, &Value::term(instance));
++        if crate::dapcn_s1::on() {
++            let (scope, place) = dapcn_rule_place(kb, rid);
++            crate::dapcn_s1::hit("R4b-simp-guard-dict-from-value", scope, &place);
++            if crate::dapcn_s1::refuse_run(scope) {
++                return None;
++            }
++        }
+         let FindDictFetch::Fetched(dictionary) =
+             fetch_dictionary_from_type(kb, &check, &instance, &carrier, DefaultRung::Consult, None)
+         else {
+@@ -3387,3 +3401,17 @@ pub(super) fn arrow_params_compatible<A: TermView, B: TermView>(
+ }
+ 
+ // ── Unified type checking ──────────────────────────────────────
++
++/// TEMPORARY — WI-20261127-DAPCN S1 probe: the scope and place of the clause `rid`.
++fn dapcn_rule_place(kb: &KnowledgeBase, rid: crate::kb::RuleId) -> (&'static str, String) {
++    let name = crate::kb::head_functor_and_arity(kb, kb.rule_head_value(rid))
++        .map(|(f, _)| kb.qualified_name_of(f).to_string())
++        .unwrap_or_default();
++    match kb.rule_head_span(rid) {
++        Some(sp) => {
++            let src = kb.source_name(sp.source);
++            (crate::dapcn_s1::scope_of_name(src), format!("`{name}` @ {src}:{}", sp.span.start))
++        }
++        None => ("?", format!("`{name}`")),
++    }
++}
+diff --git a/rustland/anthill-core/src/lib.rs b/rustland/anthill-core/src/lib.rs
+index 442b32882..1bf12ebd8 100644
+--- a/rustland/anthill-core/src/lib.rs
++++ b/rustland/anthill-core/src/lib.rs
+@@ -31,6 +31,7 @@
+ #![allow(rustdoc::private_intra_doc_links)]
+ 
+ pub mod codegen;
++pub mod dapcn_s1;
+ pub mod eval;
+ pub mod fs_util;
+ pub mod intern;
+diff --git a/rustland/anthill-core/src/dapcn_s1.rs b/rustland/anthill-core/src/dapcn_s1.rs
+new file mode 100644
+index 000000000..d7debe5a3
+--- /dev/null
++++ b/rustland/anthill-core/src/dapcn_s1.rs
+@@ -0,0 +1,146 @@
++//! TEMPORARY — WI-20261127-DAPCN S1 (proposal 060.1 §9), a MEASUREMENT PROBE. Not for commit:
++//! S1 builds nothing, and this module and its hooks are backed out once the rows are counted.
++//!
++//! `ANTHILL_DAPCN_S1` selects what the hooks do; unset, every hook is a cheap no-op and the
++//! build behaves as HEAD does.
++//!
++//! - `log`  — record each hit: `tag \t scope \t who \t detail` into `ANTHILL_DAPCN_S1_LOG`
++//!   (default `/tmp/dapcn_s1.log`), one line per distinct (tag, scope, who, detail).
++//! - `load` — log, and REFUSE AT LOAD every citation of a program file (not the standard
++//!   library's) that leaves a rule's type variable for a value to decide.
++//! - `run`  — log, and REFUSE AT RUN TIME every read of a type off a value in a rule that
++//!   decides the type, except where the standard library wrote both the clause and the goal.
++//! - `runall` — `run`, the standard library's own reads refused too.
++//!
++//! `who` is the test the hit came from (libtest names each test's thread after it), or
++//! `main:<pid>:<argv>` for a spawned binary.
++
++use std::cell::RefCell;
++use std::collections::HashSet;
++use std::io::Write;
++use std::sync::{Mutex, OnceLock};
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum Mode {
++    Off,
++    Log,
++    Load,
++    Run,
++    RunAll,
++}
++
++pub fn mode() -> Mode {
++    static M: OnceLock<Mode> = OnceLock::new();
++    *M.get_or_init(|| match std::env::var("ANTHILL_DAPCN_S1").as_deref() {
++        Ok("log") => Mode::Log,
++        Ok("load") => Mode::Load,
++        Ok("run") => Mode::Run,
++        Ok("runall") => Mode::RunAll,
++        _ => Mode::Off,
++    })
++}
++
++#[inline]
++pub fn on() -> bool {
++    mode() != Mode::Off
++}
++
++#[inline]
++pub fn refuse_load() -> bool {
++    mode() == Mode::Load
++}
++
++/// Does the mode refuse a run-time read at a goal of `scope`?
++#[inline]
++pub fn refuse_run(scope: &str) -> bool {
++    match mode() {
++        Mode::Run => scope != "stdlib",
++        Mode::RunAll => true,
++        _ => false,
++    }
++}
++
++fn who() -> String {
++    let t = std::thread::current();
++    match t.name() {
++        Some(n) if n != "main" => n.to_string(),
++        _ => format!(
++            "main:{}:{}",
++            std::process::id(),
++            std::env::args().skip(1).collect::<Vec<_>>().join(" ")
++        ),
++    }
++}
++
++static SEEN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
++
++/// Record one hit. `scope` is `stdlib`, `prog` or `?` (a run-time goal with no place).
++pub fn hit(tag: &str, scope: &str, detail: &str) {
++    if !on() {
++        return;
++    }
++    let mut line = format!("{tag}\t{scope}\t{}\t{detail}", who());
++    line.retain(|c| c != '\n');
++    {
++        let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
++        if !g.get_or_insert_with(HashSet::new).insert(line.clone()) {
++            return;
++        }
++    }
++    line.push('\n');
++    let path = std::env::var("ANTHILL_DAPCN_S1_LOG").unwrap_or_else(|_| "/tmp/dapcn_s1.log".into());
++    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
++        let _ = f.write_all(line.as_bytes());
++    }
++}
++
++/// `stdlib` for a source the standard library was loaded from, else `prog`.
++pub fn scope_of_name(name: &str) -> &'static str {
++    if name.contains("stdlib/anthill/") || name.starts_with("anthill/") {
++        "stdlib"
++    } else {
++        "prog"
++    }
++}
++
++thread_local! {
++    static PENDING: RefCell<Vec<(crate::span::SourceSpan, String)>> = const { RefCell::new(Vec::new()) };
++}
++
++/// Queue a load refusal (mode `load`, program files only) for the typer run to report.
++pub fn push_refusal(at: crate::span::SourceSpan, message: String) {
++    PENDING.with(|p| {
++        let mut p = p.borrow_mut();
++        if !p.iter().any(|(s, _)| *s == at) {
++            p.push((at, message));
++        }
++    });
++}
++
++/// The refusals queued so far on this thread, taken.
++pub fn take_refusals() -> Vec<(crate::span::SourceSpan, String)> {
++    PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()))
++}
++
++thread_local! {
++    static QUERY_ORIGIN: std::cell::Cell<&'static str> = const { std::cell::Cell::new("runtime") };
++}
++
++/// Where the query being typed comes from: `query` (written, typed where it is read),
++/// `constraint` (an integrity guard's goals, typed when checked) or `runtime` (a query built
++/// or drained at run time — a relation an operation body cites, `execute`). Set for the scope
++/// of the returned guard.
++pub fn query_origin(origin: &'static str) -> impl Drop {
++    struct Restore(&'static str);
++    impl Drop for Restore {
++        fn drop(&mut self) {
++            QUERY_ORIGIN.with(|c| c.set(self.0));
++        }
++    }
++    let before = QUERY_ORIGIN.with(|c| c.replace(origin));
++    Restore(before)
++}
++
++pub fn current_query_origin() -> &'static str {
++    QUERY_ORIGIN.with(|c| c.get())
++}

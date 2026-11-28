@@ -3,11 +3,13 @@
 - id: WI-20261127-DAPCN-proposal-060-1-9-a-rule-s
 - created: 2026-11-27T18:23:40Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-27T18:23:40Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-11-28T09:01:01Z
 
 - acceptance: cargo-test, scaland-sbt-test
+
+- depends_on: WI-20261127-AGR9S-resolver-the-continuation-is
 
 - tags: typing, proposal-060.1
 
@@ -30,4 +32,8 @@ ACCEPTANCE: S1 (measure, nothing built) reported first — every citation that l
 ### 2026-11-27T22:44:54Z — feedback — claude
 
 OPEN QUESTIONS OF 060.1 section 9 GONE THROUGH WITH THE USER (2026-11-27/28, commit 553b4523b); the description's 'decided before building: data at several types (2), a query's spelling (4)' is answered. The amendment's questions are now section 8.12-8.18 of the one list. 8.18 DECIDED: the dictionary is always passed and trusted wraps it, as WI-20261124-YFD7F delivered ('trusted with no dictionary is not representable'); has[X](v: X) needs requires SortDomain[T = X] -- so the description's 'a value the typer has at a rigid is trusted, its slot extended to an operation body's citation' means: no check run, the dictionary still passed. Generation stays in the typed rule (MEASURED, debug CLI at a44f7d164: typed(?x) answers red, green, blue; rule first(?x) :- typed(?x), ! answers red alone). 8.17 DECIDED: a fact may be parametrized, and an open inferred slot is its type parameter -- fact holder(h: wrap([])) loads as holder[E](...), one fact at every E, nothing refused; so the tree's type step WALKS the type as a term and cannot key on one interned id (this narrows item 4's low-level choice). 8.15 DECIDED: a query is a rule body with no head (bracket, a typed query variable or a bound argument fixes the parameter); the unbound tag(?x) is refused, the message saying the type parameter cannot be inferred. 8.13 DEFERRED to the tree's adaptation: what a goal with an open type does there. Item 4 CORRECTED: a fact at another type is kept out by the goal's selection by type, not by the column's check (wrap([]) conforms to both List[T = Int64] and List[T = Colour]). ORDER with 076 and 077 (077's status line): S1-S2 after 076 Stage A (WI-20261127-AGR9S, an order the user chose, not a technical edge) and before WI-20261127-V69PS's S2; S3-S4 together with V69PS's S3, so 077 section 5.2 is never built.
+
+### 2026-11-28T10:06:11Z — feedback — user
+
+S1 MEASURED (2026-11-28, on 4c886d7fc; record docs/measurements/060.1-section9/s1-2026-11-28.txt, the probe s1-probe.patch beside it, applied, measured and backed out - nothing built). Of 13016 rows: refusing at load every citation that leaves a rule's type variable open (L1 operation-body citation, L2 rule-body goal, L3 written query) and every operation-body citation that fixes a typed column at a rigid with no SortDomain in its chain (L4, section 9 item 5, measurement 3) moves 70 rows (L1-L3 40, L4 32); refusing at run time every read that decides a type off a value where no citation supplied it (R0: a typed column opened with its SortDomain read unbound; R0d, R3, R4) moves 93; 25 in both, 138 in all. The standard library, examples/ and anthill-todo hit no site in any mode; families: no hit, no verdict moved; log mode 13016 / 0 / 26 = HEAD. Of the 40 L1-L3 rows only 5 are section 9's own case; the rest are open slots section 9 does not name: an effect row of an inferred function column (11), an open fact at a goal (8, the 8.13 question), a slot left open by inference or by a partly open argument such as err(...) / ok(...) / [] (10), a named requirement slot (2). Run: 82 R0 rows, 12 also refused at load; the other 70 have the type FIXED at the citation and no dictionary passed (36 through a marker that routes the clause's other reads, 34 bare). About 280 rows read a declared [A] off the value through domain(?r, A) though the citation fixed A and its guard dictionary was passed. L4: 26 of its 72 sites are a sort's own parameters in its own operations. Questions Q1-Q5 in the record; the plan to be revised with the user on it.
 

@@ -1,0 +1,164 @@
+060.1 §9 — S1, THE MEASUREMENT (WI-20261127-DAPCN), 2026-11-28, on 4c886d7fc
+==========================================================================
+
+What S1 asks: refuse at load every citation that leaves a rule's type variable for a value
+to decide, and count the rows that move; the same for every run-time read of a type off a
+value in a rule. Nothing built: the probe below was applied, measured and backed out.
+
+
+1. THE PROBE
+------------
+
+`s1-probe.patch` (this directory; applies on 4c886d7fc). A module `anthill-core/src/dapcn_s1.rs`
+and hooks, switched by `ANTHILL_DAPCN_S1`:
+
+  log     record each hit (tag, stdlib|prog, the test — libtest names the thread after it —,
+          site) into ANTHILL_DAPCN_S1_LOG; change nothing
+  load    log, and refuse at load the L-sites of a PROGRAM file (not the standard library's)
+  run     log, and refuse at run time the deciding R-sites, except where the standard
+          library wrote both the clause and the goal
+
+LOAD SITES — a citation that leaves a variable of the cited clauses' column types unfixed:
+
+  L1  an operation body's citation (`relation_reference_type[_applied]`): a clause variable no
+      argument, bracket or expected type fixed and no argument's type is tied to — what
+      `close_unfixed_clause_vars` opens to a rigid today (0RRQP, "uncited, the value decides")
+  L2  a rule body's goal on a relation (`settle_late_positions`, on a trial of the settled
+      clause): a callee variable no argument's type fixes and the caller's head does not reach
+      (what the head reaches, the caller's own citation fixes). Classed by the callee: `typed`
+      (a clause with a bound or an introducer), `inferred`, `facts` (no clause has a body)
+  L3  a WRITTEN query's goal (`load.rs`'s query typing), same reading, no head; a constraint's
+      goals likewise. A query DRAINED AT RUN TIME (an operation body's relation citation,
+      `execute.rs` `type_query_goals`) is logged as L3-runtime and not refused
+  L4  an operation body's citation that fixes a column at a RIGID — the operation's type
+      parameter, or its sort's — where the enclosing chain holds no `SortDomain` (§9 items 5–6,
+      measurement 3). Approximate: any rigid in the column, any `SortDomain` in the chain
+
+RUN SITES — the decision is taken where a clause is OPENED, the citation's dictionaries bound:
+
+  R0   a typed column whose bound mentions a variable, its `SortDomain` read left unbound by the
+       citation: `apply_domain(?d, ?x, B)` will read `?x`'s type into `B`
+  R0d  a `domain(?x, B)` conformance goal with a variable in `B` (a column at a declared
+       `[A]`), in a clause the citation routed NOTHING to
+  R3   `apply_domain`'s condition whose type nothing pinned, read off the value
+  R4   the simp guard (`typed_pattern_bounds_hold`): a bound's variable pinned off the redex,
+       and its provider dictionary fetched from the value's type
+  R5a/R5c  a `SortDomain` / an operation's requirement dictionary found from a value's type
+       with none passed; R6 a slot derived from argument values
+  logged only (the type was the citation's, the read is the implementation's):
+  R0-routed, R0d-routed, R1 (the guard's and `domain`'s pins), R2 (the conform pin),
+  R5d (WI-860's check of a passed dictionary against the value's row), E1–E3 (eval's value
+  dispatch, pairing, bridge derivation)
+
+CONTROLS
+  - log mode, the whole workspace: 13016 passed / 0 failed / 26 ignored — HEAD's gate.
+  - families (scripts/families.sh), each mode: no site hit, no verdict moved.
+  - §9's measurement 2 (`tagV`): the goal `tagV(?w)` in a rule and the citation
+    `tagV.takeN(9)` in an operation refused at load, `viaTag(?x: Wrap[T = Int64]) :- tagV(?x)`
+    not; the query `tagV(?x)` refused at run (R0).
+  - measurement 3 (`at[A](e: List[T = Wrap[T = A]]) = tag3(e)…`, `at[A = Colour]([])`):
+    answers 2 in log mode; refused at load by L4 and at run by R0. With
+    `requires SortDomain[T = A]` written: passes L4 and answers 1 — §9's "what it fixes".
+  - `tag3([wrap(1)], ?x)` and `fixedQ(?x: Wrap[T = Int64])` as queries pass; `tag3(?w, ?x)` is
+    refused at load (L3).
+
+
+2. THE ROWS THAT MOVE
+---------------------
+
+Of 13016 rows. The standard library, examples/ and anthill-todo hit NO site, in any mode:
+every row that moves is a test fixture's.
+
+                                         rows
+  load (L1–L4 refused)                     70     L1–L3: 40, L4: 32 (30 by L4 alone)
+  run  (R0/R0d/R3/R4/R5/R6 refused)        93
+  both                                     25
+  either                                  138
+
+LOAD, L1–L3, by what is left open (40 rows):
+
+  11  an EFFECT ROW of an inferred function column, `() -> String @ ?Rho`: `rule cc(?f, ?r) :-
+      applyThunk(?f, ?r)` cited `cc(lambda () -> "x", ?r)` (w2jp7, one site moves 10; r1w5a 1)
+   8  an OPEN FACT — `[]`, a field nothing fixes (`List[T = ?]`, `Box[V = ?]`, `Pair[L = ?,
+      R = ?]`) — at a goal with a local variable (wi1096 2, wi1099 2, cbrd2 2, fdj0e 1, jb6rs 1):
+      §8.17's parametrized fact, at the goal §8.13 defers to the tree
+   8  an open slot of a `Result` — inferred from `Error.reify(lambda () -> …, ?r)`
+      (`Result[T = ?X, E = ?T1]`, 9wvt7 5), or a PARTLY OPEN ARGUMENT: the query
+      `caught(err(error: (a: 1, b: "x")))` leaves `T` (hwd8a 2), `n2(ok(value: "s"))` `E` (wf14z 1)
+   5  §9'S OWN CASE: a typed head's variable cited by a local variable or uncited in an operation
+      (`tag`, `tag3`, `gen`, `fieldTwice` — 0RRQP), one with an inferred `Bag[E = ?]` too
+   2  a partly open argument `[]` at a typed head (`twin([], [])`, cbrd2 sortreq)
+   2  a NAMED REQUIREMENT SLOT left open, `Ranked[T = Int64, O = ?]` at a rule-body goal (0RRQP)
+   2  CLI (kf2sd, two spawned queries)
+   2  refused either way: the row asserts a refusal and gains the probe's beside it
+
+LOAD, L4 (32 rows; 72 sites — 40 at an operation's parameter, `List[T = !A]` in `evenS`,
+`tag3`; 26 at the SORT'S OWN parameters read in its own operations, `Box[T = !T, O = !O]` in
+`Box.order`) — 0RRQP 22, atvc1 4, 5g28a 4, j9ssg 1.
+
+RUN (93 rows):
+
+  82  R0 — a typed column activated with no `SortDomain` dictionary. 12 of them are refused at
+      load too (the program leaves the type open). The other 70 have the type FIXED at their
+      citation and no dictionary reaching the clause:
+        36 through a citation marker that routes the clause's other reads and not the typed
+           column's (`rule outer[X, U](?x: X, ?u: U, ?r) :- Conv[A = X, B = U], …` cited
+           `outer(m(v: 3), "km", ?r)`: `Conv`'s dictionary is passed, `SortDomain[T = Meters]`
+           is not);
+        34 through a goal no load marked (a hand-built query term, or a goal the router left
+           bare)
+   6  R4 — the simp guard's pin (wi582 3, 8dxvk, ak2aj, pw9a0)
+   3  R0d — a `domain` goal at a variable in a clause that was routed nothing
+   2  R3 — a condition's type read off the value (shed7)
+
+WHAT THE IMPLEMENTATION READS THOUGH THE CITATION FIXED THE TYPE (logged, not refused):
+about 280 rows run a `domain(?r, A)` at a declared `[A]` under a routed guard and pin `A` off
+`?r` (`rule mk[A](?r: A, ?s) :- Shape[T = A], …` cited `mk(num(v: 1), ?s)`: `A = Num` at
+load, `Shape`'s dictionary passed, `A` read off `num(v: 1)` all the same: 283 rows in log mode);
+59 rows activate a typed column whose `SortDomain` the citation routed, and its conform still
+pins the type off the value in 11; the typed head's guard pins it in 89 rows, routed or not;
+28 check a passed dictionary against the value's own row (WI-860). Eval's value dispatch,
+pairing and bridge derivation (E1–E3) are reached by 0, 1 and 8 rows.
+
+
+3. WHAT IT SAYS ABOUT S2–S4
+---------------------------
+
+(a) No library code moves. S2–S4 rewrite test rows only, and the implementation.
+
+(b) S2's refusal (L1–L3) moves 40 rows, but only 5 are §9's own case. The rest are four
+    kinds of open slot §9 does not yet name: an effect row (11), an open fact (8), a slot left
+    open by inference or by a partly open argument (10), a named requirement slot (2). Each is
+    a question before S2 is built (below).
+
+(c) S2 changes nothing at run time by itself. A rule's parameter rigid in the body and fixed at
+    the citation is a LOAD fact; at run time the clause reads `A` off the value in ~280 rows,
+    because nothing carries the citation's `A` to it except a dictionary. So the citation's
+    type reaching the clause is S3's dictionary, and the reads are S4's to remove.
+
+(d) S3's "the citation passes `SortDomain[T = T]`" has to be built at EVERY citation of a typed
+    column, the concrete ones included: 70 rows have the type fixed and the dictionary not
+    passed today (36 marked, 34 bare).
+
+(e) S4 (L4) moves 32 rows, and 26 of its 72 sites are a sort's own parameters in the sort's own
+    operations: refused as written, such a sort writes `requires SortDomain[T = T]`, or the
+    instance's own domain is passed with it.
+
+(f) A query has two typings: a written one (`load.rs`) and a run-time drain of an operation
+    body's relation citation (`execute.rs`, `type_query_goals`), whose arguments are VALUES —
+    measurement 3's `tag3(e)` arrives as `tag3([], ?x)`. S2's query refusal is the first's; the
+    drain must not refuse again what its citation passed at load.
+
+QUESTIONS (for the plan's revision with the user):
+  Q1  An effect row left open by an inferred function column (`@ ?Rho`): a type variable §9
+      refuses to leave open, or a typer gap (the lambda argument's row is known)?
+  Q2  An argument whose own type leaves a slot open (`[]`, `err(…)`, `ok(…)`): does it fix the
+      parameter (it conforms at every instance — §8.17's reading of a fact, at an argument), or
+      leave it open and be refused?
+  Q3  A slot inference leaves open (`Error.reify`'s `Result[T = ?, E = ?]`): inferred = written
+      makes the relation parametric there, and a goal with a local variable is refused — so, or
+      a default?
+  Q4  An open fact's goal (8 rows): refused until the tree work decides §8.13, as the draft's
+      item 2 says?
+  Q5  A sort's own parameters in its own operations (L4, 26 sites): `requires SortDomain[T = T]`
+      on the sort, or the instance's domain passed with it?
