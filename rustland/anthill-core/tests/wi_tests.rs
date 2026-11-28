@@ -2138,6 +2138,8 @@ mod wi_8y5be_interpreter_stream_failure_test;
 mod wi_p9qbf_lazy_truncation_test;
 #[path = "include/wi_0wt09_depth_is_nesting_test.rs"]
 mod wi_0wt09_depth_is_nesting_test;
+#[path = "include/wi_agr9s_linked_continuation_test.rs"]
+mod wi_agr9s_linked_continuation_test;
 #[path = "include/wi_96qkw_execute_options_test.rs"]
 mod wi_96qkw_execute_options_test;
 

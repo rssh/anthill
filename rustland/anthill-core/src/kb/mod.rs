@@ -6803,7 +6803,7 @@ impl KnowledgeBase {
     ///     `?x` or a literal is a legitimate pattern the resolver answers empty);
     ///   * a functor that IS defined;
     ///   * a resolver SCOPING MARKER (`forall_in` / `some_in` / `forall_impl`
-    ///     at arity 3, `__pop_assumption` at arity 1) — the resolver recognises
+    ///     at arity 3, `__size_round_end` at arity 1) — the resolver recognises
     ///     these by their kernel SYMBOL and arity and skolemises / expands them in
     ///     place, so they carry no rule / fact / declaration yet are not unknown. A
     ///     bounded-quantifier query that evaluates to FALSE produces zero
@@ -14442,7 +14442,6 @@ impl KnowledgeBase {
             crate::parse::desugar_target::qualified(crate::parse::desugar_target::SOME_IN),
             BuiltinTag::SomeIn,
         );
-        self.register_builtin_tag(crate::kb::resolve::POP_ASSUMPTION, BuiltinTag::PopAssumption);
         self.register_builtin_tag(crate::kb::resolve::SIZE_ROUND_END, BuiltinTag::SizeRoundEnd);
         self.register_builtin_tag(
             crate::kb::resolve::WITHIN_REQUIREMENTS,

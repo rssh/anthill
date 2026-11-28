@@ -128,7 +128,8 @@ substitution proving it, and the assumptions in scope"* — and the rule-body pu
 list out of the callee's body AND the caller's remaining goals (`resolve.rs:4550`,
 `new_goals.extend(remaining)`). A field on that frame is read by both halves. `assumed_facts`
 gets its scope not from the per-push clone but from a `__pop_assumption(N)` MARKER GOAL appended
-after the consequents (`resolve.rs:2762`, popped at `:1517`) — and the delay fallback (`:4190`)
+after the consequents (`resolve.rs:2762`, popped at `:1517`; since 076 Stage A, WI-20261127-AGR9S,
+the discharge's scope instead, which drops them at its exit) — and the delay fallback (`:4190`)
 moves a delayed goal to the END of the list, past any marker, while `find_dictionary` is
 precisely the goal that delays (`:7910`).
 

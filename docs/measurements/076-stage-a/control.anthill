@@ -1,0 +1,4 @@
+namespace probe.control
+  fact ok(1)
+  rule chain(?n) :- (?n = 0) | (?n > 0, ok(1), chain(?n - 1))
+end

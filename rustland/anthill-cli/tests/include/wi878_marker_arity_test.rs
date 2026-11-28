@@ -1,6 +1,7 @@
 //! WI-878 (Case C of WI-863) — the undefined-functor guard exempted a resolver
 //! SCOPING MARKER by its SHORT NAME alone. The four marker names — `forall_in` /
-//! `some_in` / `forall_impl` (3-ary) and `__pop_assumption` (1-ary) — are
+//! `some_in` / `forall_impl` (3-ary) and `__pop_assumption` (1-ary; retired by
+//! WI-20261127-AGR9S, the 1-ary class is `__size_round_end` now) — are
 //! skolemised / expanded by the resolver in place, so they carry no rule / fact /
 //! declaration and must be exempted from the "undefined functor" report; without
 //! the exemption a legitimate `(forall …)` query would be mis-refused (WI-027).
@@ -27,7 +28,7 @@ use crate::common::{anthill, fixtures_dir};
 
 /// Queried against `wi754/props.anthill` — top-level `base(1)`/`base(2)` facts and
 /// NO marker names declared anywhere, so a bare `some_in` / `forall_in` /
-/// `forall_impl` / `__pop_assumption` is a genuinely undefined functor.
+/// `forall_impl` / `__size_round_end` is a genuinely undefined functor.
 fn query_props(args: &[&str]) -> crate::common::Output {
     let kb = fixtures_dir("wi754").join("props.anthill");
     let mut all = vec!["query", "-p", kb.to_str().unwrap()];
@@ -94,14 +95,16 @@ fn forall_impl_at_wrong_arity_is_refused() {
     );
 }
 
-/// The OTHER arity class: `__pop_assumption` is the 1-ary scope-discharge marker,
-/// so a 2-ary `__pop_assumption(1, 2)` is off-arity and refused — exercising the
-/// `pos_arity == 1` branch of the shared predicate, not just the 3-ary one.
+/// The OTHER arity class: `__size_round_end` is the 1-ary marker that ends a round's fill,
+/// so a 2-ary `__size_round_end(1, 2)` is off-arity and refused — exercising the
+/// `pos_arity == 1` branch of the shared predicate, not just the 3-ary one. (This row was
+/// `__pop_assumption`'s, the 1-ary scope discharge, until WI-20261127-AGR9S retired it: a
+/// discharge's scope drops its assumptions at its exit now.)
 #[test]
-fn pop_assumption_at_wrong_arity_is_refused() {
-    let out = query_props(&["__pop_assumption(1, 2)"]);
+fn size_round_end_at_wrong_arity_is_refused() {
+    let out = query_props(&["__size_round_end(1, 2)"]);
     assert!(
-        is_refused(&out, "__pop_assumption"),
+        is_refused(&out, "__size_round_end"),
         "stdout:\n{}\nstderr:\n{}",
         out.stdout,
         out.stderr

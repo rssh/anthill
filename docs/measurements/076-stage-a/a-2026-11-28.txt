@@ -1,0 +1,105 @@
+WI-20261127-AGR9S (proposal 076 Stage A) — the continuation linked, not copied.
+
+Peak RSS (GNU time %M) and wall, debug CLI (cargo build -p anthill-cli, dev profile),
+`anthill query -p <probe> -i probe.<probe>.<rel> --max-depth 100000 '<rel>(n)'`, one run
+each, this machine (24 cores, 15 GB). Loading the stdlib is about 95 MB and 3.6 s of every
+run. The probes are the files beside this one (076 § MEASURED's rules, each in a namespace
+of its own); `runs.sh <binary> <label>` makes every row.
+
+BEFORE: the tree the work started from (HEAD 22bfbc359, 2026-11-28), the control.
+AFTER:  the scoped linked continuation (`Goals`, kb/resolve.rs), uncommitted tree of
+        2026-11-28, before the `waited` flag (which only skips the wake scan).
+
+before grow n=1000 1 solution(s) RSS 422064 KB wall 4.22 s 
+before grow n=2000 1 solution(s) RSS 1359632 KB wall 5.65 s 
+before grow n=4000 1 solution(s) RSS 5062112 KB wall 11.06 s 
+before control n=1000 1 solution(s) RSS 117088 KB wall 3.85 s 
+before control n=2000 1 solution(s) RSS 140136 KB wall 3.94 s 
+before control n=4000 1 solution(s) RSS 187444 KB wall 4.24 s 
+before cnt n=1000 1 solution(s) RSS 98116 KB wall 3.68 s 
+before cnt n=2000 1 solution(s) RSS 103004 KB wall 3.73 s 
+before cnt n=4000 1 solution(s) RSS 113012 KB wall 3.78 s 
+before tgrow n=1000 1 solution(s) RSS 832604 KB wall 4.98 s 
+before tgrow n=2000 1 solution(s) RSS 2993168 KB wall 8.62 s 
+before tgrow n=4000 1 solution(s) RSS 11580564 KB wall 23.85 s 
+before tcnt n=1000 1 solution(s) RSS 204844 KB wall 4.03 s 
+before tcnt n=2000 1 solution(s) RSS 519108 KB wall 4.83 s 
+before tcnt n=4000 1 solution(s) RSS 1756984 KB wall 8.02 s 
+
+after grow n=1000 1 solution(s) RSS 117236 KB wall 4.01 s 
+after grow n=2000 1 solution(s) RSS 141296 KB wall 4.66 s 
+after grow n=4000 1 solution(s) RSS 188692 KB wall 6.95 s 
+after control n=1000 1 solution(s) RSS 117744 KB wall 3.82 s 
+after control n=2000 1 solution(s) RSS 141876 KB wall 4.00 s 
+after control n=4000 1 solution(s) RSS 189696 KB wall 4.31 s 
+after cnt n=1000 1 solution(s) RSS 98776 KB wall 3.69 s 
+after cnt n=2000 1 solution(s) RSS 103552 KB wall 3.72 s 
+after cnt n=4000 1 solution(s) RSS 113504 KB wall 3.80 s 
+after tgrow n=1000 1 solution(s) RSS 121532 KB wall 4.39 s 
+after tgrow n=2000 1 solution(s) RSS 149776 KB wall 6.22 s 
+after tgrow n=4000 1 solution(s) RSS 206132 KB wall 15.65 s 
+after tcnt n=1000 1 solution(s) RSS 103940 KB wall 3.84 s 
+after tcnt n=2000 1 solution(s) RSS 114040 KB wall 4.28 s 
+after tcnt n=4000 1 solution(s) RSS 133928 KB wall 5.68 s 
+
+READING
+- grow (the resolvent grows one goal a level) was quadratic: 422 MB / 1.36 GB / 5.06 GB,
+  x3.2 then x3.7 per doubling. It is now 117 / 141 / 189 MB, the control's own numbers.
+  This is the row the ticket owns: DONE.
+- tgrow (the same, `?n: Int64`; YFD7F's trusted call has not removed its fill) was
+  833 MB / 2.99 GB / 11.6 GB, and is now 122 / 150 / 206 MB.
+- tcnt (deterministic, typed) 205 / 519 / 1757 MB -> 104 / 114 / 134 MB.
+- control and cnt (short resolvent) unchanged, as expected: their tail was short.
+- push_choice((1 === 1), (1 === 2)) at --max-depth 0: true before and after.
+- WALL TIME of grow and tgrow at n = 4000 (6.95 s, 15.65 s after; 11.06 s, 23.85 s before)
+  still grows faster than the control's: `wake_bound_goal` walks the whole continuation at
+  every step, O(n) a step, as it walked the Vec before. The `waited` flag added after these
+  rows skips that walk for a continuation no suspended goal has entered.
+
+FINAL: the tree as delivered, with the `waited` flag (`final.txt` beside this file):
+
+final grow n=1000 1 solution(s) RSS 117228 KB wall 3.77 s 
+final grow n=2000 1 solution(s) RSS 141228 KB wall 3.95 s 
+final grow n=4000 1 solution(s) RSS 189232 KB wall 4.22 s 
+final control n=1000 1 solution(s) RSS 117660 KB wall 3.80 s 
+final control n=2000 1 solution(s) RSS 141744 KB wall 3.86 s 
+final control n=4000 1 solution(s) RSS 190012 KB wall 4.24 s 
+final tgrow n=1000 1 solution(s) RSS 121832 KB wall 3.86 s 
+final tgrow n=2000 1 solution(s) RSS 150036 KB wall 4.09 s 
+final tgrow n=4000 1 solution(s) RSS 206512 KB wall 4.51 s 
+final tcnt n=1000 1 solution(s) RSS 103868 KB wall 3.73 s 
+final tcnt n=2000 1 solution(s) RSS 114024 KB wall 3.82 s 
+final tcnt n=4000 1 solution(s) RSS 134056 KB wall 4.04 s 
+
+- Memory is as AFTER; wall time is now the control's too: grow 4.22 s and tgrow 4.51 s at
+  n = 4000 (11.06 s and 23.85 s before). Nothing in these probes waits, so no step walks the
+  continuation looking for a goal to wake.
+
+GATE on the delivered tree: scripts/test.sh (full workspace) 13025 / 0 / 26 (HEAD 13020 / 0 /
+26, plus the five rows added: kb::resolve::goals_tests x2, wi_agr9s_linked_continuation_test
+x3); scaland sbt testFull 814 + 51 (2 skipped) + 1, all passing.
+
+THE RETIREMENT (step 3: `__pop_assumption` and the baked `cut(B)` become fields of a scope).
+`wake.anthill` beside this file, debug CLI, `anthill query -p wake.anthill -i probe.wake.w
+-i probe.wake.w2 '<q>'`, on the tree the work started from and on the delivered one:
+
+  query      before     after
+  w(?y)      ?y = 5     no solutions
+  w2(?y)     ?y = 5     ?y = 5
+
+- `s(?y) :- nonvar(?y), hyp(?y)` is the CALLER's goal, written before the discharge; its
+  clause waits on `?y` and the goal goes behind. `hyp(5)` holds only as the discharge's
+  hypothesis. So `s(5)` has no proof, and "no solutions" is the answer.
+- BEFORE, `w` answered `?y = 5`: the consequent's last goal bound `?y` on the step before the
+  `__pop_assumption` marker's; on the marker's step the woken `s(5)` went in front of it, and
+  was answered by the hypothesis. AFTER, the scope exits as its last goal is discharged, before
+  anything wakes.
+- `w2` writes one more goal in the consequent (`?y <=> 5, true`): the binding comes while the
+  scope is live, the woken caller goal goes in front of the current goal, inside the scope, and
+  the hypothesis answers it — before and after. A woken goal asked in the context it was first
+  asked in is 076 Stage B; not this ticket.
+- Pinned: `wi_agr9s_linked_continuation_test::a_caller_goal_woken_at_a_discharges_exit_is_not_
+  answered_by_its_hypothesis` (no answer); w2 is stated at its site, not asserted.
+- Not measured as answers, and moved: a discharge with assumptions takes one step fewer (the
+  marker was a step; `stats.steps`, fuel), and the residualization gate's goal count no longer
+  counts a pending marker. A `!` is still a step: it is the goal as written, unbaked.

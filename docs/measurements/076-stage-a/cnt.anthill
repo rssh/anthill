@@ -1,0 +1,4 @@
+namespace probe.cnt
+  fact cnt(0)
+  rule cnt(?n) :- ?n > 0, cnt(?n - 1)
+end

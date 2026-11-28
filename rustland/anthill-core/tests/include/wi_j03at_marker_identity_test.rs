@@ -1,7 +1,8 @@
 //! WI-20260827-J03AT — the resolver's markers are kernel SYMBOLS, not names.
 //!
 //! `forall_impl` / `forall_in` / `some_in` (the converter's discharge and bounded
-//! quantifiers), `__pop_assumption` (the resolver's scope discharge) and
+//! quantifiers), `__pop_assumption` (the resolver's scope discharge, retired by
+//! WI-20261127-AGR9S: a discharge's scope drops its assumptions at its exit) and
 //! `__within_requirements` (the marker a citation's root goal rides in) were recognised by
 //! their SHORT NAME. So a user predicate of one of those names was read as the marker —
 //! its data arguments as goals, its wrong-arity call never refused — and, worse, the
@@ -19,7 +20,7 @@
 //! discharge's own walk.
 //!
 //! Five readers have no row of their own, and cannot: `step_init`'s `is_forall_impl` /
-//! `bounded_quant_kind` / `pop_assumption_arg` run only behind `is_scoping_marker`, and the
+//! `bounded_quant_kind` / `size_round_end_arg` run only behind `is_scoping_marker`, and the
 //! query walk's discharge skip and the typer's `GoalCommit` discharge test act on a node's
 //! goal slots, which `goal_slot_readings` gives no symbol but the markers. They are keyed
 //! on the tag so no reader of a marker reads a name.
@@ -228,9 +229,11 @@ fn the_printer_renders_only_the_kernel_marker_as_a_discharge() {
     }
 }
 
-/// `__pop_assumption`, the resolver's own marker: a user predicate of that name called
-/// inside a discharge's consequent is the user's call. Before, it was read as the marker
-/// and popped the assumption the next goal needed, so `kept` answered nothing.
+/// `__pop_assumption`, the resolver's own marker until WI-20261127-AGR9S: a user predicate of
+/// that name called inside a discharge's consequent is the user's call. Before J03AT, it was
+/// read as the marker and popped the assumption the next goal needed, so `kept` answered
+/// nothing. Kept with the marker retired: a discharge's scope now drops its assumptions at
+/// its exit, and this row says the consequent's next goal still has them.
 #[test]
 fn a_user_pop_assumption_is_not_the_resolvers_marker() {
     let mut kb = load_kb_with(
@@ -276,7 +279,7 @@ fn a_kernel_marker_in_another_shape_is_an_error_when_it_runs() {
     for pattern in [
         "anthill.kernel.forall_impl(1)",
         "anthill.kernel.some_in(1, 2)",
-        "anthill.kernel.__pop_assumption(x)",
+        "anthill.kernel.__size_round_end(x)",
         "anthill.kernel.__within_requirements(1)",
     ] {
         let (_, messages) = crate::common::resolve_with_messages(src, pattern);

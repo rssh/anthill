@@ -1,0 +1,7 @@
+namespace probe.wake
+  import anthill.reflect.{nonvar}
+  fact hyp(99)
+  rule s(?y) :- nonvar(?y), hyp(?y)
+  rule w(?y) :- s(?y), (forall(?n), hyp(5) -: ?y <=> 5)
+  rule w2(?y) :- s(?y), (forall(?n), hyp(5) -: ?y <=> 5, true)
+end

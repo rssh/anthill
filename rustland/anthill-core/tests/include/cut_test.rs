@@ -3,9 +3,10 @@
 //! `!` commits to the current rule invocation: when it fires it discards the
 //! other clauses of the rule whose body it appears in, and every choice point
 //! created while resolving the goals before it; choice points created after it
-//! are untouched. The resolver opens the surface `!` to a barrier-tagged
-//! `cut(B)` at rule-body entry (`step_choice_point`), and `apply_cut` prunes the
-//! stack back to the frame tagged with `B`.
+//! are untouched. At rule-body entry (`step_choice_point`) the resolver opens a
+//! body with a `!` in a scope that records the CALL HEIGHT of the choice point that
+//! opened it (076 Stage A; a barrier `B` baked into `cut(B)` and a choice point tagged
+//! with it before), and `apply_cut` prunes the stack back to that height.
 //!
 //! Coverage: commit-to-first-clause, inner choice-point pruning, disjunction
 //! transparency (outer cut prunes an inner `or`; an inner cut is opaque to the

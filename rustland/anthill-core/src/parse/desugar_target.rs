@@ -183,8 +183,8 @@ pub const LET_EXPR: &str = "..anthill.reflect.Expr.let_expr";
 pub const LAMBDA_EXPR: &str = "..anthill.reflect.Expr.lambda_expr";
 
 /// `!` in goal position — the cut control primitive (proposal 033.1 / WI-568). Minted
-/// NULLARY; the resolver bakes the rule's barrier into it and keys on
-/// [`crate::kb::resolve::BuiltinTag::Cut`].
+/// NULLARY, and the resolver keeps it so: the clause body it is written in records the call
+/// height it cuts to (076 Stage A). The resolver keys on [`crate::kb::resolve::BuiltinTag::Cut`].
 pub const CUT: &str = "..anthill.kernel.cut";
 
 /// The dictionary read a rule's requirement guard makes (`rule r[A](?x: A) :- Spec[T = A]`),

@@ -1,0 +1,4 @@
+namespace probe.grow
+  fact ok(1)
+  rule chain(?n) :- (?n = 0) | (?n > 0, chain(?n - 1), ok(1))
+end

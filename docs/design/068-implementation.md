@@ -265,8 +265,10 @@ driven by `wi_cynpe_waiting_goals_test` (back-outs stated at its sites):
   identical up to variable identity. (The Bool view never consulted hypotheses, before or after.)
 - **No goal is made ready by an assumption.** `forall_impl`'s antecedents could in principle
   answer a rule goal waiting in the tail without binding its blockers — but the tail sits behind
-  the `__pop_assumption` marker, and rotation only moves the head to the back, so no tail goal is
-  asked before the assumptions are gone again. (A first cut reset the tail to `Ready` there; the
+  the `__pop_assumption` marker (since 076 Stage A, WI-20261127-AGR9S: in the scopes behind the
+  discharge's, which drops the assumptions at its exit), and rotation only moves the head to the
+  back, so no tail goal is asked before the assumptions are gone again — except one a binding
+  WAKES (§2.2 wake on bind), which goes in front of the current goal. (A first cut reset the tail to `Ready` there; the
   review found it could never fire.)
 - **Counted, not timed:** `ResolveStats::goals_asked`. A goal suspended on a variable nothing binds,
   among three siblings that progress one at a time, is asked once (4 times before).

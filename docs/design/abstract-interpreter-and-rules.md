@@ -182,7 +182,7 @@ of only from indexed rules:
 [033.1](../proposals/033.1-cut-and-the-barrier-mechanism.md).** The kernel has native goal-side
 disjunction: `Candidate::Continuation` (a body-only candidate, no head match), the n-ary
 `ChoicePoint` machinery under the binary `push_choice` surface, shared-tail semantics with
-σ-clone-per-branch isolation, projection-level dedup, and barrier-tagged choice points for cut
+σ-clone-per-branch isolation, projection-level dedup, and barrier-tagged choice points for cut (since 076 Stage A, WI-20261127-AGR9S: the call height the clause body's scope records)
 (033.1, WI-568). 033's own design principle is §2's principle stated for the resolver: inline
 rule-lifting ("synthesize `or_NNN` rules per call site") "works for one feature but does not
 compose" — one primitive instead. Materialized derived rules *are* rule-lifting; the unfold is

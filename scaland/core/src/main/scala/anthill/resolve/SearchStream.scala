@@ -35,8 +35,93 @@ private enum FrameState:
   * `ResolveConfig.maxSteps`. */
 private final case class FrameGoal(goal: TermId, depth: Int)
 
+/** WI-20261127-AGR9S (proposal 076 Stage A) — a branch's CONTINUATION: every goal it still has
+  * to prove, the current one first — rustland's `Goals` on this carrier.
+  *
+  * LINKED, NOT COPIED. A frame is both a branch and a choice point, and every frame on the stack
+  * keeps the continuation it was made with. A child frame used to be given `body ++ a copy of its
+  * parent's tail`, so a resolvent growing by one goal a level held `n` copies of a tail up to `n`
+  * long over its `n` retained frames: quadratic in memory. Here it is a persistent chain of
+  * SCOPES: a scope is the goals left of one body, and its caller's scope. Opening a body links a
+  * scope in front of what follows the goal it answers and copies nothing; a branch shares its
+  * caller's scopes. THE EXIT IS STRUCTURAL: a scope with no goals left continues with its
+  * caller's, and no scope in `scopes` is empty.
+  *
+  * `back` holds the goals that WAITED, rotated behind every other goal, the latest first (a goal
+  * that waits goes behind the whole resolvent, as before). `scopes` is empty only when `back` is
+  * too: when the last goal in front is taken, the goals that waited come round as a scope of
+  * their own, in the order they waited. */
+// A plain class, not a case class: a generated `equals` / `hashCode` / `toString` would walk the
+// whole caller chain by recursion.
+private final class Scope(val goals: List[FrameGoal], val len: Int, val caller: Scope | Null):
+  /** The goals of this scope and of every scope it returns to. */
+  val frontLen: Int = len + (if caller == null then 0 else caller.frontLen)
+
+private final class Goals private (
+  private val scopes: Scope | Null,
+  private val back: List[FrameGoal],
+  private val backLen: Int
+):
+  private def frontLen: Int = if scopes == null then 0 else scopes.frontLen
+
+  def length: Int = frontLen + backLen
+  def isEmpty: Boolean = scopes == null
+  def nonEmpty: Boolean = scopes != null
+
+  /** The goal this branch asks next. The caller knows there is one. */
+  def current: FrameGoal = scopes.nn.goals.head
+
+  /** The current goal rewritten in place (its walked form): one cell is new. */
+  def withCurrent(goal: FrameGoal): Goals =
+    val s = scopes.nn
+    Goals(Scope(goal :: s.goals.tail, s.len, s.caller), back, backLen)
+
+  /** What is left once the current goal is answered with nothing to prove. */
+  def afterCurrent: Goals =
+    val s = scopes.nn
+    Goals.settled(Goals.exit(Scope(s.goals.tail, s.len - 1, s.caller)), back, backLen)
+
+  /** The current goal answered by `body`: the body in a scope of its own, in front of what
+    * follows the current goal. */
+  def open(body: List[FrameGoal]): Goals =
+    val s = scopes.nn
+    val rest = Goals.exit(Scope(s.goals.tail, s.len - 1, s.caller))
+    Goals.settled(Goals.exit(Scope(body, body.length, rest)), back, backLen)
+
+  /** The current goal TURNED INTO `goals`, which take its place in its scope. */
+  def replaceCurrent(goals: List[FrameGoal]): Goals =
+    if goals.isEmpty then afterCurrent
+    else
+      val s = scopes.nn
+      Goals(Scope(goals ++ s.goals.tail, s.len - 1 + goals.length, s.caller), back, backLen)
+
+  /** The current goal WAITS: it goes behind every other goal as `goal`. */
+  def rotateCurrent(goal: FrameGoal): Goals =
+    val rest = afterCurrent
+    if rest.isEmpty then Goals.of(List(goal))
+    else Goals(rest.scopes, goal :: rest.back, rest.backLen + 1)
+
+  /** Every goal left, in order. */
+  def toSeq: IndexedSeq[FrameGoal] =
+    val front = Iterator.unfold(scopes)(s => if s == null then None else Some((s.goals, s.caller)))
+    (front.flatten ++ back.reverseIterator).toIndexedSeq
+
+private object Goals:
+  /** The query's goals, in order: the query's scope. */
+  def of(goals: List[FrameGoal]): Goals = settled(exit(Scope(goals, goals.length, null)), Nil, 0)
+
+  /** THE EXIT: a scope with no goals left continues with its caller's. */
+  @annotation.tailrec
+  def exit(s: Scope | Null): Scope | Null =
+    if s != null && s.len == 0 then exit(s.caller) else s
+
+  /** With nothing left in front, the goals that waited come round, in the order they waited. */
+  def settled(scopes: Scope | Null, back: List[FrameGoal], backLen: Int): Goals =
+    if scopes == null && backLen != 0 then Goals(Scope(back.reverse, backLen, null), Nil, 0)
+    else Goals(scopes, back, backLen)
+
 private class Frame(
-  var goals: ArrayBuffer[FrameGoal],
+  var goals: Goals,
   var subst: Substitution,
   var state: FrameState
 )
@@ -148,7 +233,7 @@ class SearchStream private (
     val frame = stack.last
     // The CURRENT goal's nesting depth (WI-20261115-0WT09); a frame with no goal left is an
     // answer, which no limit cuts.
-    val depth = if frame.goals.nonEmpty then frame.goals(0).depth else 0
+    val depth = if frame.goals.nonEmpty then frame.goals.current.depth else 0
     val delayMode = frame.state match
       case FrameState.Init(dm) => dm
       case _ => return Some(StepResult.Continue) // unreachable
@@ -166,7 +251,7 @@ class SearchStream private (
     // reads the same (its answer dedup and `definite_only` tell the two apart).
     delayMode match
       case DelayMode.Delayed(cd) if frame.goals.nonEmpty && cd >= frame.goals.length =>
-        val sol = Solution(frame.subst.snapshot(), frame.goals.map(_.goal).toIndexedSeq)
+        val sol = Solution(frame.subst.snapshot(), frame.goals.toSeq.map(_.goal))
         stack.remove(stack.length - 1)
         return Some(StepResult.YieldSolution(sol))
       case _ =>
@@ -187,11 +272,11 @@ class SearchStream private (
     // could change anything anyway).
     goalSelections_ += 1
     val goal =
-      if frame.subst.isEmpty then frame.goals(0).goal
+      if frame.subst.isEmpty then frame.goals.current.goal
       else
         actualWalks_ += 1
-        val walked = kb.applySubst(frame.goals(0).goal, frame.subst)
-        frame.goals(0) = frame.goals(0).copy(goal = walked)
+        val walked = kb.applySubst(frame.goals.current.goal, frame.subst)
+        frame.goals = frame.goals.withCurrent(frame.goals.current.copy(goal = walked))
         walked
 
     // NARC7 / §5.3: boolean goals are searches at every depth, including NAF and
@@ -200,7 +285,7 @@ class SearchStream private (
     kb.getTerm(goal) match
       case Term.Const(Literal.BoolLit(value)) =>
         if value then
-          frame.goals.remove(0)
+          frame.goals = frame.goals.afterCurrent
           frame.state = FrameState.Init(delayMode.reset)
         else stack.remove(stack.length - 1)
         return Some(StepResult.Continue)
@@ -217,17 +302,15 @@ class SearchStream private (
       case Some(tag) =>
         Builtins.execute(kb, tag, goal, frame.subst) match
           case BuiltinResult.Success =>
-            val newGoals = ArrayBuffer.from(frame.goals.drop(1))
             val newDelay = delayMode.reset
-            frame.goals = newGoals
+            frame.goals = frame.goals.afterCurrent
             frame.state = FrameState.Init(newDelay)
             return Some(StepResult.Continue)
 
           case BuiltinResult.SuccessWithBindings(extra) =>
-            val newGoals = ArrayBuffer.from(frame.goals.drop(1))
             frame.subst.bindCompressed(extra.bindings, kb.terms)
             val newDelay = delayMode.reset
-            frame.goals = newGoals
+            frame.goals = frame.goals.afterCurrent
             frame.state = FrameState.Init(newDelay)
             return Some(StepResult.Continue)
 
@@ -280,7 +363,7 @@ class SearchStream private (
       // enter newSubst via bindCompressed above; remaining goals are
       // lazily walked at selection time in stepInit.
       // A fact opens no goal: the tail keeps its own depths.
-      val newGoals = ArrayBuffer.from(frame.goals.drop(1))
+      val newGoals = frame.goals.afterCurrent
 
       val newDelay = cp.delayMode.reset
 
@@ -307,9 +390,8 @@ class SearchStream private (
       // lazily in stepInit.
       // A CLAUSE BODY IS ONE DEEPER than the goal the clause answers (WI-20261115-0WT09) —
       // the one place a goal's depth grows.
-      val bodyDepth = frame.goals(0).depth + 1
-      val newGoals =
-        ArrayBuffer.from(freshBody.map(FrameGoal(_, bodyDepth))) ++= frame.goals.drop(1)
+      val bodyDepth = frame.goals.current.depth + 1
+      val newGoals = frame.goals.open(freshBody.map(FrameGoal(_, bodyDepth)).toList)
 
       val newDelay = cp.delayMode.reset
 
@@ -327,20 +409,20 @@ class SearchStream private (
     val frame = stack.last
     kb.getTerm(goal) match
       case fn: Term.Fn[TermId] if fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
-        val tail = frame.goals.drop(1)
         val nextState = FrameState.Init(delayMode.reset)
         // A SPLIT IS NO CALL (WI-20261115-0WT09): both operands stand at the goal's depth.
         if choice then
           // LIFO: retain the right continuation below the left one so DFS exhausts
-          // the left branch (including its tail) before trying the right branch.
+          // the left branch (including its tail) before trying the right branch. Each side
+          // is a scope of its own (076 Stage A), sharing the tail.
           val leftSubst = frame.subst.snapshot()
-          frame.goals = ArrayBuffer(FrameGoal(fn.posArgs(1), depth)) ++= tail
+          val goals = frame.goals
+          frame.goals = goals.open(List(FrameGoal(fn.posArgs(1), depth)))
           frame.state = nextState
-          stack += Frame(ArrayBuffer(FrameGoal(fn.posArgs(0), depth)) ++= tail,
-            leftSubst, nextState)
+          stack += Frame(goals.open(List(FrameGoal(fn.posArgs(0), depth))), leftSubst, nextState)
         else
-          frame.goals =
-            ArrayBuffer(FrameGoal(fn.posArgs(0), depth), FrameGoal(fn.posArgs(1), depth)) ++= tail
+          frame.goals = frame.goals.replaceCurrent(
+            List(FrameGoal(fn.posArgs(0), depth), FrameGoal(fn.posArgs(1), depth)))
           frame.state = nextState
       case _ =>
         throw IllegalArgumentException("binary resolver primitive requires exactly two positional goals")
@@ -393,7 +475,7 @@ class SearchStream private (
           Some(StepResult.Continue)
         else
           // Inner goal failed → not(Goal) succeeds
-          val newGoals = ArrayBuffer.from(frame.goals.drop(1))
+          val newGoals = frame.goals.afterCurrent
           val newDelay = delayMode match
             case DelayMode.Normal => DelayMode.Normal
             case DelayMode.Delayed(_) => DelayMode.Delayed(0)
@@ -412,15 +494,11 @@ class SearchStream private (
           Some(StepResult.YieldSolution(sol))
         else
           // The goal keeps its own depth behind the tail: a rotation is no step deeper.
-          val rotated = ArrayBuffer.from(frame.goals.drop(1))
-          rotated += FrameGoal(goal, depth)
-          frame.goals = rotated
+          frame.goals = frame.goals.rotateCurrent(FrameGoal(goal, depth))
           frame.state = FrameState.Init(DelayMode.Delayed(1))
           Some(StepResult.Continue)
       case DelayMode.Delayed(cd) =>
-        val rotated = ArrayBuffer.from(frame.goals.drop(1))
-        rotated += FrameGoal(goal, depth)
-        frame.goals = rotated
+        frame.goals = frame.goals.rotateCurrent(FrameGoal(goal, depth))
         frame.state = FrameState.Init(DelayMode.Delayed(cd + 1))
         Some(StepResult.Continue)
 
@@ -433,7 +511,7 @@ object SearchStream:
   ): SearchStream =
     val stack = ArrayBuffer.empty[Frame]
     // The query's goals are at depth 0.
-    stack += Frame(goals.map(FrameGoal(_, 0)), subst, FrameState.Init(DelayMode.Normal))
+    stack += Frame(Goals.of(goals.map(FrameGoal(_, 0)).toList), subst, FrameState.Init(DelayMode.Normal))
     SearchStream(stack, config)
 
   /** Convenience: resolve a single goal pattern against the KB. */

@@ -1,0 +1,5 @@
+namespace probe.tcnt
+  import anthill.prelude.{Int64}
+  fact cnt(0)
+  rule cnt(?n: Int64) :- ?n > 0, cnt(?n - 1)
+end

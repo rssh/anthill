@@ -307,10 +307,10 @@ pub enum BuiltinTag {
     /// backtrack into (WI-20260822-J38JE).
     PushAnd,
     /// `anthill.kernel.cut` — cut control primitive (`!`). Surface form is the
-    /// nullary `cut`; the resolver opens it to a barrier-tagged `cut(B)` when the
-    /// enclosing rule body is entered. Special-cased in `step_init`: its effect
-    /// is on the choice-point stack (it prunes back to the barrier), not on σ —
-    /// like Not / HoApply / PushChoice. Proposal 033.1 / WI-568.
+    /// nullary `cut`, and it stays nullary: the clause body it is written in is opened in a
+    /// scope that records the call height it cuts to (076 Stage A). Special-cased in
+    /// `step_init`: its effect is on the choice-point stack (it prunes back to that height),
+    /// not on σ — like Not / HoApply / PushChoice. Proposal 033.1 / WI-568.
     Cut,
     /// `anthill.kernel.forall_impl(tuple(binders), tuple(antecedents), tuple(consequent))`
     /// — the hereditary-Harrop discharge, `(forall(?x), A -: C)`
@@ -325,10 +325,6 @@ pub enum BuiltinTag {
     /// `anthill.kernel.some_in(?x, xs, tuple(body))` — `(some ?x in xs: body)`.
     /// A scoping marker; see [`Self::ForallImpl`].
     SomeIn,
-    /// `anthill.kernel.__pop_assumption(n)` ([`POP_ASSUMPTION`]) — drops the `n`
-    /// assumptions a discharge pushed, once its consequent is proved. Minted by the
-    /// resolver only. A scoping marker; see [`Self::ForallImpl`].
-    PopAssumption,
     /// `anthill.kernel.__size_round_end(k)` ([`SIZE_ROUND_END`]) — WI-20260911-09E6M: the
     /// end of the fill a round of size `k` generates, which admits the branch only where the
     /// round's budget is spent ([`FrameState::SizeRounds`]). Minted by the resolver only. A
@@ -1046,8 +1042,8 @@ enum Candidate {
     /// WI-108). Behaves as a zero-body rule.
     Assumption(Substitution),
     /// Inline goal-list continuation — body-only, no rule head, no
-    /// fresh-var renaming. The synthesized goals are prepended before
-    /// `frame.goals[1..]` and the parent frame's σ is inherited
+    /// fresh-var renaming. The synthesized goals go in front of what follows
+    /// the current goal ([`Goals`]) and the parent frame's σ is inherited
     /// unchanged (no head match contributes bindings).
     ///
     /// Introduced by proposal 033 / WI-075 to back `push_choice(?a, ?b)`:
@@ -1153,11 +1149,11 @@ pub struct ResolveConfig {
     /// Proposal 050 (WI-537) — the local-interpretation context Γ: a
     /// discrimination-tree overlay of facts the typer narrowed at a program
     /// point, consulted at the candidate step (`step_init`) exactly like the
-    /// frame's `assumed_facts` so the SLD search resolves over **KB ∪ Γ** with
+    /// branch's assumptions ([`Goals::assumed`]) so the SLD search resolves over **KB ∪ Γ** with
     /// no duplicated logic. `None` for every ordinary resolution (the typer's
     /// `prove_from_gamma` bridge is the only seeder). Global to one resolve
     /// call (every frame sees the same Γ), so it rides the config, not the
-    /// per-frame `assumed_facts` stack. Only the in-crate `prove_from_gamma`
+    /// per-branch assumptions. Only the in-crate `prove_from_gamma`
     /// bridge ever seeds it; external callers leave it `None` via
     /// `..ResolveConfig::default()`. `pub` (not `pub(crate)`) so `ResolveConfig`
     /// stays externally constructable; the carrier `SubstTree` is `pub(crate)`,
@@ -1392,14 +1388,6 @@ enum FrameState {
         /// order. When the candidates are exhausted they become [`Candidate::Waiting`]
         /// candidates of this same choice point, so a cut that prunes it prunes them.
         waiting: Vec<RuleId>,
-        /// Cut barrier (proposal 033.1 / WI-568). Set to `Some(B)` when this
-        /// choice point selected a rule whose body contains a `!`: it is the
-        /// frame the cut commits to. `cut(B)` (baked into that body) prunes this
-        /// frame's remaining candidates and every choice point stacked above it.
-        /// Allocated fresh per rule-body open and unique across the search, so
-        /// the cut goal finds exactly its own call frame. `None` for choice
-        /// points that opened no cut-bearing body (the overwhelming majority).
-        cut_barrier: Option<i64>,
     },
 
     /// WI-20260911-09E6M — GENERATING A VALUE BY SIZE (kernel-language §5.3): the choice point
@@ -1466,23 +1454,16 @@ struct SizeBudget {
 /// `docs/design/requirement-dictionaries.md`, and false — read as a statement about
 /// *both* frames while being (partly) true of only this one. What this frame lacks
 /// is a requirement channel; it has callers, and it already threads a
-/// caller-inherited environment in `assumed_facts`. See
+/// caller-inherited environment in its continuation's assumptions ([`Goals::assumed`]). See
 /// `docs/design/requirement-channel.md` §1 and WI-1040.
 #[derive(Clone)]
 struct ResolverFrame {
     // WI-246: goals carry `Value` so rule-body occurrences flow into SLD as
     // `Value::Node` without lowering to hash-consed Term. During the
     // behavior-preserving carrier swap every goal is still `Value::Term`.
-    goals: Vec<FrameGoal>,
+    goals: Goals,
     subst: Substitution,
     state: FrameState,
-    /// Antecedents assumed under a `forall_impl` discharge that landed in
-    /// this frame's goal stream. Consulted as zero-body facts during the
-    /// proof of the consequent goals; popped when the frame pops. WI-108.
-    /// WI-683: carried carrier-faithfully as `Value` (a `Value::Node` antecedent
-    /// keeps its occurrence), matched via `match_view_value_pattern` — parity
-    /// with the already-`Value` Γ overlay, no lowering to a hash-consed term.
-    assumed_facts: Vec<Value>,
     /// WI-20261121-G8E02 — in proof mode, the instance each node took on this branch,
     /// newest first ([`super::sld_proof::PathCell`]); `None` outside proof mode. Shared with
     /// the frame it was copied from, so a branch's part of it goes with the branch.
@@ -1546,6 +1527,576 @@ impl FrameGoal {
             clause: None,
             depth,
             proof: ProofTag::NONE,
+        }
+    }
+}
+
+/// WI-20261127-AGR9S (proposal 076 Stage A) — a branch's CONTINUATION: every goal it still has
+/// to prove, the CURRENT one first.
+///
+/// Every reader and writer of a frame's goals goes through these methods and nothing else, so
+/// what stands behind them is this type's business alone.
+///
+/// LINKED, NOT COPIED. A frame is both a branch and a choice point, and every frame on the
+/// stack keeps the continuation it was made with. A child frame used to be given `body ++ a
+/// copy of its parent's tail`, so a branch whose resolvent grows by one goal a level held, over
+/// its `n` retained frames, `n` copies of a tail up to `n` long: quadratic in memory (076,
+/// MEASURED again 2026-11-28 on the tree this started from, debug CLI, peak RSS: 422 MB /
+/// 1.36 GB / 5.06 GB at n = 1000 / 2000 / 4000 for `chain(?n) :- (?n = 0) | (?n > 0,
+/// chain(?n - 1), ok(1))`). Here a continuation is a persistent linked list of SCOPES, as ELPI's
+/// `FCons`: a scope is the goals left of one body, and its caller's scope. Opening a body links
+/// a scope in front of what follows the goal it answers, and copies nothing; a branch shares
+/// its caller's scopes. THE EXIT IS STRUCTURAL: a scope with no goals left continues with its
+/// caller's.
+///
+/// What it is made of, in the order the goals are asked:
+/// - `scopes`: the innermost scope first — the current goal is the first of its goals;
+/// - `back`: the goals that WAITED, rotated behind every other goal, the latest first. A goal
+///   that waits goes behind the whole resolvent (068 §2.2 as it is built; 076 Stage B makes
+///   that the goals of its own body), and appending to a shared list would copy it.
+///
+/// THE SCOPE CARRIES WHAT ITS EXIT DOES (076 Stage A, "what it retires"): a discharge's scope
+/// the assumptions it pushed ([`Scope::pops`], the `__pop_assumption(n)` goal before), a clause
+/// body's the call height its `!` cuts to ([`Scope::cut`], the baked `cut(B)` before). The
+/// assumptions in scope ride here too ([`Self::assumed`]), since they are the scopes'.
+///
+/// The current goal's scope is never empty; a scope behind it is empty only while it waits
+/// for its exit with assumptions to drop (a body its last goal opened runs under them). `scopes`
+/// is empty only when `back` is too: when the last goal of the outermost scope is taken, the
+/// goals that waited come round as a scope of their own, in the order they waited. That costs
+/// what a lap of the rotation costs, once a lap.
+///
+/// A write to a cell another frame shares copies that one cell ([`Rc::make_mut`]); a goal taken
+/// out from behind the current one ([`Self::wake`], [`Self::insert_behind_run`]) copies the cells
+/// in front of it. Nothing else is copied.
+#[derive(Clone, Default)]
+struct Goals {
+    scopes: ScopeList,
+    /// The goals in `scopes`.
+    front_len: usize,
+    back: GoalList,
+    back_len: usize,
+    /// Has a SUSPENDED goal ever entered this continuation? Only [`Self::rotate_current`] puts
+    /// one in, and it is never cleared, so `false` says no goal here can wake and
+    /// [`Self::wake`] need not look: a search that never waits does not walk its continuation
+    /// at every step.
+    waited: bool,
+    /// The ASSUMPTIONS in scope, oldest first: the antecedents of every discharge whose scope
+    /// is still in `scopes` (WI-108). Asked as zero-body facts by a goal's candidate selection.
+    /// Each discharge's scope pushed its own and drops them at its exit ([`Scope::pops`]), so
+    /// this is always the concatenation of theirs, outermost first.
+    assumed: Rc<Vec<Value>>,
+}
+
+/// A persistent singly linked list of goals.
+#[derive(Clone, Default)]
+struct GoalList(Option<Rc<GoalCell>>);
+
+#[derive(Clone)]
+struct GoalCell {
+    goal: FrameGoal,
+    next: GoalList,
+}
+
+/// A persistent chain of scopes, the innermost first.
+#[derive(Clone, Default)]
+struct ScopeList(Option<Rc<Scope>>);
+
+/// The goals left of one body, what it does at its exit, and the scope it returns to.
+#[derive(Clone)]
+struct Scope {
+    goals: GoalList,
+    len: usize,
+    /// How many assumptions the scope PUSHED: a discharge's antecedents, dropped from
+    /// [`Goals::assumed`] at its exit. This is what the marker `__pop_assumption(n)`, spliced
+    /// behind a discharge's consequents, did before 076 Stage A. A scope with assumptions to
+    /// drop is kept while it waits for its exit even with no goals of its own left: a body
+    /// opened from its last goal runs under them.
+    pops: usize,
+    /// The CALL HEIGHT a `!` written in this scope's goals cuts to: the index on the stack of
+    /// the choice point that opened the clause whose body this is. Set for a clause body with
+    /// a top-level `!` and for nothing else, so a `!` anywhere else — at the query, under a
+    /// side of `|`, in a quantifier's instance — cuts to the stack floor, as an unbaked cut
+    /// did. This is what the baked `cut(B)` and the choice point tagged `B` did before.
+    cut: Option<usize>,
+    caller: ScopeList,
+}
+
+/// What a scope is opened with besides its goals.
+#[derive(Clone, Copy, Default)]
+struct ScopeOpen {
+    pops: usize,
+    cut: Option<usize>,
+}
+
+impl GoalList {
+    fn cons(goal: FrameGoal, next: GoalList) -> Self {
+        GoalList(Some(Rc::new(GoalCell { goal, next })))
+    }
+
+    /// `goals`, in order, in front of `rest`.
+    fn prepend(goals: Vec<FrameGoal>, mut rest: GoalList) -> Self {
+        for goal in goals.into_iter().rev() {
+            rest = GoalList::cons(goal, rest);
+        }
+        rest
+    }
+
+    fn head(&self) -> Option<&FrameGoal> {
+        self.0.as_deref().map(|c| &c.goal)
+    }
+
+    fn iter(&self) -> GoalIter<'_> {
+        GoalIter(self.0.as_deref())
+    }
+
+    /// The list without its first goal; the goal, cloned only where another frame shares it.
+    fn pop(&mut self) -> Option<FrameGoal> {
+        let cell = self.0.take()?;
+        Some(match Rc::try_unwrap(cell) {
+            Ok(mut cell) => {
+                *self = std::mem::take(&mut cell.next);
+                cell.goal
+            }
+            Err(shared) => {
+                *self = shared.next.clone();
+                shared.goal.clone()
+            }
+        })
+    }
+
+    /// The list without its first goal, which is not wanted.
+    fn drop_head(&mut self) {
+        if let Some(cell) = self.0.take() {
+            *self = cell.next.clone();
+        }
+    }
+
+    /// `f` applied to the `i`-th goal and to the cells before it, which are copied; the cells
+    /// behind it stay shared.
+    fn edit_at<R>(&mut self, i: usize, f: impl FnOnce(&mut GoalList) -> R) -> R {
+        let mut prefix: Vec<FrameGoal> = Vec::with_capacity(i);
+        let mut rest = self.clone();
+        for _ in 0..i {
+            prefix.push(rest.pop().expect("edit_at past the end of the list"));
+        }
+        let r = f(&mut rest);
+        *self = GoalList::prepend(prefix, rest);
+        r
+    }
+}
+
+/// A long list is dropped cell by cell, not by recursion: a continuation can be tens of
+/// thousands of goals long, and a recursive drop that long overflows the native stack.
+impl Drop for GoalList {
+    fn drop(&mut self) {
+        let mut cur = self.0.take();
+        while let Some(cell) = cur {
+            match Rc::try_unwrap(cell) {
+                Ok(mut cell) => cur = cell.next.0.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+/// So is a long chain of scopes.
+impl Drop for ScopeList {
+    fn drop(&mut self) {
+        let mut cur = self.0.take();
+        while let Some(scope) = cur {
+            match Rc::try_unwrap(scope) {
+                Ok(mut scope) => cur = scope.caller.0.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+struct GoalIter<'a>(Option<&'a GoalCell>);
+
+impl<'a> Iterator for GoalIter<'a> {
+    type Item = &'a FrameGoal;
+    fn next(&mut self) -> Option<&'a FrameGoal> {
+        let cell = self.0?;
+        self.0 = cell.next.0.as_deref();
+        Some(&cell.goal)
+    }
+}
+
+struct ScopeIter<'a>(Option<&'a Scope>);
+
+impl<'a> Iterator for ScopeIter<'a> {
+    type Item = &'a Scope;
+    fn next(&mut self) -> Option<&'a Scope> {
+        let scope = self.0?;
+        self.0 = scope.caller.0.as_deref();
+        Some(scope)
+    }
+}
+
+impl ScopeList {
+    fn iter(&self) -> ScopeIter<'_> {
+        ScopeIter(self.0.as_deref())
+    }
+
+    /// A scope of `goals` in front of this chain.
+    fn push(&mut self, goals: Vec<FrameGoal>, open: ScopeOpen) {
+        let len = goals.len();
+        let caller = std::mem::take(self);
+        *self = ScopeList(Some(Rc::new(Scope {
+            goals: GoalList::prepend(goals, GoalList::default()),
+            len,
+            pops: open.pops,
+            cut: open.cut,
+            caller,
+        })));
+    }
+
+    /// The innermost scope, to write — copied first where another frame shares it.
+    fn innermost_mut(&mut self) -> &mut Scope {
+        Rc::make_mut(self.0.as_mut().expect("no scope to write"))
+    }
+
+    /// A scope in front with no goals left and nothing to do at its exit is passed over: what
+    /// follows it is its caller's. One with assumptions to drop stays for its exit
+    /// ([`Goals::exit_empty`]), which only the branch reaching it makes.
+    fn elide_empty(&mut self) {
+        while self.0.as_ref().is_some_and(|s| s.len == 0 && s.pops == 0) {
+            let scope = self.0.take().expect("tested above");
+            *self = scope.caller.clone();
+        }
+    }
+
+    /// `f` applied to the scope that holds goal `i` of the chain (`i` counted from the
+    /// innermost scope's first goal) and to `i`'s place in it; the scopes in front of it are
+    /// copied, the ones behind it shared.
+    fn edit_at<R>(&mut self, mut i: usize, f: impl FnOnce(&mut Scope, usize) -> R) -> R {
+        let mut front: Vec<Scope> = Vec::new();
+        let mut cur = self.clone();
+        loop {
+            let scope = cur.0.clone().expect("edit_at past the end of the scopes");
+            if i < scope.len {
+                break;
+            }
+            i -= scope.len;
+            let mut copy = (*scope).clone();
+            cur = std::mem::take(&mut copy.caller);
+            front.push(copy);
+        }
+        let r = f(cur.innermost_mut(), i);
+        cur.elide_empty();
+        for mut scope in front.into_iter().rev() {
+            scope.caller = cur;
+            cur = ScopeList(Some(Rc::new(scope)));
+        }
+        *self = cur;
+        r
+    }
+}
+
+impl Goals {
+    /// The query's goals, in order: the query's scope.
+    fn of(goals: Vec<FrameGoal>) -> Self {
+        let mut g = Goals {
+            front_len: goals.len(),
+            ..Goals::default()
+        };
+        g.scopes.push(goals, ScopeOpen::default());
+        g.scopes.elide_empty();
+        g
+    }
+
+    /// The assumptions in scope, oldest first.
+    fn assumed(&self) -> &[Value] {
+        &self.assumed
+    }
+
+    /// The call height a `!` written in the current goal's scope cuts to; `None`: the stack
+    /// floor ([`Scope::cut`]).
+    fn cut_height(&self) -> Option<usize> {
+        self.scopes.0.as_deref().and_then(|s| s.cut)
+    }
+
+    /// THE EXIT (076 Stage A): a scope with no goals left continues with its caller's, and
+    /// drops the assumptions it pushed. Made where the branch reaches it, so a scope behind the
+    /// current one exits only once everything in front of it has.
+    fn exit_empty(&mut self) {
+        while let Some(scope) = self.scopes.0.as_ref().filter(|s| s.len == 0) {
+            let (pops, caller) = (scope.pops, scope.caller.clone());
+            if pops > 0 {
+                let assumed = Rc::make_mut(&mut self.assumed);
+                assert!(pops <= assumed.len(), "a scope drops only the assumptions it pushed");
+                assumed.truncate(assumed.len() - pops);
+            }
+            self.scopes = caller;
+        }
+    }
+
+    /// The goal this branch asks next, if any is left.
+    fn first(&self) -> Option<&FrameGoal> {
+        self.scopes.0.as_deref().and_then(|s| s.goals.head())
+    }
+
+    fn first_mut(&mut self) -> Option<&mut FrameGoal> {
+        if self.scopes.0.is_none() {
+            return None;
+        }
+        let scope = self.scopes.innermost_mut();
+        scope.goals.0.as_mut().map(|c| &mut Rc::make_mut(c).goal)
+    }
+
+    /// The goal this branch asks next. The caller knows there is one.
+    fn current(&self) -> &FrameGoal {
+        self.first().expect("a continuation with no goal has no current goal")
+    }
+
+    /// The goal this branch asks next, to rewrite it in place (its walked form, its wait
+    /// state, its proof tag). The caller knows there is one.
+    fn current_mut(&mut self) -> &mut FrameGoal {
+        self.first_mut().expect("a continuation with no goal has no current goal")
+    }
+
+    /// How many goals are left, the current one included.
+    fn len(&self) -> usize {
+        self.front_len + self.back_len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.front_len == 0
+    }
+
+    /// The current goal taken out of its scope, the scope left as it is.
+    fn take_current(&mut self) -> FrameGoal {
+        let scope = self.scopes.innermost_mut();
+        let goal = scope.goals.pop().expect("a continuation with no goal has no current goal");
+        scope.len -= 1;
+        self.front_len -= 1;
+        goal
+    }
+
+    /// The scopes left with no goal exit, and with nothing left in front the goals that waited
+    /// come round.
+    fn settle(&mut self) {
+        self.exit_empty();
+        if self.front_len == 0 && self.back_len != 0 {
+            let back = std::mem::take(&mut self.back);
+            let mut goals: Vec<FrameGoal> = back.iter().cloned().collect();
+            goals.reverse();
+            self.scopes.push(goals, ScopeOpen::default());
+            self.front_len = std::mem::take(&mut self.back_len);
+        }
+    }
+
+    /// The current goal is DISCHARGED: what follows it is what is left.
+    fn pop_current(&mut self) -> FrameGoal {
+        let goal = self.take_current();
+        self.settle();
+        goal
+    }
+
+    /// The current goal TURNED INTO `goals` — its parts, the goal with its arguments evaluated,
+    /// its pending equations — which take its place in its scope, in order. None: it held.
+    fn replace_current(&mut self, goals: Vec<FrameGoal>) {
+        if goals.is_empty() {
+            self.pop_current();
+            return;
+        }
+        let n = goals.len();
+        let scope = self.scopes.innermost_mut();
+        scope.goals.drop_head();
+        scope.goals = GoalList::prepend(goals, std::mem::take(&mut scope.goals));
+        scope.len += n - 1;
+        self.front_len += n - 1;
+    }
+
+    /// What is left once the current goal is answered with nothing to prove: a fact, an
+    /// assumption, a row.
+    fn after_current(&self) -> Goals {
+        let mut rest = self.clone();
+        let scope = rest.scopes.innermost_mut();
+        scope.goals.drop_head();
+        scope.len -= 1;
+        rest.front_len -= 1;
+        rest.settle();
+        rest
+    }
+
+    /// The current goal answered by `body`: the body in a scope of its own, in front of what
+    /// follows the current goal — a side of `|`, a quantifier's instances, an unfolded arm.
+    fn open(&self, body: Vec<FrameGoal>) -> Goals {
+        self.open_scope(body, None, Vec::new())
+    }
+
+    /// The current goal answered by a CLAUSE's `body`; `cut` is the call height a `!` written
+    /// in it cuts to (a body with a top-level `!`), `None` for any other.
+    fn open_clause(&self, body: Vec<FrameGoal>, cut: Option<usize>) -> Goals {
+        self.open_scope(body, cut, Vec::new())
+    }
+
+    /// The current goal DISCHARGED under `assumptions` (`forall …, h -: c`): its consequents in
+    /// a scope that pushes them, and drops them at its exit.
+    fn open_discharge(&self, consequents: Vec<FrameGoal>, assumptions: Vec<Value>) -> Goals {
+        self.open_scope(consequents, None, assumptions)
+    }
+
+    /// `body` in a scope that cuts to `cut` and pushes `assumptions` — the count its exit drops
+    /// is theirs, so the two cannot disagree.
+    fn open_scope(&self, body: Vec<FrameGoal>, cut: Option<usize>, assumptions: Vec<Value>) -> Goals {
+        let open = ScopeOpen {
+            pops: assumptions.len(),
+            cut,
+        };
+        let mut rest = self.clone();
+        let scope = rest.scopes.innermost_mut();
+        scope.goals.drop_head();
+        scope.len -= 1;
+        // The scope the current goal leaves behind, if it has nothing left and nothing to do at
+        // its exit, is not kept: the body returns to its caller (a last call).
+        rest.scopes.elide_empty();
+        rest.front_len = rest.front_len - 1 + body.len();
+        if !assumptions.is_empty() {
+            Rc::make_mut(&mut rest.assumed).extend(assumptions);
+        }
+        rest.scopes.push(body, open);
+        rest.settle();
+        rest
+    }
+
+    /// The current goal WAITS: it goes behind every other goal as `goal` (the value it was
+    /// asked as, with its wait). Returns the goal it replaces.
+    fn rotate_current(&mut self, goal: FrameGoal) -> FrameGoal {
+        self.waited |= matches!(goal.wait, Wait::Suspended { .. });
+        let removed = self.pop_current();
+        if self.front_len == 0 {
+            self.scopes.push(vec![goal], ScopeOpen::default());
+            self.front_len = 1;
+        } else {
+            self.back = GoalList::cons(goal, std::mem::take(&mut self.back));
+            self.back_len += 1;
+        }
+        removed
+    }
+
+    /// The first goal BEHIND the current one that `woken` picks is moved in front of it, in the
+    /// current goal's scope. Whether one was.
+    fn wake(&mut self, woken: impl Fn(&FrameGoal) -> bool) -> bool {
+        if !self.waited {
+            return false;
+        }
+        let in_front = self
+            .scopes
+            .iter()
+            .flat_map(|s| s.goals.iter())
+            .skip(1)
+            .position(&woken);
+        let goal = match in_front {
+            Some(i) => {
+                let goal = self.scopes.edit_at(i + 1, |scope, j| {
+                    scope.len -= 1;
+                    scope.goals.edit_at(j, |rest| rest.pop().expect("counted"))
+                });
+                self.front_len -= 1;
+                goal
+            }
+            None => {
+                // `back` is latest first, so the goal that waited FIRST is the LAST it picks.
+                let Some(j) = self
+                    .back
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| woken(g))
+                    .map(|(j, _)| j)
+                    .last()
+                else {
+                    return false;
+                };
+                self.back_len -= 1;
+                self.back.edit_at(j, |rest| rest.pop().expect("counted"))
+            }
+        };
+        let scope = self.scopes.innermost_mut();
+        scope.goals = GoalList::cons(goal, std::mem::take(&mut scope.goals));
+        scope.len += 1;
+        self.front_len += 1;
+        true
+    }
+
+    /// `goal` inserted right behind the run of goals that `keep` picks behind the current one,
+    /// in the scope of the run's last goal (the current goal's, when the run is empty).
+    ///
+    /// The run ends at the exit of a scope with assumptions to drop, as it ended at the
+    /// `__pop_assumption` marker there before 076 Stage A: a goal behind it is asked under other
+    /// assumptions.
+    fn insert_behind_run(&mut self, keep: impl Fn(&FrameGoal) -> bool, goal: FrameGoal) {
+        let mut run = 0;
+        let mut ended = false;
+        'scopes: for (k, scope) in self.scopes.iter().enumerate() {
+            for g in scope.goals.iter().skip(usize::from(k == 0)) {
+                if !keep(g) {
+                    ended = true;
+                    break 'scopes;
+                }
+                run += 1;
+            }
+            if scope.pops > 0 {
+                ended = true;
+                break;
+            }
+        }
+        let in_back = if ended {
+            0
+        } else {
+            let back: Vec<&FrameGoal> = self.back.iter().collect();
+            back.into_iter().rev().take_while(|g| keep(g)).count()
+        };
+        if in_back == 0 {
+            // Behind goal `run` of the scopes: the current goal is goal 0.
+            self.scopes.edit_at(run, |scope, j| {
+                scope.len += 1;
+                scope
+                    .goals
+                    .edit_at(j + 1, |rest| *rest = GoalList::cons(goal, std::mem::take(rest)));
+            });
+            self.front_len += 1;
+        } else {
+            // The run reaches the goals that waited, which are behind every scope: behind the
+            // `in_back`-th of them in the order they waited, which `back` holds latest first.
+            let j = self.back_len - in_back;
+            self.back.edit_at(j, |rest| *rest = GoalList::cons(goal, std::mem::take(rest)));
+            self.back_len += 1;
+        }
+    }
+
+    /// Every goal left, in order.
+    fn iter(&self) -> impl Iterator<Item = &FrameGoal> {
+        let back: Vec<&FrameGoal> = self.back.iter().collect();
+        self.scopes
+            .iter()
+            .flat_map(|s| s.goals.iter())
+            .chain(back.into_iter().rev())
+    }
+
+    /// Every goal left, in order, taken out of the continuation.
+    fn take_all(&mut self) -> Vec<FrameGoal> {
+        let all: Vec<FrameGoal> = self.iter().cloned().collect();
+        *self = Goals::default();
+        all
+    }
+
+    /// Proof mode: the first `nodes.len()` goals are an instance's body, at these nodes — all
+    /// in the current goal's scope, which the instance opened or spliced them into.
+    fn tag_front(&mut self, nodes: &[u32]) {
+        if nodes.is_empty() {
+            return;
+        }
+        let scope = self.scopes.innermost_mut();
+        assert!(nodes.len() <= scope.len, "an instance's body is in the current scope");
+        let mut cur = &mut scope.goals;
+        for node in nodes {
+            let cell = Rc::make_mut(cur.0.as_mut().expect("counted above"));
+            cell.goal.proof = ProofTag::of(*node);
+            cur = &mut cell.next;
         }
     }
 }
@@ -1854,21 +2405,13 @@ pub struct SearchStream {
     query_cache: HashMap<GoalKey, Vec<(RuleId, Substitution)>>,
     /// Telemetry (see `ResolveStats`).
     stats: ResolveStats,
-    /// Monotonic cut-barrier allocator (proposal 033.1 / WI-568). Bumped each
-    /// time a rule body containing a `!` is opened, yielding a fresh barrier
-    /// unique within this stream — the cut goal baked into that body carries it,
-    /// and the choice point that opened the body is tagged with it, so the cut
-    /// commits to exactly its own invocation. Local to the stream, so a cut
-    /// inside `not(P)` (a sub-stream — see `step_naf`) prunes only that
-    /// sub-proof's choice points.
-    next_barrier: i64,
-    /// Per-query cache: rule → its cut functor (`Some` = the body has a top-level
-    /// `!`, `None` = cut-free). Whether a rule body contains a cut is a static
-    /// property, so this hoists the per-activation `cut_marker_functor` scan off
-    /// the hot path — the overwhelming majority of rules are cut-free and resolve
-    /// the body open with one `HashMap` probe instead of scanning every goal
-    /// (WI-568). Safe because rules don't change during a single resolve call.
-    cut_cache: HashMap<RuleId, Option<Symbol>>,
+    /// Per-query cache: rule → does its body have a top-level `!`. Whether a rule body
+    /// contains a cut is a static property, so this hoists the per-activation
+    /// [`SearchStream::is_cut_goal`] scan off the hot path — the overwhelming majority of
+    /// rules are cut-free and resolve the body open with one `HashMap` probe instead of
+    /// scanning every goal (WI-568). Safe because rules don't change during a single resolve
+    /// call.
+    cut_cache: HashMap<RuleId, bool>,
     /// Per-query cache: rule → the body positions of its ROUTING-ONLY reads
     /// ([`is_routing_only_read`]), which the body open drops. Static per rule, as
     /// `cut_cache` is, and for the same reason: a rule that holds none — nearly every rule —
@@ -2573,9 +3116,7 @@ impl SearchStream {
             .stack
             .last_mut()
             .expect("an instance is taken on the frame that continues");
-        for (g, node) in f.goals.iter_mut().zip(nodes) {
-            g.proof = ProofTag::of(node);
-        }
+        f.goals.tag_front(&nodes);
         f.path = extend_path(&f.path, tag.node, inst);
         if n == 0 {
             rec.proved(tag.attempt, f.goals.iter().map(|g| g.proof.node));
@@ -2684,7 +3225,6 @@ impl SearchStream {
             extent_rows: Vec::new(),
             extent_next: 0,
             waiting: Vec::new(),
-            cut_barrier: None,
         };
         Some(StepResult::Continue)
     }
@@ -2692,8 +3232,8 @@ impl SearchStream {
     /// Local hypotheses that match `goal_val`, as zero-body `Assumption` candidates —
     /// resolved *inside* the normal SLD search, so they chain through KB rules and obey
     /// backtracking / floundering with no duplicated logic. Two sources:
-    ///   • the frame's `assumed_facts` (WI-108) — `forall_impl` antecedents, a per-frame
-    ///     list (push/pop with the discharge);
+    ///   • the assumptions in scope ([`Goals::assumed`], WI-108) — `forall_impl` antecedents,
+    ///     each discharge's pushed by its scope and dropped at its exit;
     ///   • the Γ overlay (WI-537 / proposal 050) — the typer's local-interpretation
     ///     context, a discrimination-tree index global to this resolve call
     ///     (`config.gamma`), matched structurally by [`Self::gamma_candidates_for`].
@@ -2705,12 +3245,13 @@ impl SearchStream {
     /// and by the WI-938 hook for a call that did not run.
     fn hypothesis_candidates(&self, kb: &mut KnowledgeBase, goal_val: &Value) -> Vec<Candidate> {
         let frame = self.stack.last().unwrap();
-        if frame.assumed_facts.is_empty() && self.config.gamma.is_none() {
+        if frame.goals.assumed().is_empty() && self.config.gamma.is_none() {
             return Vec::new();
         }
         let goal_value = kb.reify_value(goal_val, &frame.subst);
         let mut candidates: Vec<Candidate> = frame
-            .assumed_facts
+            .goals
+            .assumed()
             .iter()
             .filter_map(|fact| kb.match_view_value_pattern(fact, &goal_value))
             .filter(|subst| !subst.is_contradiction())
@@ -2754,7 +3295,7 @@ impl SearchStream {
     /// local-interpretation fact that unifies with the (already σ-reified)
     /// `goal_value`, as a zero-body [`Candidate::Assumption`]. The
     /// discrimination-tree query *is* the unifier; each candidate is confirmed
-    /// `!is_contradiction()` exactly as `assumed_facts` / `query_view` are. A Γ
+    /// `!is_contradiction()` exactly as the assumptions / `query_view` are. A Γ
     /// fact `neq(b, 0)` over a rigid parameter keys `RigidVar(b)` (WI-537's
     /// `ViewHead` refactor) — it matches the same rigid, never a concrete goal.
     /// Empty unless the typer's `prove_from_gamma` bridge seeded `config.gamma`.
@@ -2800,14 +3341,13 @@ impl SearchStream {
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
         let frame = self.stack.last().unwrap();
-        let proof_tag = frame.goals[0].proof;
+        let proof_tag = frame.goals.current().proof;
         let spliced = goals.len();
         // A SPLICE IS NO CALL (WI-20261115-0WT09): the goals that take `goals[0]`'s place — a
         // conjunction's two operands, `<=>`'s pending equations, a goal with its arguments
         // evaluated — stand where it stood, at its depth. Only opening a clause nests.
-        let mut new_goals: Vec<FrameGoal> =
+        let spliced_goals: Vec<FrameGoal> =
             goals.into_iter().map(|g| FrameGoal::ready(g, depth)).collect();
-        new_goals.extend_from_slice(&frame.goals[1..]);
         let mut new_subst = frame.subst.clone();
         // WI-502 Step 2 (M7(b)) — carry `extra`'s TOP-LEVEL constraint
         // store through the merge. This lift is the single funnel for
@@ -2853,7 +3393,7 @@ impl SearchStream {
             new_subst.bind_waking(kb, *var, val.clone());
         }
         let f = self.stack.last_mut().unwrap();
-        f.goals = new_goals;
+        f.goals.replace_current(spliced_goals);
         f.subst = new_subst;
         f.state = FrameState::Init {
             delay_mode: delay_mode.reset(),
@@ -3023,7 +3563,7 @@ impl SearchStream {
                 // The frame stays on the stack until its residual is built: opening a
                 // waiting clause selects candidates under the frame's σ.
                 let mut subst = frame.subst.clone();
-                let goals = std::mem::take(&mut self.stack.last_mut().unwrap().goals);
+                let goals = self.stack.last_mut().unwrap().goals.take_all();
                 // WI-348: residual carries the delayed goals as `Value` — no
                 // materialize-to-`TermId`, so a goal mentioning a `Value::Node`
                 // keeps its occurrence identity. A goal asked of one waiting clause is
@@ -3150,12 +3690,12 @@ impl SearchStream {
         let mut goal_val: Value = {
             let f = self.stack.last().unwrap();
             if f.subst.is_empty() {
-                f.goals[0].goal.clone()
+                f.goals.current().goal.clone()
             } else {
                 let subst = f.subst.clone();
-                let g0 = f.goals[0].goal.clone();
+                let g0 = f.goals.current().goal.clone();
                 let walked = kb.reify_value_transient(&g0, &subst);
-                self.stack.last_mut().unwrap().goals[0].goal = walked.clone();
+                self.stack.last_mut().unwrap().goals.current_mut().goal = walked.clone();
                 walked
             }
         };
@@ -3174,7 +3714,7 @@ impl SearchStream {
         // clause: its classification, its builtin, its other clauses, its hypotheses and its
         // extent rows answered when it was first asked. The clause's head is matched again
         // under σ, since the caller may have bound what the clause waited on.
-        if let Some(rid) = self.stack.last().unwrap().goals[0].clause {
+        if let Some(rid) = self.stack.last().unwrap().goals.current().clause {
             let candidates: Vec<Candidate> = self
                 .rule_candidates(kb, &goal_val)
                 .into_iter()
@@ -3190,17 +3730,14 @@ impl SearchStream {
                 extent_rows: Vec::new(),
                 extent_next: 0,
                 waiting: Vec::new(),
-                cut_barrier: None,
             };
             return Some(StepResult::Continue);
         }
         let frame = self.stack.last().unwrap();
 
-        // Scoping / hereditary-Harrop markers (`__pop_assumption`,
-        // `forall_impl`, WI-108). Detected by functor so they work for
+        // Scoping / hereditary-Harrop markers (`forall_impl`, WI-108; the bounded
+        // quantifiers; `__size_round_end`). Detected by functor so they work for
         // occurrence goals too (a rule-body `forall …` is a `Value::Node`).
-        // `__pop_assumption` classifies carrier-neutrally; the forall/quant
-        // handlers are term-structured, so reify only when one of them matches.
         let is_marker = match goal_val.head(kb) {
             ViewHead::Functor {
                 functor: f,
@@ -3210,19 +3747,6 @@ impl SearchStream {
             _ => false,
         };
         if is_marker {
-            // 3.4 __pop_assumption(N) — pops N entries off assumed_facts.
-            // Carrier-neutral: reads the count off the goal's TermView, so this
-            // marker classifies without lowering the goal to a term.
-            if let Some(n) = Self::pop_assumption_arg(kb, &goal_val) {
-                let f = self.stack.last_mut().unwrap();
-                let drop_from = f.assumed_facts.len().saturating_sub(n);
-                f.assumed_facts.truncate(drop_from);
-                f.goals.remove(0);
-                f.state = FrameState::Init {
-                    delay_mode: delay_mode.reset(),
-                };
-                return Some(StepResult::Continue);
-            }
             // 3.45 WI-20260911-09E6M — __size_round_end(k): the round's fill is done. The
             // branch is an answer of round `k` only where it spent all `k`; one that spent
             // less generated a smaller member, which the round of its size answered. Past
@@ -3235,7 +3759,7 @@ impl SearchStream {
                 let f = self.stack.last_mut().unwrap();
                 match f.size.take() {
                     Some(budget) if budget.remaining == 0 => {
-                        f.goals.remove(0);
+                        f.goals.pop_current();
                         f.state = FrameState::Init {
                             delay_mode: delay_mode.reset(),
                         };
@@ -3308,7 +3832,7 @@ impl SearchStream {
             if b {
                 let tag = self.current_proof_tag();
                 let f = self.stack.last_mut().unwrap();
-                f.goals.remove(0);
+                f.goals.pop_current();
                 f.state = FrameState::Init {
                     delay_mode: delay_mode.reset(),
                 };
@@ -3332,7 +3856,7 @@ impl SearchStream {
                 let fr = self.stack.last_mut().unwrap();
                 // As the `field_access` rewrite below: goal[0] in place, same goal count,
                 // `delay_mode` threaded through unchanged.
-                fr.goals[0].goal = not_eq;
+                fr.goals.current_mut().goal = not_eq;
                 fr.state = FrameState::Init { delay_mode };
                 return Some(StepResult::Continue);
             }
@@ -3343,7 +3867,7 @@ impl SearchStream {
         match kb.woven_equality(&goal_val, &self.stack.last().unwrap().subst) {
             Some(WovenEquality::At(pinned)) => {
                 let fr = self.stack.last_mut().unwrap();
-                fr.goals[0].goal = pinned;
+                fr.goals.current_mut().goal = pinned;
                 fr.state = FrameState::Init { delay_mode };
                 return Some(StepResult::Continue);
             }
@@ -3371,7 +3895,7 @@ impl SearchStream {
         // as a builtin (`builtin_false`), not for want of a clause.
         if registered_builtin_tag.is_some() {
             if let Some(rec) = self.proof.as_mut() {
-                rec.mark_builtin(frame.goals[0].proof.attempt);
+                rec.mark_builtin(frame.goals.current().proof.attempt);
             }
         }
 
@@ -3414,7 +3938,6 @@ impl SearchStream {
                     extent_rows: Vec::new(),
                     extent_next: 0,
                     waiting: Vec::new(),
-                    cut_barrier: None,
                 };
                 return Some(StepResult::Continue);
             }
@@ -3464,7 +3987,7 @@ impl SearchStream {
                 let fr = self.stack.last_mut().unwrap();
                 // Same discipline as the WI-580 hook above: goal[0] in place, same goal
                 // count, `delay_mode` threaded through unchanged rather than reset.
-                fr.goals[0].goal = eq_goal;
+                fr.goals.current_mut().goal = eq_goal;
                 fr.state = FrameState::Init { delay_mode };
                 return Some(StepResult::Continue);
             }
@@ -3525,7 +4048,7 @@ impl SearchStream {
                         // value is ground would walk it at every level of the check. A fill
                         // inside a round spends that round's budget instead.
                         Some((goal, true)) if f.size.is_none() => {
-                            let g0 = &f.goals[0];
+                            let g0 = &f.goals.current();
                             let fill = FrameGoal {
                                 goal,
                                 wait: Wait::Ready,
@@ -3546,7 +4069,7 @@ impl SearchStream {
                             return self.step_init(kb);
                         }
                         Some((goal, _)) => {
-                            f.goals[0].goal = goal;
+                            f.goals.current_mut().goal = goal;
                             f.state = FrameState::Init { delay_mode };
                             // A DISPATCH COSTS NOTHING (060-implementation §7.3 item 7): no depth
                             // (the goal keeps its own) and no fuel — the `fill` call it lowered to
@@ -3557,8 +4080,8 @@ impl SearchStream {
                             return self.step_init(kb);
                         }
                         None => {
-                            let tag = f.goals[0].proof;
-                            f.goals.remove(0);
+                            let tag = f.goals.current().proof;
+                            f.goals.pop_current();
                             f.state = FrameState::Init {
                                 delay_mode: delay_mode.reset(),
                             };
@@ -3572,8 +4095,8 @@ impl SearchStream {
                 let subst = frame.subst.clone();
                 if let Some(applied) = Self::lower_ho_apply(kb, &goal_val, &subst) {
                     let f = self.stack.last_mut().unwrap();
-                    let tag = f.goals[0].proof;
-                    f.goals[0].goal = applied;
+                    let tag = f.goals.current().proof;
+                    f.goals.current_mut().goal = applied;
                     f.state = FrameState::Init { delay_mode };
                     // WI-20261121-G8E02 — `?P(x)` is proved as the call it makes (§8.3).
                     self.proof_supersede(tag);
@@ -3617,7 +4140,6 @@ impl SearchStream {
                         extent_rows: Vec::new(),
                         extent_next: 0,
                         waiting: Vec::new(),
-                        cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
                 } else {
@@ -3654,20 +4176,28 @@ impl SearchStream {
                 }
             }
             // Cut (`!`), proposal 033.1 / WI-568. Bypasses execute_builtin: its
-            // effect is on the choice-point stack, not on σ. The barrier `B` is
-            // baked into the goal (`cut(B)`) when the enclosing rule body was
-            // opened (see `step_choice_point`); `apply_cut` prunes back to the
-            // frame tagged with `B`. Then the cut goal is consumed and resolution
-            // continues with the body's tail — the cut itself always succeeds.
+            // effect is on the choice-point stack, not on σ. It cuts to the CALL HEIGHT of
+            // the scope it is written in (076 Stage A, [`Scope::cut`]): the choice point
+            // that opened the clause whose body holds it, recorded when the body was opened
+            // (`step_choice_point`). Then the cut goal is consumed and resolution continues
+            // with the body's tail — the cut itself always succeeds.
             if tag == BuiltinTag::Cut {
-                // Carrier-neutral (WI-348): the barrier is read off the goal's
-                // `TermView`, so a `Value::Node` cut goal needs no whole-goal reify.
-                let barrier = Self::resolve_cut_barrier(kb, &goal_val);
-                self.apply_cut(barrier);
+                // Carrier-neutral (WI-348): the shape is read off the goal's `TermView`. The
+                // resolver no longer bakes a barrier into the goal, so a `cut` with an
+                // argument is not one it made, and it says so rather than cutting.
+                if !matches!(goal_val.head(kb), ViewHead::Functor { pos_arity: 0, named_arity: 0, .. }) {
+                    self.record_error(
+                        ResolveError::new("`cut` (`!`) takes no argument".to_string())
+                            .located_at(&goal_val),
+                    );
+                    return self.schedule_unanswerable_goal(kb, &goal_val, depth, delay_mode, None);
+                }
+                let height = self.stack.last().unwrap().goals.cut_height();
+                self.apply_cut(height);
                 let new_delay = delay_mode.reset();
                 let tag = self.current_proof_tag();
                 let f = self.stack.last_mut().unwrap();
-                f.goals.remove(0);
+                f.goals.pop_current();
                 f.state = FrameState::Init {
                     delay_mode: new_delay,
                 };
@@ -3698,7 +4228,6 @@ impl SearchStream {
                         extent_rows: Vec::new(),
                         extent_next: 0,
                         waiting: Vec::new(),
-                        cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
                 }
@@ -3800,7 +4329,6 @@ impl SearchStream {
                         extent_rows: Vec::new(),
                         extent_next: 0,
                         waiting: Vec::new(),
-                        cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
                 }
@@ -3852,15 +4380,11 @@ impl SearchStream {
             }
             match builtin_result {
                 BuiltinResult::Success => {
-                    // Remove goals[0], bump depth, reset delay counter if delayed
-                    let tag = frame.goals[0].proof;
-                    let new_goals = frame.goals[1..].to_vec();
-                    let new_subst = frame.subst.clone();
+                    // The goal is discharged; reset the delay counter if delayed.
+                    let tag = frame.goals.current().proof;
                     let new_delay = delay_mode.reset();
-                    // Replace current frame
                     let f = self.stack.last_mut().unwrap();
-                    f.goals = new_goals;
-                    f.subst = new_subst;
+                    f.goals.pop_current();
                     f.state = FrameState::Init {
                         delay_mode: new_delay,
                     };
@@ -4172,7 +4696,7 @@ impl SearchStream {
                 // the delay-mode residualization check (`consecutive_delays >=
                 // goals.len()`) can bite — a ground `member` reaches its `eq` and
                 // decides; an unground one residualizes either way.
-                fr.goals[0].goal = eq_goal;
+                fr.goals.current_mut().goal = eq_goal;
                 fr.state = FrameState::Init { delay_mode };
                 return Some(StepResult::Continue);
             }
@@ -4248,7 +4772,7 @@ impl SearchStream {
                         let unify_goal =
                             kb.make_goal_value(unify_sym, vec![Value::Node(result), value]);
                         let fr = self.stack.last_mut().unwrap();
-                        fr.goals[0].goal = unify_goal;
+                        fr.goals.current_mut().goal = unify_goal;
                         fr.state = FrameState::Init { delay_mode };
                         return Some(StepResult::Continue);
                     }
@@ -4399,7 +4923,6 @@ impl SearchStream {
             extent_rows,
             extent_next: 0,
             waiting: Vec::new(),
-            cut_barrier: None,
         };
         Some(StepResult::Continue)
     }
@@ -4567,36 +5090,29 @@ impl SearchStream {
             .map(|c| kb.reify_value(c, &skolem))
             .collect();
 
-        // Append a pop_assumption marker after the consequents so the assumed
-        // antecedents go out of scope before the surrounding rule's remaining
-        // goals run (WI-108 scoping invariant).
-        let n_assumed = skolemized_antecedents.len();
+        // The consequents run in a scope that pushes the antecedents and drops them at its
+        // exit, so they are out of scope before the surrounding rule's remaining goals run
+        // (WI-108 scoping invariant; a `__pop_assumption` marker behind the consequents
+        // before 076 Stage A).
         let n_consequents = skolemized_consequents.len();
         let proof_kind = self.proof.is_some().then(|| InstanceKind::Discharge {
             fresh: std::mem::take(&mut fresh_constants),
             assumed: skolemized_antecedents.clone(),
         });
         let proof_tag = self.current_proof_tag();
-        // The consequents are OPENED for the quantifier (WI-20261115-0WT09): one deeper, and
-        // the marker that ends the assumptions' scope with them.
+        // The consequents are OPENED for the quantifier (WI-20261115-0WT09): one deeper.
         let below = Nesting::Opened.depth_below(depth);
-        let mut new_goals: Vec<FrameGoal> = skolemized_consequents
+        let new_goals: Vec<FrameGoal> = skolemized_consequents
             .into_iter()
             .map(|c| FrameGoal::ready(c, below))
             .collect();
-        if n_assumed > 0 {
-            let marker = Self::make_pop_assumption_marker(kb, n_assumed);
-            new_goals.push(FrameGoal::ready(Value::term(marker), below));
-        }
         let frame = self.stack.last().unwrap();
         // WI-20260926-CYNPE — the tail keeps its wait states. The antecedents assumed here
         // are candidates of a rule goal, and so could answer one waiting in the tail without
-        // any of its blockers being bound — but the tail sits BEHIND the pop marker, and
-        // rotation only moves the head to the back, so no tail goal is asked before the
-        // assumptions are gone again: it is asked under the set it waited under.
-        new_goals.extend(frame.goals[1..].iter().cloned());
-        let mut new_assumed = frame.assumed_facts.clone();
-        new_assumed.extend(skolemized_antecedents);
+        // any of its blockers being bound — but the tail is in the scopes BEHIND the
+        // discharge's, and rotation moves a goal behind every scope, so a tail goal is asked
+        // under them only where a binding WAKES it in front of the current goal (068 §2.2).
+        let goals = frame.goals.open_discharge(new_goals, skolemized_antecedents);
         let new_subst = frame.subst.clone();
         let proof_path = frame.path.clone();
         let size = frame.size.clone();
@@ -4604,12 +5120,11 @@ impl SearchStream {
 
         self.stack.pop();
         self.stack.push(ResolverFrame {
-            goals: new_goals,
+            goals,
             subst: new_subst,
             state: FrameState::Init {
                 delay_mode: new_delay,
             },
-            assumed_facts: new_assumed,
             path: proof_path,
             size,
         });
@@ -4837,17 +5352,16 @@ impl SearchStream {
         if is_forall {
             // Conjunction: flatten all element bodies, prepend, replace frame.
             let frame = self.stack.last().unwrap();
-            let mut new_goals: Vec<FrameGoal> = per_element
+            let instance_goals: Vec<FrameGoal> = per_element
                 .into_iter()
                 .flatten()
                 // A quantifier's instances are OPENED for it (WI-20261115-0WT09): one deeper.
                 .map(|g| FrameGoal::ready(g, Nesting::Opened.depth_below(depth)))
                 .collect();
-            let instances = new_goals.len();
-            new_goals.extend(frame.goals[1..].iter().cloned());
+            let instances = instance_goals.len();
+            let new_goals = frame.goals.open(instance_goals);
             let new_subst = frame.subst.clone();
-            let new_assumed = frame.assumed_facts.clone();
-            let proof_tag = frame.goals[0].proof;
+            let proof_tag = frame.goals.current().proof;
             let proof_path = frame.path.clone();
             let size = frame.size.clone();
             self.stack.pop();
@@ -4857,7 +5371,6 @@ impl SearchStream {
                 state: FrameState::Init {
                     delay_mode: delay_mode.reset(),
                 },
-                assumed_facts: new_assumed,
                 path: proof_path,
                 size,
             });
@@ -4878,7 +5391,7 @@ impl SearchStream {
                     nesting: Nesting::Opened,
                 })
                 .collect();
-            let original_goal = self.stack.last().unwrap().goals[0].goal.clone();
+            let original_goal = self.stack.last().unwrap().goals.current().goal.clone();
             let f = self.stack.last_mut().unwrap();
             f.state = FrameState::ChoicePoint {
                 delay_mode,
@@ -4890,7 +5403,6 @@ impl SearchStream {
                 extent_rows: Vec::new(),
                 extent_next: 0,
                 waiting: Vec::new(),
-                cut_barrier: None,
             };
             Some(StepResult::Continue)
         }
@@ -4972,17 +5484,17 @@ impl SearchStream {
     /// The goal keeps its own depth (WI-20261115-0WT09): a rotation is no step deeper.
     fn rotate_first(&mut self, mut goal: FrameGoal, new_consecutive: usize) {
         let f = self.stack.last_mut().unwrap();
-        let removed = f.goals.remove(0);
         // WI-20261121-G8E02 — proof mode: the goal keeps its node behind the tail, and the
         // attempt that asked it is POSTPONED — it did not fail; it is asked afresh on its next
         // turn. Every rotation comes through here.
+        let asked = f.goals.current().proof;
         if goal.proof == ProofTag::NONE {
-            goal.proof = removed.proof.unasked();
+            goal.proof = asked.unasked();
         }
         if let Some(rec) = self.proof.as_mut() {
-            rec.postpone(removed.proof.attempt);
+            rec.postpone(asked.attempt);
         }
-        f.goals.push(goal);
+        f.goals.rotate_current(goal);
         f.state = FrameState::Init {
             delay_mode: DelayMode::Delayed {
                 consecutive_delays: new_consecutive,
@@ -5001,18 +5513,13 @@ impl SearchStream {
     /// tried.
     fn wake_bound_goal(&mut self) -> bool {
         let frame = self.stack.last_mut().unwrap();
-        let woken = frame.goals.iter().skip(1).position(|g| match &g.wait {
+        let subst = &frame.subst;
+        frame.goals.wake(|g| match &g.wait {
             Wait::Suspended { blockers, .. } => blockers
                 .iter()
-                .any(|b| frame.subst.resolve_as_value(*b).is_some()),
+                .any(|b| subst.resolve_as_value(*b).is_some()),
             Wait::Ready | Wait::Parked => false,
-        });
-        let Some(i) = woken else {
-            return false;
-        };
-        let goal = frame.goals.remove(i + 1);
-        frame.goals.insert(0, goal);
-        true
+        })
     }
 
     /// WI-20260926-CYNPE (068 §2.2) — `goals[0]`'s turn when it is WAITING: `None` when it
@@ -5023,7 +5530,7 @@ impl SearchStream {
     /// unchanged and counts toward the gate.
     fn pass_over_waiting_goal(&mut self, delay_mode: &DelayMode) -> Option<Option<StepResult>> {
         let frame = self.stack.last_mut().unwrap();
-        let waiting = match &frame.goals[0].wait {
+        let waiting = match &frame.goals.current().wait {
             Wait::Ready => false,
             Wait::Suspended { blockers, .. } => !blockers
                 .iter()
@@ -5031,10 +5538,13 @@ impl SearchStream {
             Wait::Parked => true,
         };
         if !waiting {
-            frame.goals[0].wait = Wait::Ready;
+            // Written only where it changes: a ready goal is left as it is.
+            if !matches!(frame.goals.current().wait, Wait::Ready) {
+                frame.goals.current_mut().wait = Wait::Ready;
+            }
             return None;
         }
-        let head = frame.goals[0].clone();
+        let head = frame.goals.current().clone();
         if matches!(delay_mode, DelayMode::Normal) && frame.goals.len() == 1 {
             let cause = head.wait.cause();
             return Some(self.yield_sole_goal(head.goal, cause));
@@ -5122,20 +5632,6 @@ impl SearchStream {
         Some(kb.make_goal_value(pred_sym, raw.into_iter().skip(1).collect()))
     }
 
-    /// Build `__pop_assumption(N)` — a synthetic goal that, when reached
-    /// in step_init, drops N entries from the frame's assumed_facts.
-    fn make_pop_assumption_marker(kb: &mut KnowledgeBase, n: usize) -> TermId {
-        let functor = kb
-            .try_resolve_symbol(POP_ASSUMPTION)
-            .expect("bootstrap registers the `__pop_assumption` marker");
-        let count = kb.alloc(Term::Const(crate::kb::term::Literal::Int(n as i64)));
-        kb.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::from_slice(&[count]),
-            named_args: SmallVec::new(),
-        })
-    }
-
     /// Read both args of a binary GOAL-BEARING primitive — `push_choice(?a, ?b)` and
     /// its conjunctive dual `push_and(?a, ?b)` — walked through σ, as
     /// `(goal_a, goal_b)`. Carrier-neutral (WI-348): the goal is read through
@@ -5167,125 +5663,41 @@ impl SearchStream {
         }
     }
 
-    /// If `node` is a cut marker (`anthill.kernel.cut`), return its functor
-    /// symbol (proposal 033.1 / WI-568). Detection reuses `get_builtin_view`'s
-    /// resolution so it matches exactly how the cut goal is classified when it
-    /// later fires; the functor is reused to build the baked `cut(B)` term.
-    fn cut_marker_functor(kb: &KnowledgeBase, node: &Rc<NodeOccurrence>) -> Option<Symbol> {
-        let v = Value::Node(node.clone());
-        if kb.get_builtin_view(&v) == Some(BuiltinTag::Cut) {
-            v.head(kb).functor_sym()
-        } else {
-            None
-        }
+    /// Is `node` the cut (`anthill.kernel.cut`, a written `!`)? Detection reuses
+    /// `get_builtin_view`'s resolution so it matches exactly how the cut goal is classified when
+    /// it later fires (proposal 033.1 / WI-568).
+    fn is_cut_goal(kb: &KnowledgeBase, node: &Rc<NodeOccurrence>) -> bool {
+        kb.get_builtin_view(&Value::Node(node.clone())) == Some(BuiltinTag::Cut)
     }
 
-    /// Build the barrier-carrying cut goal `cut(IntLit(barrier))` — the opened
-    /// form of the surface `!` (proposal 033.1 / WI-568). Reuses the marker's own
-    /// functor so the baked goal resolves to the same `BuiltinTag::Cut`.
-    fn bake_cut_term(kb: &mut KnowledgeBase, cut_sym: Symbol, barrier: i64) -> TermId {
-        let lit = kb.alloc(Term::Const(crate::kb::term::Literal::Int(barrier)));
-        kb.alloc(Term::Fn {
-            functor: cut_sym,
-            pos_args: SmallVec::from_elem(lit, 1),
-            named_args: SmallVec::new(),
-        })
-    }
-
-    /// Read the barrier `B` baked into a `cut(B)` goal (proposal 033.1 / WI-568).
-    /// The surface `!` is opened to `cut(IntLit(B))` when the enclosing rule body
-    /// is entered (`bake_cut_barrier`). Returns `None` for the unbaked nullary
-    /// `cut` — a `!` written at query top level with no enclosing rule —
-    /// whereupon [`Self::apply_cut`] commits the whole query.
+    /// Prune the choice-point stack back to the cut's call height (proposal 033.1 / WI-568;
+    /// 076 Stage A): the choice point at `height` — the one that opened the clause whose body
+    /// the `!` is written in — has its remaining clauses **and** every choice point stacked
+    /// above it (created while resolving the goals before the `!`) neutralized: `next`
+    /// advanced past all candidates and the waiting clauses cleared, so backtracking pops
+    /// straight through them. The current (top) frame, where the cut fired, is left intact to
+    /// continue with the body's tail. `None` (a `!` written anywhere but at the top of a
+    /// clause body — the query, a side of `|`, a quantifier's instance) commits to the stack
+    /// floor.
     ///
-    /// Carrier-neutral (WI-348): the goal is read through [`TermView`]
-    /// (`head` arity gate + `pos_arg`), so a rule-body `!` arriving as a
-    /// `Value::Node` occurrence is classified without a whole-goal reify. The
-    /// baked barrier is a concrete `IntLit` (never a σ-bound variable), so the arg
-    /// head is read directly — no walk — exactly as the former term reader did.
-    fn resolve_cut_barrier(kb: &KnowledgeBase, goal: &Value) -> Option<i64> {
-        match goal.head(kb) {
-            // Unbaked nullary `cut` — a top-level-query `!` with no enclosing rule
-            // body to open it. Intentional: `apply_cut(None)` commits the query.
-            // (`cut` is a builtin, not a constructor, so it never canonicalizes to
-            // the bare `Ref` spelling — the 0-ary `Functor` head is exact.)
-            ViewHead::Functor {
-                pos_arity: 0,
-                named_arity: 0,
-                ..
-            } => None,
-            // The baked form `cut(IntLit(B))`.
-            ViewHead::Functor {
-                pos_arity: 1,
-                named_arity: 0,
-                ..
-            } => {
-                match goal.pos_arg(kb, 0) {
-                    Some(arg) => match arg.head(kb) {
-                        ViewHead::Const(Literal::Int(n)) => Some(n),
-                        // A baked cut always carries an Int barrier; any other arg
-                        // means a broken lowering, not a recoverable case.
-                        _ => {
-                            debug_assert!(false, "cut goal argument is not an Int barrier");
-                            None
-                        }
-                    },
-                    // Head reports arity 1 but the view can't resolve arg 0 — a
-                    // carrier/view desync; surface it loudly rather than skip.
-                    None => {
-                        debug_assert!(false, "cut goal reports arity 1 but no arg 0");
-                        None
-                    }
-                }
-            }
-            // Neither nullary nor `cut(IntLit)`: a malformed cut goal.
-            _ => {
-                debug_assert!(false, "cut goal has an unexpected shape");
-                None
-            }
-        }
-    }
-
-    /// Prune the choice-point stack back to the cut barrier (proposal 033.1 /
-    /// WI-568). The cut commits to the rule invocation whose choice point is
-    /// tagged with `barrier`: that frame's remaining clauses **and** every choice
-    /// point stacked above it (created while resolving the goals before the `!`)
-    /// are neutralized — `next` advanced past all candidates and the delay-
-    /// fallback cleared — so backtracking pops straight through them. The current
-    /// (top) frame, where the cut fired, is left intact to continue with the
-    /// body's tail. `None` (an unbaked top-level cut) commits to the stack floor.
-    ///
-    /// Finding the barrier frame by scan, then neutralizing the contiguous
-    /// suffix above it, is the WAM "reset B to the cut barrier" reset: the stack
-    /// *is* the call-tree spine, so "stacked above the barrier frame" is exactly
-    /// "created during this invocation's body". Disjunction transparency falls
-    /// out — an `or(...)`'s `push_choice` continuations sit above the frame and
-    /// are pruned; a cut inside an inner rule carries that rule's own (higher)
-    /// barrier and so never reaches down past it.
-    fn apply_cut(&mut self, barrier: Option<i64>) {
+    /// The height is the WAM's cut barrier `B0`: the stack *is* the call-tree spine, so
+    /// "stacked above the choice point that opened the body" is exactly "created during this
+    /// invocation's body". Disjunction transparency falls out — an `or(...)`'s `push_choice`
+    /// continuations sit above it and are pruned; a cut inside an inner rule cuts to that
+    /// rule's own (higher) choice point and so never reaches down past it. It used to be
+    /// found by a scan for a choice point tagged with a barrier baked into the goal.
+    fn apply_cut(&mut self, height: Option<usize>) {
         let top = self.stack.len().saturating_sub(1);
-        let floor = match barrier {
-            Some(b) => self.stack.iter().position(|f| {
-                matches!(&f.state, FrameState::ChoicePoint { cut_barrier: Some(cb), .. } if *cb == b)
-            }),
-            None => Some(0),
-        };
-        // The barrier frame is always below the cut frame: the `cut(B)` goal
-        // flows down the spine from the frame (`F0`) that opened its rule body,
-        // and `F0` can't pop while a descendant holding the cut is live. Its
-        // absence is a broken invariant, not a recoverable case — assert loudly
-        // (caught in tests) rather than silently prune nothing.
-        let floor_idx = match floor {
-            Some(idx) => idx,
-            None => {
-                debug_assert!(
-                    false,
-                    "apply_cut: barrier {barrier:?} has no owning ChoicePoint on the stack"
-                );
-                return;
-            }
-        };
-        for frame in self.stack[floor_idx..top].iter_mut() {
+        let floor = height.unwrap_or(0);
+        // The choice point is always below the cut's frame: the frame holding the `!` is a
+        // branch of it, and it cannot pop while a branch of it is live. A height at or above
+        // the cut's own frame is a broken invariant, not a recoverable case.
+        assert!(
+            floor < self.stack.len(),
+            "apply_cut: call height {floor} is above the stack ({} frames)",
+            self.stack.len()
+        );
+        for frame in self.stack[floor..top].iter_mut() {
             match &mut frame.state {
                 FrameState::ChoicePoint {
                     next,
@@ -5301,29 +5713,6 @@ impl SearchStream {
                 FrameState::SizeRounds { closed, .. } => *closed = true,
                 _ => {}
             }
-        }
-    }
-
-    /// Recognise `__pop_assumption(N)` and return N, reading through
-    /// [`TermView`] so the classification is carrier-neutral — no lowering to a
-    /// hash-consed `TermId`. The marker is synthesised as a `Value::Term` (see
-    /// `make_pop_assumption_marker`), so it never actually carries a `Value::Node`;
-    /// reading it via the view is what lets the marker branch dispatch on `&Value`
-    /// directly, ahead of the term-structured forall/quant handlers beside it.
-    /// Returns None for anything else.
-    fn pop_assumption_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<usize> {
-        match goal.head(kb) {
-            ViewHead::Functor {
-                functor: f,
-                pos_arity: 1,
-                named_arity: 0,
-            } if kb.builtin_of(f) == Some(BuiltinTag::PopAssumption) => {
-                match goal.pos_arg(kb, 0)?.head(kb) {
-                    ViewHead::Const(Literal::Int(n)) if n >= 0 => Some(n as usize),
-                    _ => None,
-                }
-            }
-            _ => None,
         }
     }
 
@@ -6051,7 +6440,6 @@ impl SearchStream {
                     extent_rows: Vec::new(),
                     extent_next: 0,
                     waiting: Vec::new(),
-                    cut_barrier: None,
                 };
                 Some(StepResult::Continue)
             }
@@ -6102,7 +6490,7 @@ impl SearchStream {
                     super::typing::MemoryAnswer::Fails => {
                         let tag = self.current_proof_tag();
                         let f = self.stack.last_mut().unwrap();
-                        f.goals.remove(0);
+                        f.goals.pop_current();
                         f.state = FrameState::Init {
                             delay_mode: delay_mode.reset(),
                         };
@@ -6338,8 +6726,7 @@ impl SearchStream {
                 // not floundered) → P is genuinely false → not(P) SUCCEEDS.
                 let new_delay = delay_mode.reset();
                 let f = self.stack.last_mut().unwrap();
-                let new_goals = f.goals[1..].to_vec();
-                f.goals = new_goals;
+                f.goals.pop_current();
                 f.subst = subst;
                 f.state = FrameState::Init {
                     delay_mode: new_delay,
@@ -6394,20 +6781,15 @@ impl SearchStream {
         // this one — a clause's other typed columns — are asked inside it and spend its budget,
         // so `pair(a: Tree, b: Tree)` is fair to both columns as `node(l, r)` is to both fields.
         // A round of its own after this one's end would keep `a` at `leaf` while `b` runs.
-        let tail = &frame.goals[1..];
-        let shared = tail.iter().take_while(|g| is_apply_domain_goal(kb, &g.goal)).count();
-        let mut goals: Vec<FrameGoal> = Vec::with_capacity(frame.goals.len() + 1);
+        let mut goals = frame.goals.clone();
         let depth = fill.depth;
-        goals.push(fill);
-        goals.extend(tail[..shared].iter().cloned());
+        *goals.current_mut() = fill;
         // The end stands where the `apply_domain` stood, at its depth: it is no call.
-        goals.push(FrameGoal::ready(end, depth));
-        goals.extend(tail[shared..].iter().cloned());
+        goals.insert_behind_run(|g| is_apply_domain_goal(kb, &g.goal), FrameGoal::ready(end, depth));
         self.stack.push(ResolverFrame {
             goals,
             subst: frame.subst.clone(),
             state: FrameState::Init { delay_mode },
-            assumed_facts: frame.assumed_facts.clone(),
             path: frame.path.clone(),
             size: Some(SizeBudget { remaining: k, pruned }),
         });
@@ -6639,14 +7021,13 @@ impl SearchStream {
             let wait = self.suspended_on_blockers(kb, &original_goal, None);
             let frame = self.stack.last().unwrap();
             // The goal the choice point answers keeps its depth behind the tail.
-            let depth = frame.goals[0].depth;
+            let depth = frame.goals.current().depth;
             self.stack.push(ResolverFrame {
                 goals: frame.goals.clone(),
                 subst: frame.subst.clone(),
                 state: FrameState::Init {
                     delay_mode: delay_mode.clone(),
                 },
-                assumed_facts: frame.assumed_facts.clone(),
                 path: frame.path.clone(),
                 size: frame.size.clone(),
             });
@@ -6671,7 +7052,6 @@ impl SearchStream {
                 state: FrameState::BuiltinInit {
                     delay_mode: delay_mode.clone(),
                 },
-                assumed_facts: frame.assumed_facts.clone(),
                 path: frame.path.clone(),
                 size: frame.size.clone(),
             });
@@ -6685,7 +7065,6 @@ impl SearchStream {
                 state: FrameState::ClauseInit {
                     delay_mode: delay_mode.clone(),
                 },
-                assumed_facts: frame.assumed_facts.clone(),
                 path: frame.path.clone(),
                 size: frame.size.clone(),
             });
@@ -6698,20 +7077,16 @@ impl SearchStream {
         // from the variant.
         if let Candidate::Continuation { goals: body, nesting } = candidate {
             let frame = self.stack.last().unwrap();
-            let below = nesting.depth_below(frame.goals[0].depth);
-            let tail = &frame.goals[1..];
-            let mut new_goals: Vec<FrameGoal> = Vec::with_capacity(body.len() + tail.len());
+            let below = nesting.depth_below(frame.goals.current().depth);
             let parts = body.len();
-            new_goals.extend(body.into_iter().map(|g| FrameGoal::ready(g, below)));
-            new_goals.extend(tail.iter().cloned());
-            let proof_tag = frame.goals[0].proof;
+            let new_goals = frame.goals.open(body.into_iter().map(|g| FrameGoal::ready(g, below)).collect());
+            let proof_tag = frame.goals.current().proof;
             self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: frame.subst.clone(),
                 state: FrameState::Init {
                     delay_mode: delay_mode.reset(),
                 },
-                assumed_facts: frame.assumed_facts.clone(),
                 path: frame.path.clone(),
                 size: frame.size.clone(),
             });
@@ -6792,7 +7167,7 @@ impl SearchStream {
             // match enter `frame.subst` via `bind_compressed` below, and
             // remaining goals are lazily walked at selection time in
             // `step_init`.
-            let remaining = frame.goals[1..].to_vec();
+            let remaining = frame.goals.after_current();
             let mut merged = frame.subst.clone();
             // The `Value::Term` subset takes path compression; a non-Term entry
             // (an external row) takes the occurs-checked loop below.
@@ -6855,7 +7230,6 @@ impl SearchStream {
                 }
             }
             let new_delay = delay_mode.reset();
-            let inherited = frame.assumed_facts.clone();
             // A fact opens no goal: the tail keeps its own depths.
             let path = frame.path.clone();
             let size = frame.size.clone();
@@ -6865,7 +7239,6 @@ impl SearchStream {
                 state: FrameState::Init {
                     delay_mode: new_delay,
                 },
-                assumed_facts: inherited,
                 path,
                 size,
             });
@@ -6925,7 +7298,7 @@ impl SearchStream {
             // `with_fresh_vars`, and caller-side bindings flow into
             // `frame.subst` via the `bind_compressed` call below; remaining
             // goals are walked lazily in `step_init`.
-            let remaining = frame.goals[1..].to_vec();
+            let continuation = frame.goals.clone();
 
             // Sole consumer is the delay pre-check over the body — statically
             // moot for the empty body of a rerouted bodyless rule (WI-624),
@@ -6990,7 +7363,7 @@ impl SearchStream {
                 // rule-goal residualizes into a SPURIOUS solution. A refuted
                 // candidate is simply dropped (it does not wait); an honest,
                 // still-satisfiable rule keeps the old conservative delay.
-                let context_opaque = !frame.assumed_facts.is_empty()
+                let context_opaque = !frame.goals.assumed().is_empty()
                     || self.config.gamma.is_some()
                     || self.config.simplify;
                 if kb.body_refuted_by_ground_conjunct(&fresh_nodes, &merged, context_opaque) {
@@ -7005,38 +7378,30 @@ impl SearchStream {
             }
 
             // Capture what the push still needs from `frame` before the
-            // `self`-mut barrier-tagging below ends its borrow.
+            // `self`-mut cache reads below end its borrow.
             // A CLAUSE BODY IS ONE DEEPER than the goal the clause answers (WI-20261115-0WT09)
             // — the one place a goal's depth grows, so a nesting depth bounds every chain of
             // clause openings and charges nothing to the goals beside it (`remaining`).
-            let body_depth = frame.goals[0].depth + 1;
-            let inherited = frame.assumed_facts.clone();
+            let body_depth = frame.goals.current().depth + 1;
             let new_delay = delay_mode.reset();
 
-            // Cut baking (proposal 033.1 / WI-568). A body conjunct is a separate
-            // `fresh_nodes` entry, so a top-level `!` is detected here directly.
-            // (A cut nested inside an argument term — e.g. a hand-written
-            // `or((g, !), h)` — is not baked here; the supported surface form is
-            // the conjunct `!` that `once` / if-then-else and priority rules
-            // expand to.) Cut-ness is a static property of the rule, so the scan
-            // runs once per rule and is cached (cut-free rules — the vast
-            // majority — then skip it).
-            // An empty body (rerouted bodyless rule, WI-624) can't carry a cut
-            // marker — skip the cache probe entirely.
-            let cut_functor = if fresh_nodes.is_empty() {
-                None
-            } else {
-                match self.cut_cache.get(&rid) {
-                    Some(&cached) => cached,
-                    None => {
-                        let detected = fresh_nodes
-                            .iter()
-                            .find_map(|n| Self::cut_marker_functor(kb, n));
-                        self.cut_cache.insert(rid, detected);
-                        detected
-                    }
-                }
-            };
+            // A body with a top-level `!` (proposal 033.1 / WI-568) is opened in a scope that
+            // records the CALL HEIGHT its cut commits to: this choice point's index on the
+            // stack (076 Stage A, [`Scope::cut`]). A body conjunct is a separate `fresh_nodes`
+            // entry, so a top-level `!` is detected here directly. (A cut nested inside an
+            // argument term — e.g. a hand-written `or((g, !), h)` — is in a scope of its own
+            // when it runs and cuts to the stack floor, as an unbaked cut did; the supported
+            // surface form is the conjunct `!` that `once` / if-then-else and priority rules
+            // expand to.) Cut-ness is a static property of the rule, so the scan runs once
+            // per rule and is cached (cut-free rules — the vast majority — then skip it).
+            // An empty body (rerouted bodyless rule, WI-624) can't carry a cut — skip the
+            // cache probe entirely.
+            let has_cut = !fresh_nodes.is_empty()
+                && *self
+                    .cut_cache
+                    .entry(rid)
+                    .or_insert_with(|| fresh_nodes.iter().any(|n| Self::is_cut_goal(kb, n)));
+            let cut_height = has_cut.then(|| self.stack.len() - 1);
 
             // A ROUTING-ONLY read runs as no goal ([`is_routing_only_read`]): its `out` was
             // bound above if a citation routed one, and nothing reads it if none did. Dropped
@@ -7123,49 +7488,21 @@ impl SearchStream {
 
             // WI-246: opened rule-body atoms enter the goal stream as
             // `Value::Node` occurrences (carrying any typer dot-rewrites),
-            // matched/resolved through `TermView` — no lowering to terms. A cut
-            // marker is the exception: it is baked to a `Value::Term(cut(B))` so
-            // it carries the barrier down the spine wherever the goal flows.
-            let mut new_goals: Vec<FrameGoal> =
-                Vec::with_capacity(fresh_nodes.len() + remaining.len());
-            match cut_functor {
-                Some(cut_sym) => {
-                    // Allocate a fresh barrier, tag the opening choice point (the
-                    // current frame `F0`) with it, then bake it into every cut
-                    // marker. All cuts in one body share `B` — they commit to the
-                    // same invocation.
-                    let barrier = self.next_barrier;
-                    self.next_barrier += 1;
-                    if let FrameState::ChoicePoint { cut_barrier, .. } =
-                        &mut self.stack.last_mut().unwrap().state
-                    {
-                        *cut_barrier = Some(barrier);
-                    }
-                    let baked = Self::bake_cut_term(kb, cut_sym, barrier);
-                    for n in fresh_nodes {
-                        if Self::cut_marker_functor(kb, &n).is_some() {
-                            new_goals.push(FrameGoal::ready(Value::term(baked), body_depth));
-                        } else {
-                            new_goals.push(FrameGoal::ready(Value::Node(n), body_depth));
-                        }
-                    }
-                }
-                None => new_goals.extend(
-                    fresh_nodes
-                        .into_iter()
-                        .map(|n| FrameGoal::ready(Value::Node(n), body_depth)),
-                ),
-            }
+            // matched/resolved through `TermView` — no lowering to terms. A `!` among them
+            // too: what it cuts to is its scope's, not baked into it.
+            let new_goals: Vec<FrameGoal> = fresh_nodes
+                .into_iter()
+                .map(|n| FrameGoal::ready(Value::Node(n), body_depth))
+                .collect();
             let body_len = new_goals.len();
-            new_goals.extend(remaining);
+            let goals = continuation.open_clause(new_goals, cut_height);
             let path = self.stack.last().and_then(|f| f.path.clone());
             self.stack.push(ResolverFrame {
-                goals: new_goals,
+                goals,
                 subst: merged,
                 state: FrameState::Init {
                     delay_mode: new_delay,
                 },
-                assumed_facts: inherited,
                 path,
                 size,
             });
@@ -7439,12 +7776,11 @@ impl KnowledgeBase {
         let query_goals = goals.clone();
         let initial_frame = ResolverFrame {
             // The query's goals are at depth 0: no clause stands between them and the query.
-            goals: goals.into_iter().map(|g| FrameGoal::ready(g, 0)).collect(),
+            goals: Goals::of(goals.into_iter().map(|g| FrameGoal::ready(g, 0)).collect()),
             subst: Substitution::new(),
             state: FrameState::Init {
                 delay_mode: DelayMode::Normal,
             },
-            assumed_facts: Vec::new(),
             path: None,
             size: None,
         };
@@ -7472,7 +7808,6 @@ impl KnowledgeBase {
             },
             query_cache: HashMap::new(),
             stats: ResolveStats::default(),
-            next_barrier: 0,
             cut_cache: HashMap::new(),
             routing_read_cache: HashMap::new(),
             fill_read_cache: HashMap::new(),
@@ -7504,9 +7839,8 @@ impl KnowledgeBase {
     pub(crate) fn resolve_lazy_goals_with_proof(&self, goals: Vec<Value>, config: &ResolveConfig) -> SearchStream {
         let mut stream = self.resolve_lazy_goals(goals, config);
         let mut rec = ProofRecorder::default();
-        for g in &mut stream.stack[0].goals {
-            g.proof = ProofTag::of(rec.root());
-        }
+        let roots: Vec<u32> = (0..stream.stack[0].goals.len()).map(|_| rec.root()).collect();
+        stream.stack[0].goals.tag_front(&roots);
         stream.proof = Some(Box::new(rec));
         stream
     }
@@ -8122,12 +8456,11 @@ impl KnowledgeBase {
             BuiltinTag::ForallImpl
             | BuiltinTag::ForallIn
             | BuiltinTag::SomeIn
-            | BuiltinTag::PopAssumption
             | BuiltinTag::SizeRoundEnd
             | BuiltinTag::WithinRequirements => BuiltinResult::Error(ResolveError::new(format!(
                 "`{}` is a resolver marker, read in place only in the shape the resolver \
                  mints it (arity 3 for `forall_impl` / `forall_in` / `some_in`, one integer \
-                 for `__pop_assumption` and `__size_round_end`, a goal and a relation for \
+                 for `__size_round_end`, a goal and a relation for \
                  `__within_requirements`); this goal is not in that shape",
                 goal.head(self)
                     .functor_sym()
@@ -17497,10 +17830,10 @@ impl KnowledgeBase {
     ///   honest `check(?a) :- nonvar(?a), is_thing(?a)` residual alive while
     ///   `is_thing(42)` exists.)
     /// - Refutation is DISABLED when a conjunct could be discharged by a
-    ///   resolution path `query_view` does not see — the frame's `assumed_facts`
+    ///   resolution path `query_view` does not see — the branch's assumptions
     ///   (WI-108), the Γ overlay (WI-537), the `@[simp]` eq-rewrite pass, a mounted
     ///   extent source (extent rows), a scoping/quantifier MARKER (`forall_impl` /
-    ///   `forall_in` / `some_in` / `__pop_assumption`), a
+    ///   `forall_in` / `some_in` / `__size_round_end`), a
     ///   Bool-view goal ([`Self::dispatched_bool_relation`], routed to `eq(f(args), true)`), or a WOVEN
     ///   goal (`Expr::ApplyWithin`, read by the Bool view or the functional-relation
     ///   hook). A FUNCTIONAL-RELATION goal ([`Self::functional_relation_goal`], routed to
@@ -18457,17 +18790,12 @@ fn bind_citation_reads(
     routes
 }
 
-/// The kernel address of the scope-discharge marker a discharge appends after its
-/// consequent ([`BuiltinTag::PopAssumption`]). Minted by the resolver only
-/// (`make_pop_assumption_marker`), so it is not a converter desugar target; registered
-/// at bootstrap, like the three markers that are.
-pub(crate) const POP_ASSUMPTION: &str = "anthill.kernel.__pop_assumption";
-
 /// The scoping / quantifier MARKER applications `step_init` resolves off the
 /// discrim path — skolemised / expanded in place, never via rule/fact
 /// candidates: `forall_impl` (WI-108 hereditary-Harrop) and `forall_in` /
 /// `some_in` (WI-027 bounded quantification), each 3-ary, plus the 1-ary
-/// `__pop_assumption` scope discharge.
+/// `__size_round_end` (WI-20260911-09E6M). (The 1-ary `__pop_assumption` scope discharge was
+/// one until 076 Stage A made the discharge's scope drop its assumptions at its exit.)
 ///
 /// Recognised by SYMBOL — the [`BuiltinTag`] bootstrap registers on each kernel
 /// address — AND positional arity (WI-878). By symbol because the short name is
@@ -18480,16 +18808,16 @@ pub(crate) const POP_ASSUMPTION: &str = "anthill.kernel.__pop_assumption";
 /// name.
 ///
 /// A marker is only ever BUILT at its canonical arity (the converter's and the
-/// induction synthesizer's 3-ary heads; `make_pop_assumption_marker`'s 1-ary one)
+/// induction synthesizer's 3-ary heads; `size_round_end_marker`'s 1-ary one)
 /// and the handlers consume exactly that shape (`step_bounded_quant` /
-/// `step_forall_impl` read positional args 0/1/2; `pop_assumption_arg` matches
+/// `step_forall_impl` read positional args 0/1/2; `size_round_end_arg` matches
 /// `pos_arity: 1`), so a marker symbol at another arity was written under an
 /// import of the kernel name and is not the resolver's marker. This predicate is
 /// the SOLE arity guard: once it admits a marker the handlers assume canonical
 /// arity and no longer re-check it. What it does not admit reaches
 /// `execute_builtin`, which refuses it as an error when the goal runs — so does a
-/// pos-arity-1 `__pop_assumption` whose argument is not the non-negative integer
-/// `pop_assumption_arg` reads. Not at load: the bootstrap declares the symbol, so the
+/// pos-arity-1 `__size_round_end` whose argument is not the integer `size_round_end_arg`
+/// reads. Not at load: the bootstrap declares the symbol, so the
 /// load's "names nothing" guards (`KnowledgeBase::undefined_functor`) do not apply to it,
 /// as they do not to `find_dictionary` written in another shape.
 ///
@@ -18509,14 +18837,14 @@ pub(crate) fn is_scoping_marker(kb: &KnowledgeBase, functor: Symbol, pos_arity: 
         Some(BuiltinTag::ForallImpl | BuiltinTag::ForallIn | BuiltinTag::SomeIn) => {
             pos_arity == 3
         }
-        Some(BuiltinTag::PopAssumption | BuiltinTag::SizeRoundEnd) => pos_arity == 1,
+        Some(BuiltinTag::SizeRoundEnd) => pos_arity == 1,
         _ => false,
     }
 }
 
 /// WI-20260911-09E6M — the kernel address of the marker that ends a round's fill
 /// ([`BuiltinTag::SizeRoundEnd`]). Minted by the resolver only ([`size_round_end_marker`]),
-/// registered at bootstrap as [`POP_ASSUMPTION`] is.
+/// registered at bootstrap.
 pub(crate) const SIZE_ROUND_END: &str = "anthill.kernel.__size_round_end";
 
 /// `__size_round_end(k)` — the goal that ends the fill a round of size `k` asks.
@@ -18532,8 +18860,8 @@ fn size_round_end_marker(kb: &mut KnowledgeBase, k: u32) -> Value {
     }))
 }
 
-/// The size `k` of a `__size_round_end(k)` marker — read through [`TermView`], as
-/// [`SearchStream::pop_assumption_arg`] reads its count — or `None` for any other goal.
+/// The size `k` of a `__size_round_end(k)` marker, read through [`TermView`] — or `None` for
+/// any other goal.
 fn size_round_end_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<u32> {
     match goal.head(kb) {
         ViewHead::Functor {
@@ -18550,6 +18878,273 @@ fn size_round_end_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<u32> {
 }
 
 // ── Tests ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod goals_tests {
+    //! WI-20261127-AGR9S — [`Goals`], the linked continuation, against the flat `Vec<FrameGoal>`
+    //! it replaced, `__pop_assumption` markers and the frame's assumption list included: every
+    //! operation the resolver makes, in a long pseudo-random sequence, keeps the goals in the
+    //! order the `Vec` kept them, with the same count, current goal, residual and assumptions.
+    //! A goal is told apart by its depth, which the model also records.
+    use super::*;
+
+    fn g(id: usize) -> FrameGoal {
+        FrameGoal::ready(Value::Unit, id)
+    }
+
+    fn waiting(id: usize) -> FrameGoal {
+        FrameGoal {
+            wait: Wait::Suspended {
+                blockers: Rc::from(vec![]),
+                cause: None,
+            },
+            ..g(id)
+        }
+    }
+
+    fn ids(goals: &Goals) -> Vec<usize> {
+        goals.iter().map(|g| g.depth).collect()
+    }
+
+    /// The old flat resolvent, the model: a goal, or the `__pop_assumption(n)` marker a
+    /// discharge spliced behind its consequents, with the frame's assumption list beside it. A
+    /// marker at the FRONT drops its assumptions at once — which is what the scope's structural
+    /// exit does where the marker took a step of its own.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum M {
+        G(usize),
+        Pop(usize),
+    }
+
+    #[derive(Clone, Debug)]
+    struct Model {
+        goals: Vec<M>,
+        assumed: Vec<i64>,
+    }
+
+    impl Model {
+        fn settle(&mut self) {
+            while let Some(M::Pop(n)) = self.goals.first().copied() {
+                self.goals.remove(0);
+                let keep = self.assumed.len() - n;
+                self.assumed.truncate(keep);
+            }
+        }
+        fn ids(&self) -> Vec<usize> {
+            self.goals
+                .iter()
+                .filter_map(|m| match m {
+                    M::G(d) => Some(*d),
+                    M::Pop(_) => None,
+                })
+                .collect()
+        }
+        fn with_front(&self, front: Vec<M>, assumed: &[i64]) -> Model {
+            let mut goals = front;
+            goals.extend_from_slice(&self.goals[1..]);
+            let mut m = Model {
+                goals,
+                assumed: self.assumed.clone(),
+            };
+            m.assumed.extend_from_slice(assumed);
+            m.settle();
+            m
+        }
+    }
+
+    fn assumed_of(goals: &Goals) -> Vec<i64> {
+        goals
+            .assumed()
+            .iter()
+            .map(|v| match v {
+                Value::Int(n) => *n,
+                _ => panic!("the model assumes integers"),
+            })
+            .collect()
+    }
+
+    /// The sequence the resolver makes of one branch, and of the children it opens, each held
+    /// as a frame on a stack (so cells are shared) and compared with the flat resolvent it would
+    /// have been, `__pop_assumption` markers included: the goals in the same order, the same
+    /// count, current goal and residual, and the same assumptions in scope.
+    #[test]
+    fn the_linked_continuation_keeps_the_flat_resolvents_order() {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut rnd = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let mut next_id = 0usize;
+        let mut next_fact = 0i64;
+        fn fresh(next_id: &mut usize, k: usize) -> Vec<FrameGoal> {
+            (0..k)
+                .map(|_| {
+                    *next_id += 1;
+                    g(*next_id)
+                })
+                .collect()
+        }
+        fn of(goals: &[FrameGoal]) -> Vec<M> {
+            goals.iter().map(|g| M::G(g.depth)).collect()
+        }
+        let query = |next_id: &mut usize, k: usize| {
+            let q = fresh(next_id, k);
+            let m = Model {
+                goals: of(&q),
+                assumed: Vec::new(),
+            };
+            (Goals::of(q), m)
+        };
+        let mut stack: Vec<(Goals, Model)> = vec![query(&mut next_id, 3)];
+        let mut discharges = 0;
+        for step in 0..30_000 {
+            let (goals, model) = stack.last().cloned().unwrap();
+            if model.goals.is_empty() {
+                stack.pop();
+                if stack.is_empty() {
+                    stack.push(query(&mut next_id, 1 + rnd(4)));
+                }
+                continue;
+            }
+            assert_eq!(model.goals[0], M::G(goals.current().depth), "step {step}");
+            let (goals, model) = match rnd(10) {
+                // A child opened by a clause with a body of 0..4 goals.
+                0 | 1 => {
+                    let body = fresh(&mut next_id, rnd(4));
+                    let m = model.with_front(of(&body), &[]);
+                    (goals.open(body), m)
+                }
+                // A child that DISCHARGES 0..3 consequents under 1..2 assumptions.
+                2 => {
+                    discharges += 1;
+                    let consequents = fresh(&mut next_id, rnd(4));
+                    let assumed: Vec<i64> = (0..1 + rnd(2))
+                        .map(|_| {
+                            next_fact += 1;
+                            next_fact
+                        })
+                        .collect();
+                    let mut front = of(&consequents);
+                    front.push(M::Pop(assumed.len()));
+                    let m = model.with_front(front, &assumed);
+                    let values = assumed.iter().map(|n| Value::Int(*n)).collect();
+                    (goals.open_discharge(consequents, values), m)
+                }
+                // A child answered by a fact.
+                3 => (goals.after_current(), model.with_front(Vec::new(), &[])),
+                // The current goal discharged, in place.
+                4 => {
+                    let mut goals = goals;
+                    goals.pop_current();
+                    stack.pop();
+                    (goals, model.with_front(Vec::new(), &[]))
+                }
+                // The current goal turned into 0..3 goals, in place.
+                5 => {
+                    let parts = fresh(&mut next_id, rnd(3));
+                    let m = model.with_front(of(&parts), &[]);
+                    let mut goals = goals;
+                    goals.replace_current(parts);
+                    stack.pop();
+                    (goals, m)
+                }
+                // The current goal waits, in place: behind every goal and every marker.
+                6 => {
+                    next_id += 1;
+                    let w = waiting(next_id);
+                    let mut m = model.clone();
+                    m.goals.remove(0);
+                    m.goals.push(M::G(next_id));
+                    m.settle();
+                    let mut goals = goals;
+                    goals.rotate_current(w);
+                    stack.pop();
+                    (goals, m)
+                }
+                // A goal behind the current one wakes: one that waited moves to the front, in
+                // front of every marker.
+                7 => {
+                    let mut goals = goals;
+                    let mut m = model.clone();
+                    let ids = m.ids();
+                    let pick = (ids.len() > 1).then(|| ids[1 + rnd(ids.len() - 1)]);
+                    let suspended = pick.is_some_and(|p| was_waiting(&goals, p));
+                    let woke = goals.wake(|g| {
+                        Some(g.depth) == pick && matches!(g.wait, Wait::Suspended { .. })
+                    });
+                    assert_eq!(woke, suspended, "step {step}");
+                    if suspended {
+                        let p = pick.unwrap();
+                        let i = m.goals.iter().position(|x| *x == M::G(p)).unwrap();
+                        let d = m.goals.remove(i);
+                        m.goals.insert(0, d);
+                    }
+                    stack.pop();
+                    (goals, m)
+                }
+                // A round's end inserted behind a run of picked goals; a marker ends the run.
+                8 => {
+                    let mut goals = goals;
+                    let cut = rnd(6);
+                    next_id += 1;
+                    let keep = |d: usize| d % 6 != cut;
+                    goals.insert_behind_run(|g| keep(g.depth), g(next_id));
+                    let mut m = model.clone();
+                    let run = m
+                        .goals
+                        .iter()
+                        .skip(1)
+                        .take_while(|x| matches!(x, M::G(d) if keep(*d)))
+                        .count();
+                    m.goals.insert(1 + run, M::G(next_id));
+                    stack.pop();
+                    (goals, m)
+                }
+                // The current goal rewritten in place.
+                _ => {
+                    let mut goals = goals;
+                    goals.current_mut().goal = Value::Bool(true);
+                    stack.pop();
+                    (goals, model)
+                }
+            };
+            assert_eq!(ids(&goals), model.ids(), "step {step}");
+            assert_eq!(assumed_of(&goals), model.assumed, "step {step}");
+            assert_eq!(goals.len(), model.ids().len(), "step {step}");
+            assert_eq!(goals.is_empty(), model.goals.is_empty(), "step {step}");
+            stack.push((goals, model));
+            if stack.len() > 200 {
+                stack.drain(..100);
+            }
+        }
+        assert!(discharges > 1000, "the sequence discharged {discharges} times");
+        // Every frame still holds the goals and the assumptions it was made with.
+        for (goals, model) in &stack {
+            assert_eq!(ids(goals), model.ids());
+            assert_eq!(assumed_of(goals), model.assumed);
+        }
+    }
+
+    fn was_waiting(goals: &Goals, id: usize) -> bool {
+        goals
+            .iter()
+            .any(|g| g.depth == id && matches!(g.wait, Wait::Suspended { .. }))
+    }
+
+    /// A continuation as long as a deep recursion leaves is dropped without overflowing the
+    /// native stack: its cells and its scopes are dropped one by one, not by recursion.
+    #[test]
+    fn a_long_continuation_drops_without_recursion() {
+        let mut goals = Goals::of(vec![g(0)]);
+        for i in 1..200_000 {
+            goals = goals.open(vec![g(i), g(i)]);
+        }
+        assert_eq!(goals.len(), 200_000, "each open replaces one goal by two");
+        drop(goals);
+    }
+}
 
 #[cfg(test)]
 mod tests {
